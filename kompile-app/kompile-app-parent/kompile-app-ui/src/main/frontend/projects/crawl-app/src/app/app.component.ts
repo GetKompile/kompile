@@ -21,16 +21,18 @@ import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
  * Crawl manager root. All chrome lives in the shared AppShellComponent; this supplies the tab
  * bar and the legacy-key routes for the crawl persona.
  *
- * settingsRoute and stagingRoute are left unset: settings and model staging are admin surfaces
- * served by kompile-app-main, and this app declares no route for either.
+ * The settings gear is crawl-owned and configures this persona's model-staging dependency.
+ * stagingRoute remains unset because the Model Staging application is independently distributed.
  */
 @Component({
   standalone: false,
   selector: 'app-root',
   template: `
     <app-shell
+      persona="crawl"
       [navItems]="navItems"
       [legacyKeyMap]="legacyKeyMap"
+      [settingsRoute]="'/settings'"
       [showProjectExplorer]="true">
     </app-shell>
   `

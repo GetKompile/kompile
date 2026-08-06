@@ -134,6 +134,10 @@ public class SubprocessAgentRunner {
     // Invocation-local options such as Codex MCP config overrides.
     private List<String> managedCommandPrefixArguments = List.of();
 
+    // Explicit launch selection; persisted per-agent defaults are resolved at command-build time.
+    private volatile String modelOverride;
+    private volatile String thinkingOverride;
+
     // Skills injection (loaded lazily on first injectSkills() call)
     private SkillsInjection skillsInjection;
 
@@ -189,6 +193,15 @@ public class SubprocessAgentRunner {
      */
     public void setExtraEnvironment(Map<String, String> extraEnvironment) {
         this.extraEnvironment = extraEnvironment != null ? Map.copyOf(extraEnvironment) : Map.of();
+    }
+
+    /**
+     * Set explicit model/thinking values for this managed session. Blank values
+     * leave resolution to project/user agent defaults and then the native CLI.
+     */
+    public void setLaunchOverrides(String modelOverride, String thinkingOverride) {
+        this.modelOverride = modelOverride;
+        this.thinkingOverride = thinkingOverride;
     }
 
     /**
@@ -1371,8 +1384,12 @@ public class SubprocessAgentRunner {
     // ========================================================================
 
     private List<String> buildCommand(String binary, String message) {
+        Path resolvedWorkingDir = Path.of(workingDir);
+        AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
+                agent, resolvedWorkingDir, modelOverride, thinkingOverride);
         List<String> command = buildManagedCommand(agent, binary, message, firstMessageSent,
-                agentSessionId, skipPermissions, Path.of(workingDir), systemPromptManager);
+                agentSessionId, skipPermissions, resolvedWorkingDir, systemPromptManager,
+                selection.model(), selection.thinking());
         return prependGlobalOptions(command, managedCommandPrefixArguments);
     }
 
@@ -1402,6 +1419,15 @@ public class SubprocessAgentRunner {
                                                    boolean firstMessageSent, String agentSessionId,
                                                    boolean skipPermissions, Path workingDir,
                                                    SystemPromptManager systemPromptManager) {
+        return buildManagedCommand(agentName, binary, message, firstMessageSent, agentSessionId,
+                skipPermissions, workingDir, systemPromptManager, null, null);
+    }
+
+    public static List<String> buildManagedCommand(String agentName, String binary, String message,
+                                                   boolean firstMessageSent, String agentSessionId,
+                                                   boolean skipPermissions, Path workingDir,
+                                                   SystemPromptManager systemPromptManager,
+                                                   String model, String thinking) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
 
@@ -1410,6 +1436,8 @@ public class SubprocessAgentRunner {
         Path resolvedWorkingDir = workingDir != null ? workingDir : Path.of(".");
 
         if (name.contains("claude")) {
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("-p");
             cmd.add(message);
             cmd.add("--output-format");
@@ -1425,6 +1453,9 @@ public class SubprocessAgentRunner {
                 }
             }
         } else if (name.contains("codex")) {
+            // Codex model/config overrides are global and must precede the exec subcommand.
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             if (firstMessageSent) {
                 cmd.add("exec");
                 cmd.add("resume");
@@ -1443,6 +1474,8 @@ public class SubprocessAgentRunner {
                 cmd.add(message);
             }
         } else if (name.contains("gemini")) {
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("-p");
             cmd.add(message);
             cmd.add("-o");
@@ -1453,6 +1486,8 @@ public class SubprocessAgentRunner {
                 cmd.add("latest");
             }
         } else if (name.contains("qwen")) {
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("-o");
             cmd.add("stream-json");
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
@@ -1464,6 +1499,8 @@ public class SubprocessAgentRunner {
             // Structured JSON output mode: "opencode run --format json [--session <id>] <message>"
             // This produces machine-readable JSON events identical to Claude/Gemini stream-json.
             cmd.add("run");
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("--format");
             cmd.add("json");
             AgentFlagOverrides.addPermissionBypassFlags(cmd, agent, skipPermissions, resolvedWorkingDir);
@@ -1473,6 +1510,8 @@ public class SubprocessAgentRunner {
             }
             cmd.add(message);
         } else if (name.contains("pi")) {
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("--mode");
             cmd.add("json");
             cmd.add("-p");
@@ -1482,6 +1521,8 @@ public class SubprocessAgentRunner {
                 cmd.add("--continue");
             }
         } else {
+            cmd.addAll(AgentLaunchDefaults.commandArguments(
+                    agent, model, thinking, AgentLaunchDefaults.LaunchMode.MANAGED));
             cmd.add("-p");
             cmd.add(message);
         }

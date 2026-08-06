@@ -1,14 +1,14 @@
 name: Package Distribution
 description: >
-  Package a full kompile distribution archive containing CLI binaries,
-  application JARs, and default configuration. The archive follows a flat
-  layout that can be extracted directly to ~/.kompile/.
+  Package a complete Kompile ZIP containing CLI binaries, application JARs,
+  native libraries, configuration, and the matching DL4J runtime SDK shard.
 
   Distribution layout:
     bin/              CLI native binaries (kompile-cli, kompile-agent, ...)
     lib/              Application JARs (kompile-app-main.jar, kompile-model-staging.jar)
     conf/             Default application.properties
     data/             Seed data directories (prompt-templates, input_documents, etc.)
+    sdx-sdk/          DL4J runtime packages and platform SDK JARs
 
 inputs:
   platform:
@@ -32,16 +32,40 @@ inputs:
     description: 'Directory containing extra shared libraries (.so/.dylib/.dll) to include in bin/'
     required: false
     default: ''
+  sdx-assets-dir:
+    description: 'Extracted DL4J sdk-assets shard (runtime packages plus jars/)'
+    required: false
+    default: ''
+  nd4j-version:
+    description: 'DL4J/ND4J version expected in the SDK JAR filenames'
+    required: false
+    default: '1.0.0-SNAPSHOT'
+  cuda-version:
+    description: 'CUDA artifact line for the cuda variant (12.6 or 12.9)'
+    required: false
+    default: '12.9'
+  backend-artifact:
+    description: 'Exact ND4J backend artifact expected in the SDK shard; canonical default is derived from variant'
+    required: false
+    default: ''
+  sdx-classifier:
+    description: 'Exact SDK JAR classifier expected for the backend lane; canonical default is derived from variant/platform'
+    required: false
+    default: ''
+  distribution-classifier:
+    description: 'Complete Maven/archive classifier (variant plus exact release lane); canonical default is derived'
+    required: false
+    default: ''
   artifact-name:
     description: 'Workflow artifact name for upload'
     required: false
     default: ''
   release-version:
-    description: 'When set, upload to GitHub Release with tag v<version>'
+    description: 'Compatibility version input; this action never writes a GitHub Release'
     required: false
     default: ''
   prerelease:
-    description: 'Mark the release as a pre-release'
+    description: 'Compatibility input; release state is owned by release.yml'
     required: false
     default: 'true'
   retention-days:
@@ -63,8 +87,49 @@ runs:
         CLI_DIR="${{ inputs.cli-binaries-dir }}"
         APP_DIR="${{ inputs.app-jars-dir }}"
         EXTRA_DIR="${{ inputs.extra-libs-dir }}"
+        SDX_DIR="${{ inputs.sdx-assets-dir }}"
+        ND4J_VERSION="${{ inputs.nd4j-version }}"
+        CUDA_VERSION="${{ inputs.cuda-version }}"
+        VARIANT="${{ inputs.variant }}"
+        BACKEND_ARTIFACT="${{ inputs.backend-artifact }}"
+        SDX_CLASSIFIER="${{ inputs.sdx-classifier }}"
+        DISTRIBUTION_CLASSIFIER="${{ inputs.distribution-classifier }}"
 
-        DIST_DIR="${GITHUB_WORKSPACE}/dist-staging/kompile"
+        if [ -z "${BACKEND_ARTIFACT}" ]; then
+          case "${VARIANT}" in
+            full|cpu-intel|cpu-arm|android|compat) BACKEND_ARTIFACT=nd4j-native ;;
+            cuda) BACKEND_ARTIFACT="nd4j-cuda-${CUDA_VERSION}" ;;
+            amd-zluda|zluda) BACKEND_ARTIFACT=nd4j-zluda ;;
+            vulkan|vulkan-compile) BACKEND_ARTIFACT=nd4j-vulkan ;;
+            hexagon) BACKEND_ARTIFACT=nd4j-hexagon ;;
+            tpu) BACKEND_ARTIFACT=nd4j-tpu ;;
+          esac
+        fi
+        if [ -z "${SDX_CLASSIFIER}" ]; then
+          case "${VARIANT}" in
+            cpu-intel) SDX_CLASSIFIER="${PLATFORM}-avx2" ;;
+            compat) SDX_CLASSIFIER="${PLATFORM}-compat" ;;
+            vulkan-compile) SDX_CLASSIFIER="${PLATFORM}-compile" ;;
+            amd-zluda|zluda) SDX_CLASSIFIER="${PLATFORM}-zluda" ;;
+            *) SDX_CLASSIFIER="${PLATFORM}" ;;
+          esac
+        fi
+        if [ -z "${DISTRIBUTION_CLASSIFIER}" ]; then
+          case "${VARIANT}" in
+            cuda) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}-cuda-${CUDA_VERSION}" ;;
+            amd-zluda|zluda) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}-cuda-12.9-zluda" ;;
+            cpu-intel) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}-avx2" ;;
+            compat) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}-compat" ;;
+            vulkan|vulkan-compile|hexagon|tpu) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}-${VARIANT}" ;;
+            *) DISTRIBUTION_CLASSIFIER="${VARIANT}-${PLATFORM}" ;;
+          esac
+        fi
+
+        case "${DISTRIBUTION_CLASSIFIER}" in
+          *[!A-Za-z0-9._-]*|'') echo "ERROR: invalid distribution classifier: ${DISTRIBUTION_CLASSIFIER}" >&2; exit 1 ;;
+        esac
+        DIST_NAME="kompile-dist-${VERSION}-${DISTRIBUTION_CLASSIFIER}"
+        DIST_DIR="${GITHUB_WORKSPACE}/dist-staging/${DIST_NAME}"
         mkdir -p "${DIST_DIR}"/{bin,lib,conf,data}
 
         echo "Building distribution layout for ${PLATFORM} v${VERSION}"
@@ -80,7 +145,12 @@ runs:
             fi
           done
         else
-          echo "WARNING: CLI binaries directory not found: ${CLI_DIR}"
+          echo "ERROR: CLI binaries directory not found: ${CLI_DIR}" >&2
+          exit 1
+        fi
+        if [ -z "$(find "${DIST_DIR}/bin" -maxdepth 1 -type f -print -quit)" ]; then
+          echo "ERROR: no CLI binaries were staged" >&2
+          exit 1
         fi
 
         # ── lib/ — Application JARs ──
@@ -93,16 +163,35 @@ runs:
             fi
           done
         fi
+        if [ "${VARIANT}" != "cli-only" ] \
+            && [ -z "$(find "${DIST_DIR}/lib" -maxdepth 1 -type f -name '*.jar' -print -quit)" ]; then
+          echo "ERROR: ${VARIANT} requires application JARs" >&2
+          exit 1
+        fi
+
+        # ── sdx-sdk/ — complete DL4J companion shard ──
+        case "${VARIANT}" in
+          full|cpu-intel|cpu-arm|cuda|amd-zluda|zluda|android|compat|vulkan|vulkan-compile|hexagon|tpu)
+            if [ -z "${SDX_DIR}" ] || [ ! -d "${SDX_DIR}" ]; then
+              echo "ERROR: ${VARIANT} requires sdx-assets-dir" >&2
+              exit 1
+            fi
+            mkdir -p "${DIST_DIR}/sdx-sdk"
+            cp -a "${SDX_DIR}/." "${DIST_DIR}/sdx-sdk/"
+            VALIDATOR="${GITHUB_ACTION_PATH}/../../../kompile-dist/src/main/build/validate-sdx-assets.sh"
+            bash "${VALIDATOR}" "${DIST_DIR}/sdx-sdk" "${VARIANT}" "${PLATFORM}" "${ND4J_VERSION}" "${CUDA_VERSION}" "${BACKEND_ARTIFACT}" "${SDX_CLASSIFIER}"
+            ;;
+        esac
 
         # ── bin/ — Extra shared libraries ──
         if [ -n "${EXTRA_DIR}" ] && [ -d "${EXTRA_DIR}" ]; then
           echo "Copying extra libraries from ${EXTRA_DIR}"
-          for lib in "${EXTRA_DIR}"/*.{so,dylib,dll} 2>/dev/null; do
-            if [ -f "${lib}" ]; then
-              cp "${lib}" "${DIST_DIR}/bin/"
-              echo "  bin/$(basename "${lib}")"
-            fi
+          shopt -s nullglob
+          for lib in "${EXTRA_DIR}"/*.{so,dylib,dll}; do
+            cp "${lib}" "${DIST_DIR}/bin/"
+            echo "  bin/$(basename "${lib}")"
           done
+          shopt -u nullglob
         fi
 
         # ── Seed directory structure (matches GlobalBootstrap.ensureHomeDirectory) ──
@@ -119,13 +208,26 @@ runs:
           > "${DIST_DIR}/data/input_documents/sample.txt"
 
         cat > "${DIST_DIR}/data/mcp-config.json" << 'MCPEOF'
-{"mcpServers":{}}
-MCPEOF
+        {"mcpServers":{}}
+        MCPEOF
 
         # ── Version & variant markers ──
-        VARIANT="${{ inputs.variant }}"
         echo "${VERSION}" > "${DIST_DIR}/.version"
         echo "${VARIANT}" > "${DIST_DIR}/.variant"
+        cat > "${DIST_DIR}/.dist-info.json" << EOF
+        {"version":"${VERSION}","variant":"${VARIANT}","platform":"${PLATFORM}","backend":"${BACKEND_ARTIFACT:-none}","sdkClassifier":"${SDX_CLASSIFIER}","distributionClassifier":"${DISTRIBUTION_CLASSIFIER}"}
+        EOF
+        (
+          cd "${DIST_DIR}"
+          find . \( -type f -o -type l \) ! -name manifest.sha256 -print | LC_ALL=C sort | while read -r file; do
+            if command -v sha256sum >/dev/null 2>&1; then
+              DIGEST=$(sha256sum "${file}" | awk '{print $1}')
+            else
+              DIGEST=$(shasum -a 256 "${file}" | awk '{print $1}')
+            fi
+            printf '%s  %s\n' "${DIGEST}" "${file#./}"
+          done > manifest.sha256
+        )
 
         # ── Summary ──
         echo ""
@@ -137,6 +239,7 @@ MCPEOF
         DIST_PARENT="${GITHUB_WORKSPACE}/dist-staging"
         echo "dist-dir=${DIST_DIR}" >> "${GITHUB_OUTPUT}"
         echo "dist-parent=${DIST_PARENT}" >> "${GITHUB_OUTPUT}"
+        echo "archive-base=${DIST_NAME}" >> "${GITHUB_OUTPUT}"
 
     - name: Create archive
       id: archive
@@ -144,30 +247,48 @@ MCPEOF
       run: |
         set -euo pipefail
 
-        PLATFORM="${{ inputs.platform }}"
-        VERSION="${{ inputs.version }}"
         DIST_PARENT="${{ steps.layout.outputs.dist-parent }}"
 
         STAGING="${GITHUB_WORKSPACE}/release-dist-staging"
         mkdir -p "${STAGING}"
 
-        VARIANT="${{ inputs.variant }}"
-        ARCHIVE_BASE="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}"
+        ARCHIVE_BASE="${{ steps.layout.outputs.archive-base }}"
 
-        if [[ "${PLATFORM}" == windows* ]]; then
-          ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.zip"
-          cd "${DIST_PARENT}"
-          zip -r "${ARCHIVE_FILE}" kompile/
+        ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.zip"
+        if command -v python3 >/dev/null 2>&1; then
+          PYTHON_BIN=python3
+        elif command -v python >/dev/null 2>&1; then
+          PYTHON_BIN=python
         else
-          ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.tar.gz"
-          tar -czf "${ARCHIVE_FILE}" -C "${DIST_PARENT}" kompile/
+          echo "ERROR: Python 3 is required to create the distribution ZIP" >&2
+          exit 1
         fi
+        "${PYTHON_BIN}" - "${DIST_PARENT}" "${ARCHIVE_BASE}" "${ARCHIVE_FILE}" <<'PY'
+        import os
+        import sys
+        import zipfile
+        from pathlib import Path
+        root, name, output = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+            source = root / name
+            for current, directories, files in os.walk(source):
+                directories.sort()
+                files.sort()
+                for file_name in files:
+                    path = Path(current) / file_name
+                    archive.write(path, path.relative_to(root).as_posix())
+        PY
 
         echo "Created: ${ARCHIVE_FILE} ($(du -h "${ARCHIVE_FILE}" | cut -f1))"
 
-        # Checksum
+        # Checksum (GNU/Linux and macOS runners)
         cd "${STAGING}"
-        sha256sum "$(basename "${ARCHIVE_FILE}")" > "$(basename "${ARCHIVE_FILE}").sha256"
+        ARCHIVE_NAME="$(basename "${ARCHIVE_FILE}")"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+        else
+          shasum -a 256 "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+        fi
         echo "SHA256:"
         cat "$(basename "${ARCHIVE_FILE}").sha256"
 
@@ -183,23 +304,3 @@ MCPEOF
           ${{ steps.archive.outputs.staging-dir }}/*
         if-no-files-found: warn
         retention-days: ${{ inputs.retention-days }}
-
-    - name: Upload to GitHub Release
-      if: inputs.release-version != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: v${{ inputs.release-version }}
-        STAGING_DIR: ${{ steps.archive.outputs.staging-dir }}
-      run: |
-        set -euo pipefail
-
-        for file in "${STAGING_DIR}"/*; do
-          if [ -f "${file}" ]; then
-            echo "Uploading $(basename "${file}") to release ${RELEASE_TAG}"
-            gh release upload "${RELEASE_TAG}" "${file}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber \
-            || echo "WARNING: Failed to upload $(basename "${file}")"
-          fi
-        done

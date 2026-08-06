@@ -213,6 +213,11 @@ public class ModelInitSubprocessMain {
             reporter.reportLog("INFO", "This may take a moment as model files are loaded into memory");
 
             long encoderStartTime = System.currentTimeMillis();
+            // Pre-warm subprocesses populate the optimization cache and intentionally
+            // skip inference validation. Apply that contract before construction;
+            // SameDiffEncoder otherwise validates during its constructor even though
+            // the outer subprocess would skip the later validation phase.
+            configureEncoderValidation(subprocessArgs);
             SameDiffEncoder<float[]> encoder = AnseriniEncoderFactory.createEncoder(modelId);
             long encoderCreateTime = System.currentTimeMillis() - encoderStartTime;
 
@@ -359,6 +364,10 @@ public class ModelInitSubprocessMain {
         }
 
         System.exit(exitCode);
+    }
+
+    static void configureEncoderValidation(ModelInitSubprocessArgs subprocessArgs) {
+        SameDiffEncoder.setValidateOnInit(!subprocessArgs.skipValidation());
     }
 
     /**

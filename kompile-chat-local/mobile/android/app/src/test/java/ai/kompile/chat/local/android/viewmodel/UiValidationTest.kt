@@ -9,6 +9,26 @@ import org.junit.Test
 
 class UiValidationTest {
 
+    @Test
+    fun everyExecutableRouteHasAnActiveBadgeIncludingRawGguf() {
+        assertEquals(RouteBadgeUi("VULKAN", true), routeBadgeUi("LOCAL_VULKAN"))
+        assertEquals(RouteBadgeUi("HEXAGON", true), routeBadgeUi("LOCAL_HEXAGON"))
+        assertEquals(RouteBadgeUi("TENSOR G3", true), routeBadgeUi("LOCAL_TENSOR_G3_NNAPI"))
+        assertEquals(RouteBadgeUi("TENSOR G5", true), routeBadgeUi("LOCAL_TENSOR_G5"))
+        assertEquals(RouteBadgeUi("SDX GGUF", true), routeBadgeUi("SDX_GGUF_AOT"))
+        assertEquals(RouteBadgeUi("NO MODEL", false), routeBadgeUi("NONE"))
+    }
+
+    @Test
+    fun rawGgufDoesNotOfferAButtonForUnsupportedCancellation() {
+        assertFalse(routeCanCancelGeneration("SDX_GGUF_AOT"))
+        assertFalse(routeCanCancelGeneration("NONE"))
+        assertTrue(routeCanCancelGeneration("LOCAL_VULKAN"))
+        assertTrue(routeCanCancelGeneration("LOCAL_HEXAGON"))
+        assertTrue(routeCanCancelGeneration("LOCAL_TENSOR_G3_NNAPI"))
+        assertTrue(routeCanCancelGeneration("LOCAL_TENSOR_G5"))
+    }
+
     // ── engineNotice: the input bar is never silently disabled ────────────────
 
     @Test

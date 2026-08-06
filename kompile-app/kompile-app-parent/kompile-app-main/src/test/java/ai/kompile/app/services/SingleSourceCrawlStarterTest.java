@@ -25,13 +25,16 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.crawl.graph.UnifiedCrawlService;
 import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -113,10 +116,15 @@ class SingleSourceCrawlStarterTest {
                 .maxErrorsInRetryPrompt(4)
                 .build();
         GraphSchemaPresetService presetService = mock(GraphSchemaPresetService.class);
-        when(presetService.getPresetTypeNames("finance-v1")).thenReturn(Optional.of(Map.of(
-                "entityTypes", List.of("PRODUCT", "REGION"),
-                "relationshipTypes", List.of("SOLD_IN"),
-                "patterns", List.of("(PRODUCT)-[:SOLD_IN]->(REGION)"))));
+        GraphSchema presetSchema = new GraphSchema(
+                List.of(
+                        new NodeType("PRODUCT", "A product",
+                                List.of(new PropertyType("sku", "String"))),
+                        new NodeType("REGION", "A region", null)),
+                List.of(new RelationshipType(
+                        "SOLD_IN", "Product sold in region", null, List.of("available_in"))),
+                List.of("(PRODUCT)-[:SOLD_IN]->(REGION)"));
+        when(presetService.getSchema("finance-v1")).thenReturn(Optional.of(presetSchema));
         when(graphConfigService.getConfig()).thenReturn(appConfig);
         when(crawlService.startJob(any())).thenReturn(UnifiedCrawlJob.builder()
                 .jobId("job-2")
@@ -145,6 +153,11 @@ class SingleSourceCrawlStarterTest {
         assertEquals("finance-v1", graphConfig.getSchemaPresetId());
         assertEquals(List.of("PRODUCT", "REGION"), graphConfig.getEntityTypes());
         assertEquals(List.of("SOLD_IN"), graphConfig.getRelationshipTypes());
+        assertNotNull(graphConfig.getStandardizedSchema());
+        assertEquals("sku", graphConfig.getStandardizedSchema().getNodeTypes().get(0)
+                .getProperties().get(0).getName());
+        assertEquals(List.of("available_in"), graphConfig.getStandardizedSchema()
+                .getRelationshipTypes().get(0).getAliases());
         assertEquals("opencode", graphConfig.getLlmProvider());
         assertEquals("deepseek-v4-pro", graphConfig.getModelName());
         assertEquals(0.2, graphConfig.getTemperature());
@@ -160,6 +173,33 @@ class SingleSourceCrawlStarterTest {
         assertEquals(List.of("(PRODUCT)-[:SOLD_IN]->(REGION)"),
                 graphConfig.getValidationPolicy().effectiveRelationPatterns());
         assertEquals(4, graphConfig.getValidationPolicy().effectiveMaxErrorsInRetryPrompt());
+    }
+
+    @Test
+    void persistedCanonicalSchemaReachesCrawlWithoutPresetLookup() {
+        GraphExtractionConfigService configService = mock(GraphExtractionConfigService.class);
+        GraphExtractionConfigService.GraphExtractionConfig appConfig =
+                GraphExtractionConfigService.GraphExtractionConfig.defaults();
+        appConfig.standardizedSchema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person",
+                                List.of(new PropertyType("role", "String"))),
+                        new NodeType("ROLE", "A business role", null)),
+                List.of(new RelationshipType("HAS_ROLE", "Person has role", null,
+                        List.of("serves_as"))),
+                List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
+        when(configService.getConfig()).thenReturn(appConfig);
+
+        SingleSourceCrawlStarter starter = new SingleSourceCrawlStarter(
+                mock(UnifiedCrawlService.class), null, null, null, configService, null);
+
+        GraphExtractionConfig graphConfig = starter.defaultGraphExtractionConfig();
+
+        assertNotNull(graphConfig.getStandardizedSchema());
+        assertEquals("role", graphConfig.getStandardizedSchema().getNodeTypes().get(0)
+                .getProperties().get(0).getName());
+        assertEquals(List.of("serves_as"), graphConfig.getStandardizedSchema()
+                .getRelationshipTypes().get(0).getAliases());
     }
 
     // ---- Flexible options entry point ----

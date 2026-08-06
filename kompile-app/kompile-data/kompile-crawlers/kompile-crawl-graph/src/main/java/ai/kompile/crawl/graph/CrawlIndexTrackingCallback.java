@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Callback for registering crawl-originated documents and passages in the
@@ -79,6 +80,18 @@ public interface CrawlIndexTrackingCallback {
     void markDocumentGraphIndexed(String sourceId, Long factSheetId, int nodeCount);
 
     /**
+     * Loads the exact, pooled passage corpus for a fact sheet.
+     *
+     * <p>The default keeps deployments that only provide write-side index tracking source
+     * compatible. A crawl with a read-capable implementation can hydrate partition candidates from
+     * earlier runs instead of pretending that only the chunks produced by the current invocation
+     * exist.</p>
+     */
+    default Optional<CrawlCorpusSnapshot> loadCorpusSnapshot(Long factSheetId) {
+        return Optional.empty();
+    }
+
+    /**
      * Describes a single chunked passage from the crawl pipeline.
      */
     record CrawlPassageInfo(
@@ -91,4 +104,25 @@ public interface CrawlIndexTrackingCallback {
             /** Metadata map (content_type, full_table_content, table_row_count, etc.) */
             Map<String, Object> metadata
     ) {}
+
+    /** A stable view of every tracked passage in one fact sheet. */
+    record CrawlCorpusSnapshot(String snapshotId, List<CrawlCorpusPassage> passages) {
+        public CrawlCorpusSnapshot {
+            passages = passages == null ? List.of() : List.copyOf(passages);
+        }
+    }
+
+    /**
+     * One passage in a pooled corpus snapshot.
+     *
+     * @param completeText false when {@code content} is only a legacy preview; callers must not
+     *                     present such text to an extraction model as though it were the source
+     */
+    record CrawlCorpusPassage(String chunkId, int chunkIndex, String content,
+                              String contentHash, Map<String, Object> metadata,
+                              boolean completeText) {
+        public CrawlCorpusPassage {
+            metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+        }
+    }
 }

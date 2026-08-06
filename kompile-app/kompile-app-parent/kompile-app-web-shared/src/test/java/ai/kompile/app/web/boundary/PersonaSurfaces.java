@@ -338,6 +338,7 @@ public final class PersonaSurfaces {
             "/api/projects",
             "/api/projects/current/portability",
             "/api/sdk",
+            "/api/service-endpoints",
             "/api/services",
             "/api/setup",
             "/api/source-providers",

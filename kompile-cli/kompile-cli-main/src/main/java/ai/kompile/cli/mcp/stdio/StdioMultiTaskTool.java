@@ -19,13 +19,14 @@ import java.util.concurrent.*;
 
 /**
  * Splits a complex task into multiple distinct subtasks and runs each on an
- * independent Codex instance in parallel. Unlike quorum_task which sends the
+ * independent supported agent instance in parallel. Unlike quorum_task which sends the
  * <em>same</em> prompt to every instance, multi_task sends a <em>different</em>
  * prompt to each, then collects and summarises the results.
  */
 public class StdioMultiTaskTool {
 
-    private static final String CODEX_AGENT = "codex";
+    private static final String DEFAULT_AGENT = StdioTaskTool.DEFAULT_AGENT;
+    private static final List<String> SUPPORTED_AGENTS = StdioTaskTool.SUPPORTED_AGENTS;
 
     private final AgentRegistry agentRegistry;
     private final DirectSubagentRunnerStdio subagentRunner;
@@ -65,13 +66,13 @@ public class StdioMultiTaskTool {
         return "Split a complex task into distinct subtasks and run each on a separate agent in parallel. " +
             "Unlike quorum_task (same prompt to all agents), multi_task gives each agent a DIFFERENT prompt " +
             "representing a different part of the work.\n\n" +
-            "Each subtask runs on Codex. Use 'agent_count' to spawn multiple independent Codex instances " +
+            "Each subtask runs on Codex, Claude, or OpenCode. Use 'agent_count' to spawn multiple independent instances " +
             "for the same subtask prompt.\n\n" +
             "Examples:\n" +
             "  - {\"agent\": \"codex\"} → 1 Codex instance\n" +
-            "  - {\"agent\": \"codex\", \"agent_count\": 2} → 2 Codex instances\n\n" +
+            "  - {\"agent\": \"claude\", \"agent_count\": 2} → 2 Claude instances\n\n" +
             "All subtasks run concurrently. Returns a per-subtask summary; full output is written to a file.\n\n" +
-            "Available agent: codex (default).";
+            "Available agents: codex (default), claude, opencode.";
     }
 
     public JsonNode parameterSchema() {
@@ -102,25 +103,30 @@ public class StdioMultiTaskTool {
 
         var subAgent = itemProps.putObject("agent");
         subAgent.put("type", "string");
-        subAgent.put("description", "Agent for this subtask. Codex is the only available agent and the default.");
+        subAgent.put("default", DEFAULT_AGENT);
+        subAgent.put("description", "Agent for this subtask. Available: codex (default), claude, opencode.");
         ArrayNode enumValues = subAgent.putArray("enum");
-        enumValues.add(CODEX_AGENT);
+        SUPPORTED_AGENTS.forEach(enumValues::add);
 
         var subAgents = itemProps.putObject("agents");
         subAgents.put("type", "array");
-        subAgents.put("description", "Codex instances for this subtask. Use agent_count for multiple independent instances.");
+        subAgents.put("description", "Agent types for this subtask. Use agent_count for multiple independent instances of each type.");
         var agentItems = subAgents.putObject("items");
         agentItems.put("type", "string");
         ArrayNode agentEnumValues = agentItems.putArray("enum");
-        agentEnumValues.add(CODEX_AGENT);
+        SUPPORTED_AGENTS.forEach(agentEnumValues::add);
 
         var subRole = itemProps.putObject("role");
         subRole.put("type", "string");
-        subRole.put("description", "Optional role to assign to the agent for this subtask");
+        subRole.put("description", "Optional role for this subtask. Overrides the top-level role; when both are omitted, the agent's persisted role assignment is used.");
 
         var subModel = itemProps.putObject("model");
         subModel.put("type", "string");
-        subModel.put("description", "Optional model override for this subtask. When omitted, the configured default model is used.");
+        subModel.put("description", "Optional model for this subtask. Precedence: subtask value, top-level value, role default, project default, user default, provider native default.");
+
+        var subThinking = itemProps.putObject("thinking");
+        subThinking.put("type", "string");
+        subThinking.put("description", "Optional thinking/effort override for this subtask. Maps to Codex effort, Claude effort, or OpenCode variant.");
 
         var subAgentCount = itemProps.putObject("agent_count");
         subAgentCount.put("type", "integer");
@@ -132,11 +138,15 @@ public class StdioMultiTaskTool {
 
         var role = props.putObject("role");
         role.put("type", "string");
-        role.put("description", "Optional default role applied to all subtasks that don't specify their own");
+        role.put("description", "Optional default role for subtasks. Roles may define per-agent model and model-specific thinking defaults.");
 
         var model = props.putObject("model");
         model.put("type", "string");
-        model.put("description", "Optional default model override for subtasks that do not specify their own model.");
+        model.put("description", "Optional default model override for subtasks that do not specify their own model. It overrides role/project/user defaults.");
+
+        var thinking = props.putObject("thinking");
+        thinking.put("type", "string");
+        thinking.put("description", "Optional default thinking/effort override for subtasks that do not specify their own. It overrides role/project/user defaults.");
 
         var agentCount = props.putObject("agent_count");
         agentCount.put("type", "integer");
@@ -155,6 +165,7 @@ public class StdioMultiTaskTool {
         Object subtasksObj = arguments.get("subtasks");
         String defaultRole = (String) arguments.get("role");
         String defaultModel = (String) arguments.get("model");
+        String defaultThinking = (String) arguments.get("thinking");
 
         int defaultAgentCount = 1;
         Object agentCountObj = arguments.get("agent_count");
@@ -178,9 +189,9 @@ public class StdioMultiTaskTool {
         }
         for (Map<String, Object> subtask : subtasks) {
             for (String agentType : resolveAgentTypes(subtask)) {
-                if (!CODEX_AGENT.equals(agentType)) {
+                if (!StdioTaskTool.isSupportedAgent(agentType)) {
                     return ToolResult.error("Agent '" + agentType
-                        + "' is not available. Available agent: codex.");
+                        + "' is not available. Available agents: " + String.join(", ", SUPPORTED_AGENTS) + ".");
                 }
             }
         }
@@ -194,9 +205,11 @@ public class StdioMultiTaskTool {
             String agentLabel = String.join(", ", agentTypes);
             String countSuffix = taskAgentCount > 1 ? " x" + taskAgentCount : "";
             String model = resolveModel(st, defaultModel);
+            String thinking = resolveThinking(st, defaultThinking);
             String role = (String) st.getOrDefault("role", defaultRole);
             System.err.println("\u001B[2m    [" + (i + 1) + "] " + name + " → " + agentLabel + countSuffix
-                + " (model: " + displayModel(model) + ", role: " + displayRole(role) + ")\u001B[0m");
+                + " (model: " + displayModel(model) + ", thinking: " + displayThinking(thinking)
+                + ", role: " + displayRole(role) + ")\u001B[0m");
         }
         System.err.flush();
 
@@ -214,11 +227,12 @@ public class StdioMultiTaskTool {
             String prompt = (String) st.getOrDefault("prompt", "");
             String role = (String) st.getOrDefault("role", defaultRole);
             String model = resolveModel(st, defaultModel);
+            String thinking = resolveThinking(st, defaultThinking);
             List<String> agentTypes = resolveAgentTypes(st);
             int taskAgentCount = resolveAgentCount(st, defaultAgentCount);
 
             if (prompt.isEmpty()) {
-                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, 1, 0,
+                futures.add(new SubtaskFuture(name, agentTypes.get(0), model, thinking, 1, 0,
                     CompletableFuture.completedFuture(SubtaskResult.failed("(empty prompt)"))));
                 continue;
             }
@@ -242,8 +256,9 @@ public class StdioMultiTaskTool {
                     } else {
                         instanceName = name + "/" + agentType + "#" + (instanceIdx + 1);
                     }
-                    futures.add(new SubtaskFuture(instanceName, agentType, model, totalPerSubtask, instanceIdx,
-                        CompletableFuture.supplyAsync(() -> runSubtask(fName, fPrompt, fAgent, fRole, model), executor)));
+                    futures.add(new SubtaskFuture(instanceName, agentType, model, thinking, totalPerSubtask, instanceIdx,
+                        CompletableFuture.supplyAsync(() -> runSubtask(
+                                fName, fPrompt, fAgent, fRole, model, thinking), executor)));
                 }
             }
         }
@@ -261,7 +276,8 @@ public class StdioMultiTaskTool {
         for (SubtaskFuture sf : futures) {
             fullOutput.append("---\n\n");
             fullOutput.append("## ").append(sf.name).append(" (agent: ").append(sf.agent)
-                .append(", model: ").append(displayModel(sf.model)).append(")\n\n");
+                .append(", model: ").append(displayModel(sf.model))
+                .append(", thinking: ").append(displayThinking(sf.thinking)).append(")\n\n");
 
             try {
                 SubtaskResult result = sf.future.get(10, TimeUnit.MINUTES);
@@ -270,7 +286,8 @@ public class StdioMultiTaskTool {
                         succeeded++;
                         fullOutput.append(result.output).append("\n\n");
                         summaryOutput.append("- **").append(sf.name).append("** (agent: ").append(sf.agent)
-                            .append(", model: ").append(displayModel(sf.model)).append("): ")
+                            .append(", model: ").append(displayModel(sf.model))
+                            .append(", thinking: ").append(displayThinking(sf.thinking)).append("): ")
                             .append(truncateForSummary(result.output, 200)).append("\n");
                     }
                     case TIMED_OUT -> {
@@ -369,7 +386,7 @@ public class StdioMultiTaskTool {
                 return agents;
             }
         }
-        return List.of((String) subtask.getOrDefault("agent", CODEX_AGENT));
+        return List.of((String) subtask.getOrDefault("agent", DEFAULT_AGENT));
     }
 
     /**
@@ -388,8 +405,17 @@ public class StdioMultiTaskTool {
         return value instanceof String && !((String) value).isBlank() ? (String) value : defaultModel;
     }
 
+    private static String resolveThinking(Map<String, Object> subtask, String defaultThinking) {
+        Object value = subtask.get("thinking");
+        return value instanceof String && !((String) value).isBlank() ? (String) value : defaultThinking;
+    }
+
     private static String displayModel(String model) {
         return model == null || model.isBlank() ? "configured default" : model;
+    }
+
+    private static String displayThinking(String thinking) {
+        return thinking == null || thinking.isBlank() ? "configured default" : thinking;
     }
 
     private static String displayRole(String role) {
@@ -407,6 +433,7 @@ public class StdioMultiTaskTool {
             defaultCount = Math.max(1, Math.min(5, ((Number) countObj).intValue()));
         }
         String defaultModel = (String) arguments.get("model");
+        String defaultThinking = (String) arguments.get("thinking");
         String defaultRole = (String) arguments.get("role");
 
         StringBuilder plan = new StringBuilder("**Dispatch plan**\n");
@@ -420,10 +447,12 @@ public class StdioMultiTaskTool {
             totalInstances += agents.size() * count;
             String role = (String) subtask.getOrDefault("role", defaultRole);
             String model = resolveModel(subtask, defaultModel);
+            String thinking = resolveThinking(subtask, defaultThinking);
             plan.append("- **").append(name).append("**: agent=")
                 .append(String.join(",", agents));
             if (count > 1) plan.append(" x").append(count);
             plan.append(", model=").append(displayModel(model))
+                .append(", thinking=").append(displayThinking(thinking))
                 .append(", role=").append(displayRole(role)).append("\n");
         }
         plan.append("- **Total agent instances**: ").append(totalInstances).append("\n");
@@ -431,8 +460,8 @@ public class StdioMultiTaskTool {
     }
 
     private SubtaskResult runSubtask(String name, String prompt, String requestedAgent, String roleName,
-                                       String model) {
-        // A Codex-only dispatch must surface provider failures instead of cascading.
+                                       String model, String thinking) {
+        // A single-provider dispatch surfaces provider failures instead of silently cascading.
         List<String> agentsToTry = List.of(requestedAgent);
 
         for (String agentName : agentsToTry) {
@@ -443,6 +472,7 @@ public class StdioMultiTaskTool {
                     .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
                     .roleName(roleName)
                     .modelOverride(model)
+                    .thinkingOverride(thinking)
                     .build();
 
                 String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);
@@ -452,8 +482,8 @@ public class StdioMultiTaskTool {
                 return SubtaskResult.completed(result);
             } catch (RateLimitException e) {
                 System.err.println("\u001B[33m    \u26a0 " + name
-                    + ": Codex rate limited; provider fallback is disabled.\u001B[0m");
-                return SubtaskResult.failed("Codex rate limited for subtask '" + name + "'");
+                    + ": " + agentName + " rate limited; provider fallback is disabled.\u001B[0m");
+                return SubtaskResult.failed(agentName + " rate limited for subtask '" + name + "'");
             } catch (Exception e) {
                 return SubtaskResult.failed(e.getMessage());
             }
@@ -539,14 +569,17 @@ public class StdioMultiTaskTool {
         final String name;
         final String agent;
         final String model;
+        final String thinking;
         final int totalInstances;
         final int instanceIndex;
         final Future<SubtaskResult> future;
 
-        SubtaskFuture(String name, String agent, String model, int totalInstances, int instanceIndex, Future<SubtaskResult> future) {
+        SubtaskFuture(String name, String agent, String model, String thinking,
+                      int totalInstances, int instanceIndex, Future<SubtaskResult> future) {
             this.name = name;
             this.agent = agent;
             this.model = model;
+            this.thinking = thinking;
             this.totalInstances = totalInstances;
             this.instanceIndex = instanceIndex;
             this.future = future;

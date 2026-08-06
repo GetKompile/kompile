@@ -218,7 +218,16 @@ model_catalog:
       format: gguf
       files:
         model: LFM2.5-1.2B-Instruct-Q4_K_M.gguf
-        vocab: tokenizer.json
+      # The quantized repository intentionally contains only GGUF weights. Pin the
+      # runnable tokenizer/config companions to the matching upstream instruct
+      # revision so catalog staging never guesses mutable or cross-model assets.
+      asset_urls:
+        tokenizer: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/tokenizer.json
+        tokenizer_config: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/tokenizer_config.json
+        special_tokens_map: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/special_tokens_map.json
+        chat_template: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/chat_template.jinja
+        generation_config: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/generation_config.json
+        model_config: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/config.json
       metadata:
         description: "LFM2.5 1.2B Instruct Q4_K_M - Compact local LLM for chat lane"
         ram_mb: 3072

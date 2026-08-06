@@ -1,7 +1,7 @@
-name: Publish Native Binaries
+name: Package Native Binaries
 description: >
-  Package kompile native binaries into a platform tarball/zip and upload
-  as a workflow artifact. Optionally upload to a GitHub Release.
+  Package Kompile native binaries into a platform tarball/zip and upload
+  them as workflow artifacts for the controlled release collector.
 
 inputs:
   artifact-name:
@@ -15,12 +15,12 @@ inputs:
     required: true
   release-version:
     description: >
-      When set, upload the archive to GitHub Release with tag v<version>.
-      The release is created if it does not already exist.
+      Version label used in the archive name. This action never creates,
+      edits, or uploads to a GitHub Release.
     required: false
     default: ''
   prerelease:
-    description: 'Mark the release as a pre-release'
+    description: 'Compatibility input retained for callers; release state is owned by release.yml'
     required: false
     default: 'true'
   retention-days:
@@ -91,7 +91,12 @@ runs:
         STAGING_DIR="${{ steps.package.outputs.staging-dir }}"
 
         cd "${STAGING_DIR}"
-        sha256sum "$(basename "${ARCHIVE_FILE}")" > "$(basename "${ARCHIVE_FILE}").sha256"
+        ARCHIVE_NAME="$(basename "${ARCHIVE_FILE}")"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+        else
+          shasum -a 256 "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256"
+        fi
         echo "SHA256:"
         cat "$(basename "${ARCHIVE_FILE}").sha256"
 
@@ -104,70 +109,3 @@ runs:
           ${{ steps.package.outputs.staging-dir }}/*
         if-no-files-found: warn
         retention-days: ${{ inputs.retention-days }}
-
-    - name: Upload to GitHub Release
-      if: steps.package.outputs.found == '1' && inputs.release-version != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: v${{ inputs.release-version }}
-        RELEASE_VERSION: ${{ inputs.release-version }}
-        PRERELEASE: ${{ inputs.prerelease }}
-        STAGING_DIR: ${{ steps.package.outputs.staging-dir }}
-      run: |
-        set -euo pipefail
-
-        PRERELEASE_FLAG=""
-        if [ "${PRERELEASE}" == "true" ]; then
-          PRERELEASE_FLAG="--prerelease"
-        fi
-
-        # Create release if it doesn't exist (idempotent — parallel jobs may race)
-        if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-          echo "Creating GitHub Release ${RELEASE_TAG}"
-          gh release create "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "Kompile ${RELEASE_VERSION}" \
-            ${PRERELEASE_FLAG} \
-            --notes "## Kompile ${RELEASE_VERSION}
-
-        Native binary releases for all supported platforms.
-
-        ### Platforms
-        - **Linux x86_64** — \`kompile-*-linux-x86_64.tar.gz\`
-        - **macOS ARM64** — \`kompile-*-macosx-arm64.tar.gz\`
-        - **Windows x86_64** — \`kompile-*-windows-x86_64.zip\`
-
-        ### Included binaries
-        - \`kompile-cli\` — Main CLI for model conversion, pipeline building, and RAG app generation
-        - \`kompile-agent\` — Agent CLI
-        - \`kompile-app-cli\` — Application management CLI
-        - \`kompile-model\` — Model management CLI
-        - \`kompile-component\` — Component management CLI
-
-        ### Installation
-        1. Download the archive for your platform
-        2. Extract: \`tar xzf kompile-*-linux-x86_64.tar.gz\` (or unzip on Windows)
-        3. Add the extracted directory to your PATH
-        4. Run: \`kompile-cli --help\`
-
-        ### Checksums
-        SHA256 checksums are provided alongside each archive (\`.sha256\` files)." \
-          || echo "Release may have been created by another parallel job"
-        fi
-
-        # Upload all files in staging directory
-        UPLOAD_COUNT=0
-        for file in "${STAGING_DIR}"/*; do
-          if [ -f "${file}" ]; then
-            BASENAME="$(basename "${file}")"
-            echo "Uploading ${BASENAME} to release ${RELEASE_TAG}"
-            gh release upload "${RELEASE_TAG}" "${file}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber \
-            || echo "WARNING: Failed to upload ${BASENAME}"
-            UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
-          fi
-        done
-
-        echo "Uploaded ${UPLOAD_COUNT} file(s) to release ${RELEASE_TAG}"

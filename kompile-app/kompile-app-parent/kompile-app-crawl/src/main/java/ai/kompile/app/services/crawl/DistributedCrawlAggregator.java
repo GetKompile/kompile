@@ -82,8 +82,8 @@ public class DistributedCrawlAggregator {
                     steps.add(tagStep(ps, idx));
                 }
             }
-            // Tag phase/stage with the worker prefix so the step monitor attributes each event/retry/tuning
-            // decision to the right worker's (also-tagged) step. LLM-call records carry no stage → untagged.
+            // Tag phase/stage with the worker prefix so the step monitor attributes every event,
+            // retry, tuning decision and decomposed LLM call to the right worker's step.
             if (s.getRecentEvents() != null) {
                 for (StageEvent e : s.getRecentEvents()) events.add(tagEvent(e, idx));
             }
@@ -93,7 +93,11 @@ public class DistributedCrawlAggregator {
             if (s.getRecentTuningDecisions() != null) {
                 for (TuningDecision d : s.getRecentTuningDecisions()) tuning.add(tagTuning(d, idx));
             }
-            if (s.getRecentLlmCalls() != null) llmCalls.addAll(s.getRecentLlmCalls());
+            if (s.getRecentLlmCalls() != null) {
+                for (LlmCallRecord call : s.getRecentLlmCalls()) {
+                    llmCalls.add(tagLlmCall(call, idx));
+                }
+            }
 
             docsDiscovered += s.getDocumentsDiscovered();
             docsLoaded += s.getDocumentsLoaded();
@@ -183,6 +187,38 @@ public class DistributedCrawlAggregator {
                 .completedAt(s.getCompletedAt())
                 .lastUpdatedAt(s.getLastUpdatedAt())
                 .elapsedMs(s.getElapsedMs())
+                .build();
+    }
+
+    private static LlmCallRecord tagLlmCall(LlmCallRecord call, int idx) {
+        String phase = call.getPhase();
+        return LlmCallRecord.builder()
+                .timestamp(call.getTimestamp())
+                .backendId(call.getBackendId())
+                .taskType(call.getTaskType())
+                .phase(phase == null || phase.isBlank() ? phase : "w" + idx + ":" + phase)
+                .passId(call.getPassId())
+                .passInvocation(call.getPassInvocation())
+                .taskId(call.getTaskId())
+                .partitionId(call.getPartitionId())
+                .chunkId(call.getChunkId())
+                .corpusSnapshotId(call.getCorpusSnapshotId())
+                .graphRevision(call.getGraphRevision())
+                .graphEntities(call.getGraphEntities())
+                .graphRelationships(call.getGraphRelationships())
+                .latencyMs(call.getLatencyMs())
+                .inputTokens(call.getInputTokens())
+                .outputTokens(call.getOutputTokens())
+                .success(call.isSuccess())
+                .timedOut(call.isTimedOut())
+                .rateLimited(call.isRateLimited())
+                .circuitBroken(call.isCircuitBroken())
+                .errorCategory(call.getErrorCategory())
+                .errorMessage(call.getErrorMessage())
+                .promptChars(call.getPromptChars())
+                .responseChars(call.getResponseChars())
+                .promptText(call.getPromptText())
+                .responseText(call.getResponseText())
                 .build();
     }
 

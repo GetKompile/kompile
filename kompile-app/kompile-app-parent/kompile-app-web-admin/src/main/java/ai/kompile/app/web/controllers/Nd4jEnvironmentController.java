@@ -1082,7 +1082,7 @@ public class Nd4jEnvironmentController {
         descriptions.put("optimizerEnabled", "Enable SameDiff graph optimizer for improved performance");
         descriptions.put("optimizerFp16", "Convert weights to FP16 to reduce VRAM usage");
         descriptions.put("dspNoFreeze", "Disable graph freezing (false = freeze enabled)");
-        descriptions.put("dspNoNativeDecode", "Disable native decode inputs (false = native decode enabled)");
+        descriptions.put("dspNoNativeDecode", "Use the stable Java decode loop (false opts into experimental native decode)");
         descriptions.put("dspNoAttnOverride", "Disable attention override (false = override enabled)");
         descriptions.put("dspNoDirect", "Disable direct mode (false = direct mode enabled)");
         descriptions.put("tritonSkipKernels", "Skip Triton kernels (false = Triton kernels enabled)");

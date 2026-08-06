@@ -1,7 +1,6 @@
 package ai.kompile.chat.local.android.model
 
 import android.content.Context
-import org.nd4j.dsp.runtime.SdxRuntime
 
 /**
  * Android Vulkan implementation. The runtime requires bundle-owned AOT SPIR-V,
@@ -14,11 +13,12 @@ internal object PlatformLocalChatModelFactory {
         context: Context,
         modelPath: String,
         temperature: Float,
-        maxTokens: Int
+        maxTokens: Int,
+        diagnosticModelPath: String = modelPath
     ): PlatformLocalChatSession = SdxPlatformChatSession.open(
         context = context,
         modelPath = modelPath,
-        options = SdxRuntime.ModelOptions.mobileVulkan(),
+        diagnosticModelPath = diagnosticModelPath,
         routeName = "LOCAL_VULKAN",
         modelIdPrefix = "sdx-vulkan"
     )

@@ -18,53 +18,33 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.llm.pipeline.LlmGenerateController;
 import ai.kompile.app.llm.pipeline.LlmModelController;
-import ai.kompile.app.llm.pipeline.LlmObservabilityService;
 import ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl;
 import ai.kompile.pipelines.framework.api.context.Metrics;
 import ai.kompile.pipelines.framework.api.context.Profiler;
-import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
-import ai.kompile.pipelines.framework.core.data.JDataFactory;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.boot.SpringBootConfiguration;
-import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
-import org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.embedded.EmbeddedWebServerFactoryCustomizerAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.DispatcherServletAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.ServletWebServerFactoryAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.WebMvcAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.error.ErrorMvcAutoConfiguration;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
 /**
- * Minimal Spring Boot configuration for the LLM serving subprocess.
+ * Minimal bean graph for the LLM serving subprocess.
  *
- * <p>This is a whitelist configuration: it imports only the small servlet/Jackson
- * set needed for the LLM REST endpoints plus the LLM beans themselves. It does
- * not enable broad Spring Boot auto-configuration, so optional app modules on
- * the parent classpath cannot activate inside the serving subprocess.</p>
+ * <p>This is a whitelist configuration: it imports only the controllers and model
+ * implementation used by {@link ServingSubprocessHttpServer}. The subprocess uses
+ * an {@code AnnotationConfigApplicationContext} plus the JDK HTTP server, matching
+ * the established graph/pipeline native-subprocess pattern. It deliberately does
+ * not start a second Spring Boot application inside the parent native image.</p>
  */
-@SpringBootConfiguration(proxyBeanMethods = false)
+@Configuration(proxyBeanMethods = false)
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
         name = "kompile.llm.direct-serving.enabled", havingValue = "true", matchIfMissing = false)
-@ImportAutoConfiguration({
-        ServletWebServerFactoryAutoConfiguration.class,
-        EmbeddedWebServerFactoryCustomizerAutoConfiguration.class,
-        DispatcherServletAutoConfiguration.class,
-        WebMvcAutoConfiguration.class,
-        ErrorMvcAutoConfiguration.class,
-        JacksonAutoConfiguration.class,
-        HttpMessageConvertersAutoConfiguration.class
-})
 @Import({
         LlmGenerateController.class,
         LlmModelController.class,
-        LlmObservabilityService.class,
         SameDiffLanguageModelImpl.class
 })
 public class SubprocessServingConfiguration {
@@ -73,11 +53,6 @@ public class SubprocessServingConfiguration {
     @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
     public ObjectMapper objectMapper() {
         return JsonUtils.newStandardMapper();
-    }
-
-    @Bean
-    public DataFactory dataFactory() {
-        return new JDataFactory();
     }
 
     @Bean

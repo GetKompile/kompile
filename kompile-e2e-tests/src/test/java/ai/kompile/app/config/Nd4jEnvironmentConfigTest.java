@@ -104,7 +104,7 @@ class Nd4jEnvironmentConfigTest {
             assertTrue(cfg.optimizerEnabled());
             assertTrue(cfg.optimizerFp16());
             assertFalse(cfg.dspNoFreeze());
-            assertFalse(cfg.dspNoNativeDecode());
+            assertTrue(cfg.dspNoNativeDecode());
             assertFalse(cfg.tritonSkipKernels());
             assertTrue(cfg.tritonTf32());
             assertFalse(cfg.cublasDisableWorkspace());

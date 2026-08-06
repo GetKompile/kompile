@@ -1,22 +1,29 @@
 package ai.kompile.chat.local.android.acquisition
 
-import ai.kompile.chat.local.android.model.SdxRawGgufChatSession
+import ai.kompile.chat.local.android.model.SdxGgufModelImporter
+import org.nd4j.dsp.model.ResumableModelDownloader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.SocketException
 import java.net.URI
 import java.net.URL
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 
 class HuggingFaceGgmlAcquisitionTest {
 
     private val sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    private val contentSha =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     @Test
     fun canonicalizesBlobPageWithoutRepositoryRequest() {
@@ -36,33 +43,67 @@ class HuggingFaceGgmlAcquisitionTest {
         assertEquals("download=true", uri.query)
         assertNull(uri.fragment)
         assertFalse(discovery.selectedCandidate().orElseThrow().isCommitPinned)
+        assertTrue(discovery.selectedCandidate().orElseThrow().tokenizerAssets.isEmpty())
         assertNull(HuggingFaceGgmlAcquisition.problem(uri.toASCIIString()))
     }
 
     @Test
     fun resolvesRepositoryNameToOnePinnedGguf() {
         var requestedPath: String? = null
+        var requestedQuery: String? = null
         val discovery = HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") { uri ->
             requestedPath = uri.path
+            requestedQuery = uri.rawQuery
             """{
               "sha":"$sha",
               "siblings":[
                 {"rfilename":"config.json","size":42},
-                {"rfilename":"model-Q4_K_M.gguf","lfs":{"size":1234}}
+                {"rfilename":"tokenizer.json","size":100},
+                {"rfilename":"tokenizer_config.json","size":20},
+                {"rfilename":"model-Q4_K_M.gguf","lfs":{"size":1234,"sha256":"$contentSha"}}
               ]
             }"""
         }
 
         assertEquals("/api/models/acme/tiny-chat/revision/main", requestedPath)
+        assertEquals("blobs=true", requestedQuery)
         assertFalse(discovery.requiresSelection())
         val candidate = discovery.selectedCandidate().orElseThrow()
         assertEquals("model-Q4_K_M.gguf", candidate.path)
         assertEquals(1234L, candidate.size)
+        assertEquals(contentSha, candidate.sha256)
         assertEquals("Q4_K_M", candidate.quantizationHint)
+        assertEquals(
+            listOf("tokenizer.json", "tokenizer_config.json", "config.json"),
+            candidate.tokenizerAssets.map { it.name }
+        )
+        assertEquals(1396L, HuggingFaceGgmlAcquisition.expectedImportBytes(candidate))
         assertEquals(
             "https://huggingface.co/acme/tiny-chat/resolve/$sha/model-Q4_K_M.gguf?download=true",
             candidate.downloadUri.toASCIIString()
         )
+    }
+
+    @Test
+    fun tokenizerAssetsUseTheModelCacheIdentityPrefix() {
+        val directory = Files.createTempDirectory("hf-tokenizer-path")
+        try {
+            val model = directory.resolve("model-slot.gguf")
+            assertEquals(
+                "model-slot.gguf.tokenizer.json",
+                HuggingFaceGgmlAcquisition.tokenizerAssetPath(model, "tokenizer.json").fileName.toString()
+            )
+            assertEquals(
+                "model-slot.gguf.tokenizer_config.json",
+                HuggingFaceGgmlAcquisition.tokenizerAssetPath(model, "tokenizer_config.json").fileName.toString()
+            )
+            assertEquals(
+                "model-slot.gguf.chat_template.jinja",
+                HuggingFaceGgmlAcquisition.tokenizerAssetPath(model, "chat_template.jinja").fileName.toString()
+            )
+        } finally {
+            Files.deleteIfExists(directory)
+        }
     }
 
     @Test
@@ -81,6 +122,148 @@ class HuggingFaceGgmlAcquisitionTest {
                 "%20model%20Q4.gguf?download=true",
             candidate.downloadUri.toASCIIString()
         )
+    }
+
+    @Test
+    fun pinnedStorageNamesAreStableAndSeparateEqualLeavesAcrossRepositories() {
+        val first = candidate("models/model-Q4_K_M.gguf", 4)
+        val same = candidate("models/model-Q4_K_M.gguf", 4)
+        val otherRepository = HuggingFaceGgmlAcquisition.discover("other/tiny-chat") {
+            """{"sha":"$sha","siblings":[{"rfilename":"models/model-Q4_K_M.gguf","size":4}]}"""
+        }.selectedCandidate().orElseThrow()
+
+        val firstName = HuggingFaceGgmlAcquisition.pinnedStorageFilename(first)
+        assertEquals(firstName, HuggingFaceGgmlAcquisition.pinnedStorageFilename(same))
+        assertTrue(firstName.startsWith("model-Q4_K_M-"))
+        assertTrue(firstName.endsWith(".gguf"))
+        val slots = HuggingFaceGgmlAcquisition.pinnedStorageFilenames(first)
+        assertEquals(2, slots.distinct().size)
+        assertEquals(firstName, slots.first())
+        assertTrue(slots.last().endsWith("-alternate.gguf"))
+        assertFalse(
+            firstName == HuggingFaceGgmlAcquisition.pinnedStorageFilename(otherRepository)
+        )
+    }
+
+    @Test
+    fun reusesOnlyMatchingCommitPinnedPublishedDownloads() {
+        val bytes = "GGUF".toByteArray()
+        val pinned = candidate("models/model.gguf", bytes.size.toLong(), sha256(bytes))
+        val unpinned = HuggingFaceGgmlAcquisition.discover(
+            "https://huggingface.co/acme/tiny-chat/resolve/main/model.gguf"
+        ).selectedCandidate().orElseThrow()
+        val directory = Files.createTempDirectory("hf-pinned-reuse")
+        val published = directory.resolve(
+            HuggingFaceGgmlAcquisition.pinnedStorageFilename(pinned)
+        )
+        try {
+            Files.write(published, bytes)
+
+            val reused = HuggingFaceGgmlAcquisition.reusablePinnedDownload(
+                pinned,
+                published,
+                1024
+            )
+            assertEquals(published.toAbsolutePath().normalize(), reused?.finalPath)
+            assertEquals(bytes.size.toLong(), reused?.downloadedBytes)
+            assertEquals(sha256(bytes), reused?.sha256)
+            assertNull(
+                HuggingFaceGgmlAcquisition.reusablePinnedDownload(
+                    unpinned,
+                    published,
+                    1024
+                )
+            )
+        } finally {
+            Files.deleteIfExists(published)
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun sameLengthCorruptPinnedCacheIsNotReusedAndCanBeReplaced() {
+        val expectedBytes = "GGU1".toByteArray()
+        val pinned = candidate("models/model.gguf", expectedBytes.size.toLong(), sha256(expectedBytes))
+        val directory = Files.createTempDirectory("hf-pinned-corrupt")
+        val published = directory.resolve(
+            HuggingFaceGgmlAcquisition.pinnedStorageFilename(pinned)
+        )
+        try {
+            Files.write(published, "GGUF".toByteArray())
+
+            assertNull(
+                HuggingFaceGgmlAcquisition.reusablePinnedDownload(
+                    pinned,
+                    published,
+                    1024
+                )
+            )
+            assertTrue(Files.isRegularFile(published))
+        } finally {
+            Files.deleteIfExists(published)
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun replacementPlanningNeverDeletesTheActiveCorruptCacheSlot() {
+        val expectedBytes = "GGU1".toByteArray()
+        val corruptBytes = "GGUF".toByteArray()
+        val pinned = candidate("models/model.gguf", expectedBytes.size.toLong(), sha256(expectedBytes))
+        val directory = Files.createTempDirectory("hf-pinned-active-replacement")
+        val slots = HuggingFaceGgmlAcquisition.pinnedStorageFilenames(pinned)
+            .map(directory::resolve)
+        val active = slots.first()
+        val alternate = slots.last()
+        try {
+            Files.write(active, corruptBytes)
+
+            val plan = HuggingFaceGgmlAcquisition.planPinnedDownload(
+                candidate = pinned,
+                directory = directory,
+                activeModelPath = active,
+                maxBytes = 1024
+            )
+
+            assertEquals(alternate.toAbsolutePath().normalize(), plan.finalPath)
+            assertNull(plan.reusableDownload)
+            assertEquals(listOf(active.toAbsolutePath().normalize()), plan.obsoletePathsAfterActivation)
+            assertEquals("GGUF", String(Files.readAllBytes(active)))
+            assertFalse(Files.exists(alternate))
+        } finally {
+            slots.forEach { Files.deleteIfExists(it) }
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun validAlternateCanReplaceAnActiveCorruptSlotWithoutTouchingIt() {
+        val expectedBytes = "GGU1".toByteArray()
+        val pinned = candidate("models/model.gguf", expectedBytes.size.toLong(), sha256(expectedBytes))
+        val directory = Files.createTempDirectory("hf-pinned-active-reuse")
+        val slots = HuggingFaceGgmlAcquisition.pinnedStorageFilenames(pinned)
+            .map(directory::resolve)
+        val active = slots.first()
+        val alternate = slots.last()
+        try {
+            Files.write(active, "GGUF".toByteArray())
+            Files.write(alternate, expectedBytes)
+
+            val plan = HuggingFaceGgmlAcquisition.planPinnedDownload(
+                candidate = pinned,
+                directory = directory,
+                activeModelPath = active,
+                maxBytes = 1024
+            )
+
+            assertEquals(alternate.toAbsolutePath().normalize(), plan.finalPath)
+            assertEquals(alternate.toAbsolutePath().normalize(), plan.reusableDownload?.finalPath)
+            assertEquals(listOf(active.toAbsolutePath().normalize()), plan.obsoletePathsAfterActivation)
+            assertEquals("GGUF", String(Files.readAllBytes(active)))
+        } finally {
+            slots.forEach { Files.deleteIfExists(it) }
+            Files.deleteIfExists(directory)
+        }
     }
 
     @Test
@@ -213,7 +396,11 @@ class HuggingFaceGgmlAcquisitionTest {
     @Test
     fun streamsToTemporaryPathThenAtomicallyPublishesWithProgress() {
         val bytes = "gguf-test-payload".toByteArray()
-        val candidate = candidate("models/tiny model.gguf", bytes.size.toLong())
+        val candidate = candidate(
+            "models/tiny model.gguf",
+            bytes.size.toLong(),
+            sha256(bytes)
+        )
         val directory = Files.createTempDirectory("hf-download-success")
         val temporary = directory.resolve("model.part")
         val destination = directory.resolve("tiny_model.gguf")
@@ -233,9 +420,544 @@ class HuggingFaceGgmlAcquisitionTest {
             assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
             assertEquals(bytes.size.toLong(), result.downloadedBytes)
             assertEquals(bytes.size.toLong(), result.expectedBytes)
+            assertEquals(sha256(bytes), result.sha256)
             assertEquals("tiny_model.gguf", result.safeFilename)
             assertEquals(bytes.size.toLong(), progress.last().downloadedBytes)
             assertEquals(candidate, progress.last().candidate)
+        } finally {
+            Files.deleteIfExists(temporary)
+            Files.deleteIfExists(destination)
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun productionAdapterUsesSharedDownloaderAndPublishesObservableStages() {
+        val bytes = "shared-sdx-downloader".toByteArray()
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-shared-downloader")
+        val destination = directory.resolve("model.gguf")
+        val connection = FakeConnection(
+            candidate.downloadUri,
+            200,
+            bytes,
+            bytes.size.toLong(),
+            mapOf("ETag" to "\"shared-v1\"")
+        )
+        val downloader = ResumableModelDownloader(
+            { connection },
+            object : ResumableModelDownloader.MonotonicClock {
+                override fun nanoTime(): Long = System.nanoTime()
+                override fun currentTimeMillis(): Long = System.currentTimeMillis()
+            },
+            { _, _ -> Unit },
+            { delay, _ -> delay }
+        )
+        val progress = mutableListOf<HuggingFaceGgmlAcquisition.DownloadProgress>()
+        try {
+            val result = HuggingFaceGgmlAcquisition.downloadWithSharedUtility(
+                candidate,
+                destination,
+                1024,
+                progress::add,
+                HuggingFaceGgmlAcquisition.newDownloadCancellation(),
+                downloader
+            )
+
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+            assertEquals(sha256(bytes), result.sha256)
+            assertEquals(HuggingFaceGgmlAcquisition.DEFAULT_MAX_ATTEMPTS, progress.last().maxAttempts)
+            assertTrue(progress.any { it.event == HuggingFaceGgmlAcquisition.DownloadEvent.CONNECT })
+            val verification = progress.filter {
+                it.event == HuggingFaceGgmlAcquisition.DownloadEvent.VERIFY
+            }
+            assertTrue(verification.size >= 2)
+            assertEquals(0L, verification.first().downloadedBytes)
+            assertEquals(bytes.size.toLong(), verification.last().downloadedBytes)
+            assertTrue(verification.zipWithNext().all { (left, right) ->
+                right.downloadedBytes >= left.downloadedBytes
+            })
+            assertEquals(HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE, progress.last().event)
+            assertEquals(30_000, connection.connectTimeout)
+            assertTrue(connection.readTimeout > 30_000)
+        } finally {
+            Files.deleteIfExists(destination)
+            Files.deleteIfExists(destination.resolveSibling("model.gguf.partial"))
+            Files.deleteIfExists(destination.resolveSibling("model.gguf.partial.metadata"))
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun productionAdapterCannotReturnFromVerifyToDownloadAfterTransferCompletes() {
+        val bytes = "verify-is-terminal-for-transfer".toByteArray()
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-verify-terminal")
+        val destination = directory.resolve("model.gguf")
+        val metadata = destination.resolveSibling("model.gguf.partial.metadata")
+        val marker = metadata.resolve("keep")
+        var openCount = 0
+        val downloader = ResumableModelDownloader(
+            { uri ->
+                openCount++
+                check(openCount == 1) { "Verification reopened the HTTP transfer" }
+                FakeConnection(
+                    uri,
+                    200,
+                    bytes,
+                    bytes.size.toLong(),
+                    mapOf("ETag" to "\"verify-terminal-v1\"")
+                )
+            },
+            object : ResumableModelDownloader.MonotonicClock {
+                override fun nanoTime(): Long = System.nanoTime()
+                override fun currentTimeMillis(): Long = System.currentTimeMillis()
+            },
+            { _, _ -> Unit },
+            { delay, _ -> delay }
+        )
+        val poisonedCleanup = AtomicBoolean(false)
+        val progress = mutableListOf<HuggingFaceGgmlAcquisition.DownloadProgress>()
+        try {
+            val result = HuggingFaceGgmlAcquisition.downloadWithSharedUtility(
+                candidate,
+                destination,
+                1024,
+                { update ->
+                    progress.add(update)
+                    if (
+                        update.event == HuggingFaceGgmlAcquisition.DownloadEvent.VERIFY &&
+                        update.downloadedBytes == bytes.size.toLong() &&
+                        poisonedCleanup.compareAndSet(false, true)
+                    ) {
+                        Files.delete(metadata)
+                        Files.createDirectory(metadata)
+                        Files.write(marker, byteArrayOf(1))
+                    }
+                },
+                HuggingFaceGgmlAcquisition.newDownloadCancellation(),
+                downloader
+            )
+
+            assertEquals(1, openCount)
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+            assertEquals(sha256(bytes), result.sha256)
+            assertTrue(poisonedCleanup.get())
+            assertFalse(progress.any { it.event == HuggingFaceGgmlAcquisition.DownloadEvent.RETRY })
+            assertEquals(HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE, progress.last().event)
+            assertTrue(progress.last().message.contains("cleanup deferred"))
+        } finally {
+            Files.deleteIfExists(marker)
+            Files.deleteIfExists(metadata)
+            Files.deleteIfExists(destination)
+            Files.deleteIfExists(destination.resolveSibling("model.gguf.partial"))
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun tokenizerAssetsDownloadWithAggregateProgressAndAreReusedIndividually() {
+        val tokenizerBytes = "tok".toByteArray()
+        val configBytes = "{}".toByteArray()
+        val candidate = HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
+            """{
+              "sha":"$sha",
+              "siblings":[
+                {"rfilename":"model.gguf","size":4},
+                {"rfilename":"tokenizer.json","size":${tokenizerBytes.size}},
+                {"rfilename":"tokenizer_config.json","size":${configBytes.size}}
+              ]
+            }"""
+        }.selectedCandidate().orElseThrow()
+        val directory = Files.createTempDirectory("hf-tokenizer-assets")
+        val model = directory.resolve("model-cache.gguf")
+        Files.write(model, byteArrayOf(0x47, 0x47, 0x55, 0x46))
+        val progress = mutableListOf<HuggingFaceGgmlAcquisition.DownloadProgress>()
+        val downloader = ResumableModelDownloader(
+            { uri ->
+                val body = when {
+                    uri.path.endsWith("/tokenizer.json") -> tokenizerBytes
+                    uri.path.endsWith("/tokenizer_config.json") -> configBytes
+                    else -> error("Unexpected asset URI: $uri")
+                }
+                FakeConnection(uri, 200, body, body.size.toLong(), mapOf("ETag" to "\"asset\""))
+            },
+            object : ResumableModelDownloader.MonotonicClock {
+                override fun nanoTime(): Long = System.nanoTime()
+                override fun currentTimeMillis(): Long = System.currentTimeMillis()
+            },
+            { _, _ -> Unit },
+            { delay, _ -> delay }
+        )
+        try {
+            val first = HuggingFaceGgmlAcquisition.ensureTokenizerAssets(
+                candidate,
+                model,
+                progress::add,
+                HuggingFaceGgmlAcquisition.newDownloadCancellation(),
+                downloader
+            )
+
+            assertEquals(2, first.paths.size)
+            assertEquals(0, first.reusedCount)
+            assertEquals(tokenizerBytes.toList(), Files.readAllBytes(first.paths.getValue("tokenizer.json")).toList())
+            assertEquals(configBytes.toList(), Files.readAllBytes(first.paths.getValue("tokenizer_config.json")).toList())
+            assertEquals((tokenizerBytes.size + configBytes.size).toLong(), progress.last().expectedBytes)
+            assertEquals(progress.last().expectedBytes, progress.last().downloadedBytes)
+            assertTrue(progress.zipWithNext().all { (left, right) ->
+                right.downloadedBytes >= left.downloadedBytes
+            })
+
+            val reused = HuggingFaceGgmlAcquisition.ensureTokenizerAssets(
+                candidate,
+                model,
+                {},
+                HuggingFaceGgmlAcquisition.newDownloadCancellation(),
+                ResumableModelDownloader(
+                    { error("Verified tokenizer assets must not reconnect") },
+                    object : ResumableModelDownloader.MonotonicClock {
+                        override fun nanoTime(): Long = System.nanoTime()
+                        override fun currentTimeMillis(): Long = System.currentTimeMillis()
+                    },
+                    { _, _ -> Unit },
+                    { delay, _ -> delay }
+                )
+            )
+            assertEquals(2, reused.reusedCount)
+        } finally {
+            HuggingFaceGgmlAcquisition.tokenizerAssetPathsForModel(model).forEach { asset ->
+                Files.deleteIfExists(asset)
+                Files.deleteIfExists(asset.resolveSibling("${asset.fileName}.partial"))
+                Files.deleteIfExists(asset.resolveSibling("${asset.fileName}.partial.metadata"))
+            }
+            Files.deleteIfExists(model)
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun sharedAdapterRetriesSocketAbortAndResumesValidatorBackedBytes() {
+        val bytes = "validator-backed Android socket retry".toByteArray()
+        val prefixLength = 11
+        val candidate = candidate("retry.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-shared-retry")
+        val destination = directory.resolve("retry.gguf")
+        val interrupted = FakeConnection(
+            candidate.downloadUri,
+            200,
+            bytes,
+            bytes.size.toLong(),
+            mapOf("ETag" to "\"stable\""),
+            SocketAbortInputStream(bytes, prefixLength)
+        )
+        val suffix = bytes.copyOfRange(prefixLength, bytes.size)
+        val resumed = FakeConnection(
+            candidate.downloadUri,
+            206,
+            suffix,
+            suffix.size.toLong(),
+            mapOf(
+                "ETag" to "\"stable\"",
+                "Content-Range" to "bytes $prefixLength-${bytes.lastIndex}/${bytes.size}"
+            )
+        )
+        var connectionCount = 0
+        val sleeps = mutableListOf<Long>()
+        val downloader = ResumableModelDownloader(
+            {
+                when (++connectionCount) {
+                    1 -> interrupted
+                    2 -> resumed
+                    else -> error("Unexpected download attempt $connectionCount")
+                }
+            },
+            object : ResumableModelDownloader.MonotonicClock {
+                override fun nanoTime(): Long = System.nanoTime()
+                override fun currentTimeMillis(): Long = System.currentTimeMillis()
+            },
+            { delay, _ -> sleeps.add(delay) },
+            { delay, _ -> delay }
+        )
+        val progress = mutableListOf<HuggingFaceGgmlAcquisition.DownloadProgress>()
+        try {
+            val result = HuggingFaceGgmlAcquisition.downloadWithSharedUtility(
+                candidate,
+                destination,
+                1024,
+                progress::add,
+                HuggingFaceGgmlAcquisition.newDownloadCancellation(),
+                downloader
+            )
+
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+            assertEquals(sha256(bytes), result.sha256)
+            assertEquals(2, connectionCount)
+            assertEquals(listOf(1_000L), sleeps)
+            val retry = progress.single {
+                it.event == HuggingFaceGgmlAcquisition.DownloadEvent.RETRY
+            }
+            assertEquals(1, retry.attempt)
+            assertEquals(HuggingFaceGgmlAcquisition.DEFAULT_MAX_ATTEMPTS, retry.maxAttempts)
+            assertEquals(prefixLength.toLong(), retry.downloadedBytes)
+            assertEquals(bytes.size.toLong(), retry.expectedBytes)
+            assertEquals(prefixLength.toLong(), retry.resumedBytes)
+            assertEquals(1_000L, retry.retryDelayMillis)
+            assertTrue(retry.retryWillResume)
+            assertTrue(retry.message.contains("Software caused connection abort"))
+            val resume = progress.first {
+                it.event == HuggingFaceGgmlAcquisition.DownloadEvent.RESUME
+            }
+            assertEquals(2, resume.attempt)
+            assertEquals(prefixLength.toLong(), resume.resumedBytes)
+            assertEquals("bytes=$prefixLength-", resumed.requestHeader("Range"))
+            assertEquals("\"stable\"", resumed.requestHeader("If-Range"))
+            assertEquals(HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE, progress.last().event)
+            assertTrue(HuggingFaceGgmlAcquisition.TRANSFER_POLICY_SUMMARY.contains("4 attempts"))
+            assertTrue(HuggingFaceGgmlAcquisition.TRANSFER_POLICY_SUMMARY.contains("10m no-data timeout"))
+        } finally {
+            Files.deleteIfExists(destination)
+            Files.deleteIfExists(destination.resolveSibling("retry.gguf.partial"))
+            Files.deleteIfExists(destination.resolveSibling("retry.gguf.partial.metadata"))
+            Files.deleteIfExists(directory)
+        }
+    }
+
+    @Test
+    fun resumesVerifiedPinnedPartialWithRangeAndIfRange() {
+        val bytes = "GGUF-resumable-payload".toByteArray()
+        val prefixLength = 7
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-download-resume")
+        val suppliedTemporary = directory.resolve("ignored.pending")
+        val destination = directory.resolve("model.gguf")
+        val connections = mutableListOf<FakeConnection>()
+        try {
+            val firstFailure = runCatching {
+                HuggingFaceGgmlAcquisition.download(
+                    candidate, suppliedTemporary, destination, 1024, {}, { false }
+                ) { uri ->
+                    FakeConnection(
+                        uri, 200, bytes, bytes.size.toLong(), mapOf("ETag" to "\"v1\""),
+                        FailingInputStream(bytes, prefixLength)
+                    ).also(connections::add)
+                }
+            }.exceptionOrNull()
+            assertTrue(firstFailure is IOException)
+            val partial = HuggingFaceGgmlAcquisition.partialPath(destination)
+            assertEquals(bytes.take(prefixLength), Files.readAllBytes(partial).toList())
+
+            val suffix = bytes.copyOfRange(prefixLength, bytes.size)
+            val result = HuggingFaceGgmlAcquisition.download(
+                candidate, suppliedTemporary, destination, 1024, {}, { false }
+            ) { uri ->
+                FakeConnection(
+                    uri,
+                    206,
+                    suffix,
+                    suffix.size.toLong(),
+                    mapOf(
+                        "ETag" to "\"v1\"",
+                        "Content-Range" to "bytes $prefixLength-${bytes.lastIndex}/${bytes.size}"
+                    )
+                ).also(connections::add)
+            }
+
+            assertEquals("bytes=$prefixLength-", connections.last().requestHeader("Range"))
+            assertEquals("\"v1\"", connections.last().requestHeader("If-Range"))
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+            assertEquals(bytes.size.toLong(), result.downloadedBytes)
+            assertFalse(Files.exists(partial))
+            assertFalse(Files.exists(partial.resolveSibling("${partial.fileName}.metadata")))
+        } finally {
+            deleteDownloadFiles(directory, destination)
+        }
+    }
+
+    @Test
+    fun storagePreflightCountsOnlyAnExactValidatorBackedPartial() {
+        val bytes = "GGUF-partial-capacity".toByteArray()
+        val prefixLength = 7
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(bytes))
+        val changedCandidate = candidate("other.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-partial-capacity")
+        val destination = directory.resolve("model.gguf")
+        try {
+            createInterruptedPartial(candidate, destination, bytes, prefixLength)
+
+            assertEquals(
+                prefixLength.toLong(),
+                HuggingFaceGgmlAcquisition.resumablePartialBytes(candidate, destination)
+            )
+            assertEquals(
+                0L,
+                HuggingFaceGgmlAcquisition.resumablePartialBytes(changedCandidate, destination)
+            )
+        } finally {
+            deleteDownloadFiles(directory, destination)
+        }
+    }
+
+    @Test
+    fun ignoredRangeRestartsFromComplete200BodyWithoutAppending() {
+        val bytes = "GGUF-range-ignored".toByteArray()
+        val prefixLength = 5
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-download-range-ignored")
+        val destination = directory.resolve("model.gguf")
+        try {
+            createInterruptedPartial(candidate, destination, bytes, prefixLength)
+            lateinit var resumed: FakeConnection
+
+            HuggingFaceGgmlAcquisition.download(
+                candidate, directory.resolve("unused.pending"), destination, 1024, {}, { false }
+            ) { uri ->
+                FakeConnection(
+                    uri, 200, bytes, bytes.size.toLong(), mapOf("ETag" to "\"v2\"")
+                ).also { resumed = it }
+            }
+
+            assertEquals("bytes=$prefixLength-", resumed.requestHeader("Range"))
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+        } finally {
+            deleteDownloadFiles(directory, destination)
+        }
+    }
+
+    @Test
+    fun malformedOrMismatchedContentRangeIsDiscardedAndSafelyRestarted() {
+        listOf(
+            "bytes nope" to "malformed",
+            "bytes 2-9/10" to "wrong-start",
+            "bytes 5-8/99" to "wrong-total"
+        ).forEach { (contentRange, label) ->
+            val bytes = "GGUF-range".toByteArray()
+            val prefixLength = 5
+            val candidate = candidate("$label.gguf", bytes.size.toLong(), sha256(bytes))
+            val directory = Files.createTempDirectory("hf-download-$label")
+            val destination = directory.resolve("model.gguf")
+            var call = 0
+            val connections = mutableListOf<FakeConnection>()
+            try {
+                createInterruptedPartial(candidate, destination, bytes, prefixLength)
+                HuggingFaceGgmlAcquisition.download(
+                    candidate, directory.resolve("unused.pending"), destination, 1024, {}, { false }
+                ) { uri ->
+                    call++
+                    if (call == 1) {
+                        FakeConnection(
+                            uri, 206, bytes.copyOfRange(prefixLength, bytes.size),
+                            (bytes.size - prefixLength).toLong(),
+                            mapOf("ETag" to "\"v1\"", "Content-Range" to contentRange)
+                        )
+                    } else {
+                        FakeConnection(
+                            uri, 200, bytes, bytes.size.toLong(), mapOf("ETag" to "\"v2\"")
+                        )
+                    }.also(connections::add)
+                }
+
+                assertEquals(2, call)
+                assertEquals("bytes=$prefixLength-", connections.first().requestHeader("Range"))
+                assertNull(connections.last().requestHeader("Range"))
+                assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+            } finally {
+                deleteDownloadFiles(directory, destination)
+            }
+        }
+    }
+
+    @Test
+    fun cancellationPreservesVerifiedPartialAndRetryResumesIt() {
+        val bytes = "GGUF-cancel-and-retry".toByteArray()
+        val prefixLength = 6
+        val candidate = candidate("cancel.gguf", bytes.size.toLong(), sha256(bytes))
+        val directory = Files.createTempDirectory("hf-download-cancel-retry")
+        val destination = directory.resolve("model.gguf")
+        var cancellationChecks = 0
+        try {
+            val cancellation = runCatching {
+                HuggingFaceGgmlAcquisition.download(
+                    candidate, directory.resolve("unused.pending"), destination, 1024, {},
+                    { ++cancellationChecks > 3 }
+                ) { uri ->
+                    FakeConnection(
+                        uri, 200, bytes, bytes.size.toLong(), mapOf("ETag" to "\"stable\""),
+                        ChunkedInputStream(bytes, prefixLength)
+                    )
+                }
+            }.exceptionOrNull()
+            assertTrue(cancellation is java.io.InterruptedIOException)
+            val partial = HuggingFaceGgmlAcquisition.partialPath(destination)
+            assertEquals(bytes.take(prefixLength), Files.readAllBytes(partial).toList())
+
+            lateinit var retry: FakeConnection
+            HuggingFaceGgmlAcquisition.download(
+                candidate, directory.resolve("unused-again.pending"), destination, 1024, {}, { false }
+            ) { uri ->
+                val suffix = bytes.copyOfRange(prefixLength, bytes.size)
+                FakeConnection(
+                    uri, 206, suffix, suffix.size.toLong(),
+                    mapOf(
+                        "ETag" to "\"stable\"",
+                        "Content-Range" to "bytes $prefixLength-${bytes.lastIndex}/${bytes.size}"
+                    )
+                ).also { retry = it }
+            }
+
+            assertEquals("bytes=$prefixLength-", retry.requestHeader("Range"))
+            assertEquals(bytes.toList(), Files.readAllBytes(destination).toList())
+        } finally {
+            deleteDownloadFiles(directory, destination)
+        }
+    }
+
+    @Test
+    fun immutableIdentityChangeDiscardsOldPartialBeforeRequest() {
+        val firstBytes = "GGUF-first-model".toByteArray()
+        val secondBytes = "GGUF-other-model".toByteArray()
+        assertEquals(firstBytes.size, secondBytes.size)
+        val first = candidate("first.gguf", firstBytes.size.toLong(), sha256(firstBytes))
+        val second = candidate("second.gguf", secondBytes.size.toLong(), sha256(secondBytes))
+        val directory = Files.createTempDirectory("hf-download-identity-change")
+        val destination = directory.resolve("model.gguf")
+        try {
+            createInterruptedPartial(first, destination, firstBytes, 5)
+            lateinit var request: FakeConnection
+            HuggingFaceGgmlAcquisition.download(
+                second, directory.resolve("unused.pending"), destination, 1024, {}, { false }
+            ) { uri ->
+                FakeConnection(
+                    uri, 200, secondBytes, secondBytes.size.toLong(),
+                    mapOf("ETag" to "\"second\"")
+                ).also { request = it }
+            }
+
+            assertNull(request.requestHeader("Range"))
+            assertNull(request.requestHeader("If-Range"))
+            assertEquals(secondBytes.toList(), Files.readAllBytes(destination).toList())
+        } finally {
+            deleteDownloadFiles(directory, destination)
+        }
+    }
+
+    @Test
+    fun rejectsRepositoryDigestMismatchBeforePublishing() {
+        val bytes = "GGUF".toByteArray()
+        val expected = "GGU1".toByteArray()
+        val candidate = candidate("model.gguf", bytes.size.toLong(), sha256(expected))
+        val directory = Files.createTempDirectory("hf-download-digest")
+        val temporary = directory.resolve("model.part")
+        val destination = directory.resolve("model.gguf")
+        try {
+            val failure = runCatching {
+                HuggingFaceGgmlAcquisition.download(
+                    candidate, temporary, destination, 100, {}, { false }
+                ) { FakeConnection(it, 200, bytes, bytes.size.toLong()) }
+            }.exceptionOrNull()
+
+            assertTrue(failure?.message.orEmpty().contains("SHA-256 mismatch"))
+            assertFalse(Files.exists(temporary))
+            assertFalse(Files.exists(destination))
         } finally {
             Files.deleteIfExists(temporary)
             Files.deleteIfExists(destination)
@@ -327,36 +1049,141 @@ class HuggingFaceGgmlAcquisitionTest {
     }
 
     @Test
-    fun rawSdxValidationAcceptsEveryDl4jGgufAndLegacyGgmlMagic() {
+    fun ggufImporterAcceptsEveryDl4jGgufAndLegacyGgmlMagic() {
         listOf("GGUF", "ggml", "ggmf", "ggjt", "lmgg", "fmgg", "tjgg").forEach { magic ->
             assertTrue(
                 "Expected DL4J-compatible magic $magic",
-                SdxRawGgufChatSession.hasSupportedMagic(magic.toByteArray(Charsets.US_ASCII))
+                SdxGgufModelImporter.hasSupportedMagic(magic.toByteArray(Charsets.US_ASCII))
             )
         }
         assertFalse(
-            SdxRawGgufChatSession.hasSupportedMagic("<htm".toByteArray(Charsets.US_ASCII))
+            SdxGgufModelImporter.hasSupportedMagic("<htm".toByteArray(Charsets.US_ASCII))
         )
     }
 
-    private fun candidate(path: String, size: Long) =
+    private fun candidate(path: String, size: Long, contentSha256: String? = null) =
         HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
-            """{"sha":"$sha","siblings":[{"rfilename":"$path","size":$size}]}"""
+            val lfs = contentSha256?.let {
+                ",\"lfs\":{\"size\":$size,\"sha256\":\"$it\"}"
+            }.orEmpty()
+            """{"sha":"$sha","siblings":[{"rfilename":"$path","size":$size$lfs}]}"""
         }.selectedCandidate().orElseThrow()
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private fun createInterruptedPartial(
+        candidate: org.nd4j.dsp.model.HuggingFaceGgmlResolver.Candidate,
+        destination: java.nio.file.Path,
+        bytes: ByteArray,
+        prefixLength: Int
+    ) {
+        val failure = runCatching {
+            HuggingFaceGgmlAcquisition.download(
+                candidate, destination.resolveSibling("unused.pending"), destination,
+                1024, {}, { false }
+            ) { uri ->
+                FakeConnection(
+                    uri, 200, bytes, bytes.size.toLong(), mapOf("ETag" to "\"v1\""),
+                    FailingInputStream(bytes, prefixLength)
+                )
+            }
+        }.exceptionOrNull()
+        assertTrue(failure is IOException)
+    }
+
+    private fun deleteDownloadFiles(directory: java.nio.file.Path, destination: java.nio.file.Path) {
+        val partial = HuggingFaceGgmlAcquisition.partialPath(destination)
+        Files.deleteIfExists(destination)
+        Files.deleteIfExists(partial)
+        Files.deleteIfExists(partial.resolveSibling("${partial.fileName}.metadata"))
+        Files.deleteIfExists(partial.resolveSibling("${partial.fileName}.metadata.tmp"))
+        Files.deleteIfExists(directory.resolve("unused.pending"))
+        Files.deleteIfExists(directory.resolve("unused-again.pending"))
+        Files.deleteIfExists(directory.resolve("ignored.pending"))
+        Files.deleteIfExists(directory)
+    }
+
+    private class FailingInputStream(
+        private val bytes: ByteArray,
+        private val prefixLength: Int
+    ) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int {
+            if (position >= prefixLength) throw IOException("simulated connection loss")
+            return bytes[position++].toInt() and 0xff
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (position >= prefixLength) throw IOException("simulated connection loss")
+            val count = minOf(length, prefixLength - position)
+            bytes.copyInto(buffer, offset, position, position + count)
+            position += count
+            return count
+        }
+    }
+
+    private class SocketAbortInputStream(
+        private val bytes: ByteArray,
+        private val prefixLength: Int
+    ) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int {
+            if (position >= prefixLength) throw SocketException("Software caused connection abort")
+            return bytes[position++].toInt() and 0xff
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (position >= prefixLength) throw SocketException("Software caused connection abort")
+            val count = minOf(length, prefixLength - position)
+            bytes.copyInto(buffer, offset, position, position + count)
+            position += count
+            return count
+        }
+    }
+
+    private class ChunkedInputStream(
+        private val bytes: ByteArray,
+        private val chunkSize: Int
+    ) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int = if (position >= bytes.size) -1 else bytes[position++].toInt() and 0xff
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (position >= bytes.size) return -1
+            val count = minOf(length, chunkSize, bytes.size - position)
+            bytes.copyInto(buffer, offset, position, position + count)
+            position += count
+            return count
+        }
+    }
 
     private class FakeConnection(
         uri: URI,
         private val status: Int,
         private val body: ByteArray,
         private val declaredLength: Long,
-        private val headers: Map<String, String> = emptyMap()
+        private val headers: Map<String, String> = emptyMap(),
+        private val suppliedInput: InputStream? = null
     ) : HttpURLConnection(URL(uri.toASCIIString())) {
+        private val requestHeaders = linkedMapOf<String, String>()
+
         override fun connect() = Unit
         override fun disconnect() = Unit
         override fun usingProxy(): Boolean = false
         override fun getResponseCode(): Int = status
-        override fun getInputStream(): InputStream = ByteArrayInputStream(body)
+        override fun getInputStream(): InputStream = suppliedInput ?: ByteArrayInputStream(body)
         override fun getContentLengthLong(): Long = declaredLength
         override fun getHeaderField(name: String?): String? = headers[name]
+        override fun setRequestProperty(key: String, value: String) {
+            requestHeaders[key] = value
+        }
+
+        fun requestHeader(name: String): String? = requestHeaders[name]
     }
 }

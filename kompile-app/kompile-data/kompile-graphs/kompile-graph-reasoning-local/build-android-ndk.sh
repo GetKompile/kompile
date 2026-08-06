@@ -78,10 +78,23 @@ LABSJDK_COMMIT=ef9d66c6808536e7029680f6f4d965359f8f20c8
 GRAAL_URL=https://github.com/oracle/graal.git
 GRAAL_REF=vm-23.1.5
 GRAAL_COMMIT=67b6384f4502ffd46aef357d6bcfaf249b68d7d3
+EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD=st_birthtime_sec
+FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD=st_birthtime_nsec
+LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256=b31495be262f4a59130ba377641f84ca0c42c5ebcb78b7af1abdfb7ab1c9c202
 
 fail() {
     echo "ERROR: $*" >&2
     exit 3
+}
+
+assert_unix_file_attributes_abi() {
+    local binary="$1"
+    [[ -s "$binary" ]] || fail "UnixFileAttributes ABI verification input is missing: $binary"
+    LC_ALL=C grep -a -F -q "$EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD" "$binary" ||
+        fail "$binary does not reference required field $EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD"
+    if LC_ALL=C grep -a -F -q "$FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD" "$binary"; then
+        fail "$binary references forbidden GraalVM field $FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD"
+    fi
 }
 
 [[ -d "$ANDROID_NDK" ]] || fail "Android NDK not found: $ANDROID_NDK"
@@ -94,6 +107,13 @@ NDK_REVISION="$(awk -F= '/Pkg.Revision/ {gsub(/[[:space:]]/, "", $2); print $2}'
 NATIVE_IMAGE_VERSION="$("$GRAALVM_HOME/bin/native-image" --version 2>&1)"
 [[ "$NATIVE_IMAGE_VERSION" == *"$EXPECTED_GRAAL_JAVA"* ]] ||     fail "Expected GraalVM Java $EXPECTED_GRAAL_JAVA: $NATIVE_IMAGE_VERSION"
 [[ "$NATIVE_IMAGE_VERSION" == *"$EXPECTED_NATIVE_IMAGE"* ]] ||     fail "Expected Native Image build $EXPECTED_NATIVE_IMAGE: $NATIVE_IMAGE_VERSION"
+[[ -x "$GRAALVM_HOME/bin/javap" ]] || fail "GraalVM javap is required to verify the private java.base ABI"
+UNIX_FILE_ATTRIBUTES_LAYOUT="$("$GRAALVM_HOME/bin/javap" -private sun.nio.fs.UnixFileAttributes 2>&1)" ||
+    fail "Could not inspect GraalVM sun.nio.fs.UnixFileAttributes: $UNIX_FILE_ATTRIBUTES_LAYOUT"
+[[ "$UNIX_FILE_ATTRIBUTES_LAYOUT" == *"long $EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD;"* ]] ||
+    fail "GraalVM UnixFileAttributes is missing $EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD: $UNIX_FILE_ATTRIBUTES_LAYOUT"
+[[ "$UNIX_FILE_ATTRIBUTES_LAYOUT" != *"long $FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD;"* ]] ||
+    fail "GraalVM UnixFileAttributes unexpectedly exposes $FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD: $UNIX_FILE_ATTRIBUTES_LAYOUT"
 
 TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/$NDK_HOST_TAG/bin"
 CLANG="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
@@ -205,6 +225,18 @@ else
         fail "LabsJDK bionic patch neither applies nor is already present"
     fi
 
+    UNIX_FILE_ATTRIBUTES_PATCH="$ANDROID_SUPPORT/labsjdk-unix-file-attributes-abi.patch"
+    [[ -f "$UNIX_FILE_ATTRIBUTES_PATCH" ]] ||
+        fail "Pinned UnixFileAttributes ABI patch is missing: $UNIX_FILE_ATTRIBUTES_PATCH"
+    UNIX_FILE_ATTRIBUTES_PATCH_SHA256="$(sha256sum "$UNIX_FILE_ATTRIBUTES_PATCH" | awk '{print $1}')"
+    [[ "$UNIX_FILE_ATTRIBUTES_PATCH_SHA256" == "$LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256" ]] ||
+        fail "UnixFileAttributes ABI patch digest mismatch: expected $LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256, found $UNIX_FILE_ATTRIBUTES_PATCH_SHA256"
+    if git -C "$LABSJDK_SOURCE" apply --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
+        git -C "$LABSJDK_SOURCE" apply "$UNIX_FILE_ATTRIBUTES_PATCH"
+    elif ! git -C "$LABSJDK_SOURCE" apply --reverse --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
+        fail "LabsJDK UnixFileAttributes ABI patch neither applies nor is already present"
+    fi
+
     FAKE_DEPS="$WORK_DIR/fake-deps"
     for header in         cups/cups.h fontconfig/fontconfig.h         X11/Xlib.h X11/Xutil.h X11/Intrinsic.h         X11/extensions/Xrandr.h X11/extensions/XTest.h         X11/extensions/Xrender.h X11/extensions/shape.h; do
         mkdir -p "$FAKE_DEPS/include/$(dirname "$header")"
@@ -231,9 +263,17 @@ else
     env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$LABSJDK_SOURCE" CONF="$CONF" JOBS="$JOBS"         STATIC_BUILD=true STATIC_LIBS=true java.base-libs-only         >"$JDK_BUILD_LOG" 2>&1
     JDK_BUILD_STATUS=$?
     set -e
-    if [[ $JDK_BUILD_STATUS -ne 0 ]] &&        ! grep -Eq 'libsyslookup|invalid option.*m|no symbols' "$JDK_BUILD_LOG"; then
+    # The OpenJDK make target can finish all requested static objects and then fail while
+    # aggregating shared-library .symbols files that static Native Image linking never uses.
+    # Accept only those known post-build failures here. Exact object counts, deterministic
+    # archives, and JNI_OnLoad symbols are validated below before anything is linked.
+    if [[ $JDK_BUILD_STATUS -ne 0 ]] && \
+       ! grep -Eq 'libsyslookup|invalid option.*m|no symbols|modules_libs/java\.base/(server/)?lib(jli|java|net|nio|verify|zip|jimage|jvm)\.symbols: No such file or directory' "$JDK_BUILD_LOG"; then
         tail -n 120 "$JDK_BUILD_LOG" >&2
         fail "LabsJDK native-library compilation failed"
+    fi
+    if [[ $JDK_BUILD_STATUS -ne 0 ]]; then
+        echo "LabsJDK static objects completed; ignoring the known unused shared-symbol aggregation failure"
     fi
 
     JDK_OBJECT_ROOT="$LABSJDK_SOURCE/build/$CONF/support/native/java.base"
@@ -258,6 +298,7 @@ fi
 for archive in libjava.a libnet.a libnio.a libzip.a; do
     [[ -s "$JDK_LIB_DIR/$archive" ]] || fail "Missing LabsJDK archive: $JDK_LIB_DIR/$archive"
 done
+assert_unix_file_attributes_abi "$JDK_LIB_DIR/libnio.a"
 for onload in java net nio zip; do
     ONLOAD_SYMBOLS="$WORK_DIR/JNI_OnLoad_$onload.symbols"
     "$LLVM_NM" --defined-only "$JDK_LIB_DIR/lib$onload.a" > "$ONLOAD_SYMBOLS"
@@ -346,6 +387,7 @@ FINAL_LIBRARY="$OUTPUT_DIR/jni/arm64-v8a/libkompile_reasoning_android.so"
 
 cp "$UNSTRIPPED" "$FINAL_LIBRARY"
 "$LLVM_STRIP" --strip-unneeded "$FINAL_LIBRARY"
+assert_unix_file_attributes_abi "$FINAL_LIBRARY"
 
 cp "$MODULE_DIR/include/kompile_reasoning.h" "$OUTPUT_DIR/include/kompile_reasoning.h"
 if [[ -f "$GENERATED_DIR/libkompile_reasoning_android.h" ]]; then
@@ -364,6 +406,9 @@ graalvm.java=$EXPECTED_GRAAL_JAVA
 native.image=$EXPECTED_NATIVE_IMAGE
 graal.source.commit=$GRAAL_COMMIT
 labsjdk.source.commit=$LABSJDK_COMMIT
+labsjdk.unixFileAttributes.required=$EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD
+labsjdk.unixFileAttributes.forbidden=$FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD
+labsjdk.unixFileAttributes.patch.sha256=$LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256
 graph.object.sha256=$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')
 library.sha256=$(sha256sum "$FINAL_LIBRARY" | awk '{print $1}')
 openblas=false

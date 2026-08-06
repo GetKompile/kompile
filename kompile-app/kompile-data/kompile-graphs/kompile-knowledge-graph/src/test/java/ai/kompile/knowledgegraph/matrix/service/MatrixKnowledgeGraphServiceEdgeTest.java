@@ -29,6 +29,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -97,6 +100,28 @@ class MatrixKnowledgeGraphServiceEdgeTest {
                 null, "desc", "{\"provenanceType\":\"INFERRED\"}", null, null);
         assertEquals(EdgeProvenance.INFERRED, edge.getProvenanceType(),
                 "[M-10] typed provenance classification restored from metaJson");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void createEdgeWithMetadataPersistsBoundedInferenceProvenanceInTheMatrixMetadataBag() {
+        String metaJson = "{\"provenance\":\"inference:run-7\","
+                + "\"provenanceType\":\"INFERRED\","
+                + "\"metadata\":{\"inferenceRunId\":\"run-7\","
+                + "\"inferenceVersion\":\"fol-v2\","
+                + "\"supportingRuleIds\":[\"rule:control\"]}}";
+
+        GraphEdge edge = service.createEdgeWithMetadata("a", "b", EdgeType.HIERARCHICAL, 1.0,
+                null, "desc", metaJson, null, null);
+
+        ArgumentCaptor<Map<String, Object>> metadata = ArgumentCaptor.forClass(Map.class);
+        verify(graphStore).mergeEdgeMetadata(eq(DEFAULT_GRAPH_ID), eq("a"), eq("b"),
+                anyString(), metadata.capture());
+        assertEquals("INFERRED", metadata.getValue().get("provenanceType"));
+        assertEquals("inference:run-7", metadata.getValue().get("provenance"));
+        assertEquals("run-7", metadata.getValue().get("inferenceRunId"));
+        assertEquals(List.of("rule:control"), metadata.getValue().get("supportingRuleIds"));
+        assertEquals(metadata.getValue(), edge.getMetadata());
     }
 
     @Test

@@ -22,7 +22,7 @@ import java.util.concurrent.*;
  */
 public class StdioQuorumTaskTool {
 
-    private static final String CODEX_AGENT = "codex";
+    private static final List<String> SUPPORTED_AGENTS = StdioTaskTool.SUPPORTED_AGENTS;
 
     private final AgentRegistry agentRegistry;
     private final DirectSubagentRunnerStdio subagentRunner;
@@ -42,12 +42,12 @@ public class StdioQuorumTaskTool {
     public String id() { return "quorum_task"; }
 
     public String description() {
-        return "Spawn the same prompt to multiple independent Codex instances in parallel and collect all responses. " +
+        return "Spawn the same prompt to multiple independent Codex, Claude, or OpenCode instances in parallel and collect all responses. " +
             "Use this for tasks where you want independent opinions " +
             "to compare, vote on, or synthesize into a consensus.\n\n" +
             "Each agent runs independently with the same prompt. Results are returned together " +
             "so you can identify agreement/disagreement across agents.\n\n" +
-            "Available agent: codex.";
+            "Available agents: codex, claude, opencode.";
     }
 
     public JsonNode parameterSchema() {
@@ -69,12 +69,20 @@ public class StdioQuorumTaskTool {
         var items = agents.putObject("items");
         items.put("type", "string");
         ArrayNode enumValues = items.putArray("enum");
-        enumValues.add(CODEX_AGENT);
+        SUPPORTED_AGENTS.forEach(enumValues::add);
         agents.put("minItems", 2);
+
+        var model = props.putObject("model");
+        model.put("type", "string");
+        model.put("description", "Optional model override for every instance. When omitted, each agent resolves the selected role, project, user, then provider native default.");
+
+        var thinking = props.putObject("thinking");
+        thinking.put("type", "string");
+        thinking.put("description", "Optional thinking/effort override for every instance. When omitted, role exact-model/default thinking precedes project/user defaults. Maps to each agent's native flag.");
 
         var role = props.putObject("role");
         role.put("type", "string");
-        role.put("description", "Optional role to assign to all agents (e.g., 'reviewer', 'architect')");
+        role.put("description", "Optional role to assign to all agents. When omitted, each agent's persisted role assignment is used. Roles may define per-agent launch defaults.");
 
         schema.putArray("required").add("description").add("prompt").add("agents");
         return schema;
@@ -86,6 +94,8 @@ public class StdioQuorumTaskTool {
         String prompt = (String) arguments.getOrDefault("prompt", "");
         Object agentsObj = arguments.get("agents");
         String roleName = (String) arguments.get("role");
+        String model = (String) arguments.get("model");
+        String thinking = (String) arguments.get("thinking");
 
         if (prompt == null || prompt.isEmpty()) {
             return ToolResult.error("prompt is required");
@@ -102,9 +112,9 @@ public class StdioQuorumTaskTool {
             return ToolResult.error("At least 2 agents are required for a quorum. Use 'task' for single-agent delegation.");
         }
         for (String agentName : agentNames) {
-            if (!CODEX_AGENT.equals(agentName)) {
+            if (!StdioTaskTool.isSupportedAgent(agentName)) {
                 return ToolResult.error("Agent '" + agentName
-                    + "' is not available. Available agent: codex.");
+                    + "' is not available. Available agents: " + String.join(", ", SUPPORTED_AGENTS) + ".");
             }
         }
 
@@ -124,7 +134,7 @@ public class StdioQuorumTaskTool {
             int instance = seenByAgent.merge(agentName, 1, Integer::sum);
             String label = totalByAgent.get(agentName) > 1 ? agentName + "#" + instance : agentName;
             futures.add(new AgentFuture(label,
-                executor.submit(() -> runAgent(agentName, prompt, roleName, desc))));
+                executor.submit(() -> runAgent(agentName, prompt, roleName, model, thinking, desc))));
         }
 
         // Collect results — full output goes to file, summary to tool result
@@ -198,13 +208,16 @@ public class StdioQuorumTaskTool {
                    "resultFile", resultFile.toAbsolutePath().toString()));
     }
 
-    private AgentResult runAgent(String agentName, String prompt, String roleName, String desc) {
+    private AgentResult runAgent(String agentName, String prompt, String roleName,
+                                 String model, String thinking, String desc) {
         try {
             AgentConfig agentConfig = AgentConfig.builder(agentName)
                 .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
                 .description("External " + agentName + " agent")
                 .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
                 .roleName(roleName)
+                .modelOverride(model)
+                .thinkingOverride(thinking)
                 .build();
 
             String result = subagentRunner.forkForSubagent().runSubagent(agentConfig, prompt);

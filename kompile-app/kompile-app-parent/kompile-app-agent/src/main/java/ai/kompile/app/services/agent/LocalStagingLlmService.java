@@ -17,13 +17,14 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.GgufMetadataReader;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * Discovers project/global staged local LLMs and executes them through the staging server's
@@ -68,7 +70,10 @@ public class LocalStagingLlmService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    @Value("${kompile.staging.url:http://localhost:8090}")
+    private final ServiceEndpointsConfigManager endpointConfigManager =
+            ServiceEndpointsConfigManager.shared();
+
+    /** Explicit test/runtime override; production resolves the managed endpoint on every call. */
     private String stagingUrl;
 
     private volatile List<LocalModelCandidate> cachedCandidates = List.of();
@@ -288,17 +293,7 @@ public class LocalStagingLlmService {
         if (context <= 0) {
             context = readInt(node.path("tokenizer").path("max_length"));
         }
-        if (context <= 0 && modelFile.toLowerCase(java.util.Locale.ROOT).endsWith(".gguf")) {
-            // Registry entries for staged GGUF LLMs routinely carry no sequence-length metadata;
-            // the model file itself declares it in the GGUF header (<arch>.context_length).
-            // Without this, capability budgeting falls to a 2k-token default and the extraction
-            // chain's window guard would skip the model for any real batch.
-            context = ai.kompile.utils.GgufMetadataReader.readContextLength(modelPath).orElse(0);
-            if (context > 0) {
-                log.debug("Local LLM '{}' context window {} read from GGUF header {}",
-                        modelId, context, modelPath.getFileName());
-            }
-        }
+        context = authoritativeDeclaredContext(modelId, modelPath, context);
         long estimatedMemory = readLong(node.path("metadata").path("estimated_memory_bytes"));
         return Optional.of(new LocalModelCandidate(
                 modelId,
@@ -307,6 +302,53 @@ public class LocalStagingLlmService {
                 context,
                 estimatedMemory,
                 registryPath));
+    }
+
+    /**
+     * The staged executable may be an SDNB/SDZ file while its source GGUF remains beside it. The
+     * GGUF header is the architecture authority and must supersede stale registry metadata; the
+     * serving sequence buckets are applied separately by {@link #executableContextWindow}.
+     */
+    private static int authoritativeDeclaredContext(String modelId, Path modelPath,
+                                                    int registryContext) {
+        Optional<Path> ggufPath = siblingGguf(modelPath);
+        int ggufContext = ggufPath.flatMap(GgufMetadataReader::readContextLength).orElse(0);
+        if (ggufContext <= 0) {
+            return registryContext;
+        }
+        if (registryContext > 0 && registryContext != ggufContext) {
+            log.info("Local LLM '{}' registry context {} superseded by GGUF architecture context {} from {}",
+                    modelId, registryContext, ggufContext, ggufPath.get().getFileName());
+        } else {
+            log.debug("Local LLM '{}' context window {} read from GGUF header {}",
+                    modelId, ggufContext, ggufPath.get().getFileName());
+        }
+        return ggufContext;
+    }
+
+    private static Optional<Path> siblingGguf(Path modelPath) {
+        if (modelPath == null) {
+            return Optional.empty();
+        }
+        String fileName = modelPath.getFileName() == null
+                ? "" : modelPath.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (fileName.endsWith(".gguf") && Files.isRegularFile(modelPath)) {
+            return Optional.of(modelPath);
+        }
+        Path parent = modelPath.getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return Optional.empty();
+        }
+        try (Stream<Path> files = Files.list(parent)) {
+            return files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT)
+                            .endsWith(".gguf"))
+                    .sorted()
+                    .findFirst();
+        } catch (IOException e) {
+            log.debug("Could not inspect sibling GGUF metadata for {}: {}", modelPath, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     private List<Path> registryPaths() {
@@ -370,7 +412,11 @@ public class LocalStagingLlmService {
     }
 
     private URI endpoint(String path) {
-        String base = stagingUrl == null || stagingUrl.isBlank() ? "http://localhost:8090" : stagingUrl.trim();
+        String base = stagingUrl;
+        if (base == null || base.isBlank()) {
+            base = endpointConfigManager.current().effectiveStagingUrl();
+        }
+        base = base.trim();
         while (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);
         }

@@ -1,0 +1,39 @@
+.settings-page {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 860px;
+  padding: 24px;
+}
+
+header {
+  margin-bottom: 20px;
+}
+
+h1 {
+  margin-bottom: 6px;
+}
+
+header p,
+mat-card-content p {
+  color: rgba(0, 0, 0, 0.68);
+}
+
+mat-card {
+  padding: 8px;
+}
+
+mat-form-field {
+  display: block;
+  margin-top: 20px;
+  width: 100%;
+}
+
+mat-card-actions button {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.error {
+  color: #b00020 !important;
+}

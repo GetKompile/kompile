@@ -18,6 +18,7 @@ package ai.kompile.core.graphrag.passes;
 
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.graphrag.passes.ExtractionProjection.Props;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.Alternative;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.ClaimProposal;
@@ -38,6 +39,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -107,6 +109,28 @@ class ExtractionProjectionTest {
     }
 
     @Test
+    void nonLatinProvisionalNamesGetDistinctUnicodeSafeIdsInsteadOfEntityPlaceholder() {
+        assertEquals("チャネル不整合", ExtractionProjection.slug("チャネル不整合"));
+        assertEquals("田中綾子", ExtractionProjection.slug("田中綾子"));
+        assertFalse(ExtractionProjection.slug("チャネル不整合")
+                .equals(ExtractionProjection.slug("田中綾子")));
+        assertEquals(ExtractionProjection.slug("ＡＰＡＣ予測"),
+                ExtractionProjection.slug("APAC予測"),
+                "NFKC-equivalent source forms must converge to one deterministic id");
+    }
+
+    @Test
+    void symbolOnlyProvisionalNamesUseStableDistinctFingerprints() {
+        String first = ExtractionProjection.slug("🔴");
+        String second = ExtractionProjection.slug("🟢");
+
+        assertTrue(first.startsWith("entity_"));
+        assertTrue(second.startsWith("entity_"));
+        assertFalse(first.equals(second));
+        assertEquals(first, ExtractionProjection.slug("🔴"));
+    }
+
+    @Test
     void unresolvedMentionsAreWithheldWithAReason() {
         MentionProposal unresolved = new MentionProposal("p1", "the company", "SUBJECT",
                 ProposalOperation.UNRESOLVED, null, null, null, 0.3, List.of(),
@@ -149,6 +173,44 @@ class ExtractionProjectionTest {
         assertEquals("true", relation.properties().get(Props.ASSERTABLE));
         assertEquals("ASSERTION", relation.properties().get(Props.EPISTEMIC));
         assertEquals("2019", relation.occurredAt());
+    }
+
+    @Test
+    void relativeSourceTimeBecomesAProvenanceQualifierInsteadOfAnInvalidTimestamp() {
+        String source = "Acme Corp acquired Initech now.";
+        PassContext context = PassContext.forChunk("chunk-relative", "doc-relative", source)
+                .withGraph("graph-7", "graph-6")
+                .withSchema("kompile-graph-extraction/v1", "test-model");
+        PropositionProposal proposition = new PropositionProposal(
+                "p1", "Acme Corp acquired Initech now", "Acme Corp", "acquired", "Initech",
+                Polarity.AFFIRMED, Modality.FACTUAL, "now", null, null,
+                EvidenceSpan.ofQuote("chunk-relative", source));
+        RelationProposal relation = new RelationProposal(
+                "p1", "acme_corp", "initech", "ACQUIRED", ProposalOperation.CREATE_CLAIM,
+                0.9, "now", Map.of("sourceTimeExpression", "tomorrow"), List.of(),
+                "explicit acquisition verb",
+                EvidenceSpan.ofQuote("chunk-relative", "acquired Initech now"));
+        PassBundle bundle = new PassBundle(
+                List.of(proposition),
+                List.of(provisional("Acme Corp", "ORGANIZATION", "SUBJECT"),
+                        provisional("Initech", "ORGANIZATION", "OBJECT")),
+                List.of(new EpistemicProposal(
+                        "p1", SpeechAct.ASSERTION, null, 0.9, "stated", null)),
+                List.of(relation), List.of());
+
+        ExtractionProjection.Projection projection = ExtractionProjection.project(bundle, context);
+
+        ExtractedRelation projected = onlyRelation(projection).orElseThrow();
+        assertNull(projected.occurredAt(),
+                "a relative source expression must never enter the ISO-only occurredAt field");
+        assertEquals("now", projected.properties().get(Props.SOURCE_TIME_EXPRESSION),
+                "the engine-owned source qualifier must override an ungrounded model value");
+        assertTrue(projection.notes().stream()
+                .anyMatch(note -> note.contains("source-relative qualifier")));
+        var validation = GraphExtractionValidator.validate(projection.result());
+        assertTrue(validation.valid(), () ->
+                "projection must produce a graph that passes the production schema validator: "
+                        + validation.errors());
     }
 
     @Test

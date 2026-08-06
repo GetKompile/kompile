@@ -120,13 +120,13 @@ public final class ChatEngine {
                         // Then fall through to get the final answer
                         String finalAnswerFull = router.generate(working, opts);
                         String finalAnswer = stripThink(finalAnswerFull);
-                        return new TurnResult(finalAnswer, rounds);
+                        return new TurnResult(requireAnswer(finalAnswer), rounds);
                     } else {
-                        return new TurnResult(retry, rounds);
+                        return new TurnResult(requireAnswer(retry), rounds);
                     }
                 }
                 // Plain answer
-                return new TurnResult(raw, rounds);
+                return new TurnResult(requireAnswer(raw), rounds);
             }
 
             // Valid tool call — dispatch it
@@ -146,7 +146,14 @@ public final class ChatEngine {
                 "Please synthesize an answer from the tool results above without calling more tools."));
         String synthesisedFull = router.generate(working, opts);
         String synthesised = stripThink(synthesisedFull);
-        return new TurnResult(synthesised, rounds);
+        return new TurnResult(requireAnswer(synthesised), rounds);
+    }
+
+    private static String requireAnswer(String answer) {
+        if (answer == null || answer.isBlank()) {
+            throw new ChatException("The model returned no assistant text.");
+        }
+        return answer.trim();
     }
 
     // ── System prompt ─────────────────────────────────────────────────────────

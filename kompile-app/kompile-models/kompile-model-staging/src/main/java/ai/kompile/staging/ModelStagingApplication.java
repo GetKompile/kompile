@@ -16,6 +16,7 @@
 
 package ai.kompile.staging;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.staging.cli.ModelStagingCLI;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.ExitCodeGenerator;
@@ -52,6 +53,15 @@ public class ModelStagingApplication implements CommandLineRunner, ExitCodeGener
     }
 
     public static void main(String[] args) {
+        // Managed config is intentionally shared by the UI and CLI rather than owned by
+        // Spring. Bridge the standard application argument before any config manager is
+        // constructed so this standalone component reads <project>/config consistently.
+        applyProjectDataDir(args);
+
+        // Resolve the same canonical side-loaded lib/ directory used by every other
+        // distributable process before Spring or any ND4J class can initialize.
+        NativeLibraryResolver.bootstrap();
+
         // Check if running as CLI or REST server
         if (args.length > 0 && !args[0].startsWith("--server")) {
             // Run as CLI
@@ -60,6 +70,22 @@ public class ModelStagingApplication implements CommandLineRunner, ExitCodeGener
         } else {
             // Run as REST server
             SpringApplication.run(ModelStagingApplication.class, args);
+        }
+    }
+
+    static void applyProjectDataDir(String[] args) {
+        if (args == null) {
+            return;
+        }
+        String prefix = "--kompile.data.dir=";
+        for (String arg : args) {
+            if (arg != null && arg.startsWith(prefix)) {
+                String value = arg.substring(prefix.length()).trim();
+                if (!value.isEmpty()) {
+                    System.setProperty("kompile.data.dir", value);
+                }
+                return;
+            }
         }
     }
 

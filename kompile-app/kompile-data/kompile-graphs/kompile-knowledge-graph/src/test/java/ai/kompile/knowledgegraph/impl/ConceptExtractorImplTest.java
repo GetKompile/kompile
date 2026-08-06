@@ -133,6 +133,19 @@ class ConceptExtractorImplTest {
     }
 
     @Test
+    void extractConcepts_preservesInitializedNameSpans() {
+        String text = "M. Chen met J. R. Smith and F. Vasseur.";
+        ExtractionResult result = extractor.extractConcepts(text, defaultConfig());
+
+        List<String> names = result.concepts().stream()
+                .map(ExtractedConcept::name)
+                .toList();
+        assertTrue(names.contains("M. Chen"), "Expected M. Chen in " + names);
+        assertTrue(names.contains("J. R. Smith"), "Expected J. R. Smith in " + names);
+        assertTrue(names.contains("F. Vasseur"), "Expected F. Vasseur in " + names);
+    }
+
+    @Test
     void extractConcepts_filtersCommonSentenceStarters() {
         String text = "The company is growing. This quarter was profitable. " +
                 "It shows that progress is being made.";
@@ -145,6 +158,22 @@ class ConceptExtractorImplTest {
         // "The company", "This quarter", "It shows" should be filtered
         assertFalse(entityNames.contains("The"));
         assertFalse(entityNames.contains("This"));
+    }
+
+    @Test
+    void extractConcepts_preservesShortAndCompoundUppercaseTerms() {
+        String text = "The CFO reviewed KPI targets with a VP, FP&A counterpart for Q3.";
+        ExtractionResult result = extractor.extractConcepts(text, defaultConfig());
+
+        List<String> names = result.concepts().stream()
+                .map(ExtractedConcept::name)
+                .toList();
+        assertTrue(names.contains("CFO"), "Expected CFO in " + names);
+        assertTrue(names.contains("KPI"), "Expected KPI in " + names);
+        assertTrue(names.contains("VP"), "Expected VP in " + names);
+        assertTrue(names.contains("FP&A"), "Expected FP&A in " + names);
+        assertTrue(names.contains("VP, FP&A"), "Expected compound VP, FP&A in " + names);
+        assertTrue(names.contains("Q3"), "Expected Q3 in " + names);
     }
 
     // ─── Technical terms ────────────────────────────────────────────

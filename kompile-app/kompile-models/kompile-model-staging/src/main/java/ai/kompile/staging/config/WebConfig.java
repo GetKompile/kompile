@@ -16,7 +16,6 @@
 
 package ai.kompile.staging.config;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -30,10 +29,11 @@ import java.io.IOException;
 /**
  * Web configuration for serving the Angular SPA.
  * Handles SPA routing by forwarding non-API requests to index.html.
- * Only active when running as the standalone staging server.
+ * The staging application owns this namespace, so the configuration must be present in both JVM
+ * and AOT/native contexts. Conditional removal during AOT leaves the HTML present but makes every
+ * JavaScript and CSS asset resolve to a 404.
  */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(name = "kompile.staging.ui.enabled", havingValue = "true", matchIfMissing = true)
 public class WebConfig implements WebMvcConfigurer {
 
     @Override

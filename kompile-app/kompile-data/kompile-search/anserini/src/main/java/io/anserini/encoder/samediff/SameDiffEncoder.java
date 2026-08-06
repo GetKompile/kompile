@@ -883,6 +883,18 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     }
 
     /**
+     * Public cache-validity contract for launchers and provisioning services.
+     * Callers must not duplicate the cache filename or fingerprint algorithm;
+     * both include runtime backend/optimizer settings owned by this encoder.
+     */
+    public static boolean hasValidOptimizationCache(Path sourcePath) {
+        if (sourcePath == null) {
+            return false;
+        }
+        return isOptCacheValid(sourcePath, computeOptCachePath(sourcePath));
+    }
+
+    /**
      * Persist the currently-loaded (already graph-optimized) SameDiff model as
      * {@code cachedOptPath}, and write a {@code .fp} fingerprint file recording the
      * source file and runtime optimizer/backend settings so future loads can verify freshness.

@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.LlmTranscriptLogger;
 import ai.kompile.core.crawl.graph.LocalServingBackend;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig.ProcessingBackend;
@@ -27,6 +28,7 @@ import ai.kompile.core.llm.chat.LLMChat;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -269,6 +271,46 @@ class CrawlLlmDispatcherCapabilityFilterTest {
         assertEquals(EXTRACTION_JSON, response);
         assertEquals(1, generateCalls.get());
         assertEquals(1536, forwardedMaxTokens.get());
+    }
+
+    @Test
+    void decomposedScopeIsRecordedAndCannotLeakIntoTheNextCall() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        List<String> transcriptTaskTypes = new ArrayList<>();
+        LlmTranscriptLogger transcriptLogger = (jobId, backendId, taskType, prompt, response,
+                latencyMs, success, errorMessage, agentSessionId) -> transcriptTaskTypes.add(taskType);
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend",
+                servingBackend(true, generateCalls));
+        ReflectionTestUtils.setField(dispatcher, "transcriptLogger", transcriptLogger);
+        UnifiedCrawlJob job = jobForModel(LOCAL_MODEL, "serving");
+        CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
+                "ENTITY_PARTITIONS", "propositions", 1,
+                "job:partition:chunk", "partition-acme", "chunk-7",
+                "corpus-v1:abc", "graph-12", 14, 9);
+
+        assertEquals(EXTRACTION_JSON,
+                dispatcher.promptWithCapacityFallback("extract scoped", "llm", job, scope));
+        assertEquals(EXTRACTION_JSON,
+                dispatcher.promptWithCapacityFallback("extract plain", "llm", job));
+
+        assertEquals(2, generateCalls.get());
+        assertEquals(List.of("llm/ENTITY_PARTITIONS/propositions#1", "llm"),
+                transcriptTaskTypes);
+        assertEquals(2, job.getRecentLlmCalls().size());
+        UnifiedCrawlJob.LlmCallRecord scoped = job.getRecentLlmCalls().get(0);
+        assertEquals("llm", scoped.getTaskType(), "routing capability remains canonical");
+        assertEquals("ENTITY_PARTITIONS", scoped.getPhase());
+        assertEquals("propositions", scoped.getPassId());
+        assertEquals(1, scoped.getPassInvocation());
+        assertEquals("partition-acme", scoped.getPartitionId());
+        assertEquals("chunk-7", scoped.getChunkId());
+        assertEquals("corpus-v1:abc", scoped.getCorpusSnapshotId());
+        assertEquals("graph-12", scoped.getGraphRevision());
+        assertEquals(14, scoped.getGraphEntities());
+        assertEquals(9, scoped.getGraphRelationships());
+        assertNull(job.getRecentLlmCalls().get(1).getPhase(),
+                "the ThreadLocal scope must be restored after dispatch");
     }
 
     @Test

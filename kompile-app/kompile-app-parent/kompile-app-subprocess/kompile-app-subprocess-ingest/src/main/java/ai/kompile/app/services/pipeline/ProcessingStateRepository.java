@@ -72,14 +72,17 @@ public class ProcessingStateRepository {
     private final Set<String> pendingWrites = ConcurrentHashMap.newKeySet();
 
     public ProcessingStateRepository(
-            @Value("${kompile.ingest.state-directory:#{null}}") String baseDirectory) {
-        // Handle null baseDirectory - use temporary directory as fallback
-        if (baseDirectory != null) {
-            this.stateDir = Paths.get(baseDirectory, STATE_DIR_NAME);
-        } else {
-            this.stateDir = Paths.get(System.getProperty("java.io.tmpdir"), "kompile-state", STATE_DIR_NAME);
-            logger.warn("kompile.ingest.state-directory not configured, using temporary directory: {}", this.stateDir);
+            @Value("${kompile.ingest.state-directory:${kompile.data.dir:${user.home}/.kompile}/state}")
+            String baseDirectory) {
+        String resolvedBaseDirectory = baseDirectory;
+        if (resolvedBaseDirectory == null || resolvedBaseDirectory.isBlank()) {
+            String dataDirectory = System.getProperty("kompile.data.dir");
+            if (dataDirectory == null || dataDirectory.isBlank()) {
+                dataDirectory = Paths.get(System.getProperty("user.home"), ".kompile").toString();
+            }
+            resolvedBaseDirectory = Paths.get(dataDirectory, "state").toString();
         }
+        this.stateDir = Paths.get(resolvedBaseDirectory, STATE_DIR_NAME);
         this.objectMapper = JsonUtils.standardMapper();
         this.persistenceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "state-persistence");

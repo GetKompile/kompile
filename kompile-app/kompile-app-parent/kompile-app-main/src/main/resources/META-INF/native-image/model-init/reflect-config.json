@@ -11203,5 +11203,78 @@
         ]
       }
     ]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage",
+    "allPermittedSubclasses":true,
+    "queryAllDeclaredMethods":true
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Completed",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","int","int","long","java.util.Map","ai.kompile.app.subprocess.model.ModelInitMessage$ModelMetrics"] }, {"name":"embeddingDimensions","parameterTypes":[] }, {"name":"encoderType","parameterTypes":[] }, {"name":"maxSequenceLength","parameterTypes":[] }, {"name":"metrics","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"modelSource","parameterTypes":[] }, {"name":"phaseDurations","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }, {"name":"totalDurationMs","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Failed",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.app.subprocess.model.ModelInitMessage$Phase","java.lang.String","java.lang.String","java.lang.String","boolean"] }, {"name":"errorMessage","parameterTypes":[] }, {"name":"errorType","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"phase","parameterTypes":[] }, {"name":"retriable","parameterTypes":[] }, {"name":"stackTrace","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Heartbeat",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","long","double","long","long","ai.kompile.app.subprocess.model.ModelInitMessage$Phase"] }, {"name":"currentPhase","parameterTypes":[] }, {"name":"heapMaxBytes","parameterTypes":[] }, {"name":"heapUsedBytes","parameterTypes":[] }, {"name":"memoryUsagePercent","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }, {"name":"uptimeMs","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Log",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","long"] }, {"name":"level","parameterTypes":[] }, {"name":"message","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"source","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }, {"name":"timestamp","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$ModelInfo",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","int","int","int","java.lang.String","java.util.Map"] }, {"name":"embeddingDimensions","parameterTypes":[] }, {"name":"encoderClass","parameterTypes":[] }, {"name":"maxSequenceLength","parameterTypes":[] }, {"name":"metadata","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"modelType","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }, {"name":"tokenizerType","parameterTypes":[] }, {"name":"vocabSize","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$ModelMetrics",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["long","int","java.lang.String","int","int","int","java.lang.String","long","double","int","int"] }, {"name":"maxBatchSize","parameterTypes":[] }, {"name":"modelFileSizeBytes","parameterTypes":[] }, {"name":"modelPath","parameterTypes":[] }, {"name":"numModelFiles","parameterTypes":[] }, {"name":"numOpsInGraph","parameterTypes":[] }, {"name":"numVariablesInGraph","parameterTypes":[] }, {"name":"optimalBatchSize","parameterTypes":[] }, {"name":"testEmbeddingTimeMs","parameterTypes":[] }, {"name":"testThroughputTokensPerSec","parameterTypes":[] }, {"name":"tokenizerType","parameterTypes":[] }, {"name":"vocabSize","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Phase",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$PhaseTransition",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.app.subprocess.model.ModelInitMessage$Phase","ai.kompile.app.subprocess.model.ModelInitMessage$Phase","long"] }, {"name":"fromPhase","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"phaseDurationMs","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }, {"name":"toPhase","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$Progress",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.app.subprocess.model.ModelInitMessage$Phase","int","int","java.lang.String","ai.kompile.app.subprocess.model.ModelInitMessage$ProgressDetails"] }, {"name":"details","parameterTypes":[] }, {"name":"message","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"phase","parameterTypes":[] }, {"name":"phaseProgressPercent","parameterTypes":[] }, {"name":"progressPercent","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.kompile.app.subprocess.model.ModelInitMessage$ProgressDetails",
+    "allDeclaredFields":true,
+    "queryAllDeclaredMethods":true,
+    "queryAllDeclaredConstructors":true,
+    "methods":[{"name":"<init>","parameterTypes":["java.lang.Long","java.lang.Long","java.lang.Double","java.lang.Long","java.lang.Integer","java.lang.Integer","java.lang.Integer","java.lang.Long","java.lang.Long","java.lang.Integer","java.lang.Double","boolean","long","long","double"] }, {"name":"downloadSpeedBytesPerSec","parameterTypes":[] }, {"name":"downloadedBytes","parameterTypes":[] }, {"name":"graphBuildTimeMs","parameterTypes":[] }, {"name":"heapMaxBytes","parameterTypes":[] }, {"name":"heapUsedBytes","parameterTypes":[] }, {"name":"memoryUsagePercent","parameterTypes":[] }, {"name":"modelFileSizeBytes","parameterTypes":[] }, {"name":"numModelFiles","parameterTypes":[] }, {"name":"numOpsInGraph","parameterTypes":[] }, {"name":"numVariablesInGraph","parameterTypes":[] }, {"name":"testMagnitude","parameterTypes":[] }, {"name":"testTokenCount","parameterTypes":[] }, {"name":"totalBytes","parameterTypes":[] }, {"name":"validationPassed","parameterTypes":[] }, {"name":"validationTimeMs","parameterTypes":[] }]
   }
 ]

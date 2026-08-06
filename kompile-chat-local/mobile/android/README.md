@@ -12,12 +12,14 @@ uses one of four device-specific accelerator flavors:
 | `tensorG5` | canonical `.sdz` | Google LiteRT-LM dispatch on Tensor G5 TPU/NPU | forbidden |
 
 Every flavor additionally packages the explicit provider-independent `SDX_GGUF_AOT`
-route for app-owned `.gguf`/`.ggml` imports. Format selects that raw route; it is never a
-fallback from a failed prepared provider. All four variants are ARM64-only. Inference and
-graph reasoning remain local. `INTERNET` is confined to public Hugging Face repository
-metadata and selected model transfer; cleartext traffic, tokens, remote inference,
-OpenBLAS, host runtimes, implicit NNAPI partitioning, and alternate prepared providers
-are rejected by the application or packaging verifier.
+route for app-owned `.gguf`/`.ggml` imports. Format selects that SDX AOT CPU route; it is
+never a fallback from a failed prepared provider and never changes the selected `.sdz`
+accelerator. All four variants are ARM64-only. Inference and graph reasoning remain local.
+`INTERNET` is confined to public Hugging Face repository metadata and selected model
+transfer; cleartext traffic, tokens, remote inference, host runtimes, implicit NNAPI
+partitioning, and alternate prepared providers are rejected. The raw route carries its
+own exact, audited CPU/OpenBLAS closure; prepared-provider OpenBLAS leakage remains
+forbidden.
 
 ## Model acquisition and activation
 
@@ -33,35 +35,48 @@ The Settings screen exposes two independent paths:
 - an optional Kompile artifact service opens only prepared `.sdz`/`.kproject` downloads in
   an external browser.
 
-A Hugging Face transfer is not success. The downloaded file must pass GGUF/GGML validation,
-`libsdx_llm` ABI-v2 load, embedded tokenizer and model-owned chat-template rendering, and a
-bounded real decode. The exact SDX session that decoded the probe is then installed in
-`ChatEngine`; only afterward are active-model preferences committed. A failure removes the
-new file and restores the prior selection/runtime. Kompile staging receives only the target
-profile and prepared artifact kind and never participates in the Hugging Face path.
+A Hugging Face transfer is not success. A commit-pinned selection has a stable app-private
+cache name, but it is reused only when repository discovery supplied an LFS SHA-256 and both
+the file size and recomputed digest still match. Corrupt, incomplete, size-mismatched, unhashed,
+or unpinned entries are downloaded again; a repository-supplied digest is also verified while
+streaming before atomic publication. The exact downloaded file must pass GGUF/GGML validation,
+`libsdx_llm` ABI-v2 load in `runtime_quantized` mode, retain at least one structural
+`ggml_qmatmul`, render a prompt, return nonblank text with generated tokens, and report that
+`ggml_qmatmul` actually executed during the bounded real decode. Prompt rendering prefers the model/tokenizer chat template, then a proven ChatML
+protocol, and finally an explicit plain completion transcript. Merely parsing or loading a
+GGUF is not activation.
+
+Activation is transactional: the candidate session performs that real decode first, the
+canonical SDZ path is persisted, and only then is a fresh canonical-SDZ session published to
+`ChatEngine`; persistence and the candidate are rolled back if publication fails. The previous
+runtime stays active on any preparation or decode failure. Engine startup opens the persisted SDZ
+through the ordinary provider path without repeating the import-time smoke decode. A failed
+commit-pinned candidate remains cached so a newer APK can retry it without another download; a
+failed unpinned download is removed. Kompile
+staging receives only the target profile and prepared artifact kind and never participates
+in the Hugging Face path.
 
 ## Architecture
 
 The application layer depends only on `ChatModel` and
-`AcceleratedChatModelAndroid`. Model format selects a `PlatformLocalChatSession`:
+`AcceleratedChatModelAndroid`. Every `PlatformLocalChatSession` receives canonical SDZ:
 
-- Raw `.gguf`/`.ggml` opens `SdxRawGgufChatSession`, a JNA binding limited to the stable
-  `libsdx_llm` ABI-v2 surface. Runtime creation, SDX model import, chat-template rendering,
-  generation, unload, and isolate destruction stay serialized on one OS thread. Inside the
-  image the execution path is `SdxLlmCore` → `GGMLModelImport` → `GenerationPipeline`.
-- Vulkan, Hexagon, and Tensor G3 prepared `.sdz` share one SDX JavaCPP session lifecycle
+- Raw `.gguf`/`.ggml` is accepted only by `SdxGgufModelImporter`, a JNA ingestion adapter
+  over the stable `libsdx_llm` ABI-v2 surface. The disposable Graal process imports directly
+  to sharded canonical SDZ, populates the shared `SdxModelCompiler` cache, destroys its runtime,
+  and is observed dead before the application opens a session. It never renders prompts or runs
+  generation.
+- Vulkan, Hexagon, and Tensor G3 canonical `.sdz` share one SDX JavaCPP session lifecycle
   using `SdxRuntime`, `NativeTokenizer`, and `SdxTextSession`. Only their strict model
   options and route identity differ: `mobileVulkan()`, `mobileHexagon()`, and
-  `mobileNnapiAccelerator()`.
+  `mobileNnapiArmHybrid()`.
 - Tensor G5 prepared `.sdz` uses the SDX JavaCPP LiteRT-LM session and Google's dispatch
   runtime.
 
-JNA and `libjnidispatch` are intentionally packaged only for the raw SDX C ABI; remote and
-legacy chat transports remain excluded, and `verify-offline-apk.sh` rejects their DEX
-classes. Prepared-provider streaming, stop tokens, cancellation, reset, and ownership stay
-at their provider seams. ABI v2 raw generation is currently a blocking one-shot call: it
-emits the completed result as one chunk and has no cooperative native cancellation entry
-point, while transfer cancellation and session teardown remain bounded.
+JNA and `libjnidispatch` are intentionally packaged only for the one-time GGUF/GGML
+ingestion ABI; remote and legacy chat transports remain excluded, and
+`verify-offline-apk.sh` rejects their DEX classes. Streaming, stop tokens, cancellation,
+reset, and ownership all stay at the canonical provider session seams.
 
 The bundled `fixture.kgraph` is checksum-verified on every launch. Imports run off the UI
 thread and move transactionally into app-owned storage. Graphs are opened once for format
@@ -138,10 +153,13 @@ Tensor G3, or Tensor G5. Tensor G5 remains a specialized LiteRT-LM artifact
 produced by `nd4j-sdx-litertlm`; its vendor/Bazel helper is retained behind that
 Maven boundary.
 
-Direct raw-model execution is a separate explicit producer. Build the DL4J `sdx-aot`
-Android SDK with its opt-in `android-aot` profile and NDK helper, then pass its root to the
-lower-level packager as `--sdx-llm-sdk` (or publish/consume the matching classifier through
-the Maven lifecycle). The packager requires `abi.version=2`, `direct.gguf=true`, and
+Raw-model ingestion is a separate explicit producer. Build the DL4J `sdx-aot`
+Android SDK with its opt-in `android-aot` profile, an explicit repository-standard
+`-Dbackend.artifactId=<importer-backend>` input, and the NDK helper, then pass its root to
+the lower-level packager as `--sdx-llm-sdk` (or publish/consume the matching classifier
+through the Maven lifecycle). That ND4J backend supplies GGUF/GGML-to-SDZ conversion; it
+never replaces the independently packaged SDX NNAPI/Vulkan/Hexagon execution provider. The
+packager requires `abi.version=2`, `direct.gguf=true`, and
 `jni/arm64-v8a/libsdx_llm.so`; a default DL4J build does not create this artifact.
 
 ### 2. Build from the Kompile root reactor
@@ -206,6 +224,19 @@ mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk.sha256
 
 Direct invocation of `build-offline-accelerators.sh` instead defaults to
 `mobile/android/build/offline-dist`.
+
+After either success or failure, the helper removes only disposable Gradle
+intermediates, normalized provider AARs, graph-wrapper work, canonical JNI/Maven
+staging, and resolver temporary files. Every build mode passes provider AARs to
+Gradle and the final APK verifier by their resolved source path, so the helper
+never copies or overwrites `app/libs` inputs. Pre-existing/caller-owned AARs, final APKs and checksums, the
+standalone DL4J SDX SDK, Gradle caches, and Maven artifacts in the local repository
+are preserved. Cleanup is armed before input validation/release resolution, and an
+APK output path inside disposable staging is rejected. Use `--retain-staging` (or
+`KOMPILE_ANDROID_RETAIN_STAGING=1`) only when those intermediates are needed for
+diagnosis. `--cleanup-only` applies the same exact-path cleanup without assembling an
+APK. This cleanup is targeted and does not invoke a Maven, Gradle, or CMake `clean`
+lifecycle.
 
 These are debug-signed research APKs. Production distribution must supply its
 own release signing configuration.

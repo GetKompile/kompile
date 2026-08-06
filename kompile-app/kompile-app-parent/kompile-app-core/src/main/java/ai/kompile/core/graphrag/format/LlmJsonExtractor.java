@@ -117,7 +117,63 @@ public final class LlmJsonExtractor {
             }
         }
 
-        return json;
+        return completeMissingContainerClosures(json);
+    }
+
+    /**
+     * Repairs only a structurally complete JSON value that is missing one or more final container
+     * delimiters. This recovers a source-grounded proposal such as a complete nested selection object
+     * whose outer brace was omitted, without inventing a missing string, field, value, or array item.
+     */
+    static String completeMissingContainerClosures(String json) {
+        if (json == null || json.isBlank()) {
+            return json;
+        }
+        String candidate = json.strip();
+        if (candidate.isEmpty() || (candidate.charAt(0) != '{' && candidate.charAt(0) != '[')) {
+            return json;
+        }
+
+        java.util.ArrayDeque<Character> expectedClosures = new java.util.ArrayDeque<>();
+        boolean inString = false;
+        boolean escaped = false;
+        for (int index = 0; index < candidate.length(); index++) {
+            char current = candidate.charAt(index);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (current == '"') {
+                inString = true;
+            } else if (current == '{') {
+                expectedClosures.push('}');
+            } else if (current == '[') {
+                expectedClosures.push(']');
+            } else if (current == '}' || current == ']') {
+                if (expectedClosures.isEmpty() || expectedClosures.pop() != current) {
+                    return json;
+                }
+            }
+        }
+
+        if (inString || expectedClosures.isEmpty()) {
+            return json;
+        }
+        char last = candidate.charAt(candidate.length() - 1);
+        if (last != '}' && last != ']') {
+            return json;
+        }
+        StringBuilder completed = new StringBuilder(candidate);
+        while (!expectedClosures.isEmpty()) {
+            completed.append(expectedClosures.pop());
+        }
+        return completed.toString();
     }
 
     private static boolean isToolCallLine(String line) {

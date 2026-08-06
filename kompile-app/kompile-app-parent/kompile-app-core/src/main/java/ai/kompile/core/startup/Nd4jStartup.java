@@ -16,12 +16,11 @@
 
 package ai.kompile.core.startup;
 
+import ai.kompile.app.config.NativeLibraryResolver;
+import ai.kompile.utils.NativeImageInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 
 /**
@@ -37,70 +36,26 @@ public final class Nd4jStartup {
     private Nd4jStartup() {}
 
     /**
-     * Configure JavaCPP properties for GraalVM native image mode.
-     * In native image mode, JavaCPP uses the same directory as the binary
-     * for its native library cache. Native libraries (libnd4jcpu.so, etc.)
-     * must be placed alongside the binary.
-     *
-     * This MUST be called before any ND4J/JavaCPP class initialization.
+     * Configure JavaCPP properties before native-image code initializes ND4J.
+     * The canonical resolver uses {@link NativeImageInfo} to select a distribution's
+     * sibling {@code lib/} directory and publishes the exact trusted compiler-runtime
+     * path. Keeping that decision centralized prevents a later startup path from
+     * accidentally rebasing JavaCPP onto {@code bin/}.
      */
     public static void configureJavaCppForNativeImage() {
-        boolean isNativeImage = false;
-        String execPath = null;
-        try {
-            Class<?> imageInfoClass = Class.forName("org.graalvm.nativeimage.ImageInfo");
-            java.lang.reflect.Method inImageCode = imageInfoClass.getMethod("inImageCode");
-            isNativeImage = (Boolean) inImageCode.invoke(null);
-            if (isNativeImage) {
-                try {
-                    java.lang.reflect.Method getExecPath = imageInfoClass.getMethod("getExecutableName");
-                    execPath = (String) getExecPath.invoke(null);
-                } catch (Exception e) {
-                    logger.debug("Could not get native image executable name via reflection: {}", e.getMessage());
-                }
-            }
-        } catch (ClassNotFoundException ignored) {
-            // Not in a native image
-        } catch (Exception e) {
-            logger.debug("Error checking native image status: {}", e.getMessage());
+        if (!NativeImageInfo.isRunningInNativeImage()) {
+            logger.debug("Running in JVM mode - using default JavaCPP configuration");
+            return;
         }
 
-        if (isNativeImage) {
-            logger.info("Running as GraalVM native image - configuring JavaCPP for native mode");
-
-            Path binaryDir;
-            if (execPath != null) {
-                binaryDir = Paths.get(execPath).toAbsolutePath().getParent();
-            } else {
-                binaryDir = Paths.get(".").toAbsolutePath();
-                logger.warn("Could not determine native executable path, using CWD: {}", binaryDir);
-            }
-
-            System.setProperty("org.bytedeco.javacpp.cachedir", binaryDir.toString());
-            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
-
-            String existingLibPath = System.getProperty("java.library.path", "");
-            if (!existingLibPath.contains(binaryDir.toString())) {
-                String newLibPath = binaryDir.toString() +
-                        (existingLibPath.isEmpty() ? "" : ":" + existingLibPath);
-                System.setProperty("java.library.path", newLibPath);
-            }
-
-            System.setProperty("org.bytedeco.javacpp.platform.resourcedir", binaryDir.toString());
-
-            logger.info("JavaCPP native image config: cachedir={}, pathsFirst=true", binaryDir);
-
-            Path nativesDir = binaryDir.resolve("natives");
-            if (Files.isDirectory(nativesDir)) {
-                String libPath = System.getProperty("java.library.path", "");
-                if (!libPath.contains(nativesDir.toString())) {
-                    System.setProperty("java.library.path",
-                            nativesDir.toString() + ":" + libPath);
-                }
-                logger.info("Found natives/ directory alongside binary: {}", nativesDir);
-            }
+        boolean resolved = NativeLibraryResolver.bootstrap();
+        if (resolved) {
+            logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
+                    System.getProperty("org.bytedeco.javacpp.cachedir"),
+                    System.getProperty("org.nd4j.presets.sharedRuntimePath"),
+                    System.getProperty("org.bytedeco.javacpp.pathsFirst"));
         } else {
-            logger.debug("Running in JVM mode - using default JavaCPP configuration");
+            logger.warn("No side-loaded native library directory could be resolved for this native image");
         }
     }
 

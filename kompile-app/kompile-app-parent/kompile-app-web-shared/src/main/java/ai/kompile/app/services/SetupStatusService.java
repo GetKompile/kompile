@@ -216,8 +216,8 @@ public class SetupStatusService {
             }
         }
 
-        // No explicit staging-service config, but if the staging server is running the generated
-        // app loads models straight from it (kompile.staging.url), so the model source IS available.
+        // No named legacy staging-service record, but a locally managed staging process is still
+        // a valid model source through service-endpoints.json.
         if (stagingServerLifecycleService != null) {
             try {
                 StagingServerLifecycleService.StagingServerStatus ss = stagingServerLifecycleService.getStatus();

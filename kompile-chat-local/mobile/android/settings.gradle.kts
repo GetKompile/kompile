@@ -9,6 +9,9 @@ pluginManagement {
         }
         mavenCentral()
         gradlePluginPortal()
+        System.getenv("KOMPILE_MAVEN_REPO")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { repositoryPath -> maven { url = uri(repositoryPath) } }
         mavenLocal()
     }
 }
@@ -16,9 +19,12 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        System.getenv("KOMPILE_MAVEN_REPO")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { repositoryPath -> maven { url = uri(repositoryPath) } }
+        mavenLocal()
         google()
         mavenCentral()
-        mavenLocal()
     }
 }
 

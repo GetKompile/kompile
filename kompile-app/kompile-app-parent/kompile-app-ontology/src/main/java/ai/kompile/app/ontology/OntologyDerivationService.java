@@ -32,7 +32,11 @@ import ai.kompile.process.ontology.FieldDefinition;
 import ai.kompile.process.ontology.FieldType;
 import ai.kompile.process.ontology.OntologySchema;
 import ai.kompile.process.ontology.RelationshipTypeDefinition;
+import ai.kompile.process.ontology.RuleSeverity;
+import ai.kompile.process.ontology.RuleType;
+import ai.kompile.process.ontology.ValidationRule;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +50,13 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -80,84 +90,207 @@ public class OntologyDerivationService {
     private static final int DEFAULT_MAX_CONCEPTS = 60;
     private static final int MAX_ENTITY_LABELS_IN_PROMPT = 50;
     private static final int MAX_EXAMPLE_LINKS_IN_PROMPT = 12;
+    private static final int MAX_RELATIONSHIP_CORRECTION_PASSES = 3;
+    private static final int MAX_CLASSIFICATION_CORRECTION_PASSES = 1;
+    private static final int MAX_RULE_ACTION_CORRECTION_PASSES = 2;
 
     /**
      * Strict output contract handed to the model. Mirrors {@link OntologySchema} and the allowed enum
      * values so the response parses cleanly into the process-engine model.
      */
     private static final String SYSTEM_PROMPT = """
-            You are an expert knowledge- and process-ontology engineer. You convert a knowledge graph
-            that was extracted from crawled documents into a strict, well-typed ontology schema.
+            You are an expert knowledge- and process-ontology engineer. Convert only the supplied
+            knowledge-graph evidence into a strict, well-typed ontology schema.
 
-            Return ONLY a single JSON object — no markdown fences, no commentary — with this shape:
-            {
-              "name": "string",
-              "entityTypes": [
-                {
-                  "name": "PascalCaseTypeName",
-                  "description": "string",
-                  "aliases": ["original crawl labels, abbreviations, translated labels, spelling variants"],
-                  "localizedLabels": {"BCP-47 language tag": "native label"},
-                  "classification": "one of REFERENCE | TRANSACTIONAL | PATTERN | CONTROL | METRIC | ACTOR",
-                  "parentType": "PascalCase name of the broader type this one is-a (subClassOf), or null",
-                  "confidence": 0.0,
-                  "fields": [
-                    {
-                      "name": "camelCaseField",
-                      "type": "one of STRING | INTEGER | DECIMAL | BOOLEAN | DATE | DATETIME | ENUM | ENUM_ARRAY | MAP",
-                      "required": true,
-                      "primaryKey": false,
-                      "description": "string",
-                      "enumValues": ["only", "for", "ENUM", "types"]
-                    }
-                  ],
-                  "rules": [
-                    {
-                      "name": "string",
-                      "ruleType": "one of ASSERTION | BUDGET_LIMIT | ESCALATION_TRIGGER | INVARIANT | THRESHOLD | SUM_CHECK | RANGE_CHECK | CUSTOM",
-                      "expression": "a SpEL/CEL-style boolean expression",
-                      "severity": "one of INFO | WARNING | ERROR | CRITICAL",
-                      "description": "string"
-                    }
-                  ]
-                }
-              ],
-              "relationshipTypes": [
-                {
-                  "type": "VERB_PHRASE_IN_CAPS",
-                  "sourceEntityType": "PascalCaseTypeName",
-                  "targetEntityType": "PascalCaseTypeName",
-                  "cardinality": "one of ONE_TO_ONE | ONE_TO_MANY | MANY_TO_ONE | MANY_TO_MANY",
-                  "transitive": false,
-                  "description": "string"
-                }
-              ],
-              "globalRules": [
-                {
-                  "name": "string",
-                  "ruleType": "see ruleType values above",
-                  "expression": "string",
-                  "severity": "see severity values above",
-                  "description": "string"
-                }
-              ]
-            }
+            Return exactly one raw JSON object with these top-level keys in order: "name",
+            "entityTypes", "relationshipTypes", and "globalRules". The final three values are arrays.
+            Do not return markdown, commentary, ellipses, or a second root object.
 
-            Hard requirements:
-            - Ground every entity type in the supplied concepts/labels; do not invent unrelated domains.
-            - Use concise PascalCase entity names and camelCase field names where the source text is
-              Latin-script. Preserve non-Latin type names when no faithful Latin-script canonical name
-              is present.
-            - Preserve source-language labels as aliases/localizedLabels; do not translate away evidence.
-            - Give every entity type exactly one field with "primaryKey": true.
-            - Use only the enum values listed above, spelled exactly (UPPERCASE).
-            - Emit "relationshipTypes" and rules only when the user asks for them.
-            - Set "parentType" when an entity type is a more specific kind of another listed type
-              (is-a / subClassOf), e.g. RegionalForecast parentType Forecast; otherwise null.
-            - Set "transitive": true for containment / part-of / hierarchy relationships where
-              A→B and B→C imply A→C (has-a), e.g. CONTAINS, PART_OF, REPORTS_TO; otherwise false.
-            - The output MUST be valid JSON parseable by Jackson.
+            ENTITY TYPE OBJECT CONTRACT:
+            - Required: "name" (source-grounded type name), "description" (source-grounded string),
+              "classification" (exactly REFERENCE, TRANSACTIONAL, PATTERN, CONTROL, METRIC, or ACTOR),
+              "confidence" (number from 0.45 through 1.0), and "fields" (array).
+            - Optional: "aliases" (source labels), "localizedLabels" (language-tag to source label),
+              "parentType" (another emitted entity type name or null), and "rules" (array).
+            - Each domain field requires "name", "type", "required", and "description".
+              Field type must be exactly STRING, INTEGER, DECIMAL, BOOLEAN, DATE, DATETIME, ENUM,
+              ENUM_ARRAY, or MAP. "enumValues" is allowed only for ENUM and ENUM_ARRAY.
+            - The engine owns the identifier field and primary-key choice; do not emit them.
+
+            RELATIONSHIP TYPE OBJECT CONTRACT:
+            - Required: "type", "sourceEntityType", "targetEntityType", "cardinality", "transitive",
+              and "description".
+            - "type" must be a concise source-grounded UPPERCASE_WITH_UNDERSCORES verb phrase.
+            - Endpoints must be names present in "entityTypes".
+            - Cardinality must be exactly ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, or MANY_TO_MANY.
+
+            RULE OBJECT CONTRACT:
+            - Required: "name", "ruleType", "expression", "severity", and "description".
+            - ruleType must be exactly ASSERTION, BUDGET_LIMIT, ESCALATION_TRIGGER, INVARIANT,
+              THRESHOLD, SUM_CHECK, RANGE_CHECK, or CUSTOM.
+            - severity must be exactly INFO, WARNING, ERROR, or CRITICAL.
+
+            GROUNDING REQUIREMENTS:
+            - Ground every emitted name, type, field, relationship, and rule in the supplied concepts,
+              labels, graph statistics, example links, or explicit user guidance.
+            - Never emit metasyntactic placeholders or copy a descriptive phrase from this contract as data.
+            - Use concise PascalCase entity names and camelCase field names for Latin-script evidence;
+              preserve non-Latin names when no faithful Latin-script canonical name is supplied.
+            - Preserve source-language labels as aliases/localizedLabels.
+            - Emit relationshipTypes and rules only when supported by evidence or requested guidance.
+            - Use transitive=true only when the supplied evidence supports a transitive hierarchy.
+            - The output must be valid JSON parseable by Jackson.
             """;
+
+    private static final String ENTITY_TYPE_SYSTEM_PROMPT = """
+            TASK: Identify only the entity types supported by the supplied graph evidence.
+            Return one raw JSON object with top-level key "entityTypes" (array).
+            Each object requires "name", "description", and "confidence";
+            optional keys are "aliases" and "localizedLabels".
+            Classification and hierarchy are separate engine-controlled tasks; do not emit them here.
+            confidence is from 0.45 through 1.0.
+            Do not emit fields, relationships, rules, schema metadata, placeholders, or examples.
+            If no type is supported, return exactly {"entityTypes":[]}.
+            Output JSON only.
+            """;
+
+    private static final String ENTITY_CLASSIFICATION_SYSTEM_PROMPT = """
+            TASK: Classify exactly one engine-fixed entity type.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null}.
+            Replace null with exactly one ordinal from this classification ballot:
+            1 = REFERENCE: stable lookup/master data.
+            2 = TRANSACTIONAL: a business record or object that is created, submitted, reviewed, or approved.
+            3 = PATTERN: a reusable recurring template or behavioral pattern.
+            4 = CONTROL: a policy, constraint, checkpoint, or control definition.
+            5 = METRIC: a quantitative measure or calculated indicator.
+            6 = ACTOR: a person, role, team, or organization that performs actions.
+            Classify what the fixed type itself represents, not a person or role related to it.
+            Do not rename or repeat the type and do not emit fields, relationships, or rules.
+            Output JSON only.
+            """;
+
+    private static final String ENTITY_CLASSIFICATION_CORRECTION_SYSTEM_PROMPT = """
+            TASK: Correct one rejected entity classification response.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null}.
+            Use the required ordinal supplied by production validation. Do not rename or repeat the
+            entity type and do not emit fields, relationships, rules, markdown, or prose.
+            Output JSON only.
+            """;
+
+    private static final String FIELD_SYSTEM_PROMPT = """
+            TASK: Select domain fields for exactly one engine-fixed entity type.
+            Return one raw JSON object with top-level key "fields" (array).
+            Each field requires "name", "type", "required", and "description".
+            type is exactly STRING, INTEGER, DECIMAL, BOOLEAN, DATE, DATETIME, ENUM, ENUM_ARRAY, or MAP.
+            Optional constraints are maxLength, immutable, regex, fkReference, enumValues, min, max,
+            and defaultValue. The engine adds the identifier and primary key after this task.
+            Never return id, primaryKey, the entity type name, another entity type name, relationships,
+            rules, placeholders, or examples as fields.
+            If no domain field is supported, return exactly {"fields":[]}.
+            Output JSON only.
+            """;
+
+    private static final String RELATIONSHIP_SYSTEM_PROMPT = """
+            TASK: Identify only supported relationships between the engine-fixed entity types.
+            Return one raw JSON object with top-level key "relationshipTypes" (array).
+            Each object requires "type", "sourceOrdinal", "targetOrdinal", "cardinality",
+            "transitive", and "description". type is a concise source-grounded uppercase verb phrase.
+            sourceOrdinal and targetOrdinal must come from the supplied ballot; do not return entity names.
+            cardinality is exactly ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, or MANY_TO_MANY.
+            Emit at most one direction for a relationship type and endpoint pair; never emit its inverse duplicate.
+            Do not emit entity types, fields, rules, placeholders, or examples.
+            If no relationship is supported, return exactly {"relationshipTypes":[]}.
+            Output JSON only.
+            """;
+
+    private static final String RELATIONSHIP_CORRECTION_SYSTEM_PROMPT = """
+            TASK: Correct one rejected relationship extraction response.
+            Return the full corrected raw JSON object with top-level key "relationshipTypes" (array).
+            The array may contain zero, one, or many relationships. There is no one-relationship limit.
+            Preserve every distinct relationship that is supported by the bounded source evidence; do not
+            reduce the answer to one relationship merely because validation rejected another entry.
+            Every relationship requires "type", "sourceOrdinal", "targetOrdinal", "cardinality",
+            "transitive", and "description". Endpoint ordinals must come from the supplied ballot.
+            cardinality is exactly ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, or MANY_TO_MANY.
+            Fix every supplied validation error. Never emit duplicate or inverse-duplicate entries.
+            Output exactly one JSON object and no prose.
+            """;
+
+    private static final String RULE_SYSTEM_PROMPT = """
+            TASK: Identify only executable validation-rule cores explicitly supported by the supplied
+            evidence and engine-fixed ontology. Return one raw JSON object with top-level key
+            "globalRules" (array). Each rule requires only "name", "expression", and "description".
+            "expression" must be one complete condition from the engine-grounded expression ballot and
+            must include its comparison/operator/constraint phrase. A bare entity name, field reference,
+            relationship type, or source label is not an executable rule.
+            Do not classify ruleType, severity, or violation action in this task. Do not emit an id,
+            types, fields, relationships, placeholders, or examples.
+            If no executable rule is supported, return exactly {"globalRules":[]}.
+            Output JSON only.
+            """;
+
+    private static final String RULE_TYPE_SYSTEM_PROMPT = """
+            TASK: Classify exactly one engine-fixed validation rule.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null}.
+            Replace null with exactly one ordinal chosen by meaning:
+            1 = ASSERTION: a general business or record condition that must hold, including required-field checks.
+            2 = BUDGET_LIMIT: a spending or value budget constraint.
+            3 = ESCALATION_TRIGGER: a condition whose purpose is to trigger escalation.
+            4 = INVARIANT: a structural ontology condition that must remain true across state changes;
+              do not use it for an ordinary record-field validation.
+            5 = THRESHOLD: a one-sided threshold alert.
+            6 = SUM_CHECK: values must sum to a target.
+            7 = RANGE_CHECK: a value must remain between lower and upper bounds.
+            8 = CUSTOM: a domain-specific composite not covered above.
+            Do not change or repeat the rule core.
+            Output JSON only.
+            """;
+
+    private static final String RULE_ACTION_SYSTEM_PROMPT = """
+            TASK: Select the violation action for exactly one engine-fixed validation rule.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null,"escalateTo":null}.
+            Replace selectedOrdinal with exactly one ordinal chosen by meaning:
+            1 = no violation action is specified by the evidence.
+            2 = halt.
+            3 = log.
+            4 = escalate.
+            5 = auto_correct.
+            escalateTo must be a source-grounded role/person for ordinal 4 and must be null for every
+            other ordinal. Do not change or repeat the rule core.
+            Output JSON only.
+            """;
+
+    private static final String RULE_ACTION_CORRECTION_SYSTEM_PROMPT = """
+            TASK: Correct one rejected validation-rule action response.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null,"escalateTo":null}.
+            Copy the production-required selectedOrdinal supplied in the correction task; do not classify
+            the action again. Copy the required escalateTo value exactly. Do not repeat the rule, evidence,
+            rejected response, validation errors, markdown, or prose. Output JSON only.
+            """;
+
+    private static final String RULE_SEVERITY_SYSTEM_PROMPT = """
+            TASK: Classify severity for exactly one engine-fixed rule and violation action.
+            Return exactly one raw JSON object shaped as {"selectedOrdinal":null}.
+            Replace null with exactly one ordinal from this severity ballot:
+            1 = INFO: informational and non-blocking; normally paired with log.
+            2 = WARNING: recoverable degradation that does not reject the result.
+            3 = ERROR: invalid result that must be rejected or halted.
+            4 = CRITICAL: severe systemic, safety, or catastrophic business failure.
+            When the fixed action is halt and the evidence is not catastrophic, select 3 (ERROR).
+            Do not change or repeat the fixed rule or action. Output JSON only.
+            """;
+
+    static String systemPromptContract() {
+        return SYSTEM_PROMPT;
+    }
+
+    static List<String> splitPromptContracts() {
+        return List.of(ENTITY_TYPE_SYSTEM_PROMPT, ENTITY_CLASSIFICATION_SYSTEM_PROMPT,
+                ENTITY_CLASSIFICATION_CORRECTION_SYSTEM_PROMPT, FIELD_SYSTEM_PROMPT,
+                RELATIONSHIP_SYSTEM_PROMPT, RELATIONSHIP_CORRECTION_SYSTEM_PROMPT, RULE_SYSTEM_PROMPT,
+                RULE_TYPE_SYSTEM_PROMPT, RULE_ACTION_SYSTEM_PROMPT, RULE_ACTION_CORRECTION_SYSTEM_PROMPT,
+                RULE_SEVERITY_SYSTEM_PROMPT);
+    }
 
     private final FactSheetGraphService graphService;
     private final FactSheetService factSheetService;
@@ -292,7 +425,8 @@ public class OntologyDerivationService {
             String userPrompt = buildUserPrompt(sheet, ctx, guidance, seeds, focus, maxEntityTypes,
                     includeRelationships, includeRules);
             try {
-                schema = deriveWithModel(req, userPrompt, progress);
+                schema = deriveWithModel(req, userPrompt, progress, maxEntityTypes,
+                        includeRelationships, includeRules);
                 method = useRegistry(req) ? ("llm:" + req.modelProvider()) : "llm";
             } catch (Exception e) {
                 log.warn("Model ontology derivation failed for factSheet {} — falling back to structural: {}",
@@ -347,8 +481,10 @@ public class OntologyDerivationService {
 
     /** Generate and parse schema JSON via the chosen provider/model (registry) or the default LLM. */
     private OntologySchema deriveWithModel(DeriveOntologyRequest req, String userPrompt,
-                                           DerivationProgress progress) throws Exception {
-        String content;
+                                           DerivationProgress progress, int maxEntityTypes,
+                                           boolean includeRelationships,
+                                           boolean includeRules) throws Exception {
+        ExtractionLlmService routedService = null;
         String usedProvider;
         String usedModel;
         if (useRegistry(req)) {
@@ -361,25 +497,1151 @@ public class OntologyDerivationService {
             }
             usedProvider = svc.getId();
             usedModel = svc.getEffectiveModel();
-            progress.log("Generating with provider '" + usedProvider + "', model '" + usedModel + "'…");
-            content = svc.complete(SYSTEM_PROMPT + "\n\n" + userPrompt);
+            routedService = svc;
         } else {
             usedProvider = "default";
             usedModel = (req.modelName() == null || req.modelName().isBlank()) ? "(default)" : req.modelName();
-            progress.log("Generating with the default LLM…");
-            content = llmChat.prompt().system(SYSTEM_PROMPT).user(userPrompt).call().content();
         }
 
+        progress.log("Generating ontology entity types with provider '" + usedProvider
+                + "', model '" + usedModel + "'…");
+        String entityContent = completeStage(routedService, usedProvider, usedModel,
+                ENTITY_TYPE_SYSTEM_PROMPT, userPrompt, progress);
+        JsonNode entityRoot = mapper.readTree(extractJsonObject(entityContent));
+        if (isLegacyCompleteSchema(entityRoot)) {
+            OntologySchema parsed = mapper.treeToValue(entityRoot, OntologySchema.class);
+            if (parsed == null || parsed.getEntityTypes() == null || parsed.getEntityTypes().isEmpty()) {
+                throw new IllegalStateException("Model response contained no entity types");
+            }
+            return parsed;
+        }
+
+        List<EntityTypeDefinition> entityTypes = parseEntityTypes(entityRoot, maxEntityTypes);
+        if (entityTypes.isEmpty()) {
+            throw new IllegalStateException("Model response contained no entity types");
+        }
+        String evidence = boundedEvidence(userPrompt);
+        for (int i = 0; i < entityTypes.size(); i++) {
+            EntityTypeDefinition entityType = entityTypes.get(i);
+            progress.log("Classifying entity type " + (i + 1) + "/" + entityTypes.size()
+                    + ": " + entityType.getName());
+            EntityClassification classification = null;
+            String classificationContent = null;
+            try {
+                classificationContent = completeStage(routedService, usedProvider, usedModel,
+                        ENTITY_CLASSIFICATION_SYSTEM_PROMPT,
+                        entityClassificationPrompt(entityType, evidence), progress);
+                classification = parseEntityClassification(classificationContent);
+            } catch (Exception failure) {
+                reportStageFailure(progress, "classification for " + entityType.getName(), failure);
+            }
+            Optional<EntityClassification> groundedHint = strongClassificationHint(entityType.getName());
+            if (groundedHint.isPresent() && classification != groundedHint.get()) {
+                for (int attempt = 1; attempt <= MAX_CLASSIFICATION_CORRECTION_PASSES
+                        && classification != groundedHint.get(); attempt++) {
+                    try {
+                        progress.log("Entity classification rejected by production validation; requesting "
+                                + "bounded correction " + attempt + "/"
+                                + MAX_CLASSIFICATION_CORRECTION_PASSES + ".");
+                        String correctionContent = completeStage(routedService, usedProvider, usedModel,
+                                ENTITY_CLASSIFICATION_CORRECTION_SYSTEM_PROMPT,
+                                entityClassificationCorrectionPrompt(entityType, evidence,
+                                        classificationContent, groundedHint.get()), progress);
+                        classification = parseEntityClassification(correctionContent);
+                    } catch (Exception failure) {
+                        reportStageFailure(progress,
+                                "classification correction for " + entityType.getName(), failure);
+                    }
+                }
+            }
+            EntityClassification finalizedClassification = groundedHint.isPresent()
+                    ? groundedHint.get() : (classification == null
+                    ? guessClassification(entityType.getName()) : classification);
+            entityType.setClassification(finalizedClassification);
+        }
+        Set<String> reservedEntityFieldNames = entityTypes.stream()
+                .map(EntityTypeDefinition::getName)
+                .map(OntologyDerivationService::fieldNameKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (int i = 0; i < entityTypes.size(); i++) {
+            EntityTypeDefinition entityType = entityTypes.get(i);
+            List<String> fieldHints = fieldHintsFor(entityType, evidence);
+            if (fieldHints.isEmpty()) {
+                progress.log("No grounded domain-field ballot for " + entityType.getName()
+                        + "; adding only the engine-owned identifier.");
+                entityType.setFields(List.of(identifierField()));
+                continue;
+            }
+            progress.log("Generating fields for entity type " + (i + 1) + "/"
+                    + entityTypes.size() + ": " + entityType.getName());
+            try {
+                String fieldContent = completeStage(routedService, usedProvider, usedModel,
+                        FIELD_SYSTEM_PROMPT, fieldPrompt(entityType, evidence, fieldHints), progress);
+                entityType.setFields(parseFields(fieldContent, fieldHints, reservedEntityFieldNames));
+            } catch (Exception failure) {
+                reportStageFailure(progress, "fields for " + entityType.getName(), failure);
+                entityType.setFields(List.of(identifierField()));
+            }
+        }
+
+        List<RelationshipTypeDefinition> relationships = null;
+        if (includeRelationships && entityTypes.size() >= 2) {
+            progress.log("Generating relationships over " + entityTypes.size()
+                    + " engine-fixed entity types…");
+            String boundedRelationshipPrompt = relationshipPrompt(entityTypes, evidence);
+            try {
+                String relationContent = completeStage(routedService, usedProvider, usedModel,
+                        RELATIONSHIP_SYSTEM_PROMPT, boundedRelationshipPrompt, progress);
+                RelationshipValidation validation = validateRelationships(relationContent, entityTypes);
+                RelationshipValidation bestSalvage = validation;
+                for (int attempt = 1; !validation.valid()
+                        && attempt <= MAX_RELATIONSHIP_CORRECTION_PASSES; attempt++) {
+                    progress.log("Relationship response rejected by production validation; requesting "
+                            + "bounded correction " + attempt + "/"
+                            + MAX_RELATIONSHIP_CORRECTION_PASSES + ".");
+                    String correctionContent = completeStage(routedService, usedProvider, usedModel,
+                            RELATIONSHIP_CORRECTION_SYSTEM_PROMPT,
+                            relationshipCorrectionPrompt(boundedRelationshipPrompt, relationContent,
+                                    validation.errors()), progress);
+                    boolean unchangedPayload = sameJsonPayload(relationContent, correctionContent);
+                    validation = validateRelationships(correctionContent, entityTypes);
+                    if (validation.relationships().size() > bestSalvage.relationships().size()) {
+                        bestSalvage = validation;
+                    }
+                    relationContent = correctionContent;
+                    if (!validation.valid() && unchangedPayload) {
+                        progress.log("Relationship correction repeated the rejected JSON payload; "
+                                + "ending the feedback loop without redundant model calls.");
+                        break;
+                    }
+                }
+                if (!validation.valid()) {
+                    if (!bestSalvage.relationships().isEmpty()) {
+                        relationships = bestSalvage.relationships();
+                        progress.log("Relationship feedback did not fully converge; retaining "
+                                + relationships.size() + " distinct validator-approved relationship(s) "
+                                + "and rejecting the remaining invalid or ambiguous candidates.");
+                    } else {
+                        throw new IllegalArgumentException("relationship validation failed after correction: "
+                                + String.join("; ", validation.errors()));
+                    }
+                } else {
+                    relationships = validation.relationships();
+                }
+            } catch (Exception failure) {
+                reportStageFailure(progress, "relationships", failure);
+                relationships = List.of();
+            }
+        }
+        List<ValidationRule> globalRules = null;
+        if (includeRules) {
+            globalRules = new ArrayList<>();
+            List<String> ruleExpressionHints = ruleExpressionHints(evidence);
+            if (ruleExpressionHints.isEmpty()) {
+                progress.log("No grounded executable-rule ballot; skipping rule-model calls.");
+            } else {
+                progress.log("Discovering validation-rule cores over the engine-fixed ontology…");
+            }
+            List<RuleCore> ruleCores = List.of();
+            if (!ruleExpressionHints.isEmpty()) {
+                try {
+                    String ruleCoreContent = completeStage(routedService, usedProvider, usedModel,
+                            RULE_SYSTEM_PROMPT,
+                            rulePrompt(entityTypes, relationships, evidence, ruleExpressionHints), progress);
+                    ruleCores = parseRuleCores(ruleCoreContent, ruleExpressionHints);
+                } catch (Exception failure) {
+                    reportStageFailure(progress, "rule-core discovery", failure);
+                }
+            }
+            for (int i = 0; i < ruleCores.size(); i++) {
+                RuleCore core = ruleCores.get(i);
+                String relevantEvidence = relevantActionEvidenceForRule(core, evidence);
+                progress.log("Classifying validation rule " + (i + 1) + "/" + ruleCores.size()
+                        + ": " + core.name());
+                RuleType ruleType = null;
+                RuleAction action = null;
+                RuleSeverity severity = null;
+                try {
+                    String typeContent = completeStage(routedService, usedProvider, usedModel,
+                            RULE_TYPE_SYSTEM_PROMPT, ruleTypePrompt(core), progress);
+                    ruleType = parseRuleType(typeContent);
+                } catch (Exception failure) {
+                    reportStageFailure(progress, "rule type for " + core.name(), failure);
+                }
+                try {
+                    String actionContent = completeStage(routedService, usedProvider, usedModel,
+                            RULE_ACTION_SYSTEM_PROMPT, ruleActionPrompt(core, relevantEvidence), progress);
+                    RuleActionValidation actionValidation = validateRuleAction(actionContent, relevantEvidence);
+                    RuleAction groundedSalvage = actionValidation.action();
+                    for (int attempt = 1; !actionValidation.valid()
+                            && attempt <= MAX_RULE_ACTION_CORRECTION_PASSES; attempt++) {
+                        progress.log("Rule action rejected by production validation; requesting bounded "
+                                + "correction " + attempt + "/" + MAX_RULE_ACTION_CORRECTION_PASSES + ".");
+                        String correctionContent = completeStage(routedService, usedProvider, usedModel,
+                                RULE_ACTION_CORRECTION_SYSTEM_PROMPT,
+                                ruleActionCorrectionPrompt(core, relevantEvidence, actionContent,
+                                        actionValidation.errors()), progress);
+                        boolean unchangedPayload = sameJsonPayload(actionContent, correctionContent);
+                        actionValidation = validateRuleAction(correctionContent, relevantEvidence);
+                        if (actionValidation.action() != null) {
+                            groundedSalvage = actionValidation.action();
+                        }
+                        actionContent = correctionContent;
+                        if (!actionValidation.valid() && unchangedPayload) {
+                            progress.log("Rule-action correction repeated the rejected JSON payload; "
+                                    + "ending the feedback loop without redundant model calls.");
+                            break;
+                        }
+                    }
+                    if (!actionValidation.valid()) {
+                        if (groundedSalvage != null) {
+                            action = groundedSalvage;
+                            progress.log("Rule-action feedback did not converge; using the unambiguous "
+                                    + "source-grounded action selected by production validation.");
+                        } else {
+                            throw new IllegalArgumentException("rule-action validation failed after correction: "
+                                    + String.join("; ", actionValidation.errors()));
+                        }
+                    } else {
+                        action = actionValidation.action();
+                    }
+                } catch (Exception failure) {
+                    reportStageFailure(progress, "rule action for " + core.name(), failure);
+                }
+                if (action != null) {
+                    try {
+                        String severityContent = completeStage(routedService, usedProvider, usedModel,
+                                RULE_SEVERITY_SYSTEM_PROMPT, ruleSeverityPrompt(core, action), progress);
+                        severity = parseRuleSeverity(severityContent);
+                    } catch (Exception failure) {
+                        reportStageFailure(progress, "rule severity for " + core.name(), failure);
+                    }
+                }
+                if (ruleType == null || action == null || severity == null) {
+                    continue;
+                }
+                globalRules.add(ValidationRule.builder()
+                        .id("rule-" + (globalRules.size() + 1))
+                        .name(core.name())
+                        .description(core.description())
+                        .expression(core.expression())
+                        .ruleType(ruleType)
+                        .severity(severity)
+                        .onViolation(action.onViolation())
+                        .escalateTo(action.escalateTo())
+                        .build());
+            }
+        }
+        return OntologySchema.builder()
+                .entityTypes(entityTypes)
+                .relationshipTypes(relationships == null || relationships.isEmpty()
+                        ? null : relationships)
+                .globalRules(globalRules == null || globalRules.isEmpty() ? null : globalRules)
+                .build();
+    }
+
+    private String completeStage(ExtractionLlmService routedService, String provider, String model,
+                                 String systemPrompt, String userPrompt,
+                                 DerivationProgress progress) throws Exception {
+        String content = routedService != null
+                ? routedService.complete(systemPrompt + "\n\n" + userPrompt)
+                : llmChat.prompt().system(systemPrompt).user(userPrompt).call().content();
         if (content == null || content.isBlank()) {
             throw new IllegalStateException("The model returned an empty response");
         }
-        progress.transcript(usedProvider, usedModel, SYSTEM_PROMPT + "\n\n" + userPrompt, content);
+        progress.transcript(provider, model, systemPrompt + "\n\n" + userPrompt, content);
+        return content;
+    }
 
-        OntologySchema parsed = mapper.readValue(extractJsonObject(content), OntologySchema.class);
-        if (parsed == null || parsed.getEntityTypes() == null || parsed.getEntityTypes().isEmpty()) {
-            throw new IllegalStateException("Model response contained no entity types");
+    private void reportStageFailure(DerivationProgress progress, String stage, Exception failure) {
+        log.warn("Ontology model stage '{}' failed and was isolated: {}", stage, failure.toString());
+        progress.log("Model stage '" + stage + "' failed validation and was isolated: "
+                + conciseError(failure));
+    }
+
+    private static boolean isLegacyCompleteSchema(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return false;
         }
-        return parsed;
+        if (root.has("name") || root.has("relationshipTypes") || root.has("globalRules")) {
+            return true;
+        }
+        JsonNode types = root.get("entityTypes");
+        if (types != null && types.isArray()) {
+            for (JsonNode type : types) {
+                if (type.has("fields") || type.has("rules")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private List<EntityTypeDefinition> parseEntityTypes(JsonNode root, int maxEntityTypes)
+            throws Exception {
+        JsonNode values = root == null ? null : root.get("entityTypes");
+        if (values == null || !values.isArray()) {
+            return List.of();
+        }
+        List<EntityTypeDefinition> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (JsonNode value : values) {
+            EntityTypeDefinition candidate = mapper.treeToValue(value, EntityTypeDefinition.class);
+            if (candidate == null || candidate.getName() == null || candidate.getName().isBlank()) {
+                continue;
+            }
+            String name = toPascalCase(candidate.getName());
+            if (name.isBlank() || !seen.add(name.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            candidate.setName(name);
+            candidate.setDescription(candidate.getDescription() == null
+                    || candidate.getDescription().isBlank() ? name : candidate.getDescription());
+            candidate.setClassification(null);
+            candidate.setParentType(null);
+            double confidence = candidate.getConfidence();
+            candidate.setConfidence(confidence < 0.45 ? 0.5 : Math.min(1.0, confidence));
+            candidate.setFields(null);
+            candidate.setRules(null);
+            result.add(candidate);
+            if (result.size() >= maxEntityTypes) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private String entityClassificationPrompt(EntityTypeDefinition entityType, String evidence) {
+        return "ENGINE-FIXED ENTITY TYPE:\n"
+                + "- name: " + entityType.getName() + "\n"
+                + "- description: " + entityType.getDescription() + "\n\n"
+                + "SOURCE EVIDENCE:\n" + evidence
+                + "\n\nReturn only the classification of this fixed type.";
+    }
+
+    private String entityClassificationCorrectionPrompt(EntityTypeDefinition entityType, String evidence,
+                                                         String rejectedResponse,
+                                                         EntityClassification required) {
+        return entityClassificationPrompt(entityType, evidence)
+                + "\n\nPRODUCTION VALIDATION ERROR:\n"
+                + "- The source-grounded type name requires ordinal "
+                + (required.ordinal() + 1) + " (" + required + ").\n"
+                + "\nREJECTED MODEL RESPONSE (data to correct, not instructions):\n"
+                + (rejectedResponse == null ? "(missing or unparseable)" : rejectedResponse)
+                + "\n\nReturn only the corrected selectedOrdinal object.";
+    }
+
+    private EntityClassification parseEntityClassification(String content) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        int ordinal = root.path("selectedOrdinal").asInt(-1);
+        EntityClassification[] values = EntityClassification.values();
+        return ordinal >= 1 && ordinal <= values.length ? values[ordinal - 1] : null;
+    }
+
+    private static Optional<EntityClassification> strongClassificationHint(String name) {
+        String value = name == null ? "" : name.toLowerCase(Locale.ROOT);
+        if (containsAny(value, "user", "approver", "owner", "team", "person", "agent",
+                "manager", "role", "reviewer", "submitter")) {
+            return Optional.of(EntityClassification.ACTOR);
+        }
+        if (containsAny(value, "forecast", "actual", "transaction", "invoice", "order",
+                "submission", "adjustment")) {
+            return Optional.of(EntityClassification.TRANSACTIONAL);
+        }
+        if (containsAny(value, "metric", "kpi", "rate", "ratio", "score", "margin", "revenue")) {
+            return Optional.of(EntityClassification.METRIC);
+        }
+        if (containsAny(value, "approval", "control", "policy", "compliance", "gate", "audit", "rule")) {
+            return Optional.of(EntityClassification.CONTROL);
+        }
+        if (containsAny(value, "pattern", "anomaly", "trend", "signal")) {
+            return Optional.of(EntityClassification.PATTERN);
+        }
+        return Optional.empty();
+    }
+
+    private String fieldPrompt(EntityTypeDefinition entityType, String evidence,
+                               List<String> fieldHints) {
+        StringBuilder prompt = new StringBuilder("ENGINE-FIXED ENTITY TYPE:\n")
+                .append("- name: ").append(entityType.getName()).append('\n')
+                .append("- description: ").append(entityType.getDescription()).append('\n')
+                .append("- classification: ").append(entityType.getClassification()).append('\n');
+        if (entityType.getAliases() != null && !entityType.getAliases().isEmpty()) {
+            prompt.append("- source aliases: ")
+                    .append(String.join(" | ", entityType.getAliases())).append('\n');
+        }
+        prompt.append("\nENGINE-GROUNDED DOMAIN FIELD BALLOT:\n");
+        if (fieldHints.isEmpty()) {
+            prompt.append("- none extracted; emit a field only when the source evidence directly supports it\n");
+        } else {
+            for (String hint : fieldHints) {
+                prompt.append("- ").append(hint).append('\n');
+            }
+            prompt.append("Choose only names from this ballot.\n");
+        }
+        prompt.append("\nSOURCE EVIDENCE:\n").append(evidence)
+                .append("\n\nReturn domain fields only; the engine adds id and owns primaryKey.");
+        return prompt.toString();
+    }
+
+    private List<String> fieldHintsFor(EntityTypeDefinition entityType, String evidence) {
+        if (entityType == null || entityType.getName() == null || evidence == null || evidence.isBlank()) {
+            return List.of();
+        }
+        LinkedHashMap<String, String> hints = new LinkedHashMap<>();
+        Matcher qualified = Pattern.compile(
+                        "(?iu)\\b" + Pattern.quote(entityType.getName())
+                                + "\\.([\\p{L}][\\p{L}\\p{N}_-]*)\\b")
+                .matcher(evidence);
+        while (qualified.find()) {
+            addFieldHint(hints, qualified.group(1));
+        }
+        Matcher listed = Pattern.compile(
+                        "(?iu)\\b" + Pattern.quote(entityType.getName())
+                                + "\\s+(?:has|contains|includes|with)\\s+([^.;\\n]+?)\\s+fields?\\b")
+                .matcher(evidence);
+        while (listed.find()) {
+            for (String candidate : listed.group(1).split("(?iu)\\s*(?:,|\\band\\b|\\bor\\b)\\s*")) {
+                addFieldHint(hints, candidate);
+            }
+        }
+        return List.copyOf(hints.values());
+    }
+
+    private static void addFieldHint(Map<String, String> hints, String raw) {
+        if (raw == null) {
+            return;
+        }
+        String cleaned = raw.strip()
+                .replaceFirst("(?iu)^(?:the|a|an)\\s+", "")
+                .replaceFirst("(?iu)\\s+field$", "");
+        if (cleaned.isBlank() || !cleaned.matches("[\\p{L}][\\p{L}\\p{N}_ -]{0,60}")) {
+            return;
+        }
+        String pascal = toPascalCase(cleaned);
+        if (pascal.isBlank()) {
+            return;
+        }
+        int first = pascal.codePointAt(0);
+        String canonical = new StringBuilder()
+                .appendCodePoint(Character.toLowerCase(first))
+                .append(pascal.substring(Character.charCount(first)))
+                .toString();
+        hints.putIfAbsent(fieldNameKey(canonical), canonical);
+    }
+
+    private static String fieldNameKey(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]", "");
+    }
+
+    private List<FieldDefinition> parseFields(String content, List<String> fieldHints,
+                                              Set<String> reservedEntityFieldNames) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        JsonNode values = root.get("fields");
+        List<FieldDefinition> fields = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        Map<String, String> hintByKey = fieldHints.stream()
+                .collect(Collectors.toMap(OntologyDerivationService::fieldNameKey, value -> value,
+                        (left, right) -> left, LinkedHashMap::new));
+        if (values != null && values.isArray()) {
+            for (JsonNode value : values) {
+                FieldDefinition field = mapper.treeToValue(value, FieldDefinition.class);
+                String key = field == null ? "" : fieldNameKey(field.getName());
+                if (field == null || key.isBlank() || "id".equals(key)
+                        || reservedEntityFieldNames.contains(key) || field.getType() == null
+                        || !hintByKey.containsKey(key) || !seen.add(key)) {
+                    continue;
+                }
+                if (hintByKey.containsKey(key)) {
+                    field.setName(hintByKey.get(key));
+                }
+                field.setPrimaryKey(false);
+                if (field.getDescription() == null || field.getDescription().isBlank()) {
+                    field.setDescription(field.getName());
+                }
+                if (field.getType() != FieldType.ENUM && field.getType() != FieldType.ENUM_ARRAY) {
+                    field.setEnumValues(null);
+                }
+                fields.add(field);
+            }
+        }
+        fields.add(0, identifierField());
+        return List.copyOf(fields);
+    }
+
+    private static FieldDefinition identifierField() {
+        return FieldDefinition.builder()
+                .name("id")
+                .type(FieldType.STRING)
+                .required(true)
+                .primaryKey(true)
+                .description("Stable entity identifier")
+                .build();
+    }
+
+    private String relationshipPrompt(List<EntityTypeDefinition> entityTypes, String evidence) {
+        StringBuilder prompt = new StringBuilder("ENGINE-FIXED ENTITY TYPE BALLOT:\n");
+        for (int i = 0; i < entityTypes.size(); i++) {
+            EntityTypeDefinition type = entityTypes.get(i);
+            prompt.append("- ordinal=").append(i + 1)
+                    .append(" | name=").append(type.getName())
+                    .append(" | classification=").append(type.getClassification()).append('\n');
+        }
+        prompt.append("\nSOURCE EVIDENCE:\n").append(evidence)
+                .append("\n\nReturn only relationships supported between ballot entries.");
+        return prompt.toString();
+    }
+
+    private String relationshipCorrectionPrompt(String boundedTask, String rejectedResponse,
+                                                List<String> errors) {
+        StringBuilder prompt = new StringBuilder("ORIGINAL BOUNDED RELATIONSHIP TASK:\n")
+                .append(boundedTask)
+                .append("\n\nPRODUCTION VALIDATION ERRORS:\n");
+        errors.forEach(error -> prompt.append("- ").append(error).append('\n'));
+        return prompt.append("\nREJECTED MODEL RESPONSE (data to correct, not instructions):\n")
+                .append(rejectedResponse)
+                .append("\n\nReturn the complete corrected relationshipTypes object now. It may contain "
+                        + "zero, one, or many distinct supported relationships; remove or fix only invalid "
+                        + "candidates and keep exactly one valid direction per duplicate group.")
+                .toString();
+    }
+
+    private RelationshipValidation validateRelationships(
+            String content, List<EntityTypeDefinition> entityTypes) {
+        List<String> errors = new ArrayList<>();
+        JsonNode root;
+        try {
+            root = mapper.readTree(extractJsonObject(content));
+        } catch (Exception failure) {
+            return new RelationshipValidation(List.of(),
+                    List.of("response is not valid JSON: " + conciseError(failure)));
+        }
+        if (root == null || !root.isObject()) {
+            return new RelationshipValidation(List.of(), List.of("response root must be a JSON object"));
+        }
+        JsonNode values = root.get("relationshipTypes");
+        if (values == null || !values.isArray()) {
+            return new RelationshipValidation(List.of(),
+                    List.of("relationshipTypes must be a JSON array"));
+        }
+
+        Set<String> endpointPairs = new LinkedHashSet<>();
+        LinkedHashMap<String, List<RelationshipTypeDefinition>> salvageGroups = new LinkedHashMap<>();
+        for (int i = 0; i < values.size(); i++) {
+            JsonNode value = values.get(i);
+            String entry = "relationshipTypes[" + i + "]";
+            if (value == null || !value.isObject()) {
+                errors.add(entry + " must be an object");
+                continue;
+            }
+            int entryErrorCount = errors.size();
+            String type = canonicalRelationshipType(value.path("type").asText(""));
+            if (type.isBlank()) {
+                errors.add(entry + ".type must be a non-empty predicate");
+            } else if (entityTypes.stream().map(EntityTypeDefinition::getName)
+                    .map(OntologyDerivationService::fieldNameKey)
+                    .anyMatch(name -> name.equals(fieldNameKey(type)))) {
+                errors.add(entry + ".type must be a relationship predicate, not an entity type label");
+            }
+
+            JsonNode sourceNode = value.get("sourceOrdinal");
+            JsonNode targetNode = value.get("targetOrdinal");
+            int sourceOrdinal = sourceNode != null && sourceNode.isIntegralNumber()
+                    ? sourceNode.asInt(-1) : -1;
+            int targetOrdinal = targetNode != null && targetNode.isIntegralNumber()
+                    ? targetNode.asInt(-1) : -1;
+            boolean endpointsValid = sourceOrdinal >= 1 && sourceOrdinal <= entityTypes.size()
+                    && targetOrdinal >= 1 && targetOrdinal <= entityTypes.size()
+                    && sourceOrdinal != targetOrdinal;
+            if (!endpointsValid) {
+                errors.add(entry + " must use two different valid endpoint ordinals from the ballot");
+            }
+
+            String cardinality = value.path("cardinality").asText("");
+            Cardinality parsedCardinality = null;
+            try {
+                parsedCardinality = Cardinality.valueOf(cardinality);
+            } catch (IllegalArgumentException failure) {
+                errors.add(entry + ".cardinality must be ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, "
+                        + "or MANY_TO_MANY");
+            }
+            if (!value.path("transitive").isBoolean()) {
+                errors.add(entry + ".transitive must be true or false");
+            }
+            if (!value.path("description").isTextual()
+                    || value.path("description").asText().isBlank()) {
+                errors.add(entry + ".description must be non-empty text");
+            }
+
+            if (!type.isBlank() && endpointsValid) {
+                int low = Math.min(sourceOrdinal, targetOrdinal);
+                int high = Math.max(sourceOrdinal, targetOrdinal);
+                String pairKey = type + "|" + low + "|" + high;
+                if (type.endsWith("_BY")) {
+                    EntityClassification source = entityTypes.get(sourceOrdinal - 1).getClassification();
+                    EntityClassification target = entityTypes.get(targetOrdinal - 1).getClassification();
+                    if (source == EntityClassification.ACTOR || target != EntityClassification.ACTOR) {
+                        errors.add(entry + " has passive type " + type
+                                + "; source must be the non-ACTOR object and target must be the ACTOR");
+                    }
+                }
+                if (errors.size() == entryErrorCount) {
+                    RelationshipTypeDefinition candidate = RelationshipTypeDefinition.builder()
+                            .type(type)
+                            .sourceEntityType(entityTypes.get(sourceOrdinal - 1).getName())
+                            .targetEntityType(entityTypes.get(targetOrdinal - 1).getName())
+                            .description(value.path("description").asText().trim())
+                            .cardinality(parsedCardinality)
+                            .transitive(value.path("transitive").asBoolean())
+                            .build();
+                    salvageGroups.computeIfAbsent(pairKey, ignored -> new ArrayList<>()).add(candidate);
+                }
+                if (!endpointPairs.add(pairKey)) {
+                    errors.add(entry + " duplicates or reverses an earlier " + type
+                            + " relation over the same endpoints");
+                }
+            }
+        }
+        if (!errors.isEmpty()) {
+            return new RelationshipValidation(selectValidatorApprovedRelationships(salvageGroups, entityTypes),
+                    List.copyOf(errors));
+        }
+        try {
+            return new RelationshipValidation(parseRelationships(content, entityTypes), List.of());
+        } catch (Exception failure) {
+            return new RelationshipValidation(List.of(),
+                    List.of("validated response could not be finalized: " + conciseError(failure)));
+        }
+    }
+
+    private static String canonicalRelationshipType(String rawType) {
+        return rawType == null ? "" : rawType.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]+", "_").replaceAll("^_+|_+$", "");
+    }
+
+    private List<RelationshipTypeDefinition> selectValidatorApprovedRelationships(
+            Map<String, List<RelationshipTypeDefinition>> groups,
+            List<EntityTypeDefinition> entityTypes) {
+        List<RelationshipTypeDefinition> selected = new ArrayList<>();
+        for (List<RelationshipTypeDefinition> group : groups.values()) {
+            LinkedHashMap<String, RelationshipTypeDefinition> uniqueCandidates = new LinkedHashMap<>();
+            for (RelationshipTypeDefinition candidate : group) {
+                String signature = candidate.getSourceEntityType().toLowerCase(Locale.ROOT) + "|"
+                        + candidate.getTargetEntityType().toLowerCase(Locale.ROOT) + "|"
+                        + candidate.getCardinality() + "|" + candidate.isTransitive();
+                uniqueCandidates.putIfAbsent(signature, candidate);
+            }
+            List<RelationshipTypeDefinition> candidates = List.copyOf(uniqueCandidates.values());
+            if (candidates.size() == 1) {
+                selected.add(candidates.get(0));
+                continue;
+            }
+            if (candidates.isEmpty() || candidates.get(0).getType() == null
+                    || !candidates.get(0).getType().endsWith("_BY")) {
+                continue;
+            }
+            int bestScore = candidates.stream()
+                    .mapToInt(candidate -> relationshipDirectionScore(candidate, entityTypes)).max().orElse(-1);
+            List<RelationshipTypeDefinition> best = candidates.stream()
+                    .filter(candidate -> relationshipDirectionScore(candidate, entityTypes) == bestScore).toList();
+            if (bestScore >= 3 && best.size() == 1) {
+                selected.add(best.get(0));
+            }
+        }
+        return List.copyOf(selected);
+    }
+
+    private boolean sameJsonPayload(String left, String right) {
+        if (left == null || right == null) {
+            return Objects.equals(left, right);
+        }
+        String leftPayload = extractJsonObject(left);
+        String rightPayload = extractJsonObject(right);
+        try {
+            return Objects.equals(mapper.readTree(leftPayload), mapper.readTree(rightPayload));
+        } catch (Exception ignored) {
+            return Objects.equals(leftPayload, rightPayload);
+        }
+    }
+
+    private List<RelationshipTypeDefinition> parseRelationships(
+            String content, List<EntityTypeDefinition> entityTypes) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        JsonNode values = root.get("relationshipTypes");
+        if (values == null || !values.isArray()) {
+            return List.of();
+        }
+        LinkedHashMap<String, RelationshipTypeDefinition> result = new LinkedHashMap<>();
+        for (JsonNode value : values) {
+            int sourceOrdinal = value.path("sourceOrdinal").asInt(-1);
+            int targetOrdinal = value.path("targetOrdinal").asInt(-1);
+            String type = canonicalRelationshipType(value.path("type").asText(""));
+            if (sourceOrdinal < 1 || sourceOrdinal > entityTypes.size()
+                    || targetOrdinal < 1 || targetOrdinal > entityTypes.size()
+                    || type.isBlank()) {
+                continue;
+            }
+            Cardinality cardinality;
+            try {
+                cardinality = Cardinality.valueOf(value.path("cardinality").asText(""));
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            String source = entityTypes.get(sourceOrdinal - 1).getName();
+            String target = entityTypes.get(targetOrdinal - 1).getName();
+            String endpointA = source.compareToIgnoreCase(target) <= 0 ? source : target;
+            String endpointB = source.compareToIgnoreCase(target) <= 0 ? target : source;
+            String key = type + "|" + endpointA.toLowerCase(Locale.ROOT)
+                    + "|" + endpointB.toLowerCase(Locale.ROOT);
+            String description = value.path("description").asText("").trim();
+            RelationshipTypeDefinition candidate = RelationshipTypeDefinition.builder()
+                    .type(type)
+                    .sourceEntityType(source)
+                    .targetEntityType(target)
+                    .description(description.isBlank() ? type : description)
+                    .cardinality(cardinality)
+                    .transitive(value.path("transitive").asBoolean(false))
+                    .build();
+            RelationshipTypeDefinition existing = result.get(key);
+            if (existing == null || relationshipDirectionScore(candidate, entityTypes)
+                    > relationshipDirectionScore(existing, entityTypes)) {
+                result.put(key, candidate);
+            }
+        }
+        return List.copyOf(result.values());
+    }
+
+    private int relationshipDirectionScore(RelationshipTypeDefinition relationship,
+                                           List<EntityTypeDefinition> entityTypes) {
+        if (relationship == null || relationship.getType() == null
+                || !relationship.getType().endsWith("_BY")) {
+            return 0;
+        }
+        Map<String, EntityClassification> classificationByName = entityTypes.stream()
+                .filter(type -> type.getName() != null)
+                .collect(Collectors.toMap(EntityTypeDefinition::getName,
+                        EntityTypeDefinition::getClassification, (left, right) -> left));
+        EntityClassification source = classificationByName.get(relationship.getSourceEntityType());
+        EntityClassification target = classificationByName.get(relationship.getTargetEntityType());
+        int score = target == EntityClassification.ACTOR ? 2 : 0;
+        if (source != EntityClassification.ACTOR) {
+            score++;
+        }
+        return score;
+    }
+
+    private String rulePrompt(List<EntityTypeDefinition> entityTypes,
+                              List<RelationshipTypeDefinition> relationships,
+                              String evidence,
+                              List<String> ruleExpressionHints) {
+        StringBuilder prompt = new StringBuilder("ENGINE-FIXED ONTOLOGY:\nENTITY TYPES:\n");
+        for (EntityTypeDefinition entityType : entityTypes) {
+            prompt.append("- ").append(entityType.getName()).append(" | fields=");
+            if (entityType.getFields() == null || entityType.getFields().isEmpty()) {
+                prompt.append("none");
+            } else {
+                prompt.append(entityType.getFields().stream().map(FieldDefinition::getName)
+                        .collect(Collectors.joining(" | ")));
+            }
+            prompt.append('\n');
+        }
+        prompt.append("RELATIONSHIPS:\n");
+        if (relationships == null || relationships.isEmpty()) {
+            prompt.append("none\n");
+        } else {
+            for (RelationshipTypeDefinition relationship : relationships) {
+                prompt.append("- ").append(relationship.getSourceEntityType())
+                        .append(" -[").append(relationship.getType()).append("]-> ")
+                        .append(relationship.getTargetEntityType()).append('\n');
+            }
+        }
+        prompt.append("\nENGINE-GROUNDED EXECUTABLE EXPRESSION BALLOT:\n");
+        ruleExpressionHints.forEach(hint -> prompt.append("- ").append(hint).append('\n'));
+        prompt.append("Choose an expression exactly from this ballot.\n")
+                .append("\nSOURCE EVIDENCE:\n").append(evidence)
+                .append("\n\nReturn only executable rules explicitly supported by this evidence.");
+        return prompt.toString();
+    }
+
+    private List<RuleCore> parseRuleCores(String content, List<String> ruleExpressionHints) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        JsonNode values = root.get("globalRules");
+        if (values == null || !values.isArray()) {
+            return List.of();
+        }
+        List<RuleCore> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        Map<String, String> hintByKey = ruleExpressionHints.stream().collect(Collectors.toMap(
+                OntologyDerivationService::ruleExpressionKey, value -> value,
+                (left, right) -> left, LinkedHashMap::new));
+        for (JsonNode value : values) {
+            String name = trimmedText(value, "name");
+            String expression = trimmedText(value, "expression");
+            String description = trimmedText(value, "description");
+            String canonicalExpression = expression == null ? null
+                    : hintByKey.get(ruleExpressionKey(expression));
+            if (name == null || canonicalExpression == null
+                    || !seen.add(name.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            result.add(new RuleCore(name, canonicalExpression, description == null ? name : description));
+        }
+        return List.copyOf(result);
+    }
+
+    private List<String> ruleExpressionHints(String evidence) {
+        if (evidence == null || evidence.isBlank()) {
+            return List.of();
+        }
+        LinkedHashMap<String, String> hints = new LinkedHashMap<>();
+        for (String raw : evidence.split("(?<=[.!?;])\\s+|\\R+")) {
+            String candidate = raw.strip().replaceFirst("^[*-]\\s*", "")
+                    .replaceFirst("[.;]+$", "").strip();
+            String lower = candidate.toLowerCase(Locale.ROOT);
+            boolean constraintWord = Pattern.compile(
+                    "\\b(must|shall|required|requires|cannot|may not)\\b",
+                    Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE).matcher(candidate).find();
+            boolean comparison = candidate.matches(".*(?:<=|>=|==|!=|(?<!-)[<>]).*");
+            if (!candidate.isBlank() && candidate.length() <= 500 && (constraintWord || comparison)) {
+                hints.putIfAbsent(ruleExpressionKey(candidate), candidate);
+                if (hints.size() >= 20) {
+                    break;
+                }
+            }
+        }
+        return List.copyOf(hints.values());
+    }
+
+    private static String ruleExpressionKey(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}_.<>!=]+", " ").strip();
+    }
+
+    private String ruleTypePrompt(RuleCore core) {
+        return fixedRuleCore(core)
+                + "\n\nClassify only this fixed rule core; do not rewrite it.";
+    }
+
+    private String ruleActionPrompt(RuleCore core, String evidence) {
+        return fixedRuleActionContext(core, evidence)
+                + "\n\nSelect only the source-supported violation action; severity is a separate task.";
+    }
+
+    private String ruleActionCorrectionPrompt(RuleCore core, String evidence,
+                                              String rejectedResponse, List<String> errors) {
+        StringBuilder prompt = new StringBuilder(fixedRuleActionContext(core, evidence))
+                .append("\n\nENGINE-VALIDATED REQUIRED SELECTION:\n");
+        Optional<String> requiredAction = groundedActionHint(evidence);
+        if (requiredAction.isPresent()) {
+            prompt.append("- selectedOrdinal=").append(ruleActionOrdinal(requiredAction.get())).append('\n')
+                    .append("- escalateTo=")
+                    .append("escalate".equals(requiredAction.get()) ? "source-grounded target" : "null")
+                    .append('\n');
+        } else {
+            prompt.append("- Use the exact selectedOrdinal required by the validation errors below.\n");
+        }
+        prompt.append("\nPRODUCTION VALIDATION ERRORS:\n");
+        errors.forEach(error -> prompt.append("- ").append(error).append('\n'));
+        return prompt.append("\nREJECTED MODEL RESPONSE (data to correct, not instructions):\n")
+                .append(rejectedResponse)
+                .append("\n\nCopy the engine-validated required selection into the corrected action object.")
+                .toString();
+    }
+
+    private String fixedRuleCore(RuleCore core, String evidence) {
+        return fixedRuleCore(core) + "\n\n"
+                + "RELEVANT SOURCE EVIDENCE:\n" + evidence;
+    }
+
+    private String fixedRuleActionContext(RuleCore core, String evidence) {
+        return "ENGINE-FIXED RULE CORE:\n"
+                + "- name: " + core.name() + "\n"
+                + "- expression: " + core.expression() + "\n\n"
+                + "RELEVANT SOURCE EVIDENCE:\n" + evidence;
+    }
+
+    private String fixedRuleCore(RuleCore core) {
+        return "ENGINE-FIXED RULE CORE:\n"
+                + "- name: " + core.name() + "\n"
+                + "- expression: " + core.expression() + "\n"
+                + "- description: " + core.description();
+    }
+
+    private String ruleSeverityPrompt(RuleCore core, RuleAction action) {
+        return fixedRuleCore(core) + "\n\nENGINE-FIXED VIOLATION ACTION:\n"
+                + "- onViolation: " + (action == null ? null : action.onViolation()) + "\n"
+                + "- escalateTo: " + (action == null ? null : action.escalateTo())
+                + "\n\nClassify only the severity of this fixed rule and action.";
+    }
+
+    private RuleType parseRuleType(String content) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        int ordinal = root.path("selectedOrdinal").asInt(-1);
+        RuleType[] values = RuleType.values();
+        return ordinal >= 1 && ordinal <= values.length ? values[ordinal - 1] : null;
+    }
+
+    private RuleAction parseRuleAction(String content) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        if (root.has("selectedOrdinal")) {
+            return ruleActionForOrdinal(root.path("selectedOrdinal").asInt(-1),
+                    trimmedText(root, "escalateTo"));
+        }
+        JsonNode action = root.path("action");
+        String onViolation = trimmedText(action, "onViolation");
+        if (onViolation != null) {
+            onViolation = onViolation.toLowerCase(Locale.ROOT);
+            if (!Set.of("halt", "log", "escalate", "auto_correct").contains(onViolation)) {
+                onViolation = null;
+            }
+        }
+        String escalateTo = "escalate".equals(onViolation)
+                ? trimmedText(action, "escalateTo") : null;
+        return new RuleAction(onViolation, escalateTo);
+    }
+
+    private static RuleAction ruleActionForOrdinal(int ordinal, String escalateTo) {
+        return switch (ordinal) {
+            case 1 -> new RuleAction(null, null);
+            case 2 -> new RuleAction("halt", null);
+            case 3 -> new RuleAction("log", null);
+            case 4 -> new RuleAction("escalate", escalateTo);
+            case 5 -> new RuleAction("auto_correct", null);
+            default -> null;
+        };
+    }
+
+    private static int ruleActionOrdinal(String onViolation) {
+        if (onViolation == null) {
+            return 1;
+        }
+        return switch (onViolation) {
+            case "halt" -> 2;
+            case "log" -> 3;
+            case "escalate" -> 4;
+            case "auto_correct" -> 5;
+            default -> -1;
+        };
+    }
+
+    private RuleActionValidation validateRuleAction(String content, String evidence) {
+        List<String> errors = new ArrayList<>();
+        JsonNode root;
+        try {
+            root = mapper.readTree(extractJsonObject(content));
+        } catch (Exception failure) {
+            return new RuleActionValidation(null,
+                    List.of("response is not valid JSON: " + conciseError(failure)));
+        }
+        String onViolation = null;
+        JsonNode escalateNode;
+        if (root != null && root.has("selectedOrdinal")) {
+            JsonNode selectedOrdinal = root.get("selectedOrdinal");
+            int ordinal = selectedOrdinal != null && selectedOrdinal.isIntegralNumber()
+                    ? selectedOrdinal.asInt(-1) : -1;
+            RuleAction selected = ruleActionForOrdinal(ordinal, null);
+            if (selected == null) {
+                errors.add("selectedOrdinal must be an integer from 1 through 5");
+            } else {
+                onViolation = selected.onViolation();
+            }
+            escalateNode = root.get("escalateTo");
+        } else {
+            JsonNode action = root == null ? null : root.get("action");
+            if (action == null || !action.isObject()) {
+                return new RuleActionValidation(null,
+                        List.of("selectedOrdinal must be 1 through 5 (legacy action object also accepted)"));
+            }
+            JsonNode onViolationNode = action.get("onViolation");
+            if (onViolationNode != null && !onViolationNode.isNull()) {
+                if (!onViolationNode.isTextual() || onViolationNode.asText().isBlank()) {
+                    errors.add("action.onViolation must be halt, log, escalate, auto_correct, or null");
+                } else {
+                    onViolation = onViolationNode.asText().trim().toLowerCase(Locale.ROOT);
+                    if (!Set.of("halt", "log", "escalate", "auto_correct").contains(onViolation)) {
+                        errors.add("action.onViolation must be halt, log, escalate, auto_correct, or null");
+                    }
+                }
+            }
+            escalateNode = action.get("escalateTo");
+        }
+
+        String escalateTo = null;
+        if (escalateNode != null && !escalateNode.isNull()) {
+            if (!escalateNode.isTextual()) {
+                errors.add("action.escalateTo must be source-grounded text or null");
+            } else if (!escalateNode.asText().isBlank()) {
+                escalateTo = escalateNode.asText().trim();
+            }
+        }
+        if ("escalate".equals(onViolation) && escalateTo == null) {
+            errors.add("action.escalateTo is required when onViolation is escalate");
+        } else if (!"escalate".equals(onViolation) && escalateTo != null) {
+            errors.add("action.escalateTo must be null unless onViolation is escalate");
+        }
+
+        Optional<String> groundedAction = groundedActionHint(evidence);
+        if (groundedAction.isPresent() && !groundedAction.get().equals(onViolation)) {
+            errors.add("source evidence explicitly requires selectedOrdinal="
+                    + ruleActionOrdinal(groundedAction.get()) + " (" + groundedAction.get() + ")");
+        }
+        if (!errors.isEmpty()) {
+            RuleAction groundedSalvage = null;
+            if (groundedAction.isPresent()) {
+                groundedSalvage = ruleActionForOrdinal(ruleActionOrdinal(groundedAction.get()), escalateTo);
+                if (groundedSalvage != null && "escalate".equals(groundedSalvage.onViolation())
+                        && groundedSalvage.escalateTo() == null) {
+                    groundedSalvage = null;
+                }
+            }
+            return new RuleActionValidation(groundedSalvage, List.copyOf(errors));
+        }
+        return new RuleActionValidation(new RuleAction(onViolation, escalateTo), List.of());
+    }
+
+    private static Optional<String> groundedActionHint(String evidence) {
+        String value = evidence == null ? "" : evidence.toLowerCase(Locale.ROOT);
+        LinkedHashSet<String> actions = new LinkedHashSet<>();
+        if (Pattern.compile("\\bhalt(?:ed|ing|s)?\\b").matcher(value).find()) {
+            actions.add("halt");
+        }
+        if (Pattern.compile("\\blog(?:ged|ging|s)?\\b").matcher(value).find()) {
+            actions.add("log");
+        }
+        if (Pattern.compile("\\bescalat(?:e|es|ed|ing|ion)\\b").matcher(value).find()) {
+            actions.add("escalate");
+        }
+        if (Pattern.compile("\\bauto[-_ ]?correct(?:ed|ing|s|ion)?\\b").matcher(value).find()) {
+            actions.add("auto_correct");
+        }
+        return actions.size() == 1 ? Optional.of(actions.iterator().next()) : Optional.empty();
+    }
+
+    private RuleSeverity parseRuleSeverity(String content) throws Exception {
+        JsonNode root = mapper.readTree(extractJsonObject(content));
+        int ordinal = root.path("selectedOrdinal").asInt(-1);
+        RuleSeverity[] values = RuleSeverity.values();
+        return ordinal >= 1 && ordinal <= values.length ? values[ordinal - 1] : null;
+    }
+
+    private static String trimmedText(JsonNode node, String field) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        JsonNode value = node.get(field);
+        if (value == null || !value.isTextual() || value.asText().isBlank()) {
+            return null;
+        }
+        return value.asText().trim();
+    }
+
+    private String relevantEvidenceForRule(RuleCore core, String evidence) {
+        if (evidence == null || evidence.isBlank()) {
+            return "(none)";
+        }
+        Set<String> ignored = Set.of("must", "rule", "true", "false", "null", "blank",
+                "field", "value", "check");
+        Set<String> anchors = Arrays.stream((core.name() + " " + core.expression())
+                        .toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}_.]+"))
+                .filter(token -> token.length() >= 4 && !ignored.contains(token))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        LinkedHashSet<String> excerpts = new LinkedHashSet<>();
+        for (String candidate : evidence.split("(?<=[.!?])\\s+|\\R+")) {
+            String sentence = candidate.strip();
+            String lower = sentence.toLowerCase(Locale.ROOT);
+            if (!sentence.isBlank() && anchors.stream().anyMatch(lower::contains)) {
+                excerpts.add(sentence.length() <= 500 ? sentence : sentence.substring(0, 500));
+                if (excerpts.size() >= 6) {
+                    break;
+                }
+            }
+        }
+        int guidance = evidence.indexOf("Additional guidance from the user:\n");
+        if (guidance >= 0) {
+            String userGuidance = evidence.substring(guidance);
+            excerpts.add(userGuidance.length() <= 1_000
+                    ? userGuidance : userGuidance.substring(0, 1_000));
+        }
+        if (excerpts.isEmpty()) {
+            excerpts.add(evidence.length() <= 1_200 ? evidence : evidence.substring(0, 1_200));
+        }
+        return String.join("\n", excerpts);
+    }
+
+    private String relevantActionEvidenceForRule(RuleCore core, String evidence) {
+        if (evidence == null || evidence.isBlank()) {
+            return "(no explicit violation action in source evidence)";
+        }
+        Set<String> ignored = Set.of("must", "rule", "true", "false", "null", "blank",
+                "field", "value", "check");
+        Set<String> anchors = Arrays.stream((core.name() + " " + core.expression())
+                        .toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}_.]+"))
+                .filter(token -> token.length() >= 4 && !ignored.contains(token))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Pattern actionSignal = Pattern.compile(
+                "\\b(?:halt(?:ed|ing|s)?|log(?:ged|ging|s)?|escalat(?:e|es|ed|ing|ion)|"
+                        + "auto[-_ ]?correct(?:ed|ing|s|ion)?)\\b",
+                Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+        LinkedHashSet<String> anchored = new LinkedHashSet<>();
+        LinkedHashSet<String> anyAction = new LinkedHashSet<>();
+        for (String candidate : evidence.split("(?<=[.!?;])\\s+|\\R+")) {
+            String sentence = candidate.strip();
+            if (sentence.isBlank() || !actionSignal.matcher(sentence).find()) {
+                continue;
+            }
+            String bounded = sentence.length() <= 500 ? sentence : sentence.substring(0, 500);
+            anyAction.add(bounded);
+            String lower = sentence.toLowerCase(Locale.ROOT);
+            if (anchors.stream().anyMatch(lower::contains)) {
+                anchored.add(bounded);
+            }
+        }
+        if (!anchored.isEmpty()) {
+            return anchored.stream().limit(4).collect(Collectors.joining("\n"));
+        }
+        if (anyAction.size() == 1) {
+            return anyAction.iterator().next();
+        }
+        return "(no unambiguous violation action for this rule in source evidence)";
+    }
+
+    private record RuleCore(String name, String expression, String description) {}
+
+    private record RuleAction(String onViolation, String escalateTo) {}
+
+    private record RuleActionValidation(RuleAction action, List<String> errors) {
+        private boolean valid() {
+            return errors == null || errors.isEmpty();
+        }
+    }
+
+    private record RelationshipValidation(List<RelationshipTypeDefinition> relationships,
+                                          List<String> errors) {
+        private boolean valid() {
+            return errors == null || errors.isEmpty();
+        }
+    }
+
+    private static String boundedEvidence(String userPrompt) {
+        if (userPrompt == null) {
+            return "";
+        }
+        String evidence = userPrompt;
+        int constraints = evidence.indexOf("\nConstraints:\n");
+        if (constraints >= 0) {
+            String source = evidence.substring(0, constraints).stripTrailing();
+            int guidance = evidence.indexOf("Additional guidance from the user:\n", constraints);
+            if (guidance >= 0) {
+                int end = evidence.indexOf("\n\nProduce the ontology JSON now.", guidance);
+                String userGuidance = evidence.substring(guidance,
+                        end < 0 ? evidence.length() : end).strip();
+                evidence = source + "\n\n" + userGuidance;
+            } else {
+                evidence = source;
+            }
+        }
+        return evidence.length() <= 6_000 ? evidence : evidence.substring(0, 6_000);
     }
 
     private OntologySchema deriveStructural(GraphContext ctx, List<String> seeds, int maxEntityTypes,
@@ -790,6 +2052,18 @@ public class OntologyDerivationService {
             return text.substring(start, end + 1);
         }
         return text;
+    }
+
+    private static String conciseError(Throwable failure) {
+        String value = failure == null ? "unknown error" : failure.getMessage();
+        if (value == null || value.isBlank()) {
+            value = failure == null ? "unknown error" : failure.getClass().getSimpleName();
+        }
+        int newline = value.indexOf('\n');
+        if (newline >= 0) {
+            value = value.substring(0, newline);
+        }
+        return value.length() <= 240 ? value : value.substring(0, 237) + "...";
     }
 
     /** Convert an arbitrary concept/label into a PascalCase entity-type name. */

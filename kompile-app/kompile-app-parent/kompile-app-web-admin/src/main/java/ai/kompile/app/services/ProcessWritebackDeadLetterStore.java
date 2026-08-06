@@ -16,9 +16,10 @@
 
 package ai.kompile.app.services;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +31,8 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -87,7 +90,7 @@ public class ProcessWritebackDeadLetterStore {
         ensureLoaded();
         try {
             Files.createDirectories(journalPath.getParent());
-            String line = mapper.writeValueAsString(entry) + "\n";
+            String line = serializeEntry(entry) + "\n";
             Files.writeString(journalPath, line,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             entries.add(entry);
@@ -155,7 +158,7 @@ public class ProcessWritebackDeadLetterStore {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) continue;
                 try {
-                    DeadLetterEntry e = mapper.readValue(trimmed, DeadLetterEntry.class);
+                    DeadLetterEntry e = deserializeEntry(trimmed);
                     entries.add(e);
                 } catch (Exception ex) {
                     log.warn("ProcessWriteback dead-letter: skipping unparseable line: {}", ex.getMessage());
@@ -167,6 +170,173 @@ public class ProcessWritebackDeadLetterStore {
         }
     }
 
+    /**
+     * Encode a journal entry through Jackson's built-in tree model. Native images cannot rely on
+     * reflective bean discovery for this mutable transport type, so every persisted field is
+     * copied explicitly.
+     */
+    private String serializeEntry(DeadLetterEntry entry) throws IOException {
+        validateEntry(entry);
+        ObjectNode json = mapper.createObjectNode();
+        putText(json, "id", entry.id);
+        putText(json, "callbackType", entry.callbackType);
+        putText(json, "runId", entry.runId);
+        putText(json, "stepId", entry.stepId);
+        putText(json, "processDefinitionId", entry.processDefinitionId);
+        putText(json, "ts", entry.ts);
+        putText(json, "stepName", entry.stepName);
+        putText(json, "stepStatus", entry.stepStatus);
+        if (entry.graphNodeIds != null) {
+            ArrayNode graphNodeIds = json.putArray("graphNodeIds");
+            for (String graphNodeId : entry.graphNodeIds) {
+                if (graphNodeId == null) {
+                    graphNodeIds.addNull();
+                } else {
+                    graphNodeIds.add(graphNodeId);
+                }
+            }
+        }
+        putText(json, "executedBy", entry.executedBy);
+        putText(json, "outputKeys", entry.outputKeys);
+        putText(json, "outputHash", entry.outputHash);
+        putText(json, "inputHash", entry.inputHash);
+        putText(json, "error", entry.error);
+        putText(json, "runStatus", entry.runStatus);
+        putText(json, "startedAt", entry.startedAt);
+        putText(json, "completedAt", entry.completedAt);
+        putText(json, "failureSummary", entry.failureSummary);
+        json.put("attemptNumber", entry.attemptNumber);
+        putText(json, "outputSummary", entry.outputSummary);
+        if (entry.extra != null) {
+            try {
+                JsonNode extra = mapper.valueToTree(entry.extra);
+                json.set("extra", extra);
+            } catch (IllegalArgumentException ex) {
+                throw new IOException("Could not encode dead-letter extra data", ex);
+            }
+        }
+        return mapper.writeValueAsString(json);
+    }
+
+    /** Decode the stable JSONL shape without asking Jackson to construct a custom Java type. */
+    private DeadLetterEntry deserializeEntry(String line) throws IOException {
+        JsonNode json = mapper.readTree(line);
+        if (json == null || !json.isObject()) {
+            throw new IOException("Dead-letter entry must be a JSON object");
+        }
+
+        DeadLetterEntry entry = new DeadLetterEntry();
+        entry.id = textValue(json, "id");
+        entry.callbackType = textValue(json, "callbackType");
+        entry.runId = textValue(json, "runId");
+        entry.stepId = textValue(json, "stepId");
+        entry.processDefinitionId = textValue(json, "processDefinitionId");
+        entry.ts = textValue(json, "ts");
+        entry.stepName = textValue(json, "stepName");
+        entry.stepStatus = textValue(json, "stepStatus");
+        entry.graphNodeIds = stringListValue(json, "graphNodeIds");
+        entry.executedBy = textValue(json, "executedBy");
+        entry.outputKeys = textValue(json, "outputKeys");
+        entry.outputHash = textValue(json, "outputHash");
+        entry.inputHash = textValue(json, "inputHash");
+        entry.error = textValue(json, "error");
+        entry.runStatus = textValue(json, "runStatus");
+        entry.startedAt = textValue(json, "startedAt");
+        entry.completedAt = textValue(json, "completedAt");
+        entry.failureSummary = textValue(json, "failureSummary");
+        JsonNode attemptNumber = json.get("attemptNumber");
+        entry.attemptNumber = attemptNumber == null || attemptNumber.isNull()
+                ? 0 : attemptNumber.asInt();
+        entry.outputSummary = textValue(json, "outputSummary");
+        JsonNode extra = json.get("extra");
+        if (extra != null && !extra.isNull()) {
+            if (!extra.isObject()) {
+                throw new IOException("Dead-letter field 'extra' must be a JSON object");
+            }
+            entry.extra = objectValue(extra);
+        }
+        validateEntry(entry);
+        return entry;
+    }
+
+    private static void putText(ObjectNode json, String fieldName, String value) {
+        if (value != null) {
+            json.put(fieldName, value);
+        }
+    }
+
+    private static String textValue(JsonNode json, String fieldName) throws IOException {
+        JsonNode value = json.get(fieldName);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isValueNode()) {
+            throw new IOException("Dead-letter field '" + fieldName + "' must be scalar");
+        }
+        return value.asText();
+    }
+
+    private static List<String> stringListValue(JsonNode json, String fieldName) throws IOException {
+        JsonNode value = json.get(fieldName);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isArray()) {
+            throw new IOException("Dead-letter field '" + fieldName + "' must be an array");
+        }
+        List<String> values = new ArrayList<>(value.size());
+        for (JsonNode element : value) {
+            if (element == null || element.isNull()) {
+                values.add(null);
+            } else if (element.isValueNode()) {
+                values.add(element.asText());
+            } else {
+                throw new IOException("Dead-letter field '" + fieldName + "' must contain scalars");
+            }
+        }
+        return values;
+    }
+
+    private static Map<String, Object> objectValue(JsonNode json) throws IOException {
+        Map<String, Object> value = new LinkedHashMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = json.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            value.put(field.getKey(), nativeJsonValue(field.getValue()));
+        }
+        return value;
+    }
+
+    private static Object nativeJsonValue(JsonNode json) throws IOException {
+        if (json == null || json.isNull()) return null;
+        if (json.isTextual()) return json.textValue();
+        if (json.isBoolean()) return json.booleanValue();
+        if (json.isNumber()) return json.numberValue();
+        if (json.isObject()) return objectValue(json);
+        if (json.isArray()) {
+            List<Object> values = new ArrayList<>(json.size());
+            for (JsonNode element : json) {
+                values.add(nativeJsonValue(element));
+            }
+            return values;
+        }
+        throw new IOException("Unsupported JSON value in dead-letter field 'extra'");
+    }
+
+    private static void validateEntry(DeadLetterEntry entry) throws IOException {
+        if (entry.id == null || entry.id.isBlank()) {
+            throw new IOException("Dead-letter entry is missing required field 'id'");
+        }
+        if (entry.runId == null || entry.runId.isBlank()) {
+            throw new IOException("Dead-letter entry is missing required field 'runId'");
+        }
+        if (!"STEP_COMPLETED".equals(entry.callbackType)
+                && !"RUN_COMPLETED".equals(entry.callbackType)) {
+            throw new IOException("Dead-letter entry has unsupported callbackType '"
+                    + entry.callbackType + "'");
+        }
+    }
+
     private void rewriteAtomic() {
         if (journalPath == null) return;
         Path tmp = journalPath.resolveSibling(journalPath.getFileName() + ".tmp");
@@ -174,7 +344,7 @@ public class ProcessWritebackDeadLetterStore {
             Files.createDirectories(journalPath.getParent());
             StringBuilder sb = new StringBuilder();
             for (DeadLetterEntry e : entries) {
-                sb.append(mapper.writeValueAsString(e)).append("\n");
+                sb.append(serializeEntry(e)).append("\n");
             }
             Files.writeString(tmp, sb.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             try {
@@ -203,8 +373,6 @@ public class ProcessWritebackDeadLetterStore {
      *  "error":null,"failureSummary":"KG service unavailable"}
      * </pre>
      */
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class DeadLetterEntry {
 
         /** Unique ID for this dead-letter entry (used to address DELETE). */
@@ -251,7 +419,7 @@ public class ProcessWritebackDeadLetterStore {
         /** Optional bag for any extra replay context. */
         public Map<String, Object> extra;
 
-        /** Jackson no-arg constructor. */
+        /** No-arg constructor retained for callers and API projections. */
         public DeadLetterEntry() {}
 
         public static DeadLetterEntry forStep(String runId, String stepId,

@@ -12,7 +12,7 @@
 
   <artifactId>kompile-compute-graph-scripting</artifactId>
   <name>Kompile Compute Graph - Scripting Engine</name>
-  <description>Lightweight scripting backend using GraalVM polyglot (JavaScript/Python) for per-node calculations</description>
+  <description>JVM scripting worker with GraalVM JavaScript and Python4J/system-Python execution</description>
 
   <properties>
     <graalvm.polyglot.version>24.1.0</graalvm.polyglot.version>
@@ -22,6 +22,11 @@
     <dependency>
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-cli-common</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-compute-graph-scripting-client</artifactId>
+      <version>${project.version}</version>
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
@@ -53,12 +58,6 @@
       <type>pom</type>
     </dependency>
     <dependency>
-      <groupId>org.graalvm.polyglot</groupId>
-      <artifactId>python</artifactId>
-      <version>${graalvm.polyglot.version}</version>
-      <type>pom</type>
-    </dependency>
-    <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>python4j-core</artifactId>
       <version>${nd4j.version}</version>
@@ -84,4 +83,32 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
+        <configuration>
+          <mainClass>ai.kompile.compute.graph.scripting.worker.ScriptingWorkerMain</mainClass>
+          <classifier>exec</classifier>
+          <excludes>
+            <exclude>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+        <executions>
+          <execution>
+            <id>repackage-scripting-worker</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

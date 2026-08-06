@@ -14,6 +14,14 @@
  * limitations under the License.
  */
 
+/* The split introduced an app-shell custom element around the former app-root markup.
+ * Custom elements are inline by default, so restore the block formatting context that app-root
+ * provided before the persona split. */
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
 /* src/app/app.component.css */
 .app-container {
   display: flex;

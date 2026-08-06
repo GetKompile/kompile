@@ -54,6 +54,37 @@ class GraphSchemaPresetServiceTest {
         assertTrue(Files.isDirectory(presetsDir));
     }
 
+    @Test
+    void builtInFpnaPresetUsesOneCanonicalEntityAndRelationVocabulary() {
+        PresetEntry preset = service.getPreset("fpna-cpg-channel-v1").orElseThrow();
+        GraphSchema schema = preset.schema;
+
+        assertEquals(2, preset.version);
+        assertTrue(schema.getAllNodeLabels().containsAll(List.of(
+                "PERSON", "APPROVAL_ROLE", "ORGANIZATION", "SPREADSHEET", "SHEET",
+                "PROCESS", "KNOWLEDGE_GRAPH", "CURRENCY_REGISTRY", "FX_FORWARD_CURVE",
+                "CLOSE_STEP_EXECUTION")));
+        assertTrue(schema.getAllRelationshipTypes().containsAll(List.of(
+                "HAS_ROLE", "CONTAINS", "DERIVES_FROM", "SENT_BY", "FORECAST_FOR",
+                "VALIDATES", "ESCALATED_TO", "APPROVED_BY", "PUBLISHES", "PRODUCES",
+                "GOVERNS")));
+        assertTrue(schema.getPatterns().containsAll(List.of(
+                "(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)",
+                "(SPREADSHEET)-[:CONTAINS]->(SHEET)",
+                "(SPREADSHEET)-[:DERIVES_FROM]->(SPREADSHEET)",
+                "(PROCESS)-[:PRODUCES]->(KNOWLEDGE_GRAPH)",
+                "(CURRENCY_REGISTRY)-[:GOVERNS]->(FX_FORWARD_CURVE)",
+                "(CONTROL_ASSERTION)-[:VALIDATES]->(CLOSE_STEP_EXECUTION)")));
+        assertTrue(schema.getRelationshipTypes().stream()
+                .filter(type -> "CONTAINS".equals(type.getType()))
+                .flatMap(type -> type.getAliases().stream())
+                .anyMatch("CONTAINS_SHEET"::equals));
+        assertTrue(schema.getRelationshipTypes().stream()
+                .filter(type -> "DERIVES_FROM".equals(type.getType()))
+                .flatMap(type -> type.getAliases().stream())
+                .anyMatch("DERIVED_FROM"::equals));
+    }
+
     // --- savePreset / getPreset ---
 
     @Test

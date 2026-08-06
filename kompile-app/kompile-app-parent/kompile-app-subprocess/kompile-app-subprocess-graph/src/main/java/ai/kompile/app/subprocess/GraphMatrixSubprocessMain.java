@@ -62,6 +62,8 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -668,6 +670,419 @@ public class GraphMatrixSubprocessMain {
         return serializeResult(method, rawResult, mapper);
     }
 
+    // ── Native-safe ExternalNodeLookup wire codec ─────────────────────────────
+
+    /**
+     * Encode interface-owned record lists as Jackson tree nodes made only from built-in JSON values.
+     * The main native image must never ask Jackson to reflect over these records.
+     */
+    public static ArrayNode encodeKnowledgeGraphRecordList(List<?> records, ObjectMapper mapper) {
+        ArrayNode encoded = mapper.createArrayNode();
+        if (records == null) {
+            return encoded;
+        }
+        for (Object record : records) {
+            if (record == null) {
+                encoded.addNull();
+                continue;
+            }
+            ObjectNode row = mapper.createObjectNode();
+            if (record instanceof KnowledgeGraphService.SnippetSpec spec) {
+                putNullableText(row, "parentExternalId", spec.parentExternalId());
+                putNullableLong(row, "parentFactSheetId", spec.parentFactSheetId());
+                putNullableText(row, "snippetId", spec.snippetId());
+                putNullableText(row, "content", spec.content());
+                row.put("chunkIndex", spec.chunkIndex());
+            } else if (record instanceof KnowledgeGraphService.NodeSpec spec) {
+                putNullableEnum(row, "nodeType", spec.nodeType());
+                putNullableText(row, "externalId", spec.externalId());
+                putNullableText(row, "title", spec.title());
+                putNullableText(row, "description", spec.description());
+                putNullableMap(row, "metadata", spec.metadata(), mapper);
+            } else if (record instanceof KnowledgeGraphService.ExternalNodeLookup lookup) {
+                putNullableText(row, "externalId", lookup.externalId());
+                putNullableEnum(row, "nodeType", lookup.nodeType());
+                putNullableLong(row, "factSheetId", lookup.factSheetId());
+            } else if (record instanceof KnowledgeGraphService.EdgeSpec spec) {
+                putNullableText(row, "sourceNodeId", spec.sourceNodeId());
+                putNullableText(row, "targetNodeId", spec.targetNodeId());
+                putNullableEnum(row, "edgeType", spec.edgeType());
+                putNullableDouble(row, "weight", spec.weight());
+                putNullableText(row, "description", spec.description());
+                putNullableText(row, "label", spec.label());
+                putNullableText(row, "metaJson", spec.metaJson());
+                putNullableEnum(row, "provenance", spec.provenance());
+                putNullableLong(row, "factSheetId", spec.factSheetId());
+            } else if (record instanceof KnowledgeGraphService.NodeUpdate update) {
+                putNullableText(row, "nodeId", update.nodeId());
+                putNullableText(row, "title", update.title());
+                putNullableText(row, "description", update.description());
+                putNullableMap(row, "additionalMetadata", update.additionalMetadata(), mapper);
+            } else if (record instanceof KnowledgeGraphService.NodeMetadataUpdate update) {
+                putNullableText(row, "nodeId", update.nodeId());
+                putNullableMap(row, "additionalMetadata", update.additionalMetadata(), mapper);
+            } else if (record instanceof KnowledgeGraphService.EdgeMetadataUpdate update) {
+                putNullableText(row, "edgeId", update.edgeId());
+                putNullableMap(row, "additionalMetadata", update.additionalMetadata(), mapper);
+            } else {
+                throw new IllegalArgumentException(
+                        "[graph-matrix] unsupported native record payload: " + record.getClass().getName());
+            }
+            encoded.add(row);
+        }
+        return encoded;
+    }
+
+    public static ArrayNode encodeExternalNodeLookups(
+            List<KnowledgeGraphService.ExternalNodeLookup> lookups,
+            ObjectMapper mapper) {
+        return encodeKnowledgeGraphRecordList(lookups, mapper);
+    }
+
+    private static void putNullableText(ObjectNode row, String field, String value) {
+        if (value == null) row.putNull(field); else row.put(field, value);
+    }
+
+    private static void putNullableLong(ObjectNode row, String field, Long value) {
+        if (value == null) row.putNull(field); else row.put(field, value);
+    }
+
+    private static void putNullableDouble(ObjectNode row, String field, Double value) {
+        if (value == null) row.putNull(field); else row.put(field, value);
+    }
+
+    private static void putNullableEnum(ObjectNode row, String field, Enum<?> value) {
+        if (value == null) row.putNull(field); else row.put(field, value.name());
+    }
+
+    private static void putNullableMap(ObjectNode row, String field, Map<String, Object> value,
+                                       ObjectMapper mapper) {
+        row.set(field, encodeNativeJsonValue(value, mapper));
+    }
+
+    /**
+     * Encodes only JSON-native values so graph batch metadata never falls back to Jackson bean
+     * discovery in a native image. Unsupported application objects fail at the RPC boundary with
+     * a concrete error instead of requiring reflective serialization metadata.
+     */
+    static JsonNode encodeNativeJsonValue(Object value, ObjectMapper mapper) {
+        if (value == null) {
+            return mapper.getNodeFactory().nullNode();
+        }
+        if (value instanceof JsonNode node) {
+            return copyNativeJsonNode(node, mapper);
+        }
+        if (value instanceof Enum<?> enumValue) {
+            return mapper.getNodeFactory().textNode(enumValue.name());
+        }
+        if (value instanceof CharSequence || value instanceof Character) {
+            return mapper.getNodeFactory().textNode(value.toString());
+        }
+        if (value instanceof Boolean booleanValue) {
+            return mapper.getNodeFactory().booleanNode(booleanValue);
+        }
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            return mapper.getNodeFactory().numberNode(((Number) value).intValue());
+        }
+        if (value instanceof Long longValue) {
+            return mapper.getNodeFactory().numberNode(longValue);
+        }
+        if (value instanceof BigInteger bigInteger) {
+            return mapper.getNodeFactory().numberNode(bigInteger);
+        }
+        if (value instanceof Float floatValue) {
+            return mapper.getNodeFactory().numberNode(floatValue);
+        }
+        if (value instanceof Double doubleValue) {
+            return mapper.getNodeFactory().numberNode(doubleValue);
+        }
+        if (value instanceof BigDecimal bigDecimal) {
+            return mapper.getNodeFactory().numberNode(bigDecimal);
+        }
+        if (value instanceof Map<?, ?> mapValue) {
+            ObjectNode encoded = mapper.createObjectNode();
+            for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "[graph-matrix] native JSON metadata map keys must be strings: "
+                                    + entry.getKey());
+                }
+                encoded.set(key, encodeNativeJsonValue(entry.getValue(), mapper));
+            }
+            return encoded;
+        }
+        if (value instanceof Collection<?> collectionValue) {
+            ArrayNode encoded = mapper.createArrayNode();
+            for (Object item : collectionValue) {
+                encoded.add(encodeNativeJsonValue(item, mapper));
+            }
+            return encoded;
+        }
+        throw new IllegalArgumentException(
+                "[graph-matrix] unsupported native JSON metadata value: "
+                        + value.getClass().getName());
+    }
+
+    private static JsonNode copyNativeJsonNode(JsonNode node, ObjectMapper mapper) {
+        if (node == null || node.isNull()) {
+            return mapper.getNodeFactory().nullNode();
+        }
+        if (node.isPojo()) {
+            throw new IllegalArgumentException(
+                    "[graph-matrix] unsupported native JSON metadata node: "
+                            + node.getClass().getName());
+        }
+        if (node.isObject()) {
+            ObjectNode encoded = mapper.createObjectNode();
+            node.fields().forEachRemaining(entry ->
+                    encoded.set(entry.getKey(), copyNativeJsonNode(entry.getValue(), mapper)));
+            return encoded;
+        }
+        if (node.isArray()) {
+            ArrayNode encoded = mapper.createArrayNode();
+            for (JsonNode item : node) {
+                encoded.add(copyNativeJsonNode(item, mapper));
+            }
+            return encoded;
+        }
+        if (node.isValueNode()) {
+            return node.deepCopy();
+        }
+        throw new IllegalArgumentException(
+                "[graph-matrix] unsupported native JSON metadata node: "
+                        + node.getClass().getName());
+    }
+
+    private static void requireRecordArray(JsonNode payload, String operation) {
+        if (payload != null && !payload.isNull() && !payload.isArray()) {
+            throw new IllegalArgumentException(
+                    "[graph-matrix] " + operation + " expects an array payload");
+        }
+    }
+
+    private static ObjectNode requireRecordObject(JsonNode row, String operation) {
+        if (!row.isObject()) {
+            throw new IllegalArgumentException(
+                    "[graph-matrix] " + operation + " rows must be JSON objects");
+        }
+        return (ObjectNode) row;
+    }
+
+    private static String nullableText(JsonNode row, String field) {
+        JsonNode value = row.get(field);
+        return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private static Long nullableLong(JsonNode row, String field) {
+        JsonNode value = row.get(field);
+        return value == null || value.isNull() ? null : value.asLong();
+    }
+
+    private static Double nullableDouble(JsonNode row, String field) {
+        JsonNode value = row.get(field);
+        return value == null || value.isNull() ? null : value.asDouble();
+    }
+
+    private static int integerValue(JsonNode row, String field) {
+        JsonNode value = row.get(field);
+        return value == null || value.isNull() ? 0 : value.asInt();
+    }
+
+    private static <E extends Enum<E>> E nullableEnum(JsonNode row, String field, Class<E> type) {
+        String value = nullableText(row, field);
+        return value == null ? null : Enum.valueOf(type, value);
+    }
+
+    private static Object decodeBuiltInJson(JsonNode value) {
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (value.isObject()) {
+            Map<String, Object> decoded = new LinkedHashMap<>();
+            value.fields().forEachRemaining(entry ->
+                    decoded.put(entry.getKey(), decodeBuiltInJson(entry.getValue())));
+            return decoded;
+        }
+        if (value.isArray()) {
+            List<Object> decoded = new ArrayList<>(value.size());
+            value.forEach(item -> decoded.add(decodeBuiltInJson(item)));
+            return decoded;
+        }
+        if (value.isTextual()) {
+            return value.textValue();
+        }
+        if (value.isBoolean()) {
+            return value.booleanValue();
+        }
+        if (value.isNumber()) {
+            return value.numberValue();
+        }
+        throw new IllegalArgumentException(
+                "[graph-matrix] unsupported built-in JSON value: " + value.getNodeType());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> nullableMap(JsonNode row, String field) {
+        JsonNode value = row.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isObject()) {
+            throw new IllegalArgumentException(
+                    "[graph-matrix] field '" + field + "' must be a JSON object");
+        }
+        return (Map<String, Object>) decodeBuiltInJson(value);
+    }
+
+    static List<KnowledgeGraphService.ExternalNodeLookup> decodeExternalNodeLookups(JsonNode payload) {
+        requireRecordArray(payload, "getNodesByExternalIds");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.ExternalNodeLookup> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "getNodesByExternalIds");
+            decoded.add(new KnowledgeGraphService.ExternalNodeLookup(
+                    nullableText(record, "externalId"),
+                    nullableEnum(record, "nodeType", NodeLevel.class),
+                    nullableLong(record, "factSheetId")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.NodeSpec> decodeNodeSpecs(JsonNode payload) {
+        requireRecordArray(payload, "createNodesBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.NodeSpec> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "createNodesBatch");
+            decoded.add(new KnowledgeGraphService.NodeSpec(
+                    nullableEnum(record, "nodeType", NodeLevel.class),
+                    nullableText(record, "externalId"),
+                    nullableText(record, "title"),
+                    nullableText(record, "description"),
+                    nullableMap(record, "metadata")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.NodeMetadataUpdate> decodeNodeMetadataUpdates(JsonNode payload) {
+        requireRecordArray(payload, "updateNodeKgeMetadataBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.NodeMetadataUpdate> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "updateNodeKgeMetadataBatch");
+            decoded.add(new KnowledgeGraphService.NodeMetadataUpdate(
+                    nullableText(record, "nodeId"),
+                    nullableMap(record, "additionalMetadata")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.NodeUpdate> decodeNodeUpdates(JsonNode payload) {
+        requireRecordArray(payload, "updateNodesBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.NodeUpdate> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "updateNodesBatch");
+            decoded.add(new KnowledgeGraphService.NodeUpdate(
+                    nullableText(record, "nodeId"),
+                    nullableText(record, "title"),
+                    nullableText(record, "description"),
+                    nullableMap(record, "additionalMetadata")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.SnippetSpec> decodeSnippetSpecs(JsonNode payload) {
+        requireRecordArray(payload, "createSnippetNodesBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.SnippetSpec> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "createSnippetNodesBatch");
+            decoded.add(new KnowledgeGraphService.SnippetSpec(
+                    nullableText(record, "parentExternalId"),
+                    nullableLong(record, "parentFactSheetId"),
+                    nullableText(record, "snippetId"),
+                    nullableText(record, "content"),
+                    integerValue(record, "chunkIndex")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.EdgeSpec> decodeEdgeSpecs(JsonNode payload) {
+        requireRecordArray(payload, "createEdgesBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.EdgeSpec> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "createEdgesBatch");
+            decoded.add(new KnowledgeGraphService.EdgeSpec(
+                    nullableText(record, "sourceNodeId"),
+                    nullableText(record, "targetNodeId"),
+                    nullableEnum(record, "edgeType", EdgeType.class),
+                    nullableDouble(record, "weight"),
+                    nullableText(record, "description"),
+                    nullableText(record, "label"),
+                    nullableText(record, "metaJson"),
+                    nullableEnum(record, "provenance", EdgeProvenance.class),
+                    nullableLong(record, "factSheetId")));
+        }
+        return decoded;
+    }
+
+    static List<KnowledgeGraphService.EdgeMetadataUpdate> decodeEdgeMetadataUpdates(JsonNode payload) {
+        requireRecordArray(payload, "updateEdgeMetadataBatch");
+        if (payload == null || payload.isNull()) {
+            return List.of();
+        }
+        List<KnowledgeGraphService.EdgeMetadataUpdate> decoded = new ArrayList<>(payload.size());
+        for (JsonNode row : payload) {
+            if (row == null || row.isNull()) {
+                decoded.add(null);
+                continue;
+            }
+            ObjectNode record = requireRecordObject(row, "updateEdgeMetadataBatch");
+            decoded.add(new KnowledgeGraphService.EdgeMetadataUpdate(
+                    nullableText(record, "edgeId"),
+                    nullableMap(record, "additionalMetadata")));
+        }
+        return decoded;
+    }
+
     // ── KnowledgeGraphService dispatcher ─────────────────────────────────────
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -719,36 +1134,17 @@ public class GraphMatrixSubprocessMain {
                 }
             }
 
-            case "createNodesBatch" -> {
-                JavaType specList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.NodeSpec.class);
-                List<KnowledgeGraphService.NodeSpec> specs = mapper.convertValue(arg(args, 0), specList);
-                yield svc.createNodesBatch(specs, argLong(args, 1));
-            }
+            case "createNodesBatch" ->
+                    svc.createNodesBatch(decodeNodeSpecs(arg(args, 0)), argLong(args, 1));
 
-            case "updateNodeKgeMetadataBatch" -> {
-                JavaType updateList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.NodeMetadataUpdate.class);
-                List<KnowledgeGraphService.NodeMetadataUpdate> updates =
-                        mapper.convertValue(arg(args, 0), updateList);
-                yield svc.updateNodeKgeMetadataBatch(updates);
-            }
+            case "updateNodeKgeMetadataBatch" ->
+                    svc.updateNodeKgeMetadataBatch(decodeNodeMetadataUpdates(arg(args, 0)));
 
-            case "updateNodesBatch" -> {
-                JavaType nodeUpdateList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.NodeUpdate.class);
-                List<KnowledgeGraphService.NodeUpdate> nodeUpdates =
-                        mapper.convertValue(arg(args, 0), nodeUpdateList);
-                yield svc.updateNodesBatch(nodeUpdates);
-            }
+            case "updateNodesBatch" ->
+                    svc.updateNodesBatch(decodeNodeUpdates(arg(args, 0)));
 
-            case "createSnippetNodesBatch" -> {
-                JavaType snippetSpecList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.SnippetSpec.class);
-                List<KnowledgeGraphService.SnippetSpec> snippetSpecs =
-                        mapper.convertValue(arg(args, 0), snippetSpecList);
-                yield svc.createSnippetNodesBatch(snippetSpecs);
-            }
+            case "createSnippetNodesBatch" ->
+                    svc.createSnippetNodesBatch(decodeSnippetSpecs(arg(args, 0)));
 
             case "getNode" -> svc.getNode(argStr(args, 0));
 
@@ -762,13 +1158,8 @@ public class GraphMatrixSubprocessMain {
                 }
             }
 
-            case "getNodesByExternalIds" -> {
-                JavaType lookupList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.ExternalNodeLookup.class);
-                List<KnowledgeGraphService.ExternalNodeLookup> lookups =
-                        mapper.convertValue(arg(args, 0), lookupList);
-                yield svc.getNodesByExternalIds(lookups);
-            }
+            case "getNodesByExternalIds" ->
+                    svc.getNodesByExternalIds(decodeExternalNodeLookups(arg(args, 0)));
 
             case "getChildren" -> svc.getChildren(argStr(args, 0));
 
@@ -856,21 +1247,11 @@ public class GraphMatrixSubprocessMain {
                         argObj(args, 7, EdgeProvenance.class, mapper), argLong(args, 8));
             }
 
-            case "createEdgesBatch" -> {
-                JavaType edgeSpecList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.EdgeSpec.class);
-                List<KnowledgeGraphService.EdgeSpec> edgeSpecs =
-                        mapper.convertValue(arg(args, 0), edgeSpecList);
-                yield svc.createEdgesBatch(edgeSpecs);
-            }
+            case "createEdgesBatch" ->
+                    svc.createEdgesBatch(decodeEdgeSpecs(arg(args, 0)));
 
-            case "updateEdgeMetadataBatch" -> {
-                JavaType edgeUpdateList = mapper.getTypeFactory()
-                        .constructCollectionType(List.class, KnowledgeGraphService.EdgeMetadataUpdate.class);
-                List<KnowledgeGraphService.EdgeMetadataUpdate> edgeUpdates =
-                        mapper.convertValue(arg(args, 0), edgeUpdateList);
-                yield svc.updateEdgeMetadataBatch(edgeUpdates);
-            }
+            case "updateEdgeMetadataBatch" ->
+                    svc.updateEdgeMetadataBatch(decodeEdgeMetadataUpdates(arg(args, 0)));
 
             case "addDocument" -> svc.addDocument(
                     argStr(args, 0), argStr(args, 1), argStr(args, 2),

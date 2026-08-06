@@ -1,11 +1,14 @@
 package ai.kompile.staging.web;
 
+import ai.kompile.core.staging.StagingModelInfo;
+import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.modelmanager.registry.RegistryService;
 import ai.kompile.staging.archive.ArchiveModelManager;
 import ai.kompile.staging.catalog.CatalogModel;
 import ai.kompile.staging.catalog.CatalogService;
 import ai.kompile.staging.config.ModelSourceConfiguration;
+import ai.kompile.staging.config.StagingSettings;
 import ai.kompile.staging.config.StagingSettingsService;
 import ai.kompile.staging.download.DownloadRequest;
 import ai.kompile.staging.download.ComponentUrlDownloader;
@@ -33,6 +36,7 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -109,6 +113,62 @@ class StagingControllerTest {
         when(catalogService.getEncoders()).thenReturn(List.of());
 
         assertEquals(ModelType.LLM_GGML, resolve(llm));
+    }
+
+    @Test
+    void stageFromCatalog_forwardsPinnedRunnableCompanionUrls() {
+        CatalogModel llm = CatalogModel.builder()
+                .id("catalog-llm")
+                .source("huggingface")
+                .repo("owner/quantized-model")
+                .format("gguf")
+                .files(Map.of("model", "model-q4.gguf"))
+                .assetUrls(Map.of(
+                        "tokenizer", "https://huggingface.co/owner/base/resolve/abc/tokenizer.json",
+                        "tokenizer_config", "https://huggingface.co/owner/base/resolve/abc/tokenizer_config.json",
+                        "model_config", "https://huggingface.co/owner/base/resolve/abc/config.json"))
+                .build();
+        when(catalogService.getModel("catalog-llm")).thenReturn(Optional.of(llm));
+
+        ResponseEntity<?> response = controller.stageFromCatalog("catalog-llm", false);
+
+        ArgumentCaptor<DownloadRequest> captured = ArgumentCaptor.forClass(DownloadRequest.class);
+        verify(stagingService).stageModelAsync(captured.capture());
+        DownloadRequest forwarded = captured.getValue();
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        assertEquals("model-q4.gguf", forwarded.getFiles().get("model"));
+        assertEquals(
+                "https://huggingface.co/owner/base/resolve/abc/tokenizer.json",
+                forwarded.getTextAssetUrls().getTokenizer());
+        assertEquals(
+                "https://huggingface.co/owner/base/resolve/abc/tokenizer_config.json",
+                forwarded.getTextAssetUrls().getTokenizerConfig());
+        assertEquals(
+                "https://huggingface.co/owner/base/resolve/abc/config.json",
+                forwarded.getTextAssetUrls().getModelConfig());
+    }
+
+    @Test
+    void stageFromCatalog_autoPromotesCompletedModels() {
+        CatalogModel llm = CatalogModel.builder()
+                .id("catalog-llm")
+                .source("huggingface")
+                .repo("owner/quantized-model")
+                .format("gguf")
+                .files(Map.of("model", "model-q4.gguf"))
+                .build();
+        StagingModelInfo completed = StagingModelInfo.builder()
+                .modelId("catalog-llm")
+                .status(StagingStatus.COMPLETED)
+                .build();
+        when(catalogService.getModel("catalog-llm")).thenReturn(Optional.of(llm));
+        when(stagingService.stageModelAsync(any()))
+                .thenReturn(CompletableFuture.completedFuture(completed));
+
+        ResponseEntity<?> response = controller.stageFromCatalog("catalog-llm", true);
+
+        assertEquals(HttpStatus.ACCEPTED, response.getStatusCode());
+        verify(stagingService).promoteModel("catalog-llm", null);
     }
 
     @Test
@@ -442,6 +502,41 @@ class StagingControllerTest {
 
         verify(stagingService).getImportDiagnostics(17);
         verify(stagingService).getImportDiagnostics("attempt-123");
+    }
+
+    @Test
+    void updateSettingsNormalizesAndPersistsManagedCallbackEndpoint() {
+        StagingSettings settings = StagingSettings.defaults();
+        settings.setCallbackUrl("http://localhost:18080/");
+        when(stagingSettingsService.updateSettings(any(StagingSettings.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        StagingSettings updated = controller.updateSettings(settings);
+
+        assertEquals("http://localhost:18080", updated.getCallbackUrl());
+        verify(stagingSettingsService).updateSettings(settings);
+    }
+
+    @Test
+    void updateSettingsRejectsMalformedCallbackEndpoint() {
+        StagingSettings settings = StagingSettings.defaults();
+        settings.setCallbackUrl("not-a-url");
+
+        ResponseStatusException error = assertThrows(
+                ResponseStatusException.class, () -> controller.updateSettings(settings));
+
+        assertEquals(HttpStatus.BAD_REQUEST, error.getStatusCode());
+        verify(stagingSettingsService, never()).updateSettings(any());
+    }
+
+    @Test
+    void testSettingsCallbackDelegatesToManagedSettingsService() {
+        StagingSettingsService.CallbackTestResult expected =
+                new StagingSettingsService.CallbackTestResult(true, "Connection successful");
+        when(stagingSettingsService.testCallback()).thenReturn(expected);
+
+        assertEquals(expected, controller.testSettingsCallback());
+        verify(stagingSettingsService).testCallback();
     }
 
     private static TextModelAssetMap completeAssets(String model) {

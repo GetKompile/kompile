@@ -16,12 +16,15 @@
 #
 # Launcher for kompile-server (RAG application — native image).
 #
-# Sets up library paths and passes Spring config location from the
-# distribution's conf/ directory.
+# Sets up library paths and passes the distribution's conf/ location. The admin
+# server defaults to port 8080 and follows the same CLI convention as the other
+# distributable components: `--port <N>` overrides KOMPILE_SERVER_PORT. The
+# legacy `--server.port=<N>` spelling remains accepted for compatibility.
 #
 # Usage:
 #   bin/kompile-server.sh
-#   bin/kompile-server.sh --server.port=9090
+#   bin/kompile-server.sh --port 9090
+#   KOMPILE_SERVER_PORT=9090 bin/kompile-server.sh
 
 set -e
 
@@ -55,14 +58,45 @@ resolve_java() {
 BINARY="${DIST_HOME}/bin/kompile-server"
 JAR="${DIST_HOME}/lib/kompile-server.jar"
 
+# Determine port: CLI flag > env var > default 8080. Normalize both the Kompile
+# `--port` spelling and the legacy Spring spelling into one server.port argument.
+PORT="${KOMPILE_SERVER_PORT:-8080}"
+PASSTHROUGH_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --port)
+            if [ -z "${2:-}" ]; then
+                echo "error: --port requires a value" >&2
+                exit 1
+            fi
+            PORT="$2"
+            shift 2
+            ;;
+        --port=*)
+            PORT="${1#--port=}"
+            shift
+            ;;
+        --server.port=*)
+            PORT="${1#--server.port=}"
+            shift
+            ;;
+        *)
+            PASSTHROUGH_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
 export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
 # Prefer native binary.
 if [ -x "${BINARY}" ]; then
     exec "${BINARY}" \
+        -Dkompile.dist.home="${DIST_HOME}" \
         -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
-        "$@"
+        "--server.port=${PORT}" \
+        "${PASSTHROUGH_ARGS[@]}"
 fi
 
 # Fall back to exec JAR under the resolved Java runtime.
@@ -76,7 +110,9 @@ KOMPILE_SERVER_HEAP="${KOMPILE_SERVER_HEAP:--Xmx4g}"
 
 exec "${JAVA_BIN}" \
     ${KOMPILE_SERVER_HEAP} \
-    -Djava.library.path="${DIST_HOME}/lib" \
+    -Djava.library.path="${DIST_HOME}/bin:${DIST_HOME}/lib" \
+    -Dkompile.dist.home="${DIST_HOME}" \
     -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
     -jar "${JAR}" \
-    "$@"
+    "--server.port=${PORT}" \
+    "${PASSTHROUGH_ARGS[@]}"

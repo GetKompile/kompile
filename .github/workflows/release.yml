@@ -2,15 +2,15 @@
 # Kompile release pipeline
 #
 # Builds the cross-platform `kompile` CLI as a GraalVM native image, packages it
-# into the canonical distribution archive, generates a SHA-256 checksum, and
-# publishes a GitHub Release. The published archives are exactly what
-# `install.sh` (curl -fsSL https://get.kompile.ai/install.sh | bash) downloads.
+# through the canonical complete-distribution builder, generates SHA-256
+# checksums, and publishes a GitHub Release. ZIP is the primary release and Maven
+# artifact on every platform; tar.gz remains available for installer compatibility.
 #
 # Archive naming (must match install.sh + docs/getting-started/installation.md):
-#   kompile-dist-<version>-<variant>-<os>-<arch>.<ext>
+#   kompile-dist-<version>-<variant>-<os>-<arch>.zip
+#   kompile-dist-<version>-<variant>-<os>-<arch>.tar.gz
 #     os   ∈ { linux, macosx, windows }
 #     arch ∈ { x86_64, arm64 }
-#     ext  =  tar.gz (linux/macOS) | zip (windows)
 #
 # ⚠️  RUNNER SIZING — READ THIS FIRST
 #   The CLI native-image build passes `-J-Xmx18g`
@@ -22,16 +22,18 @@
 #       KOMPILE_MACOS_ARM64_RUNNER   (default: macos-14)
 #       KOMPILE_WINDOWS_X64_RUNNER   (default: windows-latest)
 #       KOMPILE_RELEASE_RUNNER       (default: ubuntu-latest; lightweight, no native build)
-#   Until you set them, the defaults run on standard hosted runners and the native
+#       DL4J_SDK_ASSETS_URL          (required for the complete Linux full ZIP)
+#       DL4J_MAVEN_REPOSITORY_URL    (optional repository containing the matching DL4J build)
+#       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
+#       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
+#   Until you set the runner variables, the defaults run on standard hosted runners and the native
 #   build step is expected to OOM.
 #
 # Variants:
-#   This workflow builds the `cli-only` variant (just the `kompile` binary; the
-#   app-main backend is fetched on demand at runtime via `kompile install
-#   kompile-app`). The heavier `hosted` variant (CLI + the ~1.9 GB app-main
-#   native image, ~22 min) and GPU variants (`cuda`, `amd-zluda`) need a
-#   dedicated/self-hosted runner — see the commented `build-hosted` job at the
-#   bottom for the template.
+#   This workflow publishes cross-platform `cli-only` archives and the canonical
+#   Linux `full` archive (CLI native + service JARs + Java runtime + DL4J SDK).
+#   Native CPU/GPU service variants remain self-hosted builds produced through
+#   build-dist.sh; they must use the same release job when enabled.
 # ──────────────────────────────────────────────────────────────────────────────
 name: release
 
@@ -45,12 +47,16 @@ on:
         description: 'Version to build (without leading v), e.g. 0.1.0'
         required: true
         default: '0.0.0-dev'
+      dl4j_sdk_assets_url:
+        description: 'Verified linux-x86_64 DL4J sdk-assets archive URL (defaults to repository variable DL4J_SDK_ASSETS_URL)'
+        required: false
+        default: ''
 
 permissions:
   contents: write          # needed to create the GitHub Release
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
   cancel-in-progress: false
 
 env:
@@ -70,23 +76,19 @@ jobs:
             os_id: linux
             arch: x86_64
             variant: cli-only
-            ext: tar.gz
           - runner: ${{ vars.KOMPILE_MACOS_ARM64_RUNNER || 'macos-14' }}   # Apple Silicon
             os_id: macosx
             arch: arm64
             variant: cli-only
-            ext: tar.gz
           - runner: ${{ vars.KOMPILE_WINDOWS_X64_RUNNER || 'windows-latest' }}
             os_id: windows
             arch: x86_64
             variant: cli-only
-            ext: zip
           # Enable once you have arm64 Linux runners:
           # - runner: ubuntu-24.04-arm
           #   os_id: linux
           #   arch: arm64
           #   variant: cli-only
-          #   ext: tar.gz
 
     steps:
       - name: Checkout
@@ -124,47 +126,47 @@ jobs:
             -pl kompile-cli/kompile-cli-main -am \
             clean package
 
-      - name: Assemble distribution archive
+      - name: Install Linux packaging tools
+        if: matrix.os_id == 'linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      - name: Assemble canonical distribution archives
         id: pkg
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
           VARIANT="${{ matrix.variant }}"
-          OS_ID="${{ matrix.os_id }}"
-          ARCH="${{ matrix.arch }}"
-          EXT="${{ matrix.ext }}"
-          NAME="kompile-dist-${VERSION}-${VARIANT}-${OS_ID}-${ARCH}"
-          TOP="kompile-${VERSION}"
-          STAGE="staging/${TOP}"
-          BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main"
+          PLATFORM="${{ matrix.os_id }}-${{ matrix.arch }}"
+          NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}"
+          OUTPUT_DIR="${PWD}/release-dist"
 
-          mkdir -p "${STAGE}/bin"
-          if [ "${OS_ID}" = "windows" ]; then
-            cp "${BIN}.exe" "${STAGE}/bin/kompile.exe"
-          else
-            cp "${BIN}" "${STAGE}/bin/kompile"
-            chmod +x "${STAGE}/bin/kompile"
-          fi
-          # Ship the Unix launcher scripts alongside the binary.
-          cp kompile-dist/src/main/scripts/*.sh "${STAGE}/bin/" 2>/dev/null || true
+          # Reuse the native image built above. The canonical builder owns the
+          # layout, metadata, internal manifest, ZIP, compatibility tarball, and
+          # platform-specific executable naming.
+          DIST_ARGS=(
+            "${VARIANT}"
+            --skip-java-build
+            --skip-maven-install
+            --version "${VERSION}"
+            --platform "${PLATFORM}"
+            --output-dir "${OUTPUT_DIR}"
+          )
+          ./build-dist.sh "${DIST_ARGS[@]}"
 
-          # Archive (single top-level dir; install.sh strips it on extract).
-          if [ "${EXT}" = "zip" ]; then
-            ( cd staging && 7z a -tzip "../${NAME}.zip" "${TOP}" >/dev/null )
-          else
-            tar -C staging -czf "${NAME}.tar.gz" "${TOP}"
-          fi
+          cp "${OUTPUT_DIR}/${NAME}.zip" "${NAME}.zip"
+          cp "${OUTPUT_DIR}/${NAME}.zip.sha256" "${NAME}.zip.sha256"
+          cp "${OUTPUT_DIR}/${NAME}.tar.gz" "${NAME}.tar.gz"
+          cp "${OUTPUT_DIR}/${NAME}.tar.gz.sha256" "${NAME}.tar.gz.sha256"
 
-          # SHA-256 checksum (sha256sum on Linux/Git-Bash, shasum on macOS).
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${NAME}.${EXT}" > "${NAME}.${EXT}.sha256"
-          else
-            shasum -a 256 "${NAME}.${EXT}" > "${NAME}.${EXT}.sha256"
-          fi
-
-          echo "archive=${NAME}.${EXT}" >> "$GITHUB_OUTPUT"
-          ls -lh "${NAME}.${EXT}" "${NAME}.${EXT}.sha256"
+          echo "archive=${NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "compatibility_archive=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          RELEASE_FILES=(
+            "${NAME}.zip" "${NAME}.zip.sha256"
+            "${NAME}.tar.gz" "${NAME}.tar.gz.sha256"
+          )
+          ls -lh "${RELEASE_FILES[@]}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -173,15 +175,36 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.archive }}.sha256
+            ${{ steps.pkg.outputs.compatibility_archive }}
+            ${{ steps.pkg.outputs.compatibility_archive }}.sha256
           if-no-files-found: error
 
-  # ── Full distribution: CLI native + server jar + staging jar + jlink runtime ──
+  # ── Full distribution: CLI native + service JARs + jlink runtime + DL4J SDK ──
   full-dist-linux:
     name: build full (linux-x86_64)
     runs-on: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+    env:
+      DL4J_MAVEN_REPOSITORY_URL: ${{ vars.DL4J_MAVEN_REPOSITORY_URL }}
+      DL4J_MAVEN_REPOSITORY_ID: ${{ vars.DL4J_MAVEN_REPOSITORY_ID || 'dl4j-release' }}
+      ND4J_VERSION: ${{ vars.DL4J_VERSION }}
+      DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
+      DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 21 (for jlink runtime + jar builds)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
+          server-username: DL4J_MAVEN_USERNAME
+          server-password: DL4J_MAVEN_PASSWORD
+
+      - name: Remember Temurin home
+        shell: bash
+        run: echo "TEMURIN_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
 
       - name: Set up GraalVM ${{ env.GRAALVM_JAVA_VERSION }} (for CLI native image)
         uses: graalvm/setup-graalvm@v1
@@ -192,12 +215,9 @@ jobs:
           native-image-job-reports: 'true'
           cache: 'maven'
 
-      - name: Set up Temurin JDK 21 (for jlink runtime + jar builds)
-        id: temurin21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
+      - name: Remember GraalVM home
+        shell: bash
+        run: echo "GRAALVM_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
 
       - name: Resolve version
         id: ver
@@ -213,69 +233,79 @@ jobs:
 
       - name: Build CLI native image (GraalVM)
         shell: bash
-        env:
-          # GraalVM is JAVA_HOME at this point (set up first by graalvm/setup-graalvm).
-          GRAALVM_HOME: ${{ env.JAVA_HOME }}
         run: |
           mvn -B -ntp -Dkompile.dist=true -DskipTests \
             -pl kompile-cli/kompile-cli-main -am \
             clean package
 
-      - name: Build server + staging jars with UI (Temurin)
+      - name: Build all service exec jars with UI (Temurin)
         shell: bash
-        env:
-          JAVA_HOME: ${{ steps.temurin21.outputs.path }}
         run: |
-          # Build kompile-app-main exec jar (includes Angular UI — do NOT pass -Dskip.ui).
-          mvn -B -ntp -DskipTests -Dkompile.dist=true -Dkompile.uber \
-            -pl kompile-app/kompile-app-parent/kompile-app-main -am \
-            clean package
-          # Build kompile-model-staging exec jar.
-          mvn -B -ntp -DskipTests \
-            -pl kompile-app/kompile-models/kompile-model-staging -am \
-            clean package
+          export JAVA_HOME="${TEMURIN_HOME}"
+          export PATH="${JAVA_HOME}/bin:${PATH}"
+          # No -Dkompile.dist here: this is the jar tier, not a native-image build.
+          # app-main includes the Angular UI because -Dskip.ui is intentionally absent.
+          MAVEN_REPOSITORY_ARGS=()
+          if [ -n "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
+            MAVEN_REPOSITORY_ARGS+=(
+              "-Ddl4j.repository.id=${DL4J_MAVEN_REPOSITORY_ID}"
+              "-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"
+            )
+          fi
+          if [ -n "${ND4J_VERSION}" ]; then
+            MAVEN_REPOSITORY_ARGS+=("-Dnd4j.version=${ND4J_VERSION}")
+          fi
+          mvn -B -ntp -DskipTests -Dkompile.uber -Dnd4j.backend=nd4j-native \
+            "${MAVEN_REPOSITORY_ARGS[@]}" \
+            -pl :kompile-app-main,:kompile-app-chat,:kompile-app-crawl-manager,:kompile-model-staging \
+            -am package
 
-      - name: Build jlink runtime (Temurin)
-        id: jlink
+      - name: Download and verify matching DL4J SDK assets
+        id: dl4j_sdk
         shell: bash
         env:
-          TEMURIN_HOME: ${{ steps.temurin21.outputs.path }}
+          SDK_URL: ${{ inputs.dl4j_sdk_assets_url || vars.DL4J_SDK_ASSETS_URL }}
         run: |
           set -euo pipefail
-          JLINK="${TEMURIN_HOME}/bin/jlink"
-          MODULES="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.management,jdk.management.agent,jdk.security.auth,jdk.naming.dns,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.jfr"
-          DEST="$(pwd)/dist-runtime"
-          ok=false
-          if "${JLINK}" --add-modules "${MODULES}" --include-locales=en \
-              --strip-debug --no-header-files --no-man-pages \
-              --compress=zip-6 --output "${DEST}" 2>/tmp/jlink.log; then
-            ok=true
-          else
-            rm -rf "${DEST}"
-            if "${JLINK}" --add-modules "${MODULES}" \
-                --strip-debug --no-header-files --no-man-pages \
-                --compress=zip-6 --output "${DEST}" 2>>/tmp/jlink.log; then
-              ok=true
-            else
-              rm -rf "${DEST}"
-              if "${JLINK}" --add-modules "${MODULES}" \
-                  --strip-debug --no-header-files --no-man-pages \
-                  --compress=2 --output "${DEST}" 2>>/tmp/jlink.log; then
-                ok=true
-              else
-                rm -rf "${DEST}" 2>/dev/null || true
-              fi
-            fi
+          if [ -z "${SDK_URL}" ]; then
+            echo "ERROR: set workflow input dl4j_sdk_assets_url or repository variable DL4J_SDK_ASSETS_URL" >&2
+            exit 1
           fi
-          if [ "${ok}" = true ] && "${DEST}/bin/java" -version 2>/dev/null; then
-            echo "runtime-path=${DEST}" >> "$GITHUB_OUTPUT"
-            echo "bundled-runtime=true" >> "$GITHUB_OUTPUT"
-            echo "jlink runtime built: $("${DEST}/bin/java" -version 2>&1 | head -1)"
-          else
-            echo "bundled-runtime=false" >> "$GITHUB_OUTPUT"
-            echo "WARN: jlink runtime build failed; jar tier will need system JDK"
-            cat /tmp/jlink.log || true
+
+          DOWNLOAD_DIR="${RUNNER_TEMP}/dl4j-sdk-download"
+          SDK_ROOT="${RUNNER_TEMP}/dl4j-sdk-assets"
+          mkdir -p "${DOWNLOAD_DIR}" "${SDK_ROOT}"
+          ARCHIVE="${DOWNLOAD_DIR}/sdk-assets.archive"
+          CHECKSUM="${ARCHIVE}.sha256"
+          curl --fail --location --retry 3 "${SDK_URL}" --output "${ARCHIVE}"
+          curl --fail --location --retry 3 "${SDK_URL}.sha256" --output "${CHECKSUM}"
+
+          EXPECTED="$(awk '{print tolower($1)}' "${CHECKSUM}")"
+          ACTUAL="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
+          if [[ ! "${EXPECTED}" =~ ^[0-9a-f]{64}$ ]] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
+            echo "ERROR: DL4J SDK checksum mismatch: expected=${EXPECTED} actual=${ACTUAL}" >&2
+            exit 1
           fi
+
+          python3 - "${ARCHIVE}" "${SDK_ROOT}" <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          driver = Path("release/aws/build-platform.py")
+          spec = importlib.util.spec_from_file_location("kompile_release_build_platform", driver)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+          destination = Path(sys.argv[2])
+          module.extract_sdk_archive(Path(sys.argv[1]), destination)
+          module.validate_sdk_assets(destination, "GitHub release DL4J SDK archive")
+          PY
+          echo "path=${SDK_ROOT}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Linux packaging tools
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y patchelf
 
       - name: Assemble full distribution archive
         id: pkg
@@ -283,100 +313,38 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          VARIANT="full"
-          OS_ID="linux"
-          ARCH="x86_64"
-          EXT="tar.gz"
-          NAME="kompile-dist-${VERSION}-${VARIANT}-${OS_ID}-${ARCH}"
-          TOP="kompile-${VERSION}"
-          STAGE="staging-full/${TOP}"
+          NAME="kompile-dist-${VERSION}-full-linux-x86_64"
+          OUTPUT_DIR="${PWD}/release-dist"
+          export JAVA_HOME="${GRAALVM_HOME}"
+          export PATH="${JAVA_HOME}/bin:${PATH}"
+          export KOMPILE_JAVA="${TEMURIN_HOME}/bin/java"
 
-          mkdir -p "${STAGE}/bin" "${STAGE}/lib" \
-                   "${STAGE}/data/input_documents/uploads" \
-                   "${STAGE}/data/shared_files" \
-                   "${STAGE}/data/prompt-templates" \
-                   "${STAGE}/data/models/.staging" \
-                   "${STAGE}/data/logs" \
-                   "${STAGE}/data/tool-definitions" \
-                   "${STAGE}/data/folders" \
-                   "${STAGE}/data/mcp-servers" \
-                   "${STAGE}/data/mcp-bridges" \
-                   "${STAGE}/data/pids" \
-                   "${STAGE}/anserini/indexes" \
-                   "${STAGE}/components" \
-                   "${STAGE}/fact-sheets" \
-                   "${STAGE}/archives"
+          # build-dist.sh owns the layout, jlink runtime, complete DL4J SDK,
+          # internal manifest, checksums, and ELF portability policy.
+          ./build-dist.sh full \
+            --skip-java-build \
+            --skip-maven-install \
+            --version "${VERSION}" \
+            --platform linux-x86_64 \
+            --sdx-assets "${{ steps.dl4j_sdk.outputs.path }}" \
+            --output-dir "${OUTPUT_DIR}"
 
-          # CLI native binary.
-          CLI_BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main"
-          if [ -f "${CLI_BIN}" ]; then
-            cp "${CLI_BIN}" "${STAGE}/bin/kompile"
-            chmod +x "${STAGE}/bin/kompile"
-            ln -sf kompile "${STAGE}/bin/kompile-cli"
-          fi
+          cp "${OUTPUT_DIR}/${NAME}.zip" "${NAME}.zip"
+          cp "${OUTPUT_DIR}/${NAME}.zip.sha256" "${NAME}.zip.sha256"
+          cp "${OUTPUT_DIR}/${NAME}.tar.gz" "${NAME}.tar.gz"
+          cp "${OUTPUT_DIR}/${NAME}.tar.gz.sha256" "${NAME}.tar.gz.sha256"
 
-          # CLI shaded jar → lib/kompile-cli.jar.
-          CLI_JAR=$(find kompile-cli/kompile-cli-main/target -maxdepth 1 -name '*-shaded.jar' 2>/dev/null | head -1)
-          if [ -n "${CLI_JAR}" ]; then
-            cp "${CLI_JAR}" "${STAGE}/lib/kompile-cli.jar"
-          fi
+          DIST_ROOT="${OUTPUT_DIR}/${NAME}"
+          for asset in kompile-cli.jar kompile-server.jar kompile-chat.jar \
+                       kompile-crawl-manager.jar kompile-model-staging.jar; do
+            test -f "${DIST_ROOT}/lib/${asset}"
+            cp "${DIST_ROOT}/lib/${asset}" "${asset}"
+          done
 
-          # Server exec jar → lib/kompile-server.jar.
-          SERVER_JAR=$(find kompile-app/kompile-app-parent/kompile-app-main/target \
-            -maxdepth 1 \( -name '*-exec.jar' -o -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' \) \
-            2>/dev/null | grep -v 'original' | head -1)
-          if [ -n "${SERVER_JAR}" ]; then
-            cp "${SERVER_JAR}" "${STAGE}/lib/kompile-server.jar"
-          fi
-
-          # Staging exec jar → lib/kompile-model-staging.jar.
-          STAGING_JAR=$(find kompile-app/kompile-models/kompile-model-staging/target \
-            -maxdepth 1 \( -name '*-exec.jar' -o -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' \) \
-            2>/dev/null | grep -v 'original' | head -1)
-          if [ -n "${STAGING_JAR}" ]; then
-            cp "${STAGING_JAR}" "${STAGE}/lib/kompile-model-staging.jar"
-          fi
-
-          # Bundled jlink runtime.
-          RUNTIME_PATH="${{ steps.jlink.outputs.runtime-path }}"
-          if [ -n "${RUNTIME_PATH}" ] && [ -d "${RUNTIME_PATH}" ]; then
-            cp -a "${RUNTIME_PATH}" "${STAGE}/runtime"
-          fi
-
-          # Launcher scripts.
-          cp kompile-dist/src/main/scripts/*.sh "${STAGE}/bin/" 2>/dev/null || true
-          chmod +x "${STAGE}/bin/"*.sh 2>/dev/null || true
-
-          # JBang catalog + quick-start guide.
-          cp kompile-dist/src/main/resources/jbang-catalog.json "${STAGE}/" 2>/dev/null || true
-          cp kompile-dist/src/main/resources/JBANG.md "${STAGE}/" 2>/dev/null || true
-
-          # Seed files.
-          echo '{"mcpServers":{}}' > "${STAGE}/data/mcp-config.json"
-          echo "${VERSION}" > "${STAGE}/.version"
-          echo "${VARIANT}" > "${STAGE}/.variant"
-          cat > "${STAGE}/.dist-info.json" << EOFJSON
-          {
-            "version": "${VERSION}",
-            "variant": "${VARIANT}",
-            "platform": "${OS_ID}-${ARCH}",
-            "buildDate": "$(date -Iseconds)",
-            "components": {
-              "cli": $([ -f "${STAGE}/bin/kompile" ] && echo true || echo false),
-              "server": $([ -f "${STAGE}/lib/kompile-server.jar" ] && echo true || echo false),
-              "model-staging": $([ -f "${STAGE}/lib/kompile-model-staging.jar" ] && echo true || echo false),
-              "bundled-runtime": $([ -d "${STAGE}/runtime" ] && echo true || echo false)
-            },
-            "backend": "hosted"
-          }
-          EOFJSON
-
-          # Archive.
-          tar -C staging-full -czf "${NAME}.tar.gz" "${TOP}"
-          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
-
-          echo "archive=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
-          ls -lh "${NAME}.tar.gz" "${NAME}.tar.gz.sha256"
+          echo "archive=${NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "compatibility_archive=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          ls -lh "${NAME}.zip" "${NAME}.zip.sha256" \
+            "${NAME}.tar.gz" "${NAME}.tar.gz.sha256" kompile-*.jar
 
       - name: Upload full-dist artifacts
         uses: actions/upload-artifact@v4
@@ -385,6 +353,13 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.archive }}.sha256
+            ${{ steps.pkg.outputs.compatibility_archive }}
+            ${{ steps.pkg.outputs.compatibility_archive }}.sha256
+            kompile-cli.jar
+            kompile-server.jar
+            kompile-chat.jar
+            kompile-crawl-manager.jar
+            kompile-model-staging.jar
           if-no-files-found: error
 
   # ── Smoke-test the full-dist archive before publishing ───────────────────
@@ -407,24 +382,38 @@ jobs:
       - name: Download full-dist artifact
         uses: actions/download-artifact@v4
         with:
-          name: kompile-dist-${{ steps.ver.outputs.version }}-full-linux-x86_64.tar.gz
+          name: kompile-dist-${{ steps.ver.outputs.version }}-full-linux-x86_64.zip
           path: full-dist-download
 
-      - name: Extract distribution to $HOME/.kompile
+      - name: Verify and extract complete ZIP to $HOME/.kompile
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE=$(find full-dist-download -name '*.tar.gz' | head -1)
+          ARCHIVE="$(find full-dist-download -maxdepth 1 -name '*.zip' -print -quit)"
           if [ -z "${ARCHIVE}" ]; then
-            echo "ERROR: no .tar.gz found in full-dist-download/"
-            ls -la full-dist-download/ || true
+            echo "ERROR: no complete distribution ZIP found in full-dist-download/" >&2
             exit 1
           fi
-          echo "Extracting ${ARCHIVE} ..."
-          mkdir -p "$HOME/.kompile"
-          tar -xzf "${ARCHIVE}" --strip-components=1 -C "$HOME/.kompile"
-          echo "Extracted layout:"
-          ls -la "$HOME/.kompile/" || true
+          CHECKSUM="${ARCHIVE}.sha256"
+          test -f "${CHECKSUM}"
+          (cd "$(dirname "${ARCHIVE}")" && sha256sum -c "$(basename "${CHECKSUM}")")
+
+          EXTRACTED="${RUNNER_TEMP}/full-dist-extracted"
+          rm -rf "${EXTRACTED}"
+          mkdir -p "${EXTRACTED}" "$HOME/.kompile"
+          unzip -q "${ARCHIVE}" -d "${EXTRACTED}"
+          DIST_ROOT="$(find "${EXTRACTED}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          if [ -z "${DIST_ROOT}" ]; then
+            echo "ERROR: distribution ZIP has no root directory" >&2
+            exit 1
+          fi
+          cp -a "${DIST_ROOT}/." "$HOME/.kompile/"
+
+          # Attest the internal payload and the complete DL4J companion shard.
+          (cd "$HOME/.kompile" && sha256sum -c manifest.sha256)
+          test -n "$(find "$HOME/.kompile/sdx-sdk" -type f \( -name '*.zip' -o -name '*.aar' \) -print -quit)"
+          test -n "$(find "$HOME/.kompile/sdx-sdk/jars" -type f -name '*.jar' -print -quit)"
+          echo "Complete ZIP extracted and verified"
 
       - name: Set permissions
         shell: bash
@@ -555,35 +544,6 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      - name: Upload stable-named jar assets
-        # Uploads well-known jar names so downstream tooling can reference them
-        # without version strings. Searches downloaded dist/ artifacts and workspace.
-        # Missing jars are skipped gracefully (jars only present in full builds).
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          upload_jar_pattern() {
-            local pattern="$1"
-            local asset_name="$2"
-            local match
-            match="$(find dist . -maxdepth 8 -path "${pattern}" 2>/dev/null | head -1)"
-            if [ -f "${match}" ]; then
-              echo "Uploading ${match} as ${asset_name}"
-              gh release upload "${TAG}" "${match}#${asset_name}" --clobber
-            else
-              echo "Skipping ${asset_name} (no file matched ${pattern})"
-            fi
-          }
-          # Stable-named jars from the full-dist artifact (extracted into dist/).
-          upload_jar_pattern "*/lib/kompile-cli.jar"             "kompile-cli.jar"
-          upload_jar_pattern "*/lib/kompile-server.jar"          "kompile-server.jar"
-          upload_jar_pattern "*/lib/kompile-model-staging.jar"   "kompile-model-staging.jar"
-          # Fallback: look in build target dirs if full-dist wasn't included in upload.
-          upload_jar_pattern "*/kompile-cli-main/*-shaded.jar"   "kompile-cli.jar"
-          upload_jar_pattern "*/kompile-app-main/*-exec.jar"     "kompile-server.jar"
-          upload_jar_pattern "*/kompile-model-staging/*-exec.jar" "kompile-model-staging.jar"
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Template: hosted / GPU variants (needs a dedicated or self-hosted runner)
 #
@@ -597,16 +557,13 @@ jobs:
 #           - os_id: linux
 #             arch: x86_64
 #             variant: cuda            # or: hosted | cpu-intel | amd-zluda
-#             ext: tar.gz
 #     steps:
 #       - uses: actions/checkout@v4
 #       - uses: graalvm/setup-graalvm@v1
 #         with: { java-version: '21', distribution: 'graalvm-community' }
-#       # Build EVERY native image in the reactor, then run the kompile-dist
-#       # assembly. For GPU variants also pass the backend flags, e.g.
-#       #   -Plibnd4j-cuda -Dlibnd4j.chip=cuda -Dlibnd4j.compute=86,89
-#       - run: mvn -B -ntp -Dkompile.dist=true -DskipTests clean package
-#       # The assembly emits kompile-dist/target/kompile-dist-<version>.<ext>;
-#       # rename it to kompile-dist-<version>-<variant>-<os>-<arch>.<ext>,
-#       # checksum, and upload exactly like the `build` job above.
+#       # Build through the canonical variant orchestrator. It stages side-loaded
+#       # libraries and enforces the same ELF contract used by the Maven assembly.
+#       - run: ./build-dist.sh cuda --version "${GITHUB_REF_NAME#v}"
+#       # Upload the emitted archive + checksum as build artifacts and add this job
+#       # to release.needs; the release job remains the sole GitHub Release writer.
 # ──────────────────────────────────────────────────────────────────────────────

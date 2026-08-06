@@ -19,6 +19,7 @@ package ai.kompile.cli.main.configure;
 import ai.kompile.cli.main.GlobalBootstrap;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.chat.McpUrlResolver;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -59,6 +60,7 @@ import java.util.concurrent.Callable;
                 ConfigureCommand.EnforcerConfigureCommand.class,
                 ConfigureCommand.JudgeConfigureCommand.class,
                 ConfigureCommand.CodeIndexConfigureCommand.class,
+                ConfigureCommand.AgentDefaultsConfigureCommand.class,
                 ConfigureCommand.McpConfigureCommand.class,
                 ConfigureCommand.GatewayConfigureCommand.class
         })
@@ -103,6 +105,7 @@ public class ConfigureCommand implements Callable<Integer> {
                         "Code indexing: index this or another source tree",
                         "MCP: choose profile/schema and generate launch settings",
                         "Tool gateway: LLM-based tool evaluation rules",
+                        "Agent defaults: model and per-model thinking for Codex, Claude, OpenCode",
                         "Show status only"
                 );
                 int choice = selectNumbered(reader, items, true);
@@ -117,7 +120,8 @@ public class ConfigureCommand implements Callable<Integer> {
                     case 7 -> new CodeIndexConfigureCommand().call();
                     case 8 -> new McpConfigureCommand().call();
                     case 9 -> new GatewayConfigureCommand().call();
-                    case 10 -> { printStatus(workingDir); yield 0; }
+                    case 10 -> new AgentDefaultsConfigureCommand().call();
+                    case 11 -> { printStatus(workingDir); yield 0; }
                     default -> 0;
                 };
                 if (result != 0) return result;
@@ -468,6 +472,92 @@ public class ConfigureCommand implements Callable<Integer> {
                 return new CommandLine(new CodeIndexCommand()).execute(args.toArray(String[]::new));
             } catch (Exception e) {
                 System.err.println("Code index configuration failed: " + e.getMessage());
+                return 1;
+            }
+        }
+    }
+
+    @Command(name = "agent-defaults", aliases = {"agents"}, mixinStandardHelpOptions = true,
+            description = "Configure per-agent model and per-model thinking defaults.")
+    public static class AgentDefaultsConfigureCommand implements Callable<Integer> {
+        @Option(names = "--agent", required = true,
+                description = "Target agent: codex, claude, opencode")
+        String agent;
+
+        @Option(names = {"--model", "-m"},
+                description = "Default model for this agent")
+        String model;
+
+        @Option(names = {"--thinking", "--effort"},
+                description = "Thinking/effort value to persist")
+        String thinking;
+
+        @Option(names = "--thinking-model",
+                description = "Exact model to associate with --thinking (defaults to --model; otherwise agent fallback)")
+        String thinkingModel;
+
+        @Option(names = "--global",
+                description = "Write user defaults under ~/.kompile/config instead of this project")
+        boolean globalConfig;
+
+        @Option(names = {"--project-dir", "-d"},
+                description = "Project directory to configure (default: resolved project root)")
+        String projectDir;
+
+        @Option(names = "--show",
+                description = "Show the effective selection without changing configuration")
+        boolean showOnly;
+
+        @Override
+        public Integer call() {
+            String selectedAgent = AgentLaunchDefaults.normalizeSupportedAgent(agent);
+            if (selectedAgent == null) {
+                System.err.println("Unsupported agent '" + agent + "'. Expected one of: "
+                        + String.join(", ", AgentLaunchDefaults.SUPPORTED_AGENTS));
+                return 2;
+            }
+            if (thinkingModel != null && !thinkingModel.isBlank()
+                    && (thinking == null || thinking.isBlank())) {
+                System.err.println("--thinking-model requires --thinking");
+                return 2;
+            }
+
+            Path projectRoot = resolveProjectDir(projectDir);
+            Path configPath = globalConfig
+                    ? AgentLaunchDefaults.userConfigPath()
+                    : AgentLaunchDefaults.projectConfigPath(projectRoot);
+            boolean hasUpdate = (model != null && !model.isBlank())
+                    || (thinking != null && !thinking.isBlank());
+            if (showOnly && hasUpdate) {
+                System.err.println("--show cannot be combined with --model or --thinking");
+                return 2;
+            }
+
+            try {
+                if (!showOnly && hasUpdate) {
+                    String selectedThinkingModel = thinkingModel;
+                    if ((selectedThinkingModel == null || selectedThinkingModel.isBlank())
+                            && model != null && !model.isBlank() && thinking != null && !thinking.isBlank()) {
+                        selectedThinkingModel = model;
+                    }
+                    AgentLaunchDefaults.save(
+                            configPath, selectedAgent, model, thinking, selectedThinkingModel);
+                    System.out.println("Saved " + selectedAgent + " defaults to " + configPath);
+                }
+
+                AgentLaunchDefaults.Selection effective = AgentLaunchDefaults.resolve(
+                        selectedAgent, projectRoot, null, null);
+                System.out.println("Effective " + selectedAgent + " model: "
+                        + (effective.model() == null ? "native default" : effective.model()));
+                System.out.println("Effective " + selectedAgent + " thinking: "
+                        + (effective.thinking() == null ? "native default" : effective.thinking()));
+                System.out.println("Precedence: explicit MCP/CLI > project > user > native CLI");
+                if (!hasUpdate && !showOnly) {
+                    System.out.println("Pass --model and/or --thinking to update these defaults.");
+                }
+                return 0;
+            } catch (Exception e) {
+                System.err.println("Could not configure agent defaults: " + e.getMessage());
                 return 1;
             }
         }

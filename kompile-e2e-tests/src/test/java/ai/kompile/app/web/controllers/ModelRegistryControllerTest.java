@@ -28,6 +28,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
@@ -51,6 +52,9 @@ class ModelRegistryControllerTest {
     private AnseriniVectorStoreImpl vectorStore;
 
     @Mock
+    private ObjectProvider<AnseriniVectorStoreImpl> vectorStoreProvider;
+
+    @Mock
     private StagingServiceConfigService stagingConfigService;
 
     @Mock
@@ -66,6 +70,7 @@ class ModelRegistryControllerTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(vectorStoreProvider.getIfAvailable()).thenReturn(vectorStore);
         // Construct with all optional dependencies null (simplest case)
         controller = new ModelRegistryController(
                 null, null, null, null, null, null
@@ -74,7 +79,7 @@ class ModelRegistryControllerTest {
 
     private ModelRegistryController controllerWithAll() {
         return new ModelRegistryController(
-                embeddingModel, vectorStore, stagingConfigService,
+                embeddingModel, vectorStoreProvider, stagingConfigService,
                 stagingClientService, ocrPipelineService, modelAutoInitService
         );
     }
@@ -277,12 +282,12 @@ class ModelRegistryControllerTest {
 
     @Test
     void getActiveModelContext_withAllNullServices_returnsNullEmbeddingAndReranker() {
-        ResponseEntity<ActiveModelContext> response =
+        ResponseEntity<Map<String, Object>> response =
                 controller.getActiveModelContext();
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
-        assertNull(response.getBody().embedding);
-        assertNull(response.getBody().reranker);
+        assertNull(response.getBody().get("embedding"));
+        assertNull(response.getBody().get("reranker"));
     }
 
     @Test

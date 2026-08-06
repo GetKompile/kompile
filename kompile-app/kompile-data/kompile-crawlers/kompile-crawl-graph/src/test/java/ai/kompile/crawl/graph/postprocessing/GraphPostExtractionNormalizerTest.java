@@ -37,9 +37,9 @@ import static org.mockito.Mockito.*;
 /**
  * Unit tests for {@link GraphPostExtractionNormalizer}.
  *
- * <p>Tests cover: static helper contracts (canonicalize/degenerate/merge),
- * integration with the mocked KnowledgeGraphService, event-dispatch path,
- * and safety (null factSheetId, over-cap graphs, service exceptions).</p>
+ * <p>Tests cover canonicalization, non-destructive fact preservation,
+ * integration with the mocked KnowledgeGraphService, event dispatch, and
+ * safety (null factSheetId, over-cap graphs, service exceptions).</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -106,65 +106,6 @@ class GraphPostExtractionNormalizerTest {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // Static helper: isDegenerate
-    // ═════════════════════════════════════════════════════════════════════════
-
-    @Test
-    void degenerate_nullTitleIsDegenerate() {
-        assertThat(GraphPostExtractionNormalizer.isDegenerate(null, 3)).isTrue();
-    }
-
-    @Test
-    void degenerate_blankTitleIsDegenerate() {
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("", 3)).isTrue();
-    }
-
-    @Test
-    void degenerate_shortNonNumericTitleIsDegenerate() {
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("A", 3)).isTrue();
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("AB", 3)).isTrue();
-    }
-
-    @Test
-    void degenerate_shortNumericTitleIsKept() {
-        // Single-digit or 2-char numbers can be legitimate entity titles (year, ID, etc.)
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("42", 3)).isFalse();
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("3.14", 3)).isFalse();
-    }
-
-    @Test
-    void degenerate_sufficientlyLongTitleIsNotDegenerate() {
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("ABC", 3)).isFalse();
-        assertThat(GraphPostExtractionNormalizer.isDegenerate("Alice Smith", 3)).isFalse();
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Static helper: mergeMetadata
-    // ═════════════════════════════════════════════════════════════════════════
-
-    @Test
-    void mergeMetadata_addsNewKeysFromDuplicate() {
-        GraphNode original  = makeNode("n1", "Alice");
-        GraphNode duplicate = makeNode("n2", "Alice");
-        // Add extra metadata to duplicate that original lacks
-        duplicate.setMetadataJson("{\"extra_key\":\"extra_val\",\"source\":\"doc2\"}");
-
-        // original has no metadata (empty JSON would be null here for simplicity)
-        Map<String, Object> additions = GraphPostExtractionNormalizer.mergeMetadata(original, duplicate);
-        // We can't easily test the live JSON parse here without Jackson, so test the no-op case
-        assertThat(additions).isNotNull();
-    }
-
-    @Test
-    void mergeMetadata_returnsEmptyWhenDuplicateHasNoMetadata() {
-        GraphNode original  = makeNode("n1", "Alice");
-        GraphNode duplicate = makeNode("n2", "Alice");
-
-        Map<String, Object> additions = GraphPostExtractionNormalizer.mergeMetadata(original, duplicate);
-        assertThat(additions).isEmpty();
-    }
-
-    // ═════════════════════════════════════════════════════════════════════════
     // normalize() — integration with mocked KnowledgeGraphService
     // ═════════════════════════════════════════════════════════════════════════
 
@@ -192,33 +133,33 @@ class GraphPostExtractionNormalizerTest {
     }
 
     @Test
-    void normalize_dropsDegenerateNodes() {
-        GraphNode degNode = makeNode("deg1", "X"); // 1 char — degenerate
+    void normalize_preservesShortEntityNames() {
+        GraphNode shortNode = makeNode("short1", "X");
         when(knowledgeGraphService.getNodesByTypeInFactSheet(2L, NodeLevel.ENTITY))
-                .thenReturn(List.of(degNode));
+                .thenReturn(List.of(shortNode));
 
         GraphPostExtractionNormalizer.NormalizationResult result =
                 normalizer.normalize(2L, 3, 10_000);
 
-        assertThat(result.degenerateDropped()).isEqualTo(1);
-        verify(knowledgeGraphService).deleteNode("deg1");
+        assertThat(result.degenerateDropped()).isZero();
+        assertThat(result.duplicatesMerged()).isZero();
+        verify(knowledgeGraphService, never()).deleteNode(anyString());
+        verify(knowledgeGraphService, never()).deleteEdge(anyString());
     }
 
     @Test
-    void normalize_mergesTriviallyDuplicateNodes() {
-        // Two nodes with equivalent canonical titles (one has trailing period)
+    void normalize_preservesSameTitleEntitiesForDedicatedResolver() {
         GraphNode n1 = makeNode("id_a", "Acme Corp");
-        GraphNode n2 = makeNode("id_b", "acme corp"); // same after lowercasing
+        GraphNode n2 = makeNode("id_b", "acme corp");
         when(knowledgeGraphService.getNodesByTypeInFactSheet(3L, NodeLevel.ENTITY))
                 .thenReturn(new ArrayList<>(List.of(n1, n2)));
 
         GraphPostExtractionNormalizer.NormalizationResult result =
                 normalizer.normalize(3L, 3, 10_000);
 
-        assertThat(result.duplicatesMerged()).isEqualTo(1);
-        verify(knowledgeGraphService).deleteNode("id_b");
-        // Original "id_a" must NOT be deleted
-        verify(knowledgeGraphService, never()).deleteNode("id_a");
+        assertThat(result.duplicatesMerged()).isZero();
+        verify(knowledgeGraphService, never()).deleteNode(anyString());
+        verify(knowledgeGraphService, never()).createEdgesBatch(any());
     }
 
     @Test

@@ -61,4 +61,19 @@ class DeviceRoutingConfigServiceTest {
 
         assertEquals(2, resolved.cudaCurrentDevice());
     }
+
+    @Test
+    void persistedServiceRouteRoundTripsThroughJackson() throws IOException {
+        DeviceRoutingConfig expected = new DeviceRoutingConfig(
+                Map.of("embedding", new DeviceRoutingConfig.ServiceDeviceConfig(
+                        "cpu", null, 4, 123456789L)),
+                true);
+        DeviceRoutingConfigService writer = new DeviceRoutingConfigService(tempDir.toString());
+        writer.saveConfiguration(expected);
+
+        DeviceRoutingConfigService reader = new DeviceRoutingConfigService(tempDir.toString());
+        reader.loadPersistedConfig();
+
+        assertEquals(expected, reader.getConfiguration());
+    }
 }

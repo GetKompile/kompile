@@ -160,9 +160,11 @@ class CrossIndexControllerTest {
 
         when(trackingService.listDocuments(eq(1L), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(doc)));
+        when(trackingService.countPassages(1L)).thenReturn(1L);
 
         mockMvc.perform(get("/api/cross-index/documents").param("factSheetId", "1"))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].passageCount").value(1));
     }
 
     @Test
@@ -181,9 +183,11 @@ class CrossIndexControllerTest {
 
         when(trackingService.findDocument(1L)).thenReturn(Optional.of(doc));
         when(trackingService.listPassagesOrdered(1L)).thenReturn(List.of());
+        when(trackingService.countPassages(1L)).thenReturn(1L);
 
         mockMvc.perform(get("/api/cross-index/documents/1"))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.document.passageCount").value(1));
     }
 
     @Test

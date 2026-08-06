@@ -27,6 +27,8 @@ import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.NativeImageInfo;
+import ai.kompile.utils.NativeRuntimePathSelector;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.management.OperatingSystemMXBean;
 import jakarta.annotation.PreDestroy;
@@ -1312,30 +1314,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         // AUTO mode: detect based on runtime context
         // If we have a classpath, prefer JVM mode for easier debugging and development
-        if (hasClasspath()) {
+        if (NativeImageInfo.hasClasspath()) {
             return LaunchMode.JVM_CLASSPATH;
         }
         // Otherwise, we're likely in a native image - use native mode
         return LaunchMode.NATIVE_EXECUTABLE;
-    }
-
-    // ==================== Inline Native Image Detection ====================
-    // These methods replace NativeImageInfo dependency for simpler builds
-
-    private static boolean isRunningInNativeImage() {
-        try {
-            Class<?> imageInfo = Class.forName("org.graalvm.nativeimage.ImageInfo");
-            java.lang.reflect.Method inImageCode = imageInfo.getMethod("inImageCode");
-            Object result = inImageCode.invoke(null);
-            return Boolean.TRUE.equals(result);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static boolean hasClasspath() {
-        String classpath = System.getProperty("java.class.path");
-        return classpath != null && !classpath.isBlank() && !classpath.equals(".");
     }
 
     /**
@@ -1442,18 +1425,6 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         logger.info("Extracted BOOT-INF entries to {}", extractDir);
     }
 
-    private static String getNativeExecutablePath() {
-        try {
-            Class<?> imageInfo = Class.forName("org.graalvm.nativeimage.ImageInfo");
-            java.lang.reflect.Method getExecutableName = imageInfo.getMethod("getExecutableName");
-            Object result = getExecutableName.invoke(null);
-            return result != null ? result.toString() : null;
-        } catch (Exception e) {
-            // Expected when not running in GraalVM native image
-            return null;
-        }
-    }
-
     private String resolveNativeExecutablePath(String configuredPath) {
         // Priority 1: Explicitly configured path
         if (configuredPath != null && !configuredPath.isBlank()) {
@@ -1465,8 +1436,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         // Priority 2: Detect from current native image
-        if (isRunningInNativeImage()) {
-            String execPath = getNativeExecutablePath();
+        if (NativeImageInfo.isRunningInNativeImage()) {
+            String execPath = NativeImageInfo.getExecutablePath();
             if (execPath != null) {
                 logger.info("Using current native image executable: {}", execPath);
                 return execPath;
@@ -1808,7 +1779,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 logger.warn("Could not get ND4J environment: {}", e.getMessage());
             }
 
-            // Also pass all org.nd4j.* and related system properties
+            // Also pass all org.nd4j.* and related system properties.
+            String childClasspath = String.join(File.pathSeparator, classpath);
             String[] propertyPrefixes = {
                 "org.nd4j.",           // All ND4J properties
                 "org.bytedeco.",       // All JavaCPP/Bytedeco properties
@@ -1836,6 +1808,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                         break;
                     }
                 }
+            }
+
+            // Emit the backend-isolated path last so it overrides the unfiltered parent value.
+            // Backend-first ordering also avoids stale same-SONAME LLVM/MLIR links in common
+            // JavaCPP cache directories such as OpenBLAS.
+            String runtimePath = NativeRuntimePathSelector.forChild(
+                    System.getProperty("org.nd4j.presets.sharedRuntimePath"), childClasspath);
+            if (runtimePath != null && !runtimePath.isBlank()) {
+                command.add("-Dorg.nd4j.presets.sharedRuntimePath=" + runtimePath);
             }
 
             // Device-agnostic backend/device/cap delivery from the shared base infra — added AFTER the
@@ -1870,7 +1851,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
             // Classpath
             command.add("-cp");
-            command.add(String.join(File.pathSeparator, classpath));
+            command.add(childClasspath);
 
             // Main class
             command.add(EmbeddingSubprocessMain.class.getName());
@@ -1893,7 +1874,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 return true;
             }
             // Native requested but not available, check if JVM fallback is possible
-            if (hasClasspath()) {
+            if (NativeImageInfo.hasClasspath()) {
                 logger.warn("Native executable mode requested but no executable found. " +
                            "Falling back to JVM classpath mode.");
                 return false;
@@ -1904,10 +1885,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         // AUTO mode: use native if we have an executable or can detect one, and no classpath available
         String resolvedPath = resolveNativeExecutablePath();
-        if (resolvedPath != null && !hasClasspath()) {
+        if (resolvedPath != null && !NativeImageInfo.hasClasspath()) {
             return true;
         }
-        return !hasClasspath();
+        return !NativeImageInfo.hasClasspath();
     }
 
     /**
@@ -1928,8 +1909,8 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
 
         // Priority 2: Detect from current native image
-        if (isRunningInNativeImage()) {
-            String execPath = getNativeExecutablePath();
+        if (NativeImageInfo.isRunningInNativeImage()) {
+            String execPath = NativeImageInfo.getExecutablePath();
             if (execPath != null) {
                 logger.info("Auto-detected native executable from running native image: {}", execPath);
                 return execPath;

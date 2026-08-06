@@ -83,7 +83,7 @@
   "allDeclaredClasses":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"dataFactory","parameterTypes":[] }, {"name":"metrics","parameterTypes":[] }, {"name":"objectMapper","parameterTypes":[] }, {"name":"profiler","parameterTypes":[] }, {"name":"restTemplateBuilder","parameterTypes":[] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"metrics","parameterTypes":[] }, {"name":"objectMapper","parameterTypes":[] }, {"name":"profiler","parameterTypes":[] }, {"name":"restTemplateBuilder","parameterTypes":[] }]
 },
 {
   "name":"ai.kompile.core.llm.LanguageModel",
@@ -5344,7 +5344,7 @@
 },
 {
   "name":"org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu",
-  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"setMemoryPoolSoftLimitPercent","parameterTypes":["int"] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }]
 },
 {
   "name":"org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$ArgumentsList"

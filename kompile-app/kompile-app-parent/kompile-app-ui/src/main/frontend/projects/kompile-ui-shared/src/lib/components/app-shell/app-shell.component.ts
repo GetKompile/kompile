@@ -43,6 +43,8 @@ import {
 } from '../create-fact-sheet-dialog/create-fact-sheet-dialog.component';
 
 /** One entry in the shell's top-level tab bar. */
+export type ShellPersona = 'admin' | 'chat' | 'crawl';
+
 export interface ShellNavItem {
   /** Visible tab text. */
   label: string;
@@ -88,6 +90,9 @@ export interface ShellNavItem {
   styleUrls: ['./app-shell.component.css']
 })
 export class AppShellComponent implements OnInit, OnDestroy {
+  /** The persona owning this shell; shared chrome uses it to avoid probing unrelated services. */
+  @Input() persona: ShellPersona = 'admin';
+
   /** Tab bar contents, in display order. */
   @Input({ required: true }) navItems: ShellNavItem[] = [];
 

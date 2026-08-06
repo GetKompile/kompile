@@ -53,6 +53,16 @@ export interface StagingServiceConfig {
   lastError?: string;
 }
 
+export type ModelStatusPersona = 'admin' | 'chat' | 'crawl';
+
+export interface StagingDependencyStatus {
+  configured: boolean;
+  endpointUrl: string;
+  reachable: boolean;
+  statusCode: number;
+  error?: string;
+}
+
 // Connection test result
 export interface ConnectionTestResult {
   success: boolean;
@@ -1086,6 +1096,7 @@ export type ModelSourceType = 'staging' | 'archive' | 'default' | 'registry';
 export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChanges {
 
   @Input() factSheetId: number | null = null;
+  @Input() persona: ModelStatusPersona = 'admin';
   @Output() openStaging = new EventEmitter<void>();
 
   // State
@@ -1184,7 +1195,7 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
     // Connect WebSocket and subscribe to model status
     this.webSocketService.connect();
 
-    this.modelStatusSubscription = this.webSocketService.subscribeToModelStatus().pipe(
+    this.modelStatusSubscription = this.webSocketService.subscribeToModelStatus(this.persona === 'admin').pipe(
       takeUntil(this.destroy$)
     ).subscribe({
       next: (status: ModelStatusUpdate) => {
@@ -1261,7 +1272,7 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
     this.registryChangeSubscription?.unsubscribe();
     this.loadingPollSubscription?.unsubscribe();
     this.modelStatusSubscription?.unsubscribe();
-    this.webSocketService.unsubscribeFromModelStatus();
+    this.webSocketService.unsubscribeFromModelStatus(this.persona === 'admin');
     this.destroy$.next();
     this.destroy$.complete();
     if (this.messageTimeout) {
@@ -1276,7 +1287,11 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
   refreshAll(): void {
     this.isLoading = true;
     this.clearMessages();
-    this.fetchRestartStatus();
+    if (this.persona === 'admin') {
+      this.fetchRestartStatus();
+    } else {
+      this.restartStatus = null;
+    }
 
     // Build the model status request URL
     const modelStatusUrl = this.factSheetId
@@ -1379,6 +1394,11 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
    * Fetch models from the remote staging service.
    */
   private fetchStagingModels(): void {
+    if (this.persona !== 'admin') {
+      this.fetchManagedStagingDependency();
+      return;
+    }
+
     forkJoin({
       stagingConfig: this.http.get<StagingServiceConfig>(`${this.baseService.backendUrl}/staging-config/configs/active`).pipe(
         catchError(err => of(null))
@@ -1451,6 +1471,49 @@ export class ModelStatusIndicatorComponent implements OnInit, OnDestroy, OnChang
         console.error('Error fetching staging models:', err);
         this.isLoading = false;
       }
+    });
+  }
+
+  /**
+   * Chat and Crawl are independently distributable personas. They read the same managed endpoint
+   * topology as Admin, but probe Model Staging through their own backend so the browser never needs
+   * Admin or cross-origin access merely to render dependency health.
+   */
+  private fetchManagedStagingDependency(): void {
+    this.http.get<StagingDependencyStatus>(
+      `${this.baseService.backendUrl}/service-endpoints/dependencies/staging`
+    ).pipe(
+      catchError(() => of(null))
+    ).subscribe(status => {
+      const configured = status?.configured === true;
+      const reachable = status?.reachable === true;
+      this.stagingConfig = configured && status ? {
+        name: 'Managed Model Staging',
+        endpointUrl: status.endpointUrl,
+        active: true,
+        verified: reachable,
+        lastError: status.error
+      } : null;
+      this.stagingConnected = reachable;
+      this.remoteRegistry = null;
+      this.remoteActiveModels = {};
+      this.archiveStatus = null;
+      this.archiveModels = [];
+      this.denseEncoders = [];
+      this.crossEncoders = [];
+      this.denseEncoderCount = 0;
+      this.crossEncoderCount = 0;
+      this.sourceStatus = {
+        configured,
+        sourceType: 'staging',
+        description: status?.endpointUrl || null,
+        available: reachable,
+        error: status?.error || null,
+        encoderCount: 0,
+        crossEncoderCount: 0
+      };
+      this.isLoading = false;
+      this.cdr.markForCheck();
     });
   }
 

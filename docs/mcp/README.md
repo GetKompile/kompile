@@ -69,6 +69,67 @@ Kompile also auto-configures hooks in agent settings files (`.claude/settings.lo
 
 Any tool can run asynchronously with `_background: true` -- returns a task ID immediately, use `poll` to check status later.
 
+## Agent delegation defaults
+
+The `task`, `multi_task`, and `quorum_task` tools can launch `codex`, `claude`, or `opencode`. Each accepts explicit `model` and `thinking` overrides; `multi_task` also accepts them per subtask.
+
+Configure project defaults from either the main CLI or the standalone agent CLI:
+
+```bash
+kompile configure agent-defaults --agent codex --model gpt-5.6-terra --thinking medium
+kompile agent defaults --agent codex --model gpt-5.6-terra --thinking medium
+kompile configure agent-defaults --agent claude --model claude-opus-4-1 --thinking high
+kompile configure agent-defaults --agent opencode --model openai/gpt-5 --thinking high
+```
+
+Add `--global` to write user defaults instead of `.kompile/agent-defaults.json`. Use `--thinking-model MODEL` to set thinking for a model other than the model being selected, or omit both model options to set an agent-wide thinking fallback. The persisted shape is:
+
+```json
+{
+  "agents": {
+    "codex": {
+      "model": "gpt-5.6-terra",
+      "thinking": {
+        "default": "medium",
+        "models": {
+          "gpt-5.6-sol": "ultra"
+        }
+      }
+    }
+  }
+}
+```
+
+Roles can override these defaults per provider. Both `create_role` and `update_role` on `role_manager` accept:
+
+```json
+{
+  "agent_defaults": {
+    "codex": {
+      "model": "gpt-5.6-terra",
+      "thinking": {
+        "default": "medium",
+        "models": {
+          "gpt-5.6-sol": "ultra"
+        }
+      }
+    },
+    "claude": {
+      "model": "claude-sonnet",
+      "thinking": { "default": "high" }
+    },
+    "opencode": {
+      "model": "openai/gpt-5.6",
+      "thinking": { "default": "medium" }
+    }
+  }
+}
+```
+
+The equivalent flat role frontmatter is `agent_defaults.codex.model: gpt-5.6-terra`, `agent_defaults.codex.thinking.default: medium`, and `agent_defaults.codex.thinking.models.gpt-5.6-sol: ultra`. The older top-level role `model:` field remains a prompt hint and is not a launch default.
+
+Model and thinking resolve independently: explicit task/subtask value, selected role default, nearest project default, user default, then the native agent default. An explicit model can therefore select that model's thinking value from the role. If a task omits `role`, Kompile uses the persisted role assignment for that agent; an explicit role wins over the assignment. Kompile maps thinking to Codex `model_reasoning_effort`, Claude `--effort`, and OpenCode `run --variant`. Direct `kompile chat` and `kompile passthrough` launches also accept `--model` and `--thinking` (alias `--effort`); OpenCode's interactive TUI has no variant flag, so its thinking selection is applied to managed delegation runs.
+
 ## Shared daemon
 
 `kompile serve` runs a shared daemon that multiplexes MCP sessions over a Unix socket at `~/.kompile/runtime/kompile.sock`. One process serves N agent sessions instead of N separate JVMs.

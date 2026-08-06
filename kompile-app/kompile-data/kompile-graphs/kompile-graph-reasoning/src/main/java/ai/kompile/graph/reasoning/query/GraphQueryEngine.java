@@ -338,7 +338,13 @@ public final class GraphQueryEngine {
         return traced(graph, query, effective, resolved.resolutions(), raw);
     }
 
-    private Result capabilities() {
+    /**
+     * Immutable model/transport-facing contract for every executable graph query intent.
+     *
+     * <p>Adapters must derive operation names and required-field guidance from this source rather
+     * than maintaining a second list that can drift from engine execution.</p>
+     */
+    public static List<Capability> capabilityContract() {
         List<Capability> values = List.of(
                 new Capability("CAPABILITIES", "List this query contract.", List.of(), Map.of()),
                 new Capability("OVERVIEW", "Summarize graph size, coverage, metadata, and available analysis assets.",
@@ -350,25 +356,25 @@ public final class GraphQueryEngine {
                 new Capability("RELATIONS", "Search and rank relations by type, endpoint, text, or metadata.",
                         List.of(), Map.of("topK", 20)),
                 new Capability("DESCRIBE", "Inspect one entity and its incident evidence.",
-                        List.of("entityId or entity phrase"), Map.of()),
+                        List.of("entityId"), Map.of()),
                 new Capability("NEIGHBORS", "List directly related entities and relations.",
-                        List.of("entityId or entity phrase"), Map.of("direction", "BOTH", "topK", 20)),
+                        List.of("entityId"), Map.of("direction", "BOTH", "topK", 20)),
                 new Capability("PATH", "Find the shortest evidence path between two entities.",
-                        List.of("entityId or phrase", "targetId or phrase"),
+                        List.of("entityId", "targetId"),
                         Map.of("direction", "OUTGOING", "maxDepth", 4)),
                 new Capability("TIMELINE", "Return timestamped graph events in chronological order.",
                         List.of(), Map.of("topK", 50)),
-                new Capability("FACTS", "Query the graph's entity-type and relation fact projection.",
+                new Capability("FACTS", "Query the graph's first-order entity-type and relation fact projection.",
                         List.of(), Map.of("topK", 50)),
-                new Capability("SIMILAR", "Rank entities similar to an automatically resolved entity.",
-                        List.of("entityId or entity phrase"), Map.of("topK", 10)),
+                new Capability("SIMILAR", "Rank entities using stored embeddings with structural fallback after resolving the source entity.",
+                        List.of("entityId"), Map.of("topK", 10)),
                 new Capability("VERIFY", "Check whether a typed relation claim is supported, refuted, or unknown.",
-                        List.of("entityId or phrase", "targetId or phrase", "relationTypes[0]"), Map.of()),
+                        List.of("entityId", "targetId", "relationTypes[0]"), Map.of()),
                 new Capability("WHY", "Return evidence supporting or refuting a typed relation claim.",
-                        List.of("entityId or phrase", "targetId or phrase", "relationTypes[0]"), Map.of()),
+                        List.of("entityId", "targetId", "relationTypes[0]"), Map.of()),
                 new Capability("WHY_NOT", "Explain why a typed relation claim is not supported.",
-                        List.of("entityId or phrase", "targetId or phrase", "relationTypes[0]"), Map.of()),
-                new Capability("RANK", "Rank important entities with the hybrid PSL/Bayesian reasoner.",
+                        List.of("entityId", "targetId", "relationTypes[0]"), Map.of()),
+                new Capability("RANK", "Rank important entities with hybrid PSL/Bayesian structure and an optional query embedding.",
                         List.of(), Map.of("structural", "PSL", "topK", 10)),
                 new Capability("ASSETS", "Inspect vectors, opinions, weight maps, metadata, and artifacts.",
                         List.of(), Map.of()),
@@ -382,10 +388,14 @@ public final class GraphQueryEngine {
                         List.of("quantitative.target", "quantitative.interventions"), Map.of()),
                 new Capability("SOLVE_TARGET", "Goal-seek one bounded graph-resident control.",
                         List.of("quantitative.target", "quantitative.goal"), Map.of()));
+        return values;
+    }
+
+    private Result capabilities() {
         return new Result(Status.OK, Intent.CAPABILITIES,
                 "Supports complete read access plus ranked executable-model retrieval, deterministic "
                         + "calculation, immutable scenarios, and bounded goal seeking.",
-                List.of(), List.of(), List.of(), values,
+                List.of(), List.of(), List.of(), capabilityContract(),
                 List.of("Entity fields accept either exact ids or names/phrases; resolutions are ranked and traced."));
     }
 

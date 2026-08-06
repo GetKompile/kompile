@@ -109,8 +109,10 @@ describe('JobLogViewerComponent', () => {
       'connect',
       'subscribeToTaskLogs',
       'subscribeToVectorPopulationLogs',
+      'subscribeToTaskTranscripts',
       'unsubscribeFromTaskLogs',
-      'unsubscribeFromVectorPopulationLogs'
+      'unsubscribeFromVectorPopulationLogs',
+      'unsubscribeFromTaskTranscripts'
     ]);
 
     // Default return values
@@ -124,6 +126,7 @@ describe('JobLogViewerComponent', () => {
 
     webSocketServiceSpy.subscribeToTaskLogs.and.returnValue(of());
     webSocketServiceSpy.subscribeToVectorPopulationLogs.and.returnValue(of());
+    webSocketServiceSpy.subscribeToTaskTranscripts.and.returnValue(of());
 
     await TestBed.configureTestingModule({
       imports: [NoopAnimationsModule]
@@ -158,6 +161,7 @@ describe('JobLogViewerComponent', () => {
     expect(component.taskId).toBe('');
     expect(component.isJobRunning).toBe(false);
     expect(component.logSource).toBe('ingest');
+    expect(component.fixedSearchText).toBe('');
     expect(component.maxTailLogs).toBe(200);
     expect(component.maxArchiveLogs).toBe(5000);
   });
@@ -173,6 +177,50 @@ describe('JobLogViewerComponent', () => {
   it('should expose all five log levels', () => {
     expect(component.allLevels).toEqual(['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR']);
   });
+
+  it('uses the permanent phase filter for the server query and filtered last-page count', fakeAsync(() => {
+    component.taskId = 'task-1';
+    component.source = 'LLM_TRANSCRIPT';
+    component.fixedSearchText = '[llm/ENTITY_PARTITIONS/';
+    jobLogServiceSpy.getLogsForJob.and.returnValue(of(makeJobLogsResponse({
+      logs: [makeJobLogEntry({ message: '[llm/ENTITY_PARTITIONS/mentions#2] response' })],
+      totalCount: 1
+    })));
+
+    fixture.detectChanges();
+    tick(100);
+
+    expect(jobLogServiceSpy.getLogCount).not.toHaveBeenCalled();
+    const options = jobLogServiceSpy.getLogsForJob.calls.mostRecent().args[1] as any;
+    expect(options.search).toBe('[llm/ENTITY_PARTITIONS/');
+    expect(options.source).toBe('LLM_TRANSCRIPT');
+    expect(component.logs.length).toBe(1);
+  }));
+
+  it('keeps unrelated live transcripts out of a phase-scoped viewer', fakeAsync(() => {
+    const transcripts = new Subject<IngestLogEntry>();
+    webSocketServiceSpy.subscribeToTaskTranscripts.and.returnValue(transcripts);
+    component.taskId = 'task-1';
+    component.source = 'LLM_TRANSCRIPT';
+    component.fixedSearchText = '[llm/ENTITY_PARTITIONS/';
+    component.isJobRunning = true;
+    jobLogServiceSpy.getLogsForJob.and.returnValue(of(makeJobLogsResponse({ logs: [], totalCount: 0 })));
+
+    fixture.detectChanges();
+    tick(100);
+    transcripts.next(makeIngestLogEntry({
+      sequenceNumber: 21,
+      source: 'LLM_TRANSCRIPT',
+      message: '[llm/GRAPH_EXTRACTION/propositions#1] wrong phase'
+    }));
+    transcripts.next(makeIngestLogEntry({
+      sequenceNumber: 22,
+      source: 'LLM_TRANSCRIPT',
+      message: '[llm/ENTITY_PARTITIONS/mentions#2] matching phase'
+    }));
+
+    expect(component.logs.map(log => log.sequenceNumber)).toEqual([22]);
+  }));
 
   // ── 2. ngOnInit – no taskId ──────────────────────────────────────────────────
 

@@ -74,6 +74,10 @@ public class GraphRagQuery {
      */
     private Long factSheetId;
 
+    /** Factual context contract presented to the answer model. */
+    @Builder.Default
+    private GraphRagContextMode contextMode = GraphRagContextMode.LEGACY_TEXT;
+
     /**
      * Whether to include community information in the search results.
      */

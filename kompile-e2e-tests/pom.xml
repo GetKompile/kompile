@@ -59,6 +59,20 @@
         </exclusion>
       </exclusions>
     </dependency>
+    <!-- Persona-owned controllers and services are no longer transitively exposed by
+         kompile-app-main. Keep E2E coverage aligned with the split runtime boundaries. -->
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-app-web-chat</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-app-web-crawl</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-model-manager</artifactId>
@@ -316,9 +330,9 @@
     </dependency>
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>${nd4j.backend}</artifactId>
+      <artifactId>${nd4j.native.backend}</artifactId>
       <version>${nd4j.version}</version>
-      <classifier>${javacpp.platform}</classifier>
+      <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
     </dependency>
 
     <!-- Maven invoker: used by the kompile-cli build-generation classes under test

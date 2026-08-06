@@ -44,6 +44,9 @@ import java.util.Set;
 public class GraphExtractionValidationPolicy {
 
     public static final String TYPE_NAME_FORMAT = "type-name-format";
+    public static final String ENTITY_TYPE_SCHEMA = "entity-type-schema";
+    public static final String RELATION_TYPE_SCHEMA = "relation-type-schema";
+    public static final String PROPERTY_SCHEMA = "property-schema";
     public static final String REQUIRED_DESCRIPTIONS = "required-descriptions";
     public static final String ENTITY_NAME_TYPE_CONSISTENCY = "entity-name-type-consistency";
     public static final String RELATION_SELF_LOOP = "relation-self-loop";
@@ -56,6 +59,21 @@ public class GraphExtractionValidationPolicy {
 
     private static final List<String> DEFAULT_VALIDATORS = List.of(
             TYPE_NAME_FORMAT,
+            ENTITY_TYPE_SCHEMA,
+            RELATION_TYPE_SCHEMA,
+            PROPERTY_SCHEMA,
+            ENTITY_NAME_TYPE_CONSISTENCY,
+            RELATION_SELF_LOOP,
+            RELATION_SCHEMA_PATTERN,
+            OCCURRED_AT_FORMAT,
+            REQUIRED_RELATION_OCCURRED_AT
+    );
+
+    private static final Set<String> KNOWN_VALIDATORS = Set.of(
+            TYPE_NAME_FORMAT,
+            ENTITY_TYPE_SCHEMA,
+            RELATION_TYPE_SCHEMA,
+            PROPERTY_SCHEMA,
             REQUIRED_DESCRIPTIONS,
             ENTITY_NAME_TYPE_CONSISTENCY,
             RELATION_SELF_LOOP,
@@ -161,9 +179,8 @@ public class GraphExtractionValidationPolicy {
     }
 
     public List<String> unknownValidatorIds() {
-        Set<String> known = Set.copyOf(DEFAULT_VALIDATORS);
         return effectiveEnabledValidators().stream()
-                .filter(id -> !known.contains(id))
+                .filter(id -> !KNOWN_VALIDATORS.contains(id))
                 .toList();
     }
 

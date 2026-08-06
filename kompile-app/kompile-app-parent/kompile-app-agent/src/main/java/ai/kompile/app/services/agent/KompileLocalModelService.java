@@ -1,8 +1,8 @@
 package ai.kompile.app.services.agent;
 
-import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.AgentType;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Service for auto-discovering and registering a local kompile model
@@ -54,7 +55,10 @@ public class KompileLocalModelService {
     @Value("${kompile.chat.local-model.poll-seconds:30}")
     private long pollSeconds;
 
-    private volatile String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
+    private volatile String stagingUrl = ServiceEndpointsConfigManager.DEFAULT_STAGING_URL;
+    private volatile String registeredStagingUrl = null;
+    private volatile Supplier<String> stagingUrlResolver = () ->
+            ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
 
     private volatile boolean connected = false;
     private volatile String currentModelId = null;
@@ -91,6 +95,7 @@ public class KompileLocalModelService {
      * goes away. Steady state is silent so a down staging server doesn't spam the log.
      */
     private void pollOnce() {
+        refreshStagingUrlFromResolver();
         String liveModelId = null;
         boolean reachable = false;
         try {
@@ -113,7 +118,8 @@ public class KompileLocalModelService {
             return;
         }
 
-        if (!registered || !liveModelId.equals(currentModelId)) {
+        if (!registered || !liveModelId.equals(currentModelId)
+                || !stagingUrl.equals(registeredStagingUrl)) {
             currentModelId = liveModelId;
             registerCurrentModel(liveModelId);
         }
@@ -123,6 +129,7 @@ public class KompileLocalModelService {
      * Attempt to discover and register the staging module's local model.
      */
     public Map<String, Object> discoverAndRegister() {
+        refreshStagingUrlFromResolver();
         Map<String, Object> result = new LinkedHashMap<>();
         try {
             String modelId = fetchLoadedModelId();
@@ -213,6 +220,7 @@ public class KompileLocalModelService {
                 .build();
 
         agentRegistryService.registerAgent(agent);
+        registeredStagingUrl = stagingUrl;
         log.info("Registered kompile-local agent: model={}, endpoint={}, maxTokens={} (contextWindow={})",
                 modelId, stagingUrl, maxTokens, contextWindow > 0 ? contextWindow : "unknown");
     }
@@ -250,7 +258,7 @@ public class KompileLocalModelService {
      * Connect to a specific staging URL.
      */
     public Map<String, Object> connectTo(String url) {
-        this.stagingUrl = url;
+        this.stagingUrl = normalizeUrl(url);
         return discoverAndRegister();
     }
 
@@ -260,6 +268,7 @@ public class KompileLocalModelService {
     public void disconnect() {
         connected = false;
         currentModelId = null;
+        registeredStagingUrl = null;
         agentRegistryService.unregisterAgent(AGENT_NAME);
         log.info("Disconnected kompile-local agent");
     }
@@ -268,6 +277,7 @@ public class KompileLocalModelService {
      * Get current status of the local model connection.
      */
     public Map<String, Object> getStatus() {
+        refreshStagingUrlFromResolver();
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("connected", connected);
         status.put("stagingUrl", stagingUrl);
@@ -287,7 +297,47 @@ public class KompileLocalModelService {
     }
 
     public String getStagingUrl() {
+        refreshStagingUrlFromResolver();
         return stagingUrl;
+    }
+
+    /**
+     * Install a deployment-level endpoint resolver. The default reads the shared managed endpoint;
+     * adapters and tests may supply an isolated resolver.
+     */
+    public void setStagingUrlResolver(Supplier<String> stagingUrlResolver) {
+        this.stagingUrlResolver = stagingUrlResolver;
+        refreshStagingUrlFromResolver();
+    }
+
+    private void refreshStagingUrlFromResolver() {
+        Supplier<String> resolver = stagingUrlResolver;
+        if (resolver == null) {
+            return;
+        }
+        try {
+            String resolved = normalizeUrl(resolver.get());
+            if (!resolved.equals(stagingUrl)) {
+                String previous = stagingUrl;
+                stagingUrl = resolved;
+                connected = false;
+                currentModelId = null;
+                registeredStagingUrl = null;
+                if (agentRegistryService.getAgent(AGENT_NAME).isPresent()) {
+                    agentRegistryService.unregisterAgent(AGENT_NAME);
+                }
+                log.info("Kompile local-model staging endpoint changed from {} to {}", previous, resolved);
+            }
+        } catch (Exception e) {
+            log.debug("Could not refresh managed staging endpoint: {}", e.getMessage());
+        }
+    }
+
+    private static String normalizeUrl(String url) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("staging URL must not be blank");
+        }
+        return url.trim().replaceAll("/+$", "");
     }
 
     public boolean isConnected() {

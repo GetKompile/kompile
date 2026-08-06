@@ -20,6 +20,7 @@ import jakarta.annotation.PreDestroy;
 import org.eclipse.deeplearning4j.audio.synthesis.AudioFileGenerator;
 import org.eclipse.deeplearning4j.audio.synthesis.AudioSynthesisRequest;
 import org.eclipse.deeplearning4j.audio.synthesis.GeneratedAudioFile;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -68,6 +69,14 @@ public class AudioSynthesisService {
     private final Object generatorExecutionLock = new Object();
     private volatile LoadedGenerator loadedGenerator;
 
+    /**
+     * Injection constructor. The {@code @Autowired} marker is load-bearing for AOT: this class
+     * has a second, package-private constructor as a test seam, and while the runtime resolver
+     * happily prefers the public one, Spring's build-time resolver refuses to choose between two
+     * unannotated candidates and looks for a no-arg constructor instead — which fails the native
+     * image build, not the JVM run. Any bean here that grows a second constructor needs this too.
+     */
+    @Autowired
     public AudioSynthesisService(
             RegistryService registryService,
             List<AudioSynthesisBackend> backends,
@@ -78,6 +87,7 @@ public class AudioSynthesisService {
         this(registryService, backends, objectMapper, Path.of(artifactRoot));
     }
 
+    /** Test seam — lets a test supply an artifact root outside the real model home. */
     AudioSynthesisService(RegistryService registryService, List<AudioSynthesisBackend> backends,
                           ObjectMapper objectMapper, Path artifactRoot) {
         this.registryService = Objects.requireNonNull(registryService, "registryService");

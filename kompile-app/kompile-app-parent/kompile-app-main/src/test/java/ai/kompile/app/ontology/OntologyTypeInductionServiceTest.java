@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -57,6 +58,17 @@ class OntologyTypeInductionServiceTest {
         processEngineService = mock(ProcessEngineService.class);
         knowledgeGraphService = mock(KnowledgeGraphService.class);
         service = new OntologyTypeInductionService(bindingService, processEngineService, knowledgeGraphService);
+    }
+
+    @Test
+    void systemPromptContainsNoCopyableTypePlaceholders() {
+        String prompt = OntologyTypeInductionService.systemPromptContract();
+
+        assertTrue(prompt.contains("0.45 through 1.0"));
+        assertTrue(prompt.contains("{\"entityTypes\":[]}"));
+        assertFalse(prompt.contains("CanonicalTypeName"));
+        assertFalse(prompt.contains("ExistingOrNewParentType"));
+        assertFalse(prompt.contains("\"confidence\": 0.0"));
     }
 
     @Test

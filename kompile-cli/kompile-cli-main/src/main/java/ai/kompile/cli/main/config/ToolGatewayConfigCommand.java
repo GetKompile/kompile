@@ -202,11 +202,7 @@ public class ToolGatewayConfigCommand implements Callable<Integer> {
         System.out.println("  API Key:  " + (modelConfig.containsKey("apiKey") ? "(set)" : "(not set)"));
         System.out.println("  Model:    " + modelConfig.getOrDefault("modelName", "(not set)"));
         System.out.println();
-        System.out.println("Set in application.properties to use:");
-        System.out.println("  kompile.tool-gateway.model.base-url=" + modelConfig.getOrDefault("baseUrl", ""));
-        if (modelConfig.containsKey("modelName")) {
-            System.out.println("  kompile.tool-gateway.model.model-name=" + modelConfig.get("modelName"));
-        }
+        System.out.println("Saved in the UI/CLI-managed JSON configuration; no Spring endpoint property is required.");
         return 0;
     }
 

@@ -8,44 +8,46 @@ import ai.kompile.chat.local.Message
 import java.util.function.Consumer
 
 /**
- * Android's only local-model seam. Prepared `.sdz` artifacts use the JavaCPP
- * accelerator selected by the Gradle flavor; raw `.gguf`/`.ggml` files use DL4J's
- * `libsdx_llm` Android AOT C ABI. Both routes perform model execution in SDX.
+ * Android's only local-model seam. Every session opens canonical SDZ through the
+ * flavor-specific [PlatformLocalChatModelFactory]. GGUF/GGML is only an ingestion
+ * format: [SdxGgufModelImporter] commits canonical SDZ, exits its disposable process,
+ * and never participates in runtime execution.
  */
-class AcceleratedChatModelAndroid(
+internal class AcceleratedChatModelAndroid(
     context: Context,
     modelPath: String,
     temperature: Float,
-    maxTokens: Int
+    maxTokens: Int,
+    verifiedSourceSha256: String? = null,
+    verifiedSourceBytes: Long? = null,
+    onPreparationStage: (PreparationStage) -> Unit = {},
+    preparedModelInfo: PreparedModelInfo? = null
 ) : ChatModel, AutoCloseable {
 
-    private val opened = runCatching {
-        if (SdxRawGgufChatSession.supports(modelPath)) {
-            SdxRawGgufChatSession.open(
+    val preparationInfo: PreparedModelInfo? =
+        preparedModelInfo ?: if (SdxGgufModelImporter.supports(modelPath)) {
+            SdxGgufModelImporter.prepare(
                 context.applicationContext,
                 modelPath,
-                temperature,
-                maxTokens
+                verifiedSourceSha256,
+                verifiedSourceBytes,
+                onPreparationStage
             )
         } else {
-            PlatformLocalChatModelFactory.open(
-                context.applicationContext,
-                modelPath,
-                temperature,
-                maxTokens
-            )
+            null
         }
-    }
 
-    private var session: PlatformLocalChatSession? = opened.getOrNull()
-    val startupError: String? = opened.exceptionOrNull()?.let {
-        buildString {
-            append(it.message ?: it.javaClass.simpleName)
-            it.cause?.message?.takeIf(String::isNotBlank)?.let { cause ->
-                append(": ")
-                append(cause)
-            }
-        }
+    val resolvedModelPath: String = preparationInfo?.canonicalSdzPath ?: modelPath
+
+    private var session: PlatformLocalChatSession? = run {
+        onPreparationStage(PreparationStage.LOAD_ACCELERATOR)
+        PlatformLocalChatModelFactory.open(
+            context.applicationContext,
+            resolvedModelPath,
+            temperature,
+            maxTokens,
+            diagnosticModelPath = modelPath
+        )
     }
 
     val routeName: String
@@ -79,8 +81,7 @@ class AcceleratedChatModelAndroid(
 
     private fun requireSession(): PlatformLocalChatSession =
         session ?: throw ChatException(
-            "Local SDX runtime is unavailable" +
-                (startupError?.let { ": $it" } ?: "")
+            "Local SDX runtime session is closed."
         )
 }
 

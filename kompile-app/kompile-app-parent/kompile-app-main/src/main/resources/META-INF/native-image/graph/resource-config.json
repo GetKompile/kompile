@@ -21,6 +21,10 @@
   }, {
     "pattern":"\\QMETA-INF/services/kotlin.reflect.jvm.internal.impl.util.ModuleVisibilityHelper\\E"
   }, {
+    "pattern":"\\QMETA-INF/services/org.apache.lucene.codecs.Codec\\E"
+  }, {
+    "pattern":"\\QMETA-INF/services/org.apache.lucene.codecs.DocValuesFormat\\E"
+  }, {
     "pattern":"\\QMETA-INF/services/org.nd4j.linalg.factory.Nd4jBackend\\E"
   }, {
     "pattern":"\\QMETA-INF/services/org.slf4j.spi.SLF4JServiceProvider\\E"
@@ -88,6 +92,8 @@
     "pattern":"\\Qai/kompile/core/indexers/IndexerService.class\\E"
   }, {
     "pattern":"\\Qai/kompile/core/indexers/NoOpIndexerService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/core/language/LanguageSupport.class\\E"
   }, {
     "pattern":"\\Qai/kompile/core/llm/ConversationalLanguageModel.class\\E"
   }, {
@@ -209,6 +215,10 @@
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService$CachedQueryIndex.class\\E"
   }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService$EnrichedVerifyResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService$RetractResult.class\\E"
+  }, {
     "pattern":"\\Qai/kompile/knowledgegraph/grounding/KbGroundingService.class\\E"
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/grounding/LuceneGroundingFactory.class\\E"
@@ -260,6 +270,8 @@
     "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixKnowledgeGraphService$NodeWithDepth.class\\E"
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/matrix/service/MatrixKnowledgeGraphService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/matrix/store/GraphRehydrationListener.class\\E"
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/matrix/store/MatrixGraphStore.class\\E"
   }, {
@@ -402,6 +414,24 @@
     "pattern":"\\Qai/kompile/knowledgegraph/service/KnowledgeGraphService.class\\E"
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/service/SourceLinkingService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/GraphReasoningQueryService$QueryRequest.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/GraphReasoningQueryService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/GraphSnapshotService$RestoreResult.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/GraphSnapshotService$SnapshotMetadata.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/GraphSnapshotService.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/UnifiedGraphAnalysisAssetStore$AssetSummary.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/UnifiedGraphAnalysisAssetStore.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/UnifiedGraphBridge$ImportSummary.class\\E"
+  }, {
+    "pattern":"\\Qai/kompile/knowledgegraph/unified/UnifiedGraphBridge.class\\E"
   }, {
     "pattern":"\\Qai/kompile/modelmanager/KompileModelManagerAutoConfiguration.class\\E"
   }, {

@@ -216,6 +216,11 @@
         </div>
       </div>
 
+      <div *ngIf="!graphServiceAvailable" class="error-container">
+        <mat-icon>hub</mat-icon>
+        <span>Crawl service is offline. Graph extraction settings remain unavailable until it is started.</span>
+      </div>
+
       <!-- Knowledge Graph / Entity Extraction Stage -->
       <div class="stage-section" *ngIf="graphConfig">
         <div class="stage-header">

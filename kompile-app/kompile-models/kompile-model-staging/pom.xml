@@ -149,9 +149,9 @@
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>${nd4j.backend}</artifactId>
+            <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
-            <classifier>${javacpp.platform}</classifier>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
         </dependency>
 
         <!-- Apache Commons Compress for tar.gz -->
@@ -229,7 +229,7 @@
             <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>tokenizers-native</artifactId>
             <version>${nd4j.version}</version>
-            <classifier>${javacpp.platform}</classifier>
+            <classifier>${tokenizers.platform.classifier}</classifier>
         </dependency>
 
         <!-- CLI common: SubprocessLogWriter for centralized log aggregation -->

@@ -20,7 +20,7 @@
       "requiredGpuTarget": "VULKAN",
       "requiredNativeLibraries": [
         "libsdx_llm.so",
-        "libjnidispatch.so",
+        "libjnisdx_llm.so",
         "libnd4jvulkan.so",
         "libjnisdx.so",
         "libjnitokenizers.so"
@@ -62,7 +62,7 @@
       "requiredBackend": "HEXAGON",
       "requiredNativeLibraries": [
         "libsdx_llm.so",
-        "libjnidispatch.so",
+        "libjnisdx_llm.so",
         "libnd4jhexagon.so",
         "libjnisdx.so",
         "libjnitokenizers.so",
@@ -105,7 +105,7 @@
       "requiredBackend": "NNAPI_ACCELERATOR_ONLY",
       "requiredNativeLibraries": [
         "libsdx_llm.so",
-        "libjnidispatch.so",
+        "libjnisdx_llm.so",
         "libnd4jnnapi.so",
         "libjnisdx.so",
         "libjnitokenizers.so"
@@ -154,7 +154,7 @@
       "requiredSoc": "Tensor_G5",
       "requiredNativeLibraries": [
         "libsdx_llm.so",
-        "libjnidispatch.so",
+        "libjnisdx_llm.so",
         "liblitert-lm.so",
         "libLiteRtDispatch_GoogleTensor.so",
         "libGemmaModelConstraintProvider.so"

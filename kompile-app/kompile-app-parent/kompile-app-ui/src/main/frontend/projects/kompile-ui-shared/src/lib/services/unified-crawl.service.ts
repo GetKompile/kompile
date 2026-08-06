@@ -19,6 +19,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
+import { ServiceEndpointRouter } from './service-endpoint-routing';
 import { SingleSourceGraphEntityPreview, SingleSourceGraphRelationPreview } from '../models/api-models';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -878,7 +879,10 @@ export interface SingleSourceRunResponse {
 })
 export class UnifiedCrawlService extends BaseService {
 
-  constructor(private http: HttpClient) {
+  constructor(
+    private http: HttpClient,
+    private readonly endpointRouter: ServiceEndpointRouter
+  ) {
     super();
   }
 
@@ -920,14 +924,20 @@ export class UnifiedCrawlService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  /** SSE endpoint for live progress of a single crawl job (per-step state + rolling LLM transcript). */
+  /**
+   * SSE endpoint for live progress of a single crawl job (per-step state + rolling LLM transcript).
+   * EventSource bypasses Angular HTTP interceptors, so resolve the owner explicitly for split UIs.
+   */
   jobEventStreamUrl(jobId: string): string {
-    return `${this.backendUrl}/crawl-events/stream/${jobId}`;
+    return this.endpointRouter.resolve(`${this.backendUrl}/crawl-events/stream/${jobId}`);
   }
 
-  /** SSE endpoint for live progress of ALL crawl jobs (used by the Tools-side list monitor). */
+  /**
+   * SSE endpoint for live progress of ALL crawl jobs (used by the Tools-side list monitor).
+   * EventSource bypasses Angular HTTP interceptors, so resolve the owner explicitly for split UIs.
+   */
   crawlEventsStreamUrl(): string {
-    return `${this.backendUrl}/crawl-events/stream`;
+    return this.endpointRouter.resolve(`${this.backendUrl}/crawl-events/stream`);
   }
 
   cancelJob(jobId: string): Observable<any> {

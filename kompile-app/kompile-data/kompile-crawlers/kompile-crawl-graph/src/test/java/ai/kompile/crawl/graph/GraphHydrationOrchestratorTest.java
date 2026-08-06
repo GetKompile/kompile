@@ -177,7 +177,9 @@ class GraphHydrationOrchestratorTest {
                 .thenReturn(new RegroundResult(1, "run-gnn", Set.of()));
         when(pruneCompactOrchestrator.run(anyLong(), anySet(), anyString(), anyBoolean(), any(HealthSetpoints.class)))
                 .thenReturn(PruneCompactResult.of(0, 0, 0, 0, 0, null, false));
-        when(graphNeuralScoringService.scoreFactSheetEdges(anyLong(), anyInt(), anyInt(), anyInt(), anyDouble(), anyDouble()))
+        when(graphNeuralScoringService.scoreFactSheetEdges(
+                anyLong(), anyInt(), anyInt(), anyInt(),
+                any(GraphNeuralScoringService.TrainingConfig.class)))
                 .thenReturn(new GraphNeuralScoringService.ScoringResult(
                         "factsheet_11", 3, 2, 2, false, "ok"));
 
@@ -185,7 +187,9 @@ class GraphHydrationOrchestratorTest {
 
         assertEquals(2, result.gnnEdgesScored());
         assertEquals(5, result.stagesRun(), "DERIVATION + PRUNE + GNN + ONTOLOGY + HEALTH");
-        verify(graphNeuralScoringService).scoreFactSheetEdges(anyLong(), anyInt(), anyInt(), anyInt(), anyDouble(), anyDouble());
+        verify(graphNeuralScoringService).scoreFactSheetEdges(
+                anyLong(), anyInt(), anyInt(), anyInt(),
+                any(GraphNeuralScoringService.TrainingConfig.class));
     }
 
     @Test

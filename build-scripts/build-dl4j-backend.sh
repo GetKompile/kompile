@@ -23,6 +23,7 @@
 #   --libnd4j-home <path>      Reuse a prebuilt libnd4j C++ tree (skips C++ build)
 #   --skip-cpp                 Build only nd4j-*-preset and nd4j-* (skip :libnd4j)
 #   --jobs <N>                 Parallel C++ compilation threads (default: nproc)
+#   --maven-repo-local <path>  Install into an isolated Maven local repository
 #   --dry-run                  Print the mvn command and exit without running it
 #   -h, --help                 Show this help and exit
 #
@@ -68,6 +69,7 @@ PIN_VERSION=""
 LIBND4J_HOME=""
 SKIP_CPP=0
 JOBS="${BUILD_THREADS:-$(nproc 2>/dev/null || echo 8)}"
+MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-}"
 DRY_RUN=0
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -93,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --libnd4j-home)  LIBND4J_HOME="$2";    shift 2 ;;
     --skip-cpp)      SKIP_CPP=1;           shift   ;;
     --jobs)          JOBS="$2";            shift 2 ;;
+    --maven-repo-local) MAVEN_REPO_LOCAL="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=1;            shift   ;;
     -h|--help)       usage ;;
     *) die "Unknown option: $1. Run with --help for usage." ;;
@@ -175,63 +178,83 @@ else
 fi
 
 # ─── Compose -Dlibnd4j.* flags ───────────────────────────────────────────────
-LIBND4J_FLAGS=""
+LIBND4J_ARGS=()
 
 # Helper flag (comma → space-separated for the -D value DL4J expects)
 if [ -n "${HELPERS}" ]; then
   # DL4J expects -Dlibnd4j.helper=onednn or comma-separated list
-  LIBND4J_FLAGS+=" -Dlibnd4j.helper=${HELPERS}"
+  LIBND4J_ARGS+=("-Dlibnd4j.helper=${HELPERS}")
 fi
 
 # Extension (avx2, avx512, etc.)
 if [ -n "${EXTENSION}" ]; then
   # Strip leading dash for libnd4j.extension; keep full value for javacpp.platform.extension
   EXT_BARE="${EXTENSION#-}"
-  LIBND4J_FLAGS+=" -Dlibnd4j.extension=${EXT_BARE}"
-  LIBND4J_FLAGS+=" -Djavacpp.platform.extension=${EXTENSION}"
+  LIBND4J_ARGS+=(
+    "-Dlibnd4j.extension=${EXT_BARE}"
+    "-Djavacpp.platform.extension=${EXTENSION}"
+  )
 fi
 
 # MLIR/Triton JIT (--compile shorthand adds this)
 if [ "${DO_COMPILE}" -eq 1 ]; then
-  LIBND4J_FLAGS+=" -Dlibnd4j.triton=ON"
+  LIBND4J_ARGS+=("-Dlibnd4j.triton=ON")
 fi
 
 # CUDA-specific flags
 if [ "${CHIP}" = "cuda" ]; then
-  LIBND4J_FLAGS+=" -Dlibnd4j.chip=cuda -Dlibnd4j.cuda.version=${CUDA_VERSION}"
+  LIBND4J_ARGS+=("-Dlibnd4j.chip=cuda" "-Dlibnd4j.cuda.version=${CUDA_VERSION}")
 fi
 
 # Prebuilt C++ tree
 if [ -n "${LIBND4J_HOME}" ]; then
-  LIBND4J_FLAGS+=" -DLIBND4J_HOME=${LIBND4J_HOME}"
+  LIBND4J_ARGS+=("-DLIBND4J_HOME=${LIBND4J_HOME}")
 fi
 
 # Parallel jobs
-LIBND4J_FLAGS+=" -Dlibnd4j.buildthreads=${JOBS}"
+LIBND4J_ARGS+=("-Dlibnd4j.buildthreads=${JOBS}")
 
 # ─── Compose the full mvn command ─────────────────────────────────────────────
-MVN_CMD="${MVN} -P${MVN_PROFILE} clean install -DskipTests"
-MVN_CMD+=" -pl ${PL_MODULES}"
-MVN_CMD+="${LIBND4J_FLAGS}"
-MVN_CMD+=" --batch-mode"
+MVN_CMD=(
+  "${MVN}" "-P${MVN_PROFILE}" clean install -DskipTests
+  -pl "${PL_MODULES}"
+  "${LIBND4J_ARGS[@]}"
+)
+if [ -n "${MAVEN_REPO_LOCAL}" ]; then
+  MVN_CMD+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
+fi
+MVN_CMD+=(--batch-mode --no-transfer-progress)
+printf -v MVN_CMD_DISPLAY ' %q' "${MVN_CMD[@]}"
+MVN_CMD_DISPLAY="${MVN_CMD_DISPLAY# }"
+
+CONSUME_CMD=(
+  mvn clean install
+  "-Dnd4j.version=${INSTALL_VERSION}"
+  "-Dkompile.backend=${KOMPILE_BACKEND_HINT}"
+)
+if [ -n "${MAVEN_REPO_LOCAL}" ]; then
+  CONSUME_CMD+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
+fi
+printf -v CONSUME_CMD_DISPLAY ' %q' "${CONSUME_CMD[@]}"
+CONSUME_CMD_DISPLAY="${CONSUME_CMD_DISPLAY# }"
 
 # ─── Print or run ─────────────────────────────────────────────────────────────
 if [ "${DRY_RUN}" -eq 1 ]; then
   echo ""
   echo "========== DRY-RUN: would execute from ${DL4J_DIR} =========="
-  echo "  ${MVN_CMD}"
+  echo "  ${MVN_CMD_DISPLAY}"
   echo "================================================================"
   echo ""
   echo "Kompile consumption line:"
-  echo "  mvn clean install -Dnd4j.version=${INSTALL_VERSION} -Dkompile.backend=${KOMPILE_BACKEND_HINT}"
+  echo "  ${CONSUME_CMD_DISPLAY}"
   exit 0
 fi
 
 log "Building DL4J backend from: ${DL4J_DIR}"
-log "Command: ${MVN_CMD}"
+log "Command: ${MVN_CMD_DISPLAY}"
 
 cd "${DL4J_DIR}"
-eval "${MVN_CMD}"
+"${MVN_CMD[@]}"
 BUILD_RC=$?
 cd "${KOMPILE_ROOT}"
 
@@ -239,7 +262,7 @@ if [ "${BUILD_RC}" -ne 0 ]; then
   die "DL4J backend build failed (exit ${BUILD_RC})"
 fi
 
-log "DL4J backend build SUCCEEDED — installed ${INSTALL_VERSION} to local Maven repo"
+log "DL4J backend build SUCCEEDED — installed ${INSTALL_VERSION} to ${MAVEN_REPO_LOCAL:-the active Maven local repository}"
 
 # ─── Post-build: pin restore reminder ────────────────────────────────────────
 if [ -n "${PIN_VERSION}" ]; then
@@ -264,6 +287,9 @@ echo "========== NEXT: consume from kompile =========="
 echo ""
 echo "  ${MVN} clean install \\"
 echo "    -Dnd4j.version=${INSTALL_VERSION} \\"
+if [ -n "${MAVEN_REPO_LOCAL}" ]; then
+  echo "    -Dmaven.repo.local=${MAVEN_REPO_LOCAL} \\"
+fi
 echo "    -Dkompile.backend=${KOMPILE_BACKEND_HINT}"
 echo ""
 echo "================================================="

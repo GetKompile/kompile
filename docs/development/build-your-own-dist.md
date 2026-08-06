@@ -11,35 +11,35 @@ jar-tier fallback. Covers CPU and CUDA spins.
 |---|---|
 | GraalVM JDK **21** | 17 fails with a huge-object image-layout limit on these images. `GRAALVM_HOME` is read by `build-dist.sh` (defaults to sdkman's `21.0.10-graal`). |
 | Maven 3.9+ | `MVN` env overrides; otherwise `mvn` from PATH is used. |
+| `patchelf` (Linux native archives) | Required. Both packaging routes fail rather than publish an ELF with a host-specific interpreter or RUNPATH. |
 | RAM | CLI native peaks ~6.5 GB. **app-main native runs with `-J-Xmx80g`** (see the `native` profile in `kompile-app/kompile-app-parent/kompile-app-main/pom.xml`) — plan for a 96 GB+ box or lower the flag and expect longer GC pauses. |
 | Node/npm | The app-main build compiles the Angular UI (skip with `-Dskip.ui` for experiments only; distribution builds keep the UI). |
 | Disk | ~20 GB free for build outputs; CUDA classpaths add several GB. |
 
-## DL4J prerequisite (read this first)
+## DL4J prerequisite (source or Maven)
 
-The reactor pins `nd4j.version=1.0.0-SNAPSHOT` and the root pom declares **no
-snapshot repository** — the ND4J/DL4J artifacts do NOT resolve from Maven
-Central. **The working assumption is that DL4J is already installed in your
-local `~/.m2`**, built from a deeplearning4j source checkout
-(`mvn clean install -Dmaven.test.skip=true`, plus the libnd4j/CUDA backend
-builds you need). Dev boxes that build kompile regularly already have this —
-do not re-clone on such a machine.
+Kompile can consume the exact DL4J release lane from either a source checkout
+or the Maven repository produced by `../deeplearning4j/release`. Repository
+mode never falls back to compiling DL4J:
 
-Known-good reference at the time of writing:
-`deeplearning4j/deeplearning4j` branch `ag_new_release_updates_2`, commit
-`5ededbe232` (2026-07-03) — the tree these kompile sources compile against.
-Treat that pin as the compatibility contract until a stable DL4J release is
-cut; a released version is the long-term fix for this whole prerequisite.
+```bash
+build-scripts/build-kompile-platform.sh linux-x86_64-cuda-12.9-cudnn \
+  --dl4j-repository https://repo.example/snapshots \
+  --repository-id dl4j-release \
+  --nd4j-version 1.0.0-SNAPSHOT \
+  --dl4j-sdk-assets /srv/dl4j-sdk/linux-x86_64-cuda-12.9-cudnn
+```
 
-Only for a machine that does NOT have DL4J installed yet:
+CPU host, CUDA, and Android release lanes publish runtime ZIP/AAR payloads
+beside Maven, so a complete Kompile ZIP also needs the matching extracted
+`sdk-assets` shard. Maven-only lanes (compat, Vulkan, Hexagon, TPU, and
+ZLUDA) collect their exact classified JAR set directly from the configured
+repository and do not invent a runtime package.
 
-- `kompile build clone-build --buildDl4j --dl4jBranchName <branch>` clones and
-  builds it (branch-level pinning only — there is no exact-commit option yet);
-  CUDA backends via `kompile build build-nd4j-backend --backend=cuda
-  --cuda-version=12.9`.
-- Or install the CI-published artifacts (`publish-release.yml` uploads
-  `nd4j-cuda-*` etc. via `.github/workflows/build-native-linux-cuda.yml` and
-  friends) with `mvn install:install-file`.
+For source mode, leave off `--dl4j-repository` and point
+`--dl4j-root` at the checkout. The platform builder delegates to DL4J's own
+release build, collects the same runtime/JAR shard, and applies the same
+validator before assembling Kompile.
 
 The ByteDeco CUDA redist jars (`org.bytedeco:cuda:12.9-9.10-1.5.12` etc.) are
 release coordinates and resolve from Central normally.
@@ -67,15 +67,46 @@ exec-jar, and all native-image steps).
 ## One-shot distribution
 
 ```bash
-./build-dist.sh cuda            # variants: cli-only | hosted | cpu-intel | cpu-arm | cuda | amd-zluda
+./build-dist.sh cuda            # variants: cli-only | full | hosted | cpu-intel | cpu-arm | cuda | amd-zluda
+./build-dist.sh full            # CLI native + all service exec JARs + jlink runtime
 ./build-dist.sh cpu-intel --jars-only    # exec JARs + jlink runtime, no native-image
 ./build-dist.sh cuda --skip-java-build   # reuse ~/.m2, only native steps
 ```
 
-Output: `dist/kompile-dist-<version>-<variant>-<platform>.tar.gz` containing
+Output includes both
+`dist/kompile-dist-<version>-<variant>-<release-lane>.zip` and `.tar.gz`.
+The release-lane identity retains CPU helpers and CUDA version/helpers (for
+example `cpu-intel-linux-x86_64-avx2` and
+`cuda-linux-x86_64-cuda-12.9-cudnn`). Each archive contains
 `bin/` (native binaries + GraalVM shim libs), `lib/` (exec JARs + side-loaded
 JavaCPP `.so`s — the images exclude native libs via `-H:ExcludeResources` and
-load them from `lib/` at runtime), `conf/`, `runtime/` (jlink), seed `data/`.
+load them from `lib/` at runtime), `conf/`, `runtime/` (jlink), seed
+`data/`, and the validated `sdx-sdk/` companion for backend distributions.
+The ZIP is installed locally as
+`ai.kompile:kompile-dist:<version>:zip:<variant>-<release-lane>`.
+
+Publish the installed reactor and every classified ZIP to the DL4J repository
+(or an explicit sibling repository) in the same invocation:
+
+```bash
+build-scripts/build-kompile-platform.sh linux-x86_64 \
+  --dl4j-repository https://repo.example/snapshots \
+  --dl4j-sdk-assets /srv/dl4j-sdk/linux-x86_64 \
+  --publish
+
+# Override only when Kompile has a separate deployment endpoint/server id:
+#   --deploy-repository https://repo.example/kompile-snapshots
+#   --deploy-repository-id kompile-release
+```
+
+`build-dist.sh` and the `kompile-dist` Maven assembly both call the same native
+stager. It emits a flat `lib/` for exactly one OS/architecture, applies a requested
+CPU flavor after the baseline set, and fails on conflicting basenames or an
+incomplete optimized ND4J pair. Distribution assembly never falls back to the
+mutable JavaCPP user cache. Both routes also call
+`kompile-dist/src/main/build/normalize-elf-portability.sh` on staged executable
+copies. Module `target/` outputs remain untouched; Linux ELF publication requires
+the system interpreter and `$ORIGIN/../lib` RUNPATH.
 
 **CUDA runtime expectation:** the `cuda` variant bundles the ND4J CUDA backend
 (`libnd4jcuda.so` via the platform-classified backend jar) and the JavaCPP JNI
@@ -98,11 +129,20 @@ mvn -f kompile-app/kompile-app-parent/kompile-app-main/pom.xml package \
 # model-staging
 mvn -f kompile-app/kompile-models/kompile-model-staging/pom.xml package \
     -Dkompile.dist=true -DskipTests
+
+# chat persona
+mvn -f kompile-app/kompile-app-parent/kompile-app-chat/pom.xml package \
+    -Dkompile.dist=true -DskipTests -Dnd4j.backend=nd4j-native
+
+# crawl-manager persona
+mvn -f kompile-app/kompile-app-parent/kompile-app-crawl-manager/pom.xml package \
+    -Dkompile.dist=true -DskipTests -Dnd4j.backend=nd4j-native
 ```
 
 The app `native` profile activates on `-Dkompile.dist` (not `-Pnative`) so the
 flag reaches child modules. Use `-DskipTests`, not `-Dmaven.test.skip=true` —
-the latter breaks the native-maven-plugin `test-native` goal.
+the latter breaks the native-maven-plugin `test-native` goal. Native-image builds
+are memory-heavy; build the server and persona images serially.
 
 ## Install and run
 
@@ -122,16 +162,39 @@ dist jars, then `components/<id>/`. The bundled Java is found by
 `JAVA_HOME` > PATH). User/project state stays under `~/.kompile` regardless of
 the install dir.
 
-## Known gaps (current state)
+## Native release acceptance
 
-- `graph/` and `serving/` under
-  `kompile-app-main/src/main/resources/META-INF/native-image/` are
-  agent-capture **placeholders** — the graph-matrix and serving subprocess
-  types are not yet proven under a native `kompile-server` (the jar tier +
-  `runtime/` covers them; native self-exec re-dispatch works for main, ingest,
-  vector, embedding, model-init).
+Validate the unpacked archive, not just the Maven targets. Run the service
+launchers serially on unused ports, wait for each application to report `Started`
+and listen, then terminate only the PID that command created:
+
+```bash
+cd dist/kompile-dist-<version>-cpu-intel-linux-x86_64-avx2
+env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH bin/kompile --version
+bin/kompile-chat.sh --port 9181 --kompile.data.dir=/tmp/kompile-dist-chat
+bin/kompile-crawl-manager.sh --port 9182 --kompile.data.dir=/tmp/kompile-dist-crawl
+bin/kompile-model-staging.sh --port 9190 --kompile.data.dir=/tmp/kompile-dist-staging
+bin/kompile-server.sh --server.port=9184 --kompile.data.dir=/tmp/kompile-dist-server
+```
+
+For Linux native variants, every ELF in `bin/` must use the system interpreter
+and a `$ORIGIN/../lib` RUNPATH. Service logs must show GraalVM native execution
+and the dist `lib/`; they must not contain `MissingReflectionRegistration`,
+`NoClassDefFoundError`, or `UnsatisfiedLinkError`. The unified server proof also
+requires graph, embedding, model-init, and serving child modes to self-exec the
+same native binary with no runtime classpath. `--version` is only a CLI boot
+check; inspect its RUNPATH to prove direct commands can resolve side-loaded
+libraries without a launcher-provided environment.
+
+## Current boundaries
+
 - The `training` subprocess dispatch is reflective (model-staging classes) and
   absent from any native image.
-- Release CI publishes `cli-only` archives plus a `full` (jar+runtime) Linux
-  dist; CUDA dist archives are built locally via `./build-dist.sh cuda` (the
-  nd4j-cuda artifacts themselves are CI-built by `publish-release.yml`).
+- `release.yml` is the only workflow that creates or edits GitHub Releases. It
+  publishes cross-platform `cli-only`, Linux `full`, checksums, and stable jar
+  assets. `publish-release.yml` can add uniquely named SDK/native artifacts only
+  after that canonical release exists; it never clobbers existing assets.
+- CUDA installable distributions are produced by `./build-dist.sh cuda` on a
+  capable runner and must be attached through the canonical `release.yml` job
+  when that matrix is enabled. The supplemental workflow publishes the underlying
+  ND4J/SDX SDK artifacts, not an independently defined Kompile distribution.

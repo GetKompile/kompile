@@ -18,6 +18,7 @@ package ai.kompile.cli.main.manage;
 
 import ai.kompile.cli.common.logs.LogPaths;
 import ai.kompile.cli.common.config.HardwareAutoConfigurator;
+import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
@@ -32,6 +33,7 @@ import java.net.URL;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 
@@ -278,33 +280,29 @@ public class ServiceManager {
     }
 
     public boolean checkHealth(int port, int timeoutMs) {
+        String baseUrl = "http://localhost:" + port;
+        if (new KompileHttpClient(baseUrl).isHealthy()) {
+            return true;
+        }
+        // Non-persona services do not mount /api/setup/status. Probe their
+        // stable read endpoints after the shared Kompile readiness check.
+        return probeHealthEndpoint(baseUrl + "/api/staging/models", timeoutMs)
+                || probeHealthEndpoint(baseUrl + "/health", timeoutMs)
+                || probeHealthEndpoint(baseUrl + "/", timeoutMs);
+    }
+
+    private boolean probeHealthEndpoint(String endpoint, int timeoutMs) {
         try {
-            URL url = new URL("http://localhost:" + port + "/actuator/health");
+            URL url = new URL(endpoint);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(timeoutMs);
             conn.setReadTimeout(timeoutMs);
-            
             int responseCode = conn.getResponseCode();
             conn.disconnect();
-            
-            return responseCode == 200;
+            return responseCode >= 200 && responseCode < 300;
         } catch (Exception e) {
-            // Try root endpoint as fallback
-            try {
-                URL url = new URL("http://localhost:" + port + "/");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setConnectTimeout(timeoutMs);
-                conn.setReadTimeout(timeoutMs);
-                
-                int responseCode = conn.getResponseCode();
-                conn.disconnect();
-                
-                return responseCode == 200;
-            } catch (Exception ex) {
-                return false;
-            }
+            return false;
         }
     }
 
@@ -350,10 +348,14 @@ public class ServiceManager {
                                          List<String> jvmArgs, List<String> appArgs,
                                          File logDir, boolean foreground) throws IOException {
         List<String> command = new ArrayList<>();
+        File distributionHome = ComponentRegistry.inferDistributionHome(jarFile.toPath());
 
         boolean isNative = !jarFile.getName().endsWith(".jar");
         if (isNative) {
             command.add(jarFile.getAbsolutePath());
+            if (distributionHome != null) {
+                command.add("-Dkompile.dist.home=" + distributionHome.getAbsolutePath());
+            }
         } else {
             command.add(JavaRuntimeLocator.javaExecutable());
             if (jvmArgs != null) {
@@ -362,6 +364,9 @@ public class ServiceManager {
             boolean hasXmx = jvmArgs != null && jvmArgs.stream().anyMatch(arg -> arg.startsWith("-Xmx"));
             if (!hasXmx) {
                 command.add("-Xmx" + defaultHeapFor(type));
+            }
+            if (distributionHome != null) {
+                command.add("-Dkompile.dist.home=" + distributionHome.getAbsolutePath());
             }
             command.add("-jar");
             command.add(jarFile.getAbsolutePath());
@@ -375,6 +380,10 @@ public class ServiceManager {
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir);
+        // Non-Spring managed services (including the endpoint topology REST surface) use this
+        // launch context to select <project>/config instead of the standalone ~/.kompile/config.
+        pb.environment().put("KOMPILE_PROJECT_ROOT", workDir.getAbsolutePath());
+        configureDistributionEnvironment(pb.environment(), distributionHome);
 
         if (foreground) {
             pb.inheritIO();
@@ -397,6 +406,35 @@ public class ServiceManager {
         InstanceRegistry.register(info);
 
         return process;
+    }
+
+    /**
+     * Mirror the distribution launchers for components started indirectly by
+     * {@code kompile project start/open}: keep the side-loaded native library
+     * directory and backend bundle attached to the child process. This deliberately
+     * uses path configuration only; no library is force-loaded.
+     */
+    static void configureDistributionEnvironment(Map<String, String> environment, File distributionHome) {
+        if (distributionHome == null) {
+            return;
+        }
+        File binDir = new File(distributionHome, "bin");
+        File libDir = new File(distributionHome, "lib");
+        environment.put("KOMPILE_DIST_HOME", distributionHome.getAbsolutePath());
+        environment.putIfAbsent("KOMPILE_NATIVE_LIB_DIR", libDir.getAbsolutePath());
+        prependPath(environment, "LD_LIBRARY_PATH", List.of(binDir, libDir));
+        prependPath(environment, "DYLD_LIBRARY_PATH", List.of(binDir, libDir));
+    }
+
+    private static void prependPath(Map<String, String> environment, String key, List<File> directories) {
+        String prefix = directories.stream()
+                .map(File::getAbsolutePath)
+                .reduce((left, right) -> left + File.pathSeparator + right)
+                .orElse("");
+        String existing = environment.get(key);
+        environment.put(key, existing == null || existing.isBlank()
+                ? prefix
+                : prefix + File.pathSeparator + existing);
     }
 
     /**

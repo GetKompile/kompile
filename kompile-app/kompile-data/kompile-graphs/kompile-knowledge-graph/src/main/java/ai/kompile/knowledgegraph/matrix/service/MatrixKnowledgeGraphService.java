@@ -1231,11 +1231,34 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         String storeKey = hasRelation ? label : edgeTypeToString(edgeType);
         // Parse the edge metaJson once into a typed view (no stringly-typed key lookups).
         EdgeMetadata meta = parseEdgeMetadata(metaJson);
+        EdgeProvenance pType = parseProvenanceType(meta.provenanceType());
+        if (pType == null) {
+            pType = provenance;
+        }
+        String sourceProvenance = meta.provenance() != null
+                ? meta.provenance() : provenance == null ? null : provenance.name();
+
+        // Preserve the open, decision-relevant metadata bag across the matrix/vector boundary.
+        // Provenance classification is duplicated into the bag because the matrix adjacency record
+        // has no dedicated fields for it; the typed GraphEdge fields remain authoritative in memory.
+        Map<String, Object> storedMetadata = new LinkedHashMap<>();
+        if (meta.metadata() != null) {
+            storedMetadata.putAll(meta.metadata());
+        }
+        if (sourceProvenance != null) {
+            storedMetadata.putIfAbsent("provenance", sourceProvenance);
+        }
+        if (pType != null) {
+            storedMetadata.putIfAbsent("provenanceType", pType.name());
+        }
+        if (meta.similarityScore() != null) {
+            storedMetadata.putIfAbsent("similarityScore", meta.similarityScore());
+        }
+
         // [M-3] Honor an explicitly-imported bidirectional flag instead of always deriving it from
         // the edge type — otherwise a bidirectional edge silently becomes directional after a clone.
         boolean bidirectional = meta.bidirectional() != null
                 ? meta.bidirectional() : (edgeType != EdgeType.HIERARCHICAL);
-
         Double confidence = meta.confidence();
         String desc = description != null ? description : meta.description();
 
@@ -1244,6 +1267,9 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         graphStore.addEdge(edgeGid, sourceNodeId, targetNodeId,
                 weight != null ? weight : 1.0, storeKey, bidirectional,
                 hasRelation ? label : null, confidence, desc);
+        if (!storedMetadata.isEmpty()) {
+            graphStore.mergeEdgeMetadata(edgeGid, sourceNodeId, targetNodeId, storeKey, storedMetadata);
+        }
 
         GraphEdge edge = createEdgeObject(sourceNodeId, targetNodeId, storeKey, weight, desc);
         if (hasRelation) {
@@ -1254,16 +1280,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
             edge.setConfidence(confidence);
         }
         edge.setBidirectional(bidirectional);
-        // Surface provenance from metaJson on the returned object
-        if (meta.provenance() != null) {
-            edge.setProvenance(meta.provenance());
-        } else if (provenance != null) {
-            edge.setProvenance(provenance.name());
-        }
-        // [M-1/M-4/M-7] Surface the remaining restored fields on the returned edge so the immediate
-        // caller sees a faithful object. (Full re-read fidelity from the adjacency store for these
-        // is a follow-on — the matrix adjacency record persists weight/relationType/bidirectional/
-        // confidence/description, not yet these extended fields.)
+        edge.setProvenance(sourceProvenance);
+        edge.setMetadataJson(serializeMetadata(storedMetadata));
         if (factSheetId != null) {
             edge.setFactSheetId(factSheetId);
         }
@@ -1275,12 +1293,6 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         }
         if (meta.similarityScore() != null) {
             edge.setSimilarityScore(meta.similarityScore());
-        }
-        // [M-10] Typed provenance classification — prefer the metaJson value, else the
-        // EdgeProvenance param. Kept distinct from the freetext source provenance above.
-        EdgeProvenance pType = parseProvenanceType(meta.provenanceType());
-        if (pType == null) {
-            pType = provenance;
         }
         if (pType != null) {
             edge.setProvenanceType(pType);

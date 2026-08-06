@@ -17,6 +17,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.rag.GraphReasoningRetriever;
 import ai.kompile.core.graphrag.GraphRagService;
+import ai.kompile.core.graphrag.query.GraphRagContextMode;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
@@ -51,7 +52,7 @@ public class GraphRagController {
     /**
      * Search the knowledge graph using RAG.
      * <p>
-     * Request body: {@code { query, searchType, maxResults, conversationId }}
+     * Request body: {@code { query, searchType, maxResults, conversationId, factSheetId, contextMode }}
      * <p>
      * Response: {@code { answer, context, entities[], relationships[], communities[], sourceChunks[] }}
      */
@@ -74,6 +75,19 @@ public class GraphRagController {
                 ? ((Number) request.get("maxResults")).intValue() : 5;
         String conversationId = (String) request.getOrDefault("conversationId", "default");
         Long factSheetId = parseLong(request.get("factSheetId"));
+        GraphRagContextMode contextMode;
+        try {
+            contextMode = GraphRagContextMode.valueOf(
+                    String.valueOf(request.getOrDefault("contextMode", "LEGACY_TEXT")).toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "contextMode must be LEGACY_TEXT or COMPACT_GRAPH"));
+        }
+        if (contextMode == GraphRagContextMode.COMPACT_GRAPH
+                && !graphRagService.supportsContextMode(contextMode)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "COMPACT_GRAPH context is not supported by the active Graph RAG service"));
+        }
 
         // Reasoning strategies (causal / probabilistic) route to the reasoning retriever, which
         // returns causal chains or MEBN posteriors as the answer/context.
@@ -101,6 +115,8 @@ public class GraphRagController {
                     .searchType(searchType)
                     .k(maxResults)
                     .conversationId(conversationId)
+                    .factSheetId(factSheetId)
+                    .contextMode(contextMode)
                     .build();
 
             long startTime = System.currentTimeMillis();

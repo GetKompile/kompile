@@ -17,6 +17,7 @@
 package ai.kompile.cli.common.chat.sources.adapters;
 
 import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +30,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -286,7 +288,7 @@ class CodexAdapterTest {
 
         List<ChatSessionSummary> summaries = adapter.list(Path.of("/work/project"));
         assertEquals(
-                List.of("preview", "matching", "vscode"),
+                List.of("preview", "matching", "vscode", "spawned"),
                 summaries.stream().map(ChatSessionSummary::sessionId).toList());
         assertEquals("Native preview title", summaries.get(0).title());
         assertEquals(7_000L, summaries.get(0).lastModifiedMillis());
@@ -295,6 +297,29 @@ class CodexAdapterTest {
         assertEquals("/work/project", summaries.get(0).workingDirectory());
         assertEquals("Indexed turn", adapter.readTurns("matching").get(0).content());
         assertTrue(adapter.discover().available());
+    }
+
+    @Test
+    void rolloutFallbackDisplaysOnlyNativeConversationMessages() throws Exception {
+        Path sessions = tempDir.resolve("sessions").resolve("2026").resolve("07").resolve("30");
+        Files.createDirectories(sessions);
+        String sessionId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        Files.writeString(
+                sessions.resolve("rollout-2026-07-30T01-00-00-" + sessionId + ".jsonl"),
+                """
+                {"type":"session_meta","payload":{"id":"%s","cwd":"/work/project","source":"cli"}}
+                {"type":"response_item","payload":{"role":"developer","content":[{"type":"input_text","text":"hidden instructions"}]}}
+                {"type":"response_item","payload":{"role":"system","content":[{"type":"input_text","text":"hidden system prompt"}]}}
+                {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"visible question"}]}}
+                {"type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"visible answer"}]}}
+                """.formatted(sessionId),
+                StandardCharsets.UTF_8);
+
+        List<ChatTurn> turns = new TestCodexAdapter(tempDir).readTurns(sessionId);
+
+        assertEquals(List.of("user", "assistant"), turns.stream().map(ChatTurn::role).toList());
+        assertEquals(List.of("visible question", "visible answer"),
+                turns.stream().map(ChatTurn::content).toList());
     }
 
     private static void insertIndexedThread(
@@ -359,6 +384,16 @@ class CodexAdapterTest {
         @Override
         protected Path codexHome() {
             return root;
+        }
+
+        @Override
+        protected Optional<List<ChatSessionSummary>> listAppServerThreads(Path workingDirectory) {
+            return Optional.empty();
+        }
+
+        @Override
+        protected Optional<List<ChatTurn>> readAppServerTurns(String sessionId) {
+            return Optional.empty();
         }
     }
 }

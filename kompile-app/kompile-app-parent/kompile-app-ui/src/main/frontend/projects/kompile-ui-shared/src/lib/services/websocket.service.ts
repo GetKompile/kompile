@@ -590,18 +590,21 @@ export class WebSocketService extends BaseService implements OnDestroy {
    * Provides live updates about embedding model state and staging connection.
    * Also notifies the backend to start broadcasting.
    */
-  subscribeToModelStatus(): Observable<ModelStatusUpdate> {
+  subscribeToModelStatus(notifyAdminBackend = true): Observable<ModelStatusUpdate> {
     const topic = WebSocketService.MODEL_STATUS_TOPIC;
 
-    // Notify backend to start broadcasting
-    this.http.post(`${backendUrl}/staging-config/broadcast/subscribe`, {}).subscribe({
-      next: (response: any) => {
-        console.debug('[WS-MODEL] Backend broadcast subscription enabled:', response);
-      },
-      error: (err) => {
-        console.error('[WS-MODEL] Failed to subscribe to model status broadcast:', err);
-      }
-    });
+    // Only Admin owns the staging broadcast controller. Chat and Crawl still subscribe to their
+    // local model-status topic, but must not require Admin just to initialize shared chrome.
+    if (notifyAdminBackend) {
+      this.http.post(`${backendUrl}/staging-config/broadcast/subscribe`, {}).subscribe({
+        next: (response: any) => {
+          console.debug('[WS-MODEL] Backend broadcast subscription enabled:', response);
+        },
+        error: (err) => {
+          console.error('[WS-MODEL] Failed to subscribe to model status broadcast:', err);
+        }
+      });
+    }
 
     this.subscribeToModelStatusTopic(topic);
     return this.modelStatusUpdates$;
@@ -611,18 +614,20 @@ export class WebSocketService extends BaseService implements OnDestroy {
    * Unsubscribe from model status updates.
    * Also notifies the backend to potentially stop broadcasting.
    */
-  unsubscribeFromModelStatus(): void {
+  unsubscribeFromModelStatus(notifyAdminBackend = true): void {
     const topic = WebSocketService.MODEL_STATUS_TOPIC;
 
-    // Notify backend to potentially stop broadcasting
-    this.http.post(`${backendUrl}/staging-config/broadcast/unsubscribe`, {}).subscribe({
-      next: (response: any) => {
-        console.debug('[WS-MODEL] Backend broadcast subscription disabled:', response);
-      },
-      error: (err) => {
-        console.error('[WS-MODEL] Failed to unsubscribe from model status broadcast:', err);
-      }
-    });
+    // Mirror subscribeToModelStatus: only Admin owns the broadcast lifecycle controller.
+    if (notifyAdminBackend) {
+      this.http.post(`${backendUrl}/staging-config/broadcast/unsubscribe`, {}).subscribe({
+        next: (response: any) => {
+          console.debug('[WS-MODEL] Backend broadcast subscription disabled:', response);
+        },
+        error: (err) => {
+          console.error('[WS-MODEL] Failed to unsubscribe from model status broadcast:', err);
+        }
+      });
+    }
 
     this.unsubscribeFromTopic(topic);
   }

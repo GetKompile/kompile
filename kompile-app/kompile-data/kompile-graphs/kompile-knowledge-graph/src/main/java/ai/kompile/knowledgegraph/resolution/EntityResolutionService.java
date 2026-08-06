@@ -24,12 +24,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -279,7 +281,8 @@ public class EntityResolutionService {
      */
     public static String normalize(String name) {
         if (name == null) return "";
-        String result = name.trim().toLowerCase();
+        String result = Normalizer.normalize(name, Normalizer.Form.NFKC)
+                .trim().toLowerCase(Locale.ROOT);
         result = SUFFIX_PATTERN.matcher(result).replaceAll("").trim();
         // Collapse whitespace
         result = result.replaceAll("\\s+", " ");

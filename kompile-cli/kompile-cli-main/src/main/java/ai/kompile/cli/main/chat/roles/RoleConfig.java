@@ -41,6 +41,11 @@ public class RoleConfig {
     @Builder.Default boolean canSpawnSubagents = true;
     @Builder.Default String modelHint = "default";
     /**
+     * Provider-specific launch defaults used when this role is selected for a
+     * delegated agent. The legacy {@code modelHint} remains prompt metadata.
+     */
+    @Builder.Default Map<String, RoleAgentDefaults> agentDefaults = Map.of();
+    /**
      * Ordered list of preferred agents for rate-limit fallback when this role is active.
      * e.g. ["qwen", "claude", "gemini"]. Empty list means use the global default order.
      */
@@ -50,6 +55,13 @@ public class RoleConfig {
 
     public boolean isCustom() {
         return !isBuiltIn;
+    }
+
+    public RoleAgentDefaults getAgentDefaultsFor(String agentName) {
+        if (agentName == null || agentDefaults == null) {
+            return null;
+        }
+        return agentDefaults.get(agentName.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public AgentConfig toAgentConfig() {
@@ -77,6 +89,29 @@ public class RoleConfig {
         sb.append("model: ").append(modelHint).append("\n");
         sb.append("max_steps: ").append(maxSteps).append("\n");
         sb.append("can_spawn: ").append(canSpawnSubagents).append("\n");
+
+        if (agentDefaults != null && !agentDefaults.isEmpty()) {
+            agentDefaults.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> {
+                        String prefix = "agent_defaults." + entry.getKey() + ".";
+                        RoleAgentDefaults defaults = entry.getValue();
+                        if (defaults == null || defaults.isEmpty()) {
+                            return;
+                        }
+                        if (defaults.getModel() != null) {
+                            sb.append(prefix).append("model: ")
+                                    .append(defaults.getModel()).append("\n");
+                        }
+                        if (defaults.getDefaultThinking() != null) {
+                            sb.append(prefix).append("thinking.default: ")
+                                    .append(defaults.getDefaultThinking()).append("\n");
+                        }
+                        defaults.getThinkingByModel().forEach((model, thinking) ->
+                                sb.append(prefix).append("thinking.models.")
+                                        .append(model).append(": ").append(thinking).append("\n"));
+                    });
+        }
 
         if (!enabledTools.contains("*")) {
             sb.append("tools: ").append(String.join(", ", enabledTools)).append("\n");

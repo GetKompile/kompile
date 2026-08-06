@@ -216,9 +216,27 @@ button mat-spinner {
     margin-bottom: 16px;
 }
 
+.endpoint-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.full-width-endpoint {
+    grid-column: 1 / -1;
+}
+
 @media (max-width: 600px) {
     .two-column-grid {
         grid-template-columns: 1fr;
+    }
+
+    .endpoint-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .full-width-endpoint {
+        grid-column: auto;
     }
 }
 

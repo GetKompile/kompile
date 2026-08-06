@@ -16,6 +16,7 @@
 
 package ai.kompile.core.crawl.graph;
 
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -40,6 +41,19 @@ import java.util.List;
 public class GraphExtractionConfig {
 
     /**
+     * Prompt-detail profiles for decomposed extraction. {@link #AUTO} chooses the richest profile
+     * that fits the selected model's executable context window and prompt budget. Explicit values
+     * are project/job overrides, but they may not exceed the executable model budget.
+     */
+    public enum DecomposedPromptTier {
+        AUTO,
+        COMPACT,
+        STANDARD,
+        RICH,
+        EXPANDED
+    }
+
+    /**
      * Compatibility accessor for callers that still ask whether graph extraction is enabled.
      * Graph extraction is mandatory for unified crawls.
      */
@@ -53,11 +67,19 @@ public class GraphExtractionConfig {
         // Legacy JSON may still contain this key. It no longer controls graph extraction.
     }
 
-    /** Named schema preset ID to load entity/relationship types from (e.g., "fpna-cpg-channel-v1").
-     *  When set, the server resolves the preset and populates entityTypes/relationshipTypes. */
+    /** Named schema preset ID to load the standardized graph schema from (e.g., "fpna-cpg-channel-v1"). */
     private String schemaPresetId;
 
-    /** Entity types to focus extraction on (empty = extract all discovered types) */
+    /**
+     * Full standardized schema resolved from the preset or supplied by a project override.
+     *
+     * <p>This is the authoritative vocabulary and property contract for extracted entities and
+     * relations. The legacy type-name lists below remain useful as optional focus subsets, but must
+     * not replace or flatten this schema.</p>
+     */
+    private GraphSchema standardizedSchema;
+
+    /** Entity types to focus extraction on (empty = use every standardized or discovered type) */
     @Builder.Default
     private List<String> entityTypes = new ArrayList<>();
 
@@ -126,9 +148,69 @@ public class GraphExtractionConfig {
     @Builder.Default
     private double entityResolutionEmbeddingThreshold = 0.88;
 
-    /** Minimum confidence threshold for keeping extracted entities (0.0 - 1.0) */
+    /** Minimum confidence threshold for keeping extracted entities (0.0 - 1.0). */
     @Builder.Default
     private double minConfidence = 0.5;
+
+    /**
+     * Optional typed calibration for probabilistic graph-addition thresholds. When absent, all
+     * effective values exactly mirror the legacy scalar fields above/below, including user overrides.
+     */
+    private GraphAdditionCalibration graphAdditionCalibration;
+
+    /** Fully validated immutable calibration consumed by graph-addition stages. */
+    @JsonIgnore
+    public GraphAdditionCalibration.Resolved getResolvedGraphAdditionCalibration() {
+        if (graphAdditionCalibration == null) {
+            return GraphAdditionCalibration.legacy(
+                    decomposedCandidateMinScore,
+                    minConfidence,
+                    minConfidence,
+                    legacyStringIdentitySimilarity(),
+                    legacyEmbeddingIdentitySimilarity());
+        }
+        return graphAdditionCalibration.resolve(
+                decomposedCandidateMinScore,
+                minConfidence,
+                minConfidence,
+                legacyStringIdentitySimilarity(),
+                legacyEmbeddingIdentitySimilarity());
+    }
+
+    @JsonIgnore
+    public double getEffectiveCandidateMinScore() {
+        return getResolvedGraphAdditionCalibration().candidateMinScore();
+    }
+
+    @JsonIgnore
+    public double getEffectiveExtractionMinConfidence() {
+        return getResolvedGraphAdditionCalibration().extractionMinConfidence();
+    }
+
+    @JsonIgnore
+    public double getEffectivePersistenceMinConfidence() {
+        return getResolvedGraphAdditionCalibration().persistenceMinConfidence();
+    }
+
+    @JsonIgnore
+    public double getEffectiveStringIdentitySimilarity() {
+        return getResolvedGraphAdditionCalibration().stringIdentitySimilarity();
+    }
+
+    @JsonIgnore
+    public double getEffectiveEmbeddingIdentitySimilarity() {
+        return getResolvedGraphAdditionCalibration().embeddingIdentitySimilarity();
+    }
+
+    private double legacyStringIdentitySimilarity() {
+        return entityResolutionSimilarityThreshold > 0.0
+                ? Math.min(1.0, entityResolutionSimilarityThreshold) : 0.85;
+    }
+
+    private double legacyEmbeddingIdentitySimilarity() {
+        return entityResolutionEmbeddingThreshold > 0.0
+                ? Math.min(1.0, entityResolutionEmbeddingThreshold) : 0.88;
+    }
 
     /**
      * Whitelist of provider prefixes allowed for extraction model selection
@@ -241,13 +323,29 @@ public class GraphExtractionConfig {
         }
     }
 
-    /** Upper bound on propositions taken from one chunk in the decomposed pipeline. */
+    /**
+     * Optional upper bound on propositions taken from one chunk in the decomposed pipeline.
+     *
+     * <p>Zero or a negative value means unbounded: the model may surface every source-grounded
+     * proposition that fits its serving output budget. A positive value is an explicit project-level
+     * safety override; prompt tiers never impose a second hidden cap.</p>
+     */
     @Builder.Default
-    private int decomposedMaxPropositions = 12;
+    private int decomposedMaxPropositions = 0;
 
     /** Entity candidates the engine retrieves and offers the model per mention. */
     @Builder.Default
     private int decomposedEntityCandidateLimit = 8;
+
+    /**
+     * Ask the mention pass to resolve one fixed subject/object endpoint per call. This costs up to
+     * two calls per proposition but removes endpoint enumeration and role repetition from the
+     * model's task. Endpoint-local ballots are the production default because the combined contract
+     * measurably loses identity decisions on small local models; callers may disable it only for a
+     * controlled legacy ablation.
+     */
+    @Builder.Default
+    private boolean decomposedSplitMentionsByEndpoint = true;
 
     /** Relation types offered to the model for one resolved endpoint pair. */
     @Builder.Default
@@ -256,6 +354,45 @@ public class GraphExtractionConfig {
     /** Existing claims offered to the model when matching new evidence. */
     @Builder.Default
     private int decomposedClaimCandidateLimit = 5;
+
+    /**
+     * Context-aware prompt profile for every decomposed pass. AUTO is resolved from the model's
+     * effective serving context (after local KV/sequence-bucket limits), not from a model-name guess
+     * or its theoretical architecture window.
+     */
+    @Builder.Default
+    private DecomposedPromptTier decomposedPromptTier = DecomposedPromptTier.AUTO;
+
+    /**
+     * Optional hard input-prompt budget in tokens for decomposed passes. This is a project/job
+     * override and must fit within the selected model's executable context after output and wrapper
+     * reserves. Invalid values are rejected before dispatch; prompts are never silently truncated to
+     * satisfy this setting.
+     */
+    private Integer decomposedPromptBudgetTokens;
+
+    /** Accept a loose string while keeping older project configuration files loadable. */
+    @JsonSetter("decomposedPromptTier")
+    public void setDecomposedPromptTierFromString(String value) {
+        if (value == null || value.isBlank()) {
+            this.decomposedPromptTier = DecomposedPromptTier.AUTO;
+            return;
+        }
+        try {
+            this.decomposedPromptTier = DecomposedPromptTier.valueOf(value.trim().toUpperCase());
+        } catch (IllegalArgumentException ignored) {
+            this.decomposedPromptTier = DecomposedPromptTier.AUTO;
+        }
+    }
+
+    /**
+     * Configurable boundary policy for proposition-sized model work. This is independent from the
+     * crawl's document/retrieval chunker because those chunks serve a different context-preservation
+     * purpose.
+     */
+    @Builder.Default
+    private PropositionAtomizationConfig decomposedAtomization =
+            PropositionAtomizationConfig.defaults();
 
     /**
      * Drop proposals whose evidence quote cannot be located in the chunk. Leaving this on is what
@@ -284,6 +421,17 @@ public class GraphExtractionConfig {
      */
     @Builder.Default
     private PartitionPassConfig partition = PartitionPassConfig.defaults();
+
+    /** Null-safe atomization settings for legacy configuration files. */
+    public PropositionAtomizationConfig getDecomposedAtomization() {
+        return decomposedAtomization == null
+                ? PropositionAtomizationConfig.defaults() : decomposedAtomization;
+    }
+
+    /** Null-safe tier for legacy JSON and programmatic callers. */
+    public DecomposedPromptTier getDecomposedPromptTier() {
+        return decomposedPromptTier == null ? DecomposedPromptTier.AUTO : decomposedPromptTier;
+    }
 
     /** The partition settings, defaulted rather than null for a config deserialised without them. */
     public PartitionPassConfig getPartition() {

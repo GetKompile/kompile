@@ -22,6 +22,7 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.*;
@@ -30,6 +31,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /**
  * End-to-end tests that wire a stub crawler through the full pipeline:
@@ -134,6 +138,31 @@ class CrawlPipelineEndToEndTest {
         assertEquals(1, summaries.size());
         assertEquals(CrawlStatus.COMPLETED, summaries.get(0).status());
         assertEquals(4, summaries.get(0).totalDiscovered());
+    }
+
+    @Test
+    void serviceRoutesDiscoveredTextThroughLanguageDetector() throws Exception {
+        CrawlerRegistry registry = new CrawlerRegistry(List.of(new StubCrawler()));
+        CrawlLanguageDetector detector = mock(CrawlLanguageDetector.class);
+        CrawlerService detectedService = new CrawlerService(registry, new ObjectMapper(), "", detector);
+        CrawlConfig config = CrawlConfig.builder()
+                .seed("stub://test")
+                .crawlerId("stub")
+                .build();
+        CountDownLatch latch = new CountDownLatch(1);
+
+        detectedService.startCrawl(config, new CrawlEventListener() {
+            @Override
+            public void onComplete(CrawlSummary summary) {
+                latch.countDown();
+            }
+        });
+
+        assertTrue(latch.await(10, TimeUnit.SECONDS));
+        ArgumentCaptor<CrawlItem> itemCaptor = ArgumentCaptor.forClass(CrawlItem.class);
+        verify(detector).enrichWithLanguage(itemCaptor.capture(),
+                eq("This English content sample is passed through the production crawl router."));
+        assertFalse(itemCaptor.getValue().getMetadata().containsKey("contentSample"));
     }
 
     @Test
@@ -438,6 +467,8 @@ class CrawlPipelineEndToEndTest {
                     CrawlItem.builder()
                             .url(seed + "/page.html")
                             .contentType("text/html")
+                            .metadata(new HashMap<>(Map.of("contentSample",
+                                    "This English content sample is passed through the production crawl router.")))
                             .discoveredAt(Instant.now())
                             .build(),
                     CrawlItem.builder()

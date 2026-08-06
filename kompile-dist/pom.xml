@@ -37,6 +37,15 @@
         Activated by -Dkompile.dist=true at the reactor root.
     </description>
 
+    <properties>
+        <!-- May also be supplied directly as -Dkompile.sdx.assets.dir=... -->
+        <kompile.sdx.assets.dir>${env.KOMPILE_SDX_ASSETS_DIR}</kompile.sdx.assets.dir>
+        <kompile.distribution.variant>full</kompile.distribution.variant>
+        <kompile.cuda.version>12.9</kompile.cuda.version>
+        <kompile.sdk.classifier>${javacpp.platform}${javacpp.platform.extension}</kompile.sdk.classifier>
+        <kompile.distribution.classifier>${kompile.distribution.variant}-${kompile.distribution.platform.classifier}</kompile.distribution.classifier>
+    </properties>
+
     <!--
         Reactor-ordering dependencies. Declaring these forces Maven to build
         every upstream module that contributes an artifact to the distribution
@@ -85,6 +94,16 @@
             <artifactId>kompile-app-main</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <!-- JVM worker for JavaScript/Python SCRIPT steps. The app-main native image contains
+             only its lightweight client; GraalJS/Truffle remain inside this exec JAR. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-compute-graph-scripting</artifactId>
+            <version>${project.version}</version>
+            <classifier>exec</classifier>
+            <scope>provided</scope>
             <optional>true</optional>
         </dependency>
         <dependency>
@@ -199,7 +218,6 @@
                                 <argument>-c</argument>
                                 <argument>d="kompile-python"; if [ -f "$d/setup.py" ]; then ( cd "$d" &amp;&amp; python3 setup.py bdist_wheel ); else echo "kompile-python: no setup.py found, skipping optional Python wheel build"; fi</argument>
                             </arguments>
-                            <failOnError>false</failOnError>
                         </configuration>
                     </execution>
                 </executions>
@@ -234,6 +252,26 @@
                                     <type>jar</type>
                                     <overWrite>true</overWrite>
                                     <outputDirectory>${project.build.directory}/staging-deps</outputDirectory>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>copy-scripting-worker-exec-jar</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>ai.kompile</groupId>
+                                    <artifactId>kompile-compute-graph-scripting</artifactId>
+                                    <version>${project.version}</version>
+                                    <classifier>exec</classifier>
+                                    <type>jar</type>
+                                    <overWrite>true</overWrite>
+                                    <outputDirectory>${project.build.directory}/scripting-deps</outputDirectory>
                                 </artifactItem>
                             </artifactItems>
                         </configuration>
@@ -276,6 +314,87 @@
                 </executions>
             </plugin>
 
+            <!--
+                Stage side-loaded natives through the same platform/flavor-strict helper used by
+                build-dist.sh. The helper emits one canonical flat lib/ layout, rejects conflicting
+                basenames, and applies the requested optimized ND4J flavor only after the baseline
+                platform set. This prevents foreign classifiers and baseline/AVX2 ambiguity from
+                leaking into the Maven-only distribution route.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>stage-complete-sdx-sdk</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <exec executable="bash" failonerror="true">
+                                    <arg value="${project.basedir}/src/main/build/stage-sdx-assets.sh"/>
+                                    <arg value="${kompile.sdx.assets.dir}"/>
+                                    <arg value="${project.build.directory}/sdx-sdk"/>
+                                    <arg value="${kompile.distribution.variant}"/>
+                                    <arg value="${javacpp.platform}"/>
+                                    <arg value="${nd4j.version}"/>
+                                    <arg value="${kompile.cuda.version}"/>
+                                    <arg value="${nd4j.backend}"/>
+                                    <arg value="${kompile.sdk.classifier}"/>
+                                </exec>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <!--
+                        Copy native-image outputs into target/portable-bin and normalize only those
+                        staged copies. This makes the Maven assembly obey the same ELF interpreter
+                        and $ORIGIN/../lib RUNPATH contract as build-dist.sh without modifying any
+                        producing module's target directory.
+                    -->
+                    <execution>
+                        <id>stage-portable-binaries</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <exec executable="bash" failonerror="true">
+                                    <arg value="${project.basedir}/src/main/build/stage-portable-binaries.sh"/>
+                                    <arg value="${project.basedir}/.."/>
+                                    <arg value="${project.build.directory}/portable-bin"/>
+                                    <arg value="${project.basedir}/src/main/build/normalize-elf-portability.sh"/>
+                                </exec>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>stage-native-libs</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <delete dir="${project.build.directory}/native-libs" quiet="true"/>
+                                <mkdir dir="${project.build.directory}/native-libs"/>
+                                <exec executable="bash" failonerror="true">
+                                    <arg value="${project.basedir}/src/main/build/stage-native-libs.sh"/>
+                                    <arg value="${project.basedir}/../kompile-app/kompile-app-parent/kompile-app-main/target/native-libs"/>
+                                    <arg value="${project.build.directory}/native-libs"/>
+                                    <arg value="${javacpp.platform}"/>
+                                    <arg value="${javacpp.platform.extension}"/>
+                                    <arg value="${nd4j.backend}"/>
+                                </exec>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Build the distribution archive -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -293,7 +412,6 @@
                                 <descriptor>src/main/assembly/dist.xml</descriptor>
                             </descriptors>
                             <finalName>kompile-dist-${project.version}</finalName>
-                            <appendAssemblyId>false</appendAssemblyId>
                         </configuration>
                     </execution>
                 </executions>

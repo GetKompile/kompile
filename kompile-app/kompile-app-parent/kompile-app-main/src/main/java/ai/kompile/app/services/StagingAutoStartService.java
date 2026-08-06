@@ -17,6 +17,7 @@
 package ai.kompile.app.services;
 
 import ai.kompile.app.config.ModelStagingWiringConfiguration;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -134,8 +135,21 @@ public class StagingAutoStartService {
             return;
         }
 
-        String stagingUrl = "http://localhost:" + port;
-        log.info("Configuring model source wiring to staging service at {}", stagingUrl);
-        wiringConfiguration.configureStagingService(stagingUrl, null);
+        ServiceEndpointsConfigManager manager = ServiceEndpointsConfigManager.shared();
+        String configuredUrl = manager.current().stagingUrl();
+        if (configuredUrl == null || configuredUrl.isBlank()) {
+            String localUrl = "http://localhost:" + port;
+            try {
+                manager.update(java.util.Map.of(ServiceEndpointsConfigManager.STAGING_URL_KEY, localUrl));
+                log.info("Recorded auto-started model-staging dependency at {} in managed configuration",
+                        localUrl);
+            } catch (Exception e) {
+                log.warn("Could not persist auto-started model-staging endpoint {}: {}", localUrl,
+                        e.getMessage());
+            }
+        } else {
+            log.info("Preserving managed model-staging dependency at {}", configuredUrl);
+        }
+        wiringConfiguration.refreshConfiguration();
     }
 }

@@ -271,7 +271,7 @@ public record Nd4jEnvironmentConfig(
                 true,   // optimizerEnabled - graph optimizer ON by default
                 true,   // optimizerFp16 - FP16 weight conversion ON by default (halves VRAM)
                 false,  // dspNoFreeze - freeze ON by default (false = don't skip freeze)
-                false,  // dspNoNativeDecode - native decode inputs ON by default
+                true,   // dspNoNativeDecode - portable Java decode ON by default
                 false,  // dspNoAttnOverride - attention override ON by default
                 false,  // dspNoDirect - direct mode ON by default
                 false,  // tritonSkipKernels - triton kernels ON by default

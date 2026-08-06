@@ -18,7 +18,9 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.maintenance.GraphMaintenanceService;
+import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.partition.DiscoveryChannel;
 import ai.kompile.core.graphrag.partition.DiscoveryChannelProvider;
 import ai.kompile.core.graphrag.partition.DiscoveryPolicy;
@@ -43,6 +45,9 @@ import ai.kompile.crawl.graph.partition.GraphEntityLinks;
 import ai.kompile.crawl.graph.partition.GraphNeighbourhoodDiscoveryProvider;
 import ai.kompile.crawl.graph.partition.PartitionFactSheets;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.domain.GraphEdge;
+import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.knowledgegraph.domain.NodeLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -56,6 +61,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Collection;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -331,6 +337,7 @@ public class EntityPartitionCrawlService {
     public List<PartitionRequest> groupedRequests(Long factSheetId, GroupingPolicy grouping,
                                                   DiscoveryPolicy discovery) {
         GroupingPlan plan = groupingFor(factSheetId, grouping);
+        Map<String, List<String>> identifiersByMember = identifiersByMember(factSheetId);
         for (String note : plan.notes()) {
             // Said out loud rather than buried in the plan: every one of these is a place the
             // corpus did not fit the policy, and the partitions below are the compromise.
@@ -340,10 +347,45 @@ public class EntityPartitionCrawlService {
         List<PartitionRequest> requests = new ArrayList<>(plan.groups().size());
         for (EntityGroup group : plan.groups()) {
             PartitionRequest request =
-                    PartitionRequest.forGroup(group, plan.policy(), factSheetId);
+                    PartitionRequest.forGroup(group, plan.policy(), factSheetId)
+                            .withIdentifiers(groupIdentifiers(group, identifiersByMember));
             requests.add(discovery == null ? request : request.withPolicy(discovery));
         }
         return requests;
+    }
+
+    private Map<String, List<String>> identifiersByMember(Long factSheetId) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        List<GraphNode> nodes = graph.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
+        if (nodes == null) {
+            return result;
+        }
+        for (GraphNode node : nodes) {
+            if (node == null || node.getNodeId() == null) {
+                continue;
+            }
+            LinkedHashSet<String> forms = new LinkedHashSet<>();
+            addText(forms, node.getTitle());
+            addText(forms, node.getExternalId());
+            addAliases(forms, node.getMetadata().get("aliases"));
+            addAliases(forms, node.getMetadata().get("alias"));
+            result.put(node.getNodeId(), List.copyOf(forms));
+        }
+        return result;
+    }
+
+    private static List<String> groupIdentifiers(EntityGroup group,
+                                                 Map<String, List<String>> byMember) {
+        LinkedHashSet<String> identifiers = new LinkedHashSet<>();
+        for (String member : group.members()) {
+            List<String> known = byMember.get(member);
+            if (known == null || known.isEmpty()) {
+                addText(identifiers, member);
+            } else {
+                identifiers.addAll(known);
+            }
+        }
+        return List.copyOf(identifiers);
     }
 
     /** True when a vector index is available for the retrieval channels. */
@@ -403,9 +445,121 @@ public class EntityPartitionCrawlService {
                     policy.excludeBelow()));
         }
         if (policy.runs(DiscoveryChannel.SEMANTIC)) {
-            providers.add(new SemanticDiscoveryProvider(store, policy.excludeBelow()));
+            providers.add(new SemanticDiscoveryProvider(store,
+                    partition -> semanticQuery(request), policy.excludeBelow()));
         }
         return providers;
+    }
+
+    private static String semanticQuery(PartitionRequest request) {
+        List<String> terms = request.identifiers().isEmpty()
+                ? request.members() : request.identifiers();
+        return String.join(" ", terms.stream().filter(Objects::nonNull)
+                .filter(term -> !term.isBlank()).distinct().limit(12).toList());
+    }
+
+    /**
+     * Materializes the already-persisted entity graph as candidate context for partition tasks.
+     * The model-facing renderer applies a much smaller cap; retaining the complete in-run object
+     * lets candidate providers choose the relevant subset independently for each shard.
+     */
+    public Graph currentGraph(Long factSheetId) {
+        List<GraphNode> nodes = graph.getNodesByTypeInFactSheet(factSheetId, NodeLevel.ENTITY);
+        List<GraphEdge> edges = graph.getEdgesInFactSheet(factSheetId);
+        List<Entity> entities = new ArrayList<>();
+        Set<String> entityIds = new LinkedHashSet<>();
+        if (nodes != null) {
+            for (GraphNode node : nodes) {
+                if (node == null || node.getNodeId() == null) {
+                    continue;
+                }
+                Entity entity = new Entity();
+                entity.setId(node.getNodeId());
+                entity.setTitle(node.getTitle());
+                entity.setType(entityType(node));
+                entity.setDescription(node.getDescription());
+                entity.setConfidence(node.getConfidence());
+                entity.setMetadata(node.getMetadata());
+                LinkedHashSet<String> aliases = new LinkedHashSet<>();
+                addText(aliases, node.getExternalId());
+                addAliases(aliases, node.getMetadata().get("aliases"));
+                addAliases(aliases, node.getMetadata().get("alias"));
+                entity.setAliases(List.copyOf(aliases));
+                entities.add(entity);
+                entityIds.add(node.getNodeId());
+            }
+        }
+        List<Relationship> relationships = new ArrayList<>();
+        if (edges != null) {
+            for (GraphEdge edge : edges) {
+                if (edge == null || !entityIds.contains(edge.getSourceNodeId())
+                        || !entityIds.contains(edge.getTargetNodeId())) {
+                    continue;
+                }
+                Relationship relationship = new Relationship();
+                relationship.setSource(edge.getSourceNodeId());
+                relationship.setTarget(edge.getTargetNodeId());
+                relationship.setType(edge.getRelationType() != null ? edge.getRelationType()
+                        : edge.getEdgeType() == null ? "RELATED_TO" : edge.getEdgeType().name());
+                relationship.setDescription(edge.getDescription());
+                relationship.setWeight(edge.getWeight());
+                relationship.setConfidence(edge.getConfidence());
+                relationship.setOccurredAt(edge.getOccurredAt() == null
+                        ? null : edge.getOccurredAt().toString());
+                Map<String, Object> metadata = new LinkedHashMap<>(edge.getMetadata());
+                if (edge.getProvenance() != null && !edge.getProvenance().isBlank()) {
+                    metadata.putIfAbsent("provenance", edge.getProvenance());
+                }
+                if (edge.getProvenanceType() != null) {
+                    metadata.putIfAbsent("provenanceType", edge.getProvenanceType().name());
+                }
+                if (edge.getSimilarityScore() != null) {
+                    metadata.putIfAbsent("similarityScore", edge.getSimilarityScore());
+                }
+                if (edge.getKgEmbeddingAlgorithm() != null) {
+                    metadata.putIfAbsent("kgEmbeddingAlgorithm", edge.getKgEmbeddingAlgorithm().name());
+                }
+                if (edge.getKgEmbeddingVersion() != null) {
+                    metadata.putIfAbsent("kgEmbeddingVersion", edge.getKgEmbeddingVersion());
+                }
+                relationship.setMetadata(metadata.isEmpty() ? Map.of() : metadata);
+                relationships.add(relationship);
+            }
+        }
+        return Graph.builder().id("fact-sheet:" + factSheetId + ":live")
+                .factSheetId(factSheetId).entities(entities).relationships(relationships).build();
+    }
+
+    private static String entityType(GraphNode node) {
+        if (node != null && node.getMetadata() != null) {
+            for (String key : List.of("entity_type", "entityType", "type")) {
+                Object value = node.getMetadata().get(key);
+                if (value != null && !String.valueOf(value).isBlank()) {
+                    return String.valueOf(value).strip();
+                }
+            }
+        }
+        return node == null || node.getNodeType() == null ? "ENTITY" : node.getNodeType().name();
+    }
+
+    private static void addAliases(Set<String> target, Object value) {
+        if (value instanceof Collection<?> collection) {
+            collection.forEach(alias -> addText(target, alias));
+        } else if (value instanceof Object[] array) {
+            for (Object alias : array) {
+                addText(target, alias);
+            }
+        } else if (value != null) {
+            for (String alias : String.valueOf(value).split("[,;|]")) {
+                addText(target, alias);
+            }
+        }
+    }
+
+    private static void addText(Set<String> target, Object value) {
+        if (value != null && !String.valueOf(value).isBlank()) {
+            target.add(String.valueOf(value).trim());
+        }
     }
 
     /** The coordinator for {@code request}; channels the policy does not name are dropped by it. */
@@ -439,12 +593,19 @@ public class EntityPartitionCrawlService {
      */
     public PartitionLifecycle.Result run(PartitionRequest request, PartitionStore store,
                                          PartitionLifecycle.ChunkProcessor processor) {
+        return run(request, store, processor, null);
+    }
+
+    private PartitionLifecycle.Result run(PartitionRequest request, PartitionStore store,
+                                          PartitionLifecycle.ChunkProcessor processor,
+                                          PartitionLifecycle.BatchObserver batchObserver) {
         Objects.requireNonNull(request, "a run needs a request");
         PartitionStore target = store == null ? PartitionStore.inMemory() : store;
         PartitionKey key = request.key();
         target.save(pinned(target.loadOrOpen(key), request));
 
-        PartitionLifecycle.Result result = lifecycleFor(request, target).run(key, processor);
+        PartitionLifecycle.Result result = lifecycleFor(request, target)
+                .run(key, processor, batchObserver);
         if (!result.isProvisionallyComplete()) {
             log.info("Partition {} did not close: {}", result.partition().id(), result.describe());
         }
@@ -534,6 +695,8 @@ public class EntityPartitionCrawlService {
 
         PartitionLifecycle.Result result;
         try {
+            PartitionLifecycle.BatchObserver graphFlush = sink == null ? null
+                    : (partition, batch) -> transaction.flush(sink);
             result = run(request, store, (member, partition) -> {
                 ExtractionReuse.Outcome outcome = reusing.extract(member, textOf(request, member),
                         partition, extractor::extract);
@@ -544,7 +707,7 @@ public class EntityPartitionCrawlService {
                 }
                 transaction.stage(member, produced);
                 return PartitionLifecycle.ProcessOutcome.processed(outcome.note());
-            });
+            }, graphFlush);
         } catch (RuntimeException e) {
             transaction.abandon("partition run failed: " + e);
             throw e;

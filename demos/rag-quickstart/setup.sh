@@ -31,7 +31,7 @@ KOMPILE_CLI="$KOMPILE_ROOT/kompile-cli/target/kompile-cli"
 MVN="${MVN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
 DEMO_DIR="${DEMO_DIR:-/tmp/kompile-rag-demo}"
 APP_PORT="${APP_PORT:-8080}"
-STAGING_PORT="${STAGING_PORT:-8081}"
+STAGING_PORT="${STAGING_PORT:-8090}"
 INSTANCE_ID="rag-demo"
 SKIP_BUILD=false
 

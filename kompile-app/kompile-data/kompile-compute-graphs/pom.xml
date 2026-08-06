@@ -18,6 +18,7 @@
         <module>kompile-compute-graph-camel</module>
         <module>kompile-compute-graph-excel</module>
         <module>kompile-compute-graph-n8n</module>
+        <module>kompile-compute-graph-scripting-client</module>
         <module>kompile-compute-graph-scripting</module>
         <module>kompile-compute-graph-xircuits</module>
     </modules>

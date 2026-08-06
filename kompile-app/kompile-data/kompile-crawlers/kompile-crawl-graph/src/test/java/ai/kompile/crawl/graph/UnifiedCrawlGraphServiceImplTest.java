@@ -111,6 +111,7 @@ class UnifiedCrawlGraphServiceImplTest {
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
     @MockBean private CrawlStepArchiveService crawlStepArchiveService;
     @MockBean private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
+    @MockBean private EntityPartitionCrawlService entityPartitionCrawlService;
     @Autowired private CrawlProgressEventCollector crawlProgressEventCollector;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private DocumentLoader emailLoader;
@@ -208,6 +209,7 @@ class UnifiedCrawlGraphServiceImplTest {
             List<?> docs = invocation.getArgument(0);
             return docs.size();
         });
+        when(vectorStore.switchIndexPath(anyString())).thenReturn(true);
 
         // KnowledgeGraphService mocks
         // Use doReturn().when() for abstract methods to avoid Mockito matcher issues.
@@ -297,6 +299,57 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(5, orchestrator.completeGraphExtractionProgress(job));
         assertEquals(5, job.getGraphChunksProcessed().get());
+    }
+
+    @Test
+    @DisplayName("Deterministic graph preparation seeds the in-run LLM graph")
+    void deterministicGraphPreparationSeedsInRunGraph() {
+        Entity sender = new Entity();
+        sender.setId("person-sarah");
+        sender.setTitle("Sarah Chen");
+        sender.setType("PERSON");
+        sender.setDescription("Email sender");
+        sender.setConfidence(1.0);
+        Relationship sentBy = new Relationship();
+        sentBy.setSource("person-sarah");
+        sentBy.setTarget("email-1");
+        sentBy.setType("SENT_BY");
+        sentBy.setDescription("Sarah sent the email");
+        sentBy.setConfidence(1.0);
+        Graph persisted = Graph.builder()
+                .id("fact-sheet:42:live")
+                .factSheetId(42L)
+                .entities(new ArrayList<>(List.of(sender)))
+                .relationships(new ArrayList<>(List.of(sentBy)))
+                .build();
+        UnifiedCrawlJob job = UnifiedCrawlJob.builder()
+                .jobId("job-seeded")
+                .request(UnifiedCrawlRequest.builder().factSheetId(42L).sources(List.of()).build())
+                .build();
+
+        Graph seeded = UnifiedCrawlGraphServiceImpl.initializeUnifiedGraph(job, persisted);
+
+        assertSame(persisted, seeded);
+        assertEquals("job-seeded", seeded.getId());
+        assertEquals("fact-sheet:42:live", seeded.getParentGraphId());
+        assertEquals(List.of("person-sarah"), seeded.getEntities().stream()
+                .map(Entity::getId).toList());
+        assertEquals("SENT_BY", seeded.getRelationships().get(0).getType());
+        assertNotNull(seeded.getCommunities());
+    }
+
+    @Test
+    @DisplayName("An absent deterministic graph still yields initialized mutable context")
+    void absentDeterministicGraphStillYieldsInitializedContext() {
+        UnifiedCrawlJob job = UnifiedCrawlJob.builder().jobId("job-empty-seed")
+                .request(UnifiedCrawlRequest.builder().sources(List.of()).build()).build();
+
+        Graph seeded = UnifiedCrawlGraphServiceImpl.initializeUnifiedGraph(job, null);
+
+        assertEquals("job-empty-seed", seeded.getId());
+        assertNotNull(seeded.getEntities());
+        assertNotNull(seeded.getRelationships());
+        assertNotNull(seeded.getCommunities());
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -2527,13 +2580,26 @@ class UnifiedCrawlGraphServiceImplTest {
     // ──────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("Cross-document callback is invoked during crawl when both callback and KG service present")
+    @DisplayName("Cross-document callback runs only after deterministic email graph facts are visible")
     void crossDocumentCallback_invokedWhenPresent() throws Exception {
-        // Configure the @MockBean to return 3 relations (already reset in setUp to return 0)
-        when(crossDocumentRelationCallback.extractRelationsFromGraphNodes(any())).thenReturn(3);
+        java.util.concurrent.atomic.AtomicBoolean deterministicEntityVisible =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        when(crossDocumentRelationCallback.extractRelationsFromGraphNodes(any())).thenAnswer(invocation -> {
+            deterministicEntityVisible.set(Mockito.mockingDetails(knowledgeGraphService).getInvocations().stream()
+                    .filter(call -> "createNode".equals(call.getMethod().getName()))
+                    .anyMatch(call -> call.getArguments().length > 0
+                            && call.getArgument(0) == NodeLevel.ENTITY));
+            return 3;
+        });
 
+        Map<String, Object> emailMetadata = new HashMap<>();
+        emailMetadata.put("email.from", "Alice <alice@corp.com>");
+        emailMetadata.put("email.to", "Bob <bob@corp.com>");
+        emailMetadata.put("email.subject", "Acme update");
+        emailMetadata.put("source_path", "email:acme-update");
+        emailMetadata.put("source_type", "EMAIL");
         when(fileLoader.load(any(DocumentSourceDescriptor.class), any())).thenReturn(List.of(
-                new Document("Alice works at Acme Corp.", Map.of())
+                new Document("Alice sent Bob an Acme update.", emailMetadata)
         ));
 
         String llmResponse = buildExtractionJson(
@@ -2552,6 +2618,8 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         verify(crossDocumentRelationCallback).extractRelationsFromGraphNodes(any());
+        assertTrue(deterministicEntityVisible.get(),
+                "Cross-document inference must observe source-native email entities before it runs");
     }
 
     @Test

@@ -18,6 +18,7 @@ package ai.kompile.cli.main.web;
 
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.main.GlobalBootstrap;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.install.ComponentInstaller;
@@ -432,7 +433,9 @@ public class WebCommand implements Callable<Integer> {
             }
         }
         if (stagingProcess != null) {
-            appArgs.add("--kompile.staging.url=http://localhost:" + stagingPort);
+            ServiceEndpointsConfigManager.shared().update(Map.of(
+                    ServiceEndpointsConfigManager.STAGING_URL_KEY,
+                    "http://localhost:" + stagingPort));
             appArgs.add("--kompile.staging.port=" + stagingPort);
         }
 

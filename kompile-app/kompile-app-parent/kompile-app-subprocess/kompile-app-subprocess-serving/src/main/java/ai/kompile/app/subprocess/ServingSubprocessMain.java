@@ -18,7 +18,10 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.llm.pipeline.LlmGenerateController;
+import ai.kompile.app.llm.pipeline.LlmModelController;
 import ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl;
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
@@ -27,20 +30,25 @@ import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Subprocess entry point for modular LLM serving.
  *
- * <p>Starts a lightweight Spring Boot HTTP server with LLM load/unload/generate
- * endpoints. Runs as an independent process with its own ND4J backend (CPU or CUDA).
- * Can be deployed separately from the main kompile-app for modular model serving.</p>
+ * <p>Starts a bounded JDK HTTP server backed by a narrow Spring bean context with
+ * LLM load/unload/generate endpoints. Runs as an independent process with its own
+ * ND4J backend (CPU or CUDA). Can be deployed separately from the main kompile-app
+ * for modular model serving.</p>
  *
  * <h3>Usage:</h3>
  * <pre>
@@ -50,8 +58,6 @@ import java.util.Map;
  *   # Direct:
  *   java -cp <classpath> ai.kompile.app.subprocess.ServingSubprocessMain args-file.json
  *
- *   # Minimal (no args file, use defaults):
- *   java -cp <classpath> ai.kompile.app.subprocess.ServingSubprocessMain
  * </pre>
  *
  * <h3>Endpoints exposed:</h3>
@@ -60,7 +66,6 @@ import java.util.Map;
  *   <li>{@code POST /api/llm/unload} — Unload the current model</li>
  *   <li>{@code GET  /api/llm/status} — Current model status</li>
  *   <li>{@code POST /api/llm/generate} — Text generation (via {@link SameDiffLanguageModelImpl})</li>
- *   <li>{@code GET  /api/sdx-llm/**} — SameDiff LLM model set management</li>
  * </ul>
  */
 public class ServingSubprocessMain {
@@ -69,19 +74,14 @@ public class ServingSubprocessMain {
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) {
-        ServingSubprocessArgs servingArgs;
-
+        final ServingSubprocessArgs servingArgs;
         try {
-            if (args.length >= 1 && Files.exists(Paths.get(args[0]))) {
-                servingArgs = ServingSubprocessArgs.fromFile(Paths.get(args[0]));
-                logger.info("Loaded serving args from: {}", args[0]);
-            } else {
-                servingArgs = ServingSubprocessArgs.defaults();
-                logger.info("Using default serving args (port {})", servingArgs.port());
-            }
+            servingArgs = requireArgs(args);
+            logger.info("Loaded serving args from: {}", args[0]);
         } catch (Exception e) {
-            logger.error("Failed to parse serving args, using defaults", e);
-            servingArgs = ServingSubprocessArgs.defaults();
+            logger.error("Serving subprocess requires exactly one valid args JSON file", e);
+            System.exit(1);
+            return;
         }
 
         try {
@@ -94,58 +94,83 @@ public class ServingSubprocessMain {
             if (softLimitPercent > 0) {
                 try {
                     var nativeOps = org.nd4j.nativeblas.NativeOpsHolder.getInstance().getDeviceNativeOps();
-                    var method = nativeOps.getClass().getMethod("setMemoryPoolSoftLimitPercent", int.class);
-                    method.invoke(nativeOps, softLimitPercent);
+                    nativeOps.setMemoryPoolSoftLimitPercent(softLimitPercent);
                     logger.info("CudaMemoryPool soft limit set to {}%", softLimitPercent);
                 } catch (Exception e) {
                     logger.debug("Could not set memory pool soft limit (CPU backend or method not available): {}", e.getMessage());
                 }
             }
 
-            // Start Spring Boot with minimal serving config
+            // Start the native-safe serving context and bounded JDK HTTP server.
             int port = servingArgs.port() > 0 ? servingArgs.port() : 8091;
-            String host = servingArgs.host() != null ? servingArgs.host() : "0.0.0.0";
+            String host = servingArgs.host() != null && !servingArgs.host().isBlank()
+                    ? servingArgs.host() : "127.0.0.1";
             String stagingUrl = servingArgs.stagingUrl() != null
                     ? servingArgs.stagingUrl() : KompileServerConstants.DEFAULT_STAGING_URL;
 
             logger.info("Starting LLM serving subprocess on {}:{}", host, port);
 
-            // Use system properties for server config so they override application.properties
-            System.setProperty("server.port", String.valueOf(port));
-            System.setProperty("server.address", host);
             System.setProperty("kompile.staging.url", stagingUrl);
-            System.setProperty("kompile.llm.cache.dir",
-                    System.getProperty("user.home") + "/.kompile/llm-cache");
-            // Serving subprocess runs models directly — never proxy to itself
-            System.setProperty("kompile.llm.serving.url", "");
-            // Enable direct-serving beans (SameDiffLanguageModelImpl, LlmModelController)
+            if (System.getProperty("kompile.llm.cache.dir") == null) {
+                System.setProperty("kompile.llm.cache.dir",
+                        KompileHome.llmCacheDirectory().getAbsolutePath());
+            }
+            // Internal process-role marker: enable direct-serving beans and never create the
+            // service-endpoints.json-backed client proxy inside the serving child itself.
             System.setProperty("kompile.llm.direct-serving.enabled", "true");
 
-            ConfigurableApplicationContext context = new SpringApplicationBuilder(
-                    SubprocessServingConfiguration.class)
-                    .properties(
-                            "spring.main.banner-mode=off",
-                            "spring.main.web-application-type=servlet"
-                    )
-                    .run();
+            AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+            context.register(SubprocessServingConfiguration.class);
+            context.refresh();
 
-            logger.info("LLM serving subprocess started on port {}", port);
+            AtomicReference<ServingSubprocessHttpServer> httpServerRef = new AtomicReference<>();
+            CountDownLatch shutdownLatch = new CountDownLatch(1);
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Shutting down LLM serving subprocess...");
+                ServingSubprocessHttpServer server = httpServerRef.get();
+                if (server != null) {
+                    server.close();
+                }
+                context.close();
+                shutdownLatch.countDown();
+            }, "serving-subprocess-shutdown"));
 
-            // Pre-load model if specified in args
+            // Finish optional initialization before accepting requests. This prevents
+            // concurrent load/generate calls from racing startup model construction.
             if (servingArgs.modelId() != null && servingArgs.modelPath() != null) {
                 preloadModel(context, servingArgs);
-                // Trim GPU memory pools after model pre-loading to release
-                // reserved-but-unused memory from DSP plan compilation and model weight loading.
                 trimGpuMemoryPools("post-model-preload");
             }
 
+            ServingSubprocessHttpServer httpServer = ServingSubprocessHttpServer.start(
+                    host,
+                    port,
+                    context.getBean(ObjectMapper.class),
+                    context.getBean(LlmModelController.class),
+                    context.getBean(LlmGenerateController.class));
+            httpServerRef.set(httpServer);
+
+            logger.info("LLM serving subprocess started on port {}", port);
+
             // Block until shutdown
             logger.info("Serving subprocess ready. Waiting for requests...");
+            shutdownLatch.await();
 
         } catch (Exception e) {
             logger.error("Serving subprocess failed to start", e);
             System.exit(1);
         }
+    }
+
+    static ServingSubprocessArgs requireArgs(String[] args) throws IOException {
+        if (args == null || args.length != 1 || args[0] == null || args[0].isBlank()) {
+            throw new IllegalArgumentException("expected exactly one args JSON file");
+        }
+        Path argsPath = Paths.get(args[0]);
+        if (!Files.isRegularFile(argsPath)) {
+            throw new IllegalArgumentException("args JSON file does not exist: " + argsPath);
+        }
+        return ServingSubprocessArgs.fromFile(argsPath);
     }
 
     private static void preloadModel(ConfigurableApplicationContext context,
@@ -157,10 +182,19 @@ public class ServingSubprocessMain {
                     ? Paths.get(args.tokenizerPath())
                     : modelPath.getParent().resolve("tokenizer.json");
 
-            Map<String, Object> opts = Map.of(
-                    "maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256,
-                    "temperature", args.temperature() > 0 ? args.temperature() : 0.7
-            );
+            Map<String, Object> opts = new HashMap<>();
+            opts.put("maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256);
+            opts.put("temperature", args.temperature() > 0 ? args.temperature() : 0.7);
+            if (args.dspEnabled() != null) {
+                opts.put("dspEnabled", args.dspEnabled());
+                // Recovery mode is a complete Kompile-side Java decode loop. Merely disabling
+                // SameDiff DSP still leaves GGUF GenerationPipeline dependent on the native
+                // autoregressive_decode plan, so select the existing lifecycle-managed runner.
+                opts.put("legacyGeneration", !args.dspEnabled());
+            }
+            if (args.optimizerEnabled() != null) {
+                opts.put("graphOptimizerEnabled", args.optimizerEnabled());
+            }
 
             logger.info("Pre-loading model: {} from {}", args.modelId(), modelPath);
             llm.loadModel(args.modelId(), modelPath, tokenizerPath, opts);

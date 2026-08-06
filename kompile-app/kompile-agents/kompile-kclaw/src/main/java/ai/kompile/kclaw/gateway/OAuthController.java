@@ -21,7 +21,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -51,7 +50,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @RestController("kclawOAuthController")
 @RequestMapping("/api/kclaw/oauth")
-@ConditionalOnBean(ChannelManager.class)
 public class OAuthController {
 
     private final ChannelManager channelManager;

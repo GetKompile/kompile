@@ -64,6 +64,17 @@ public final class KompileServiceEndpoints {
     private static Map<String, KompileService> buildDefaultRoutes() {
         Map<String, KompileService> routes = new LinkedHashMap<>();
 
+        // --- admin contracts consumed by shared chrome in every split persona ---
+        routes.put("/api/staging-config", KompileService.ADMIN);
+        routes.put("/api/embedding-restart", KompileService.ADMIN);
+        routes.put("/api/models", KompileService.ADMIN);
+        routes.put("/api/processing", KompileService.ADMIN);
+        routes.put("/api/processing-settings", KompileService.ADMIN);
+        routes.put("/api/mcp", KompileService.ADMIN);
+        routes.put("/api/process", KompileService.ADMIN);
+        routes.put("/api/graph-ontology", KompileService.ADMIN);
+        routes.put("/api/archives", KompileService.ADMIN);
+
         // --- chat (kompile-app-web-chat) ---
         routes.put("/api/agents", KompileService.CHAT);
         routes.put("/api/chat", KompileService.CHAT);

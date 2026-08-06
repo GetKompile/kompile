@@ -2,7 +2,7 @@
   "id": "fpna-cpg-channel-v1",
   "name": "FP&A — CPG Channel Mix",
   "description": "Financial Planning & Analysis schema for CPG companies with multi-channel sales, regional forecasting, and close-cycle automation.",
-  "version": 1,
+  "version": 2,
   "nodeTypes": [
     {
       "label": "CHANNEL_TAXONOMY",
@@ -185,6 +185,40 @@
       ]
     },
     {
+      "label": "ORGANIZATION",
+      "description": "A named company, legal entity, business unit, or other organization.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "legal_name", "type": "String"}
+      ]
+    },
+    {
+      "label": "PROCESS",
+      "description": "A named business process or operational workflow that consumes or produces graph facts.",
+      "properties": [
+        {"name": "classification", "type": "String"},
+        {"name": "process_name", "type": "String"},
+        {"name": "phase", "type": "String"}
+      ]
+    },
+    {
+      "label": "KNOWLEDGE_GRAPH",
+      "description": "A named knowledge-graph artifact produced or consumed by a process.",
+      "properties": [
+        {"name": "graph_name", "type": "String"},
+        {"name": "scope", "type": "String"}
+      ]
+    },
+    {
+      "label": "CLOSE_STEP_EXECUTION",
+      "description": "One dated or case-scoped execution of a monthly-close step.",
+      "properties": [
+        {"name": "case_id", "type": "String"},
+        {"name": "step_id", "type": "String"},
+        {"name": "region", "type": "String"}
+      ]
+    },
+    {
       "label": "PERSON",
       "description": "Named individual with role, email, and organizational context.",
       "properties": [
@@ -214,6 +248,14 @@
       ]
     },
     {
+      "label": "SHEET",
+      "description": "A named worksheet within a spreadsheet workbook.",
+      "properties": [
+        {"name": "sheet_name", "type": "String"},
+        {"name": "sheet_index", "type": "Integer"}
+      ]
+    },
+    {
       "label": "EMAIL_MESSAGE",
       "description": "An email message with sender, recipients, subject, and attachment references.",
       "properties": [
@@ -225,7 +267,7 @@
     }
   ],
   "relationshipTypes": [
-    {"type": "CONTAINS", "description": "Parent contains child (source→document, document→table, spreadsheet→sheet).", "properties": []},
+    {"type": "CONTAINS", "description": "Parent contains child (source→document, document→table, spreadsheet→sheet).", "properties": [], "aliases": ["CONTAINS_SHEET"]},
     {"type": "PART_OF", "description": "Inverse of CONTAINS — child is part of parent.", "properties": []},
     {"type": "VALIDATES", "description": "A control or process step validates data in another entity.", "properties": [{"name": "control_id", "type": "String"}]},
     {"type": "SOURCE_OF", "description": "Document is the original source of derived data.", "properties": []},
@@ -234,28 +276,43 @@
     {"type": "APPROVED_BY", "description": "An action or document is approved by a person/role.", "properties": [{"name": "approval_type", "type": "String"}]},
     {"type": "SUBMITTED_BY", "description": "A forecast or document was submitted by a person.", "properties": [{"name": "submission_date", "type": "String"}]},
     {"type": "FEEDS_INTO", "description": "One entity provides input data to another (e.g., forecast feeds into P&L projection).", "properties": []},
-    {"type": "DERIVES_FROM", "description": "One entity is computed from another (e.g., ROIC derives from margin + turnover).", "properties": []},
+    {"type": "DERIVES_FROM", "description": "One entity is computed from or based on another.", "properties": [], "aliases": ["DERIVED_FROM"]},
     {"type": "REFERENCES_TAXONOMY", "description": "A transactional entity references a taxonomy entity for classification.", "properties": []},
     {"type": "APPLIES_ADJUSTMENT", "description": "A forecast adjustment modifies a forecast line item.", "properties": [{"name": "field", "type": "String"}]},
     {"type": "SENT_BY", "description": "Email was sent by a person.", "properties": []},
     {"type": "SENT_TO", "description": "Email was sent to a person.", "properties": []},
     {"type": "HAS_ATTACHMENT", "description": "Email has a file attachment.", "properties": []},
     {"type": "ESCALATED_TO", "description": "A variance or flag is escalated to a person/role.", "properties": []},
+    {"type": "HAS_ROLE", "description": "A person holds a named organizational or approval role.", "properties": []},
+    {"type": "FORECAST_FOR", "description": "A regional forecast applies to an organization.", "properties": []},
+    {"type": "PUBLISHES", "description": "A person publishes a regional forecast.", "properties": []},
+    {"type": "PRODUCES", "description": "A process produces a graph or other named output.", "properties": []},
+    {"type": "GOVERNS", "description": "One canonical reference entity governs interpretation of another.", "properties": []},
     {"type": "TRIGGERS", "description": "One entity triggers evaluation of another (e.g., DQ flag triggers control assertion).", "properties": []}
   ],
   "patterns": [
     "(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)",
+    "(PERSON)-[:APPROVED_BY]->(CLOSE_STEP_EXECUTION)",
     "(PERSON)-[:SUBMITTED_BY]->(REGIONAL_FORECAST)",
+    "(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)",
+    "(PERSON)-[:PUBLISHES]->(REGIONAL_FORECAST)",
+    "(REGIONAL_FORECAST)-[:FORECAST_FOR]->(ORGANIZATION)",
     "(REGIONAL_FORECAST)-[:REFERENCES_TAXONOMY]->(CHANNEL_TAXONOMY)",
     "(REGIONAL_FORECAST)-[:REFERENCES_TAXONOMY]->(SKU_MASTER)",
     "(CONTROL_ASSERTION)-[:VALIDATES]->(REGIONAL_FORECAST)",
+    "(CONTROL_ASSERTION)-[:VALIDATES]->(CLOSE_STEP_EXECUTION)",
     "(DATA_QUALITY_FLAG)-[:TRIGGERS]->(CONTROL_ASSERTION)",
     "(VARIANCE_TRIAGE)-[:ESCALATED_TO]->(APPROVAL_ROLE)",
+    "(VARIANCE_TRIAGE)-[:ESCALATED_TO]->(PERSON)",
     "(FORECAST_ADJUSTMENT)-[:APPLIES_ADJUSTMENT]->(REGIONAL_FORECAST)",
     "(EMAIL_MESSAGE)-[:SENT_BY]->(PERSON)",
     "(EMAIL_MESSAGE)-[:SENT_TO]->(PERSON)",
     "(EMAIL_MESSAGE)-[:HAS_ATTACHMENT]->(SPREADSHEET)",
     "(SPREADSHEET)-[:CONTAINS]->(TABLE)",
+    "(SPREADSHEET)-[:CONTAINS]->(SHEET)",
+    "(SPREADSHEET)-[:DERIVES_FROM]->(SPREADSHEET)",
+    "(PROCESS)-[:PRODUCES]->(KNOWLEDGE_GRAPH)",
+    "(CURRENCY_REGISTRY)-[:GOVERNS]->(FX_FORWARD_CURVE)",
     "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(CASH_CONVERSION_CYCLE)",
     "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(ROIC_DECOMPOSITION)",
     "(CHART_OF_ACCOUNTS)-[:FEEDS_INTO]->(FREE_CASH_FLOW_MARGIN)",

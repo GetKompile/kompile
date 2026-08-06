@@ -13,14 +13,14 @@
   ~  See the License for the specific language governing permissions and
   ~ limitations under the License.
   -->
-<!-- NOTE: build-dist.sh is the canonical dist packager (see repo root). Keep this
-     Maven assembly descriptor in sync with build-dist.sh, or prefer build-dist.sh for
-     CI and release packaging. dist.xml is retained for Maven assembly plugin compatibility. -->
+<!-- NOTE: build-dist.sh is the release variant orchestrator. Maven prepare-package stages
+     native executables through the same portability normalizer before this descriptor reads
+     target/portable-bin, so both packaging routes enforce the native archive contract. -->
 <assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
                               http://maven.apache.org/xsd/assembly-2.2.0.xsd">
-    <id>bundle</id>
+    <id>${kompile.distribution.classifier}</id>
     <formats>
         <format>zip</format>
         <format>tar.gz</format>
@@ -31,28 +31,28 @@
     <files>
         <!-- ============ CLI native executables (renamed for friendlier UX) ============ -->
         <file>
-            <source>${project.parent.basedir}/kompile-cli/kompile-cli-main/target/kompile-cli-main</source>
+            <source>${project.build.directory}/portable-bin/kompile</source>
             <outputDirectory>bin</outputDirectory>
             <destName>kompile</destName>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-cli/kompile-agent-cli/target/kompile-agent</source>
+            <source>${project.build.directory}/portable-bin/kompile-agent</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-cli/kompile-app-cli/target/kompile-app-cli</source>
+            <source>${project.build.directory}/portable-bin/kompile-app-cli</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-cli/kompile-model-cli/target/kompile-model</source>
+            <source>${project.build.directory}/portable-bin/kompile-model</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
         <file>
-            <source>${project.parent.basedir}/kompile-cli/kompile-component-cli/target/kompile-component</source>
+            <source>${project.build.directory}/portable-bin/kompile-component</source>
             <outputDirectory>bin</outputDirectory>
             <fileMode>0755</fileMode>
         </file>
@@ -63,7 +63,7 @@
              vlm-test, training) via the subprocess-type flag. See
              MainApplication.main() for the routing logic. -->
         <file>
-            <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app</source>
+            <source>${project.build.directory}/portable-bin/kompile-server</source>
             <outputDirectory>bin</outputDirectory>
             <destName>kompile-server</destName>
             <fileMode>0755</fileMode>
@@ -93,9 +93,10 @@
              The end-user apps: chat on :8081, the crawl manager on :8082. kompile-app-main
              is the admin console and no longer mounts the chat or crawl APIs, so without
              these two a dist has no end-user surface at all — they are not optional extras.
-             Same shipping shape as the staging service above: exec jar by default, and the
-             launcher scripts `bin/kompile-chat.sh` / `bin/kompile-crawl-manager.sh` auto-prefer
-             a native binary in bin/ if a native profile is ever added. Staged into
+             Same shipping shape as the staging service above: exec jar on every build, plus
+             a GraalVM binary in bin/ on -Dkompile.dist builds (see the persona fileSets
+             below). The launcher scripts `bin/kompile-chat.sh` / `bin/kompile-crawl-manager.sh`
+             prefer the binary and fall back to this jar. Staged into
              ${project.build.directory}/persona-deps by the maven-dependency-plugin
              (see kompile-dist/pom.xml). -->
         <file>
@@ -118,6 +119,15 @@
             <source>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app-main-${project.version}-exec.jar</source>
             <outputDirectory>lib</outputDirectory>
             <destName>kompile-server.jar</destName>
+        </file>
+
+        <!-- ============ JavaScript/Python scripting worker exec JAR ============
+             app-main contains only the native-safe NodeExecutor client. The worker is launched
+             with the bundled Java runtime and owns the GraalJS/Truffle/Python implementation. -->
+        <file>
+            <source>${project.build.directory}/scripting-deps/kompile-compute-graph-scripting-${project.version}-exec.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-scripting-worker.jar</destName>
         </file>
 
         <!-- ============ kompile-cli shaded JAR (JBang/jar fallback) ============
@@ -143,11 +153,18 @@
     </files>
 
     <fileSets>
-        <!-- ============ GraalVM-generated Java runtime shared libs ============
-             Native images that use AWT/fonts emit lib*.so files next to the binary;
-             these must ship alongside `kompile-server` for runtime loading. -->
+        <!-- Complete DL4J companion SDK, validated and staged by the POM. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target</directory>
+            <directory>${project.build.directory}/sdx-sdk</directory>
+            <outputDirectory>sdx-sdk</outputDirectory>
+            <useDefaultExcludes>true</useDefaultExcludes>
+        </fileSet>
+
+        <!-- ============ GraalVM-generated Java runtime shared libs ============
+             stage-portable-binaries.sh de-duplicates the shims emitted beside each image;
+             they must ship in bin/ beside the service executables for runtime loading. -->
+        <fileSet>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>lib*.so</include>
@@ -157,12 +174,29 @@
             <fileMode>0755</fileMode>
         </fileSet>
 
+        <!-- ============ Side-loaded JavaCPP / ND4J native libraries ============
+             The native images intentionally exclude these files. prepare-package invokes the same
+             strict staging helper as build-dist.sh, so this directory contains only the requested
+             OS/architecture and CPU flavor in the canonical flat lib/ layout. Omitting this makes
+             archives boot only when a user cache happens to contain the same libraries. -->
+        <fileSet>
+            <directory>${project.build.directory}/native-libs</directory>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>*.so</include>
+                <include>*.so.*</include>
+                <include>*.dylib</include>
+                <include>*.dll</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
         <!-- ============ Optional extra subprocess native images (vlm-test, training) ============
              These are only emitted when their opt-in profiles are explicitly
              activated. The fileSet pattern lets them be skipped silently when
              absent, which is what we want for a default dist build. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-main/target</directory>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-vlm-test</include>
@@ -177,7 +211,7 @@
              launcher script falls back to the Spring Boot exec JAR shipped at
              lib/kompile-model-staging.jar. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-models/kompile-model-staging/target</directory>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-model-staging</include>
@@ -185,20 +219,24 @@
             <fileMode>0755</fileMode>
         </fileSet>
 
-        <!-- ============ Optional persona app native binaries ============
-             Neither persona app declares a native-maven-plugin profile today, so in
-             practice these fileSets match nothing and the launcher scripts run the exec
-             jars from lib/. They are here so that adding a native profile needs no change
-             to this descriptor.
+        <!-- ============ Persona app native binaries ============
+             Emitted by each persona's `native` profile, which -Dkompile.dist activates —
+             the same trigger app-main uses. Both forms ship: the binary here and the exec
+             jar in lib/ above, so the launchers can prefer the binary and fall back.
+             The fileSet pattern still matches nothing on a plain (non-dist) build, which
+             is what leaves the jar-only path working.
 
-             When that profile is added, set imageName to the DIST name (kompile-chat,
+             The native profile sets imageName to the DIST name (kompile-chat,
              kompile-crawl-manager) rather than the artifactId. An assembly fileSet cannot
              rename, so a binary built as `kompile-app-chat` would land in bin/ under a
              different name here than build-dist.sh gives it, and the launcher would find
              it on one dist path and not the other. Matching the names up front is what
-             keeps the two dist builders honest. -->
+             keeps the two dist builders honest.
+
+             The GraalVM-emitted JDK shims (libjava.so, libjvm.so, ...) are already de-duplicated
+             in portable-bin and picked up by the shared-library fileSet above. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-chat/target</directory>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-chat</include>
@@ -206,20 +244,19 @@
             <fileMode>0755</fileMode>
         </fileSet>
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-crawl-manager/target</directory>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-crawl-manager</include>
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>
-
         <!-- ============ Optional kompile-app-lite native binary ============
              Built when the kompile-app-lite native profile is activated.
              When absent (the default), no native binary is present; users can
              run the exec jar directly with java -jar. -->
         <fileSet>
-            <directory>${project.parent.basedir}/kompile-app/kompile-app-parent/kompile-app-lite/target</directory>
+            <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-app-lite</include>

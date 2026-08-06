@@ -61,7 +61,12 @@ public final class PartitionGraphTransaction {
     private final PartitionKey key;
     private final Long factSheetId;
     private final List<Checkpoint> checkpoints = new ArrayList<>();
+    private final List<String> flushProblems = new ArrayList<>();
     private StagedGraph staged;
+    private StagedGraph pending;
+    private int flushedEntities;
+    private int flushedRelationships;
+    private int flushCount;
     private Status status = Status.OPEN;
     private String closedBecause;
 
@@ -69,6 +74,7 @@ public final class PartitionGraphTransaction {
         this.key = key;
         this.factSheetId = factSheetId;
         this.staged = staged;
+        this.pending = StagedGraph.using(staged.keys());
     }
 
     /** Opens a transaction for {@code key}, keyed on entity names. */
@@ -84,7 +90,12 @@ public final class PartitionGraphTransaction {
     }
 
     /** A point the transaction can be rolled back to. */
-    public record Checkpoint(int sequence, String label, StagedGraph snapshot) {
+    public record Checkpoint(int sequence, String label, StagedGraph snapshot,
+                             StagedGraph pendingSnapshot) {
+
+        public Checkpoint(int sequence, String label, StagedGraph snapshot) {
+            this(sequence, label, snapshot, snapshot);
+        }
 
         public Checkpoint {
             label = label == null || label.isBlank() ? "checkpoint-" + sequence : label.trim();
@@ -129,7 +140,7 @@ public final class PartitionGraphTransaction {
     /** Captures the current state so it can be returned to. */
     public Checkpoint checkpoint(String label) {
         requireOpen("checkpoint");
-        Checkpoint checkpoint = new Checkpoint(checkpoints.size(), label, staged);
+        Checkpoint checkpoint = new Checkpoint(checkpoints.size(), label, staged, pending);
         checkpoints.add(checkpoint);
         return checkpoint;
     }
@@ -153,6 +164,7 @@ public final class PartitionGraphTransaction {
         Objects.requireNonNull(from, "staging needs provenance");
         Checkpoint before = checkpoint(from.chunkId());
         staged = staged.stage(produced, from);
+        pending = pending.stage(produced, from);
         return before;
     }
 
@@ -171,7 +183,44 @@ public final class PartitionGraphTransaction {
                     "checkpoint " + checkpoint.describe() + " does not belong to this transaction");
         }
         staged = checkpoint.snapshot();
+        pending = checkpoint.pendingSnapshot();
         checkpoints.subList(checkpoint.sequence(), checkpoints.size()).clear();
+    }
+
+    /**
+     * Writes only output accumulated since the previous flush and keeps the transaction open.
+     * Checkpoints are cleared because a rollback cannot honestly cross a graph write that is
+     * already visible to discovery.
+     */
+    public GraphCommitSink.CommitOutcome flush(GraphCommitSink sink) {
+        requireOpen("flush");
+        Objects.requireNonNull(sink, "flushing needs a sink");
+        if (pending.isEmpty()) {
+            return GraphCommitSink.CommitOutcome.nothing();
+        }
+        try {
+            GraphCommitSink.CommitOutcome outcome = sink.commit(key,
+                    pending.toGraph(key.id(), factSheetId));
+            GraphCommitSink.CommitOutcome accepted = outcome == null
+                    ? GraphCommitSink.CommitOutcome.nothing() : outcome;
+            flushedEntities += accepted.entities();
+            flushedRelationships += accepted.relationships();
+            flushProblems.addAll(accepted.problems());
+            flushCount++;
+            pending = StagedGraph.using(staged.keys());
+            checkpoints.clear();
+            return accepted;
+        } catch (RuntimeException e) {
+            status = Status.ABANDONED;
+            closedBecause = "flush failed after " + flushCount + " completed batch(es): " + e;
+            log.warn("Flush of partition {} failed: {}", key.id(), e.toString());
+            throw e;
+        }
+    }
+
+    /** Number of graph-visible batch flushes completed so far. */
+    public int flushCount() {
+        return flushCount;
     }
 
     /**
@@ -189,19 +238,17 @@ public final class PartitionGraphTransaction {
             notes.add("nothing was staged");
             outcome = GraphCommitSink.CommitOutcome.nothing();
         } else {
-            Graph graph = staged.toGraph(key.id(), factSheetId);
             try {
-                GraphCommitSink.CommitOutcome sunk = sink.commit(key, graph);
-                outcome = sunk == null ? GraphCommitSink.CommitOutcome.nothing() : sunk;
+                flush(sink);
             } catch (RuntimeException e) {
-                // The transaction is closed as abandoned rather than committed: nothing here knows
-                // how much of the graph the sink managed to write, and claiming a commit that may
-                // not have happened is worse than saying it failed.
-                status = Status.ABANDONED;
-                closedBecause = "commit failed: " + e;
-                log.warn("Commit of partition {} failed: {}", key.id(), e.toString());
+                // Preserve the public commit contract while explicit batch flushes still identify
+                // themselves as flush failures.
+                closedBecause = "commit failed after " + flushCount
+                        + " completed batch(es): " + e;
                 throw e;
             }
+            outcome = new GraphCommitSink.CommitOutcome(flushedEntities, flushedRelationships,
+                    List.copyOf(flushProblems));
         }
         int dangling = staged.danglingRelationships().size();
         if (dangling > 0) {

@@ -134,6 +134,22 @@ class McpToolInjectionTest {
         }
     }
 
+    @Test
+    void deletedProcessExecutableSuffixUsesTheRunnableReplacement() throws Exception {
+        Path replacement = createExecutable("replacement-kompile-cli");
+
+        assertEquals(replacement.toString(),
+                McpToolInjectionSupport.normalizeCurrentCommand(replacement + " (deleted)"));
+    }
+
+    @Test
+    void deletedProcessExecutableWithoutAReplacementIsRejected() {
+        Path missing = tempDir.resolve("missing-replacement").toAbsolutePath();
+
+        assertEquals(null,
+                McpToolInjectionSupport.normalizeCurrentCommand(missing + " (deleted)"));
+    }
+
     private Path createExecutable(String name) throws Exception {
         Path binary = Files.createFile(tempDir.resolve(name)).toAbsolutePath();
         assertTrue(binary.toFile().setExecutable(true));

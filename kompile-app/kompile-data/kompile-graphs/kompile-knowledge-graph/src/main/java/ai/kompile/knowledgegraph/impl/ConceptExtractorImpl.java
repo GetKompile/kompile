@@ -52,9 +52,29 @@ public class ConceptExtractorImpl implements ConceptExtractor {
     // Pattern for extracting capitalized phrases (potential proper nouns)
     private static final Pattern CAPITALIZED_PHRASE = Pattern.compile("\\b[A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*\\b");
 
+    // Initialed names are source-level identity boundaries that ordinary word tokenization splits.
+    private static final Pattern INITIALIZED_NAME = Pattern.compile(
+        "(?<![\\p{L}\\p{N}])(?:\\p{Lu}\\.\\s*)+\\p{Lu}[\\p{L}'’\\-]+(?![\\p{L}\\p{N}])"
+    );
+
     // Pattern for technical terms (camelCase, snake_case, etc.)
     private static final Pattern TECHNICAL_TERM = Pattern.compile(
         "\\b(?:[a-z]+(?:[A-Z][a-z]*)+|[a-z]+(?:_[a-z]+)+|[A-Z]+(?:_[A-Z]+)+)\\b"
+    );
+
+    // Short and compound uppercase terms often carry the most schema-discriminating
+    // information (for example role abbreviations, metrics, standards, and quarters).
+    // They need their own pattern because WORD_PATTERN requires three characters and
+    // punctuation such as '&' is otherwise treated as a token boundary.
+    private static final String UPPERCASE_TOKEN =
+        "(?:[A-Z][A-Z0-9]*(?:[&/.][A-Z0-9]+)+|[A-Z][A-Z0-9]{1,})";
+    private static final Pattern UPPERCASE_TERM = Pattern.compile(
+        "(?<![\\p{L}\\p{N}])" + UPPERCASE_TOKEN + "(?![\\p{L}\\p{N}])"
+    );
+    private static final Pattern UPPERCASE_PHRASE = Pattern.compile(
+        "(?<![\\p{L}\\p{N}])" + UPPERCASE_TOKEN
+            + "(?:(?:\\s*,\\s*|\\s+)" + UPPERCASE_TOKEN + "){1,2}"
+            + "(?![\\p{L}\\p{N}])"
     );
 
     @Override
@@ -75,8 +95,14 @@ public class ConceptExtractorImpl implements ConceptExtractor {
             concepts.addAll(extractTopics(text, config));
         }
 
+        // Preserve initialized names before generic capitalization splits their identity span.
+        concepts.addAll(extractInitializedNames(text));
+
         // Extract capitalized phrases (named entities)
         concepts.addAll(extractCapitalizedPhrases(text, config));
+
+        // Preserve short and punctuated uppercase terms that generic tokenization drops.
+        concepts.addAll(extractUppercaseTerms(text));
 
         // Extract technical terms
         concepts.addAll(extractTechnicalTerms(text, config));
@@ -224,6 +250,32 @@ public class ConceptExtractorImpl implements ConceptExtractor {
         return topics;
     }
 
+    private List<ExtractedConcept> extractInitializedNames(String text) {
+        Map<String, Integer> nameCounts = new LinkedHashMap<>();
+        Map<String, Integer> firstPositions = new HashMap<>();
+
+        Matcher matcher = INITIALIZED_NAME.matcher(text);
+        while (matcher.find()) {
+            String name = matcher.group();
+            nameCounts.merge(name, 1, Integer::sum);
+            firstPositions.putIfAbsent(name, matcher.start());
+        }
+
+        List<ExtractedConcept> concepts = new ArrayList<>(nameCounts.size());
+        for (Map.Entry<String, Integer> entry : nameCounts.entrySet()) {
+            double confidence = Math.min(0.95, 0.85 + entry.getValue() * 0.05);
+            concepts.add(new ExtractedConcept(
+                entry.getKey(),
+                normalizeConcept(entry.getKey()),
+                "ENTITY",
+                confidence,
+                entry.getValue(),
+                extractContext(text, firstPositions.getOrDefault(entry.getKey(), 0), 50)
+            ));
+        }
+        return concepts;
+    }
+
     private List<ExtractedConcept> extractCapitalizedPhrases(String text, ExtractionConfig config) {
         List<ExtractedConcept> concepts = new ArrayList<>();
         Map<String, Integer> phraseCounts = new HashMap<>();
@@ -252,6 +304,44 @@ public class ConceptExtractorImpl implements ConceptExtractor {
             ));
         }
 
+        return concepts;
+    }
+
+    private List<ExtractedConcept> extractUppercaseTerms(String text) {
+        Map<String, Integer> termCounts = new LinkedHashMap<>();
+        Map<String, Integer> firstPositions = new HashMap<>();
+        Set<String> compoundTerms = new HashSet<>();
+
+        Matcher phraseMatcher = UPPERCASE_PHRASE.matcher(text);
+        while (phraseMatcher.find()) {
+            String term = phraseMatcher.group();
+            termCounts.merge(term, 1, Integer::sum);
+            firstPositions.putIfAbsent(term, phraseMatcher.start());
+            compoundTerms.add(term);
+        }
+
+        Matcher matcher = UPPERCASE_TERM.matcher(text);
+        while (matcher.find()) {
+            String term = matcher.group();
+            termCounts.merge(term, 1, Integer::sum);
+            firstPositions.putIfAbsent(term, matcher.start());
+        }
+
+        List<ExtractedConcept> concepts = new ArrayList<>(termCounts.size());
+        for (Map.Entry<String, Integer> entry : termCounts.entrySet()) {
+            double confidence = compoundTerms.contains(entry.getKey())
+                    ? Math.min(0.95, 0.85 + entry.getValue() * 0.05)
+                    : Math.min(0.9, 0.75 + entry.getValue() * 0.05);
+            int pos = firstPositions.getOrDefault(entry.getKey(), 0);
+            concepts.add(new ExtractedConcept(
+                entry.getKey(),
+                normalizeConcept(entry.getKey()),
+                "KEYWORD",
+                confidence,
+                entry.getValue(),
+                extractContext(text, pos, 50)
+            ));
+        }
         return concepts;
     }
 

@@ -26,6 +26,9 @@ import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -251,6 +254,65 @@ class GraphExtractionValidatorTest {
         }
 
         @Test
+        void incrementalDeltaMayReferenceEntitiesAlreadyInGraph() {
+            ExtractedRelation r = new ExtractedRelation(
+                    "existing-person", "existing-step", "APPROVED_BY",
+                    "The source records this approval", 0.9, Map.of());
+            ExtractionResult delta = ExtractionResult.of(List.of(), List.of(r), null);
+
+            ValidationResult vr = GraphExtractionValidator.validate(
+                    delta,
+                    GraphExtractionValidationPolicy.defaults(),
+                    null,
+                    Map.of("existing-person", "PERSON", "existing-step", "CLOSE_STEP"));
+
+            assertTrue(vr.valid(), () -> "Existing endpoints should close the delta: " + vr.errors());
+        }
+
+        @Test
+        void knownEndpointTypesParticipateInRelationSchemaValidation() {
+            GraphExtractionValidationPolicy policy = GraphExtractionValidationPolicy.builder()
+                    .relationPatterns(List.of("(PERSON)-[:APPROVED_BY]->(CLOSE_STEP)"))
+                    .build();
+            ExtractionResult delta = ExtractionResult.of(
+                    List.of(),
+                    List.of(new ExtractedRelation(
+                            "existing-person", "existing-step", "APPROVED_BY",
+                            "The source records this approval", 0.9, Map.of())),
+                    null);
+
+            assertTrue(GraphExtractionValidator.validate(
+                    delta, policy, null,
+                    Map.of("existing-person", "PERSON", "existing-step", "CLOSE_STEP")).valid());
+
+            ValidationResult wrongTypes = GraphExtractionValidator.validate(
+                    delta, policy, null,
+                    Map.of("existing-person", "PERSON", "existing-step", "SPREADSHEET"));
+            assertFalse(wrongTypes.valid());
+            assertTrue(wrongTypes.errors().stream()
+                    .anyMatch(error -> error.contains("[RELATION_SCHEMA_PATTERN]")));
+        }
+
+        @Test
+        void existingIdMayBeEnrichedButDuplicatesInsideDeltaRemainInvalid() {
+            ExtractedEntity enrichment = entity("existing", "Existing entity", "PERSON");
+            assertTrue(GraphExtractionValidator.validate(
+                    ExtractionResult.of(List.of(enrichment), List.of(), null),
+                    GraphExtractionValidationPolicy.defaults(),
+                    null,
+                    Map.of("existing", "PERSON")).valid());
+
+            ValidationResult duplicate = GraphExtractionValidator.validate(
+                    ExtractionResult.of(List.of(enrichment, enrichment), List.of(), null),
+                    GraphExtractionValidationPolicy.defaults(),
+                    null,
+                    Map.of("existing", "PERSON"));
+            assertFalse(duplicate.valid());
+            assertTrue(duplicate.errors().stream()
+                    .anyMatch(error -> error.contains("Duplicate entity id")));
+        }
+
+        @Test
         void relationConfidenceOutOfRange() {
             ExtractedEntity e1 = entity("e1", "A", "T");
             ExtractedEntity e2 = entity("e2", "B", "T");
@@ -297,7 +359,7 @@ class GraphExtractionValidatorTest {
     @Nested
     class ToGraphConversion {
         @Test
-        void aliasesStoredInEntityMetadata() {
+        void aliasesStoredInEntityFieldAndMetadata() {
             ExtractedEntity e = new ExtractedEntity(
                     "e1", "Corp", "ORGANIZATION", List.of("Acme", "ACME Inc"),
                     "A corporation", 0.9, Map.of("industry", "tech"));
@@ -306,6 +368,7 @@ class GraphExtractionValidatorTest {
             Graph graph = GraphExtractionValidator.toGraph(result);
 
             Entity entity = graph.getEntities().get(0);
+            assertEquals(List.of("Acme", "ACME Inc"), entity.getAliases());
             assertNotNull(entity.getMetadata().get("aliases"));
             @SuppressWarnings("unchecked")
             List<String> aliases = (List<String>) entity.getMetadata().get("aliases");
@@ -333,7 +396,7 @@ class GraphExtractionValidatorTest {
             ExtractedEntity e2 = entity("e2", "B", "T");
             ExtractedRelation r = new ExtractedRelation(
                     "e1", "e2", "REL", "desc", 0.8,
-                    Map.of("since", "2024", "context", "work"));
+                    Map.of("since", "2024", "context", "work"), "2026-04-30T09:00:00Z");
             ExtractionResult result = ExtractionResult.of(List.of(e1, e2), List.of(r), null);
 
             Graph graph = GraphExtractionValidator.toGraph(result);
@@ -341,6 +404,8 @@ class GraphExtractionValidatorTest {
             Relationship rel = graph.getRelationships().get(0);
             assertEquals("2024", rel.getMetadata().get("since"));
             assertEquals("work", rel.getMetadata().get("context"));
+            assertEquals("2026-04-30T09:00:00Z", rel.getOccurredAt());
+            assertEquals("2026-04-30T09:00:00Z", rel.getMetadata().get("occurredAt"));
         }
 
         @Test
@@ -355,6 +420,30 @@ class GraphExtractionValidatorTest {
             Relationship rel = graph.getRelationships().get(0);
             assertEquals(0.75, rel.getConfidence());
             assertEquals(0.75, rel.getWeight());
+        }
+
+        @Test
+        void knownSourcePassageIsAttachedToEveryExtractedFact() {
+            ExtractedEntity e1 = entity("e1", "M. Chen", "PERSON");
+            ExtractedEntity e2 = entity("e2", "VP FP&A", "ROLE");
+            ExtractedRelation relation = new ExtractedRelation(
+                    "e1", "e2", "HAS_ROLE", null, 0.8, Map.of());
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(e1, e2), List.of(relation),
+                    ExtractionMetadata.forChunk("chunk-1", "doc-1", "model"));
+
+            Graph graph = GraphExtractionValidator.toGraph(result, "M. Chen is VP, FP&A.");
+
+            for (Entity entity : graph.getEntities()) {
+                assertEquals("chunk-1", entity.getMetadata().get("sourceChunkId"));
+                assertEquals("doc-1", entity.getMetadata().get("sourceDocumentId"));
+                assertEquals("M. Chen is VP, FP&A.", entity.getMetadata().get("evidenceQuote"));
+                assertInstanceOf(List.class, entity.getMetadata().get("supportingEvidence"));
+            }
+            Relationship extracted = graph.getRelationships().get(0);
+            assertEquals("chunk-1", extracted.getMetadata().get("sourceChunkId"));
+            assertEquals("M. Chen is VP, FP&A.", extracted.getMetadata().get("evidenceQuote"));
+            assertInstanceOf(List.class, extracted.getMetadata().get("supportingEvidence"));
         }
     }
 
@@ -471,6 +560,49 @@ class GraphExtractionValidatorTest {
             assertEquals("value1", ee.properties().get("key1"));
             assertFalse(ee.properties().containsKey("key2"));
         }
+
+        @Test
+        void fieldAliasesAndStructuredProvenanceSurviveGraphExtractionRoundTrip() {
+            Entity entity = new Entity();
+            entity.setId("person-mei");
+            entity.setTitle("Mei Chen");
+            entity.setType("PERSON");
+            entity.setAliases(new ArrayList<>(List.of("M. Chen", "mei@example.com")));
+            entity.setMetadata(new LinkedHashMap<>(Map.of(
+                    "sourceChunkId", "chunk-1",
+                    "supportingEvidence", List.of(Map.of(
+                            "sourceChunkId", "chunk-1", "evidenceQuote", "Mei approved C-03")))));
+
+            Relationship relation = new Relationship();
+            relation.setSource("person-mei");
+            relation.setTarget("control-c03");
+            relation.setType("APPROVED_BY");
+            relation.setOccurredAt("2026-06-03T09:30:00Z");
+            relation.setMetadata(new LinkedHashMap<>(Map.of(
+                    "sourceChunkIds", List.of("chunk-1", "chunk-2"),
+                    "supportingEvidence", List.of(
+                            Map.of("sourceChunkId", "chunk-1", "evidenceQuote", "Mei approved C-03"),
+                            Map.of("sourceChunkId", "chunk-2", "evidenceQuote", "Approval: Mei")),
+                    "supportingCount", 2)));
+
+            Graph graph = new Graph();
+            graph.setEntities(new ArrayList<>(List.of(entity)));
+            graph.setRelationships(new ArrayList<>(List.of(relation)));
+
+            Graph roundTrip = GraphExtractionValidator.toGraph(
+                    GraphExtractionValidator.fromGraph(graph, "model"));
+
+            assertEquals(entity.getAliases(), roundTrip.getEntities().get(0).getAliases());
+            assertInstanceOf(List.class,
+                    roundTrip.getEntities().get(0).getMetadata().get("supportingEvidence"));
+            assertEquals(List.of("chunk-1", "chunk-2"),
+                    roundTrip.getRelationships().get(0).getMetadata().get("sourceChunkIds"));
+            assertInstanceOf(List.class,
+                    roundTrip.getRelationships().get(0).getMetadata().get("supportingEvidence"));
+            assertEquals(2, roundTrip.getRelationships().get(0).getMetadata().get("supportingCount"));
+            assertEquals("2026-06-03T09:30:00Z",
+                    roundTrip.getRelationships().get(0).getOccurredAt());
+        }
     }
 
     // ── Non-degenerate confidence defaults ──────────────────────────
@@ -510,6 +642,129 @@ class GraphExtractionValidatorTest {
 
     @Nested
     class SemanticPolicyValidation {
+
+        @Test
+        void defaultsEnforceSchemaButDoNotRejectOptionalDescriptions() {
+            List<String> defaults = GraphExtractionValidationPolicy.defaultValidatorIds();
+            assertTrue(defaults.contains(GraphExtractionValidationPolicy.ENTITY_TYPE_SCHEMA));
+            assertTrue(defaults.contains(GraphExtractionValidationPolicy.RELATION_TYPE_SCHEMA));
+            assertTrue(defaults.contains(GraphExtractionValidationPolicy.PROPERTY_SCHEMA));
+            assertFalse(defaults.contains(GraphExtractionValidationPolicy.REQUIRED_DESCRIPTIONS));
+
+            ExtractedEntity withoutDescription = new ExtractedEntity(
+                    "e1", "M. Chen", "PERSON", List.of(), null, 0.9, Map.of());
+            assertTrue(GraphExtractionValidator.validate(
+                    ExtractionResult.of(List.of(withoutDescription), List.of(), null),
+                    GraphExtractionValidationPolicy.defaults(), null).valid());
+        }
+
+        @Test
+        void standardizedSchemaRejectsUnknownEntityAndRelationTypes() {
+            GraphSchema schema = new GraphSchema(
+                    List.of(
+                            new NodeType("PERSON", "A person", null),
+                            new NodeType("ROLE", "A role", null)),
+                    List.of(new RelationshipType(
+                            "HAS_ROLE", "Person has role", null, List.of("serves_as"))),
+                    List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(
+                            entity("person", "M. Chen", "PERSON"),
+                            entity("role", "VP, FP&A", "JOB_TITLE")),
+                    List.of(new ExtractedRelation(
+                            "person", "role", "OCCUPIES", "Role fact", 0.9, Map.of())),
+                    null);
+
+            ValidationResult validation = GraphExtractionValidator.validate(
+                    result, GraphExtractionValidationPolicy.defaults(), schema);
+
+            assertFalse(validation.valid());
+            assertTrue(validation.errors().stream()
+                    .anyMatch(error -> error.contains("[ENTITY_TYPE_SCHEMA]")
+                            && error.contains("JOB_TITLE")));
+            assertTrue(validation.errors().stream()
+                    .anyMatch(error -> error.contains("[RELATION_TYPE_SCHEMA]")
+                            && error.contains("OCCUPIES")));
+        }
+
+        @Test
+        void relationAliasesAreHintsButPersistedRelationsMustUseCanonicalType() {
+            GraphSchema schema = new GraphSchema(
+                    List.of(
+                            new NodeType("PERSON", "A person", null),
+                            new NodeType("ROLE", "A role", null)),
+                    List.of(new RelationshipType(
+                            "HAS_ROLE", "Person has role", null, List.of("serves_as"))),
+                    List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(
+                            entity("person", "M. Chen", "PERSON"),
+                            entity("role", "VP, FP&A", "ROLE")),
+                    List.of(new ExtractedRelation(
+                            "person", "role", "SERVES_AS", "Role fact", 0.9, Map.of())),
+                    null);
+
+            ValidationResult validation = GraphExtractionValidator.validate(
+                    result, GraphExtractionValidationPolicy.defaults(), schema);
+
+            assertFalse(validation.valid());
+            assertTrue(validation.errors().stream().anyMatch(error ->
+                    error.contains("[RELATION_TYPE_SCHEMA]")
+                            && error.contains("use canonical type HAS_ROLE")));
+        }
+
+        @Test
+        void standardizedSchemaValidatesEntityAndRelationProperties() {
+            GraphSchema schema = new GraphSchema(
+                    List.of(
+                            new NodeType("PERSON", "A person", List.of(
+                                    new PropertyType("email", "String"),
+                                    new PropertyType("level", "Integer"))),
+                            new NodeType("ROLE", "A role", List.of())),
+                    List.of(new RelationshipType(
+                            "HAS_ROLE", "Person has role",
+                            List.of(new PropertyType("primary", "Boolean")))),
+                    List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
+            ExtractedEntity person = new ExtractedEntity(
+                    "person", "M. Chen", "PERSON", List.of(), "A person", 0.9,
+                    Map.of("email", "m.chen@example.com", "level", "senior", "nickname", "M"));
+            ExtractedRelation relation = new ExtractedRelation(
+                    "person", "role", "HAS_ROLE", "Role fact", 0.9,
+                    Map.of("primary", "sometimes"));
+
+            ValidationResult validation = GraphExtractionValidator.validate(
+                    ExtractionResult.of(List.of(person, entity("role", "VP, FP&A", "ROLE")),
+                            List.of(relation), null),
+                    GraphExtractionValidationPolicy.defaults(), schema);
+
+            assertFalse(validation.valid());
+            assertTrue(validation.errors().stream().anyMatch(error ->
+                    error.contains("[PROPERTY_SCHEMA]") && error.contains("nickname")));
+            assertTrue(validation.errors().stream().anyMatch(error ->
+                    error.contains("property 'level' must be Integer")));
+            assertTrue(validation.errors().stream().anyMatch(error ->
+                    error.contains("property 'primary' must be Boolean")));
+        }
+
+        @Test
+        void emptySchemaVocabularyLeavesDiscoveryOpenAndWarnModeDoesNotDropFacts() {
+            GraphSchema openSchema = new GraphSchema(List.of(), List.of(), List.of());
+            ExtractionResult result = ExtractionResult.of(
+                    List.of(entity("e1", "Emerging concept", "NEW_CONCEPT")), List.of(), null);
+            assertTrue(GraphExtractionValidator.validate(
+                    result, GraphExtractionValidationPolicy.defaults(), openSchema).valid());
+
+            GraphExtractionValidationPolicy warn = GraphExtractionValidationPolicy.builder()
+                    .failureMode(FailureMode.WARN)
+                    .build();
+            GraphSchema closedSchema = new GraphSchema(
+                    List.of(new NodeType("PERSON", "A person", null)), List.of(), List.of());
+            ValidationResult warned = GraphExtractionValidator.validate(result, warn, closedSchema);
+            assertTrue(warned.valid());
+            assertTrue(warned.errors().isEmpty());
+            assertTrue(warned.warnings().stream()
+                    .anyMatch(error -> error.contains("[ENTITY_TYPE_SCHEMA]")));
+        }
 
         @Test
         void retryModeRejectsSameEntityNameWithConflictingTypes() {
@@ -629,6 +884,28 @@ class GraphExtractionValidatorTest {
                     "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "2026-07-19T09:15:00Z");
             assertTrue(GraphExtractionValidator.validate(
                     ExtractionResult.of(entities, List.of(validTimestamp), null), policy, null).valid());
+
+            ExtractedRelation sourceOnlyGaveYear = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "2019");
+            ExtractedRelation sourceOnlyGaveMonth = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "2019-05");
+            assertTrue(GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities,
+                            List.of(sourceOnlyGaveYear, sourceOnlyGaveMonth), null),
+                    policy, null).valid(),
+                    "reduced source precision must be retained rather than inventing January 1");
+
+            ExtractedRelation impossibleMonth = new ExtractedRelation(
+                    "forecast", "person", "SUBMITTED_BY", "Submission", 0.9, Map.of(), "2019-13");
+            assertFalse(GraphExtractionValidator.validate(
+                    ExtractionResult.of(entities, List.of(impossibleMonth), null),
+                    policy, null).valid());
+
+            assertTrue(GraphExtractionValidator.isValidOccurredAt("2019"));
+            assertTrue(GraphExtractionValidator.isValidOccurredAt("2019-05"));
+            assertTrue(GraphExtractionValidator.isValidOccurredAt("2026-07-19T09:15:00Z"));
+            assertFalse(GraphExtractionValidator.isValidOccurredAt("now"));
+            assertFalse(GraphExtractionValidator.isValidOccurredAt("last Tuesday"));
         }
 
         @Test

@@ -118,6 +118,25 @@ class EntityResolutionServiceTest {
         assertEquals("new york", EntityResolutionService.normalize("  New   York  "));
     }
 
+    @Test
+    void normalizeUsesNfkcForUnicodeEquivalentIdentityForms() {
+        assertEquals("apac予測", EntityResolutionService.normalize("ＡＰＡＣ予測"));
+        assertEquals(EntityResolutionService.normalize("APAC予測"),
+                EntityResolutionService.normalize("ＡＰＡＣ予測"));
+    }
+
+    @Test
+    void mergeEntitiesMergesUnicodeEquivalentJapaneseNames() {
+        List<ExtractedEntity> entities = List.of(
+                entity("e1", "ＡＰＡＣ予測", "FORECAST"),
+                entity("e2", "APAC予測", "FORECAST"));
+
+        EntityMergeResult result = service.mergeEntities(entities);
+
+        assertEquals(1, result.mergedEntities().size());
+        assertEquals("e1", result.idMapping().get("e2"));
+    }
+
     // ─── Same-type constraint ───────────────────────────────────────────
 
     @Test

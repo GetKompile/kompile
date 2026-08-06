@@ -1,6 +1,9 @@
 package ai.kompile.chat.local.android.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -36,6 +40,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -47,15 +52,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
+import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticSeverity
 import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
 import ai.kompile.chat.local.android.viewmodel.GraphImportOutcome
+import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportStep
 import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportUiState
+import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
 import ai.kompile.chat.local.android.viewmodel.ModelSmokeUiState
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
@@ -70,6 +82,7 @@ fun SettingsScreen(
     vm: ChatViewModel = viewModel()
 ) {
     val prefs = vm.prefs
+    val context = LocalContext.current
 
     // Local state mirrors prefs; "Save" commits back.
     var kgraphPath  by remember { mutableStateOf(prefs.kgraphPath) }
@@ -81,21 +94,11 @@ fun SettingsScreen(
     var stagingArtifact by remember {
         mutableStateOf(ModelStagingHandoff.Artifact.MODEL)
     }
-    // Hugging Face references and discoveries are one-shot state and are never persisted.
-    var huggingFaceUrl by remember { mutableStateOf("") }
-    var huggingFaceDiscovery by remember {
-        mutableStateOf<HuggingFaceGgmlResolver.Discovery?>(null)
-    }
-    var huggingFaceSelection by remember {
-        mutableStateOf<HuggingFaceGgmlResolver.Candidate?>(null)
-    }
-    var huggingFaceResolving by remember { mutableStateOf(false) }
     var maxRounds   by remember { mutableIntStateOf(prefs.maxToolRounds) }
     var temperature by remember { mutableFloatStateOf(prefs.temperature) }
     var maxTokens   by remember { mutableIntStateOf(prefs.maxTokens) }
-    // Import progress is ViewModel state shared with ChatScreen: an import started on
-    // either screen disables import controls on both, and only one runs at a time.
-    val importing by vm.importBusy.collectAsState()
+    val importOperation by vm.importOperation.collectAsState()
+    val importing = importOperation != ImportOperationKind.NONE
     // Imports and the decode test are refused during generation; disabling the
     // buttons here beats a refusal message that only ChatScreen's snackbar shows.
     val thinking by vm.thinking.collectAsState()
@@ -104,9 +107,41 @@ fun SettingsScreen(
     val modelSmokeState by vm.modelSmokeState.collectAsState()
     val importDiagnostics by vm.importDiagnostics.collectAsState()
     val huggingFaceImportState by vm.huggingFaceImportState.collectAsState()
+    val huggingFaceUrl by vm.huggingFaceReference.collectAsState()
+    val huggingFaceDiscovery by vm.huggingFaceDiscovery.collectAsState()
+    val huggingFaceSelection by vm.huggingFaceSelection.collectAsState()
+    val huggingFaceBusy = huggingFaceImportState is HuggingFaceImportUiState.Working ||
+        huggingFaceImportState is HuggingFaceImportUiState.Retrying
     var importError by remember { mutableStateOf<String?>(null) }
+    var importErrorStackTrace by remember { mutableStateOf<String?>(null) }
     var importNotice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    var pendingHuggingFaceStart by remember { mutableStateOf<(() -> Boolean)?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        val pending = pendingHuggingFaceStart
+        pendingHuggingFaceStart = null
+        pending?.invoke()
+    }
+
+    fun startHuggingFaceWithNotificationPermission(action: () -> Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            return action()
+        }
+        pendingHuggingFaceStart = action
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        return true
+    }
+
+    fun clearImportError() {
+        importError = null
+        importErrorStackTrace = null
+    }
+    val clipboard = LocalClipboardManager.current
     // Inline validation keeps the field, the Prepare button, and Save in one
     // consistent state; an invalid URL can neither launch nor be persisted.
     val stagingProblem = stagingUrlProblem(stagingUrl)
@@ -123,13 +158,19 @@ fun SettingsScreen(
         projectSourceCount = prefs.activeProjectSourceCount
     }
 
+    LaunchedEffect(huggingFaceImportState) {
+        if (huggingFaceImportState is HuggingFaceImportUiState.Active) {
+            refreshSelectionFromPrefs()
+        }
+    }
+
     // SAF launchers copy large assets on Dispatchers.IO; project archives may be gigabytes.
     val projectPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
             scope.launch {
-                importError = null
+                clearImportError()
                 importNotice = null
                 when (val outcome = vm.importProjectAndActivate(it)) {
                     is ProjectImportOutcome.Active -> {
@@ -140,6 +181,7 @@ fun SettingsScreen(
                     is ProjectImportOutcome.Failed -> {
                         refreshSelectionFromPrefs()
                         importError = outcome.displayMessage
+                        importErrorStackTrace = outcome.stackTrace
                     }
                 }
             }
@@ -151,7 +193,7 @@ fun SettingsScreen(
     ) { uri: Uri? ->
         uri?.let {
             scope.launch {
-                importError = null
+                clearImportError()
                 importNotice = null
                 when (val outcome = vm.importKgraphAndApply(it)) {
                     is GraphImportOutcome.Active -> refreshSelectionFromPrefs()
@@ -162,6 +204,7 @@ fun SettingsScreen(
                     is GraphImportOutcome.Failed -> {
                         refreshSelectionFromPrefs()
                         importError = outcome.message
+                        importErrorStackTrace = outcome.stackTrace
                     }
                 }
             }
@@ -173,13 +216,14 @@ fun SettingsScreen(
     ) { uri: Uri? ->
         uri?.let {
             scope.launch {
-                importError = null
+                clearImportError()
                 importNotice = null
                 val result = vm.importModelAndActivate(it)
                 refreshSelectionFromPrefs()
                 if (result.isFailure) {
-                    importError = result.exceptionOrNull()?.message
-                        ?: "Complete model import failed."
+                    val failure = result.exceptionOrNull()
+                    importError = failure?.message ?: "Complete model import failed."
+                    importErrorStackTrace = failure?.stackTraceToString()
                 } else {
                     importNotice =
                         "Model activated after tokenizer, chat template, target, and decode verification."
@@ -267,11 +311,16 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text(
+                        text = "APK build: ${BuildConfig.APK_BUILD_ID} · versionCode ${BuildConfig.VERSION_CODE}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     // The active files are the ground truth the imports below replace;
                     // keep them visible so the card always matches what will run.
                     Text(
-                        text = "Model: " + (modelPath.takeIf(String::isNotBlank)
-                            ?.substringAfterLast('/') ?: "none imported"),
+                        text = "Model storage: " +
+                            (modelPath.takeIf(String::isNotBlank) ?: "none imported"),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (modelPath.isBlank())
                             MaterialTheme.colorScheme.error
@@ -311,12 +360,8 @@ fun SettingsScreen(
                     )
                     OutlinedTextField(
                         value = huggingFaceUrl,
-                        onValueChange = { value ->
-                            huggingFaceUrl = value
-                            huggingFaceDiscovery = null
-                            huggingFaceSelection = null
-                        },
-                        enabled = !importing && !huggingFaceResolving,
+                        onValueChange = vm::updateHuggingFaceReference,
+                        enabled = !importBlocked && !huggingFaceBusy,
                         singleLine = true,
                         isError = huggingFaceProblem != null,
                         label = { Text("Hugging Face owner/repository or URL") },
@@ -330,86 +375,44 @@ fun SettingsScreen(
                     )
                     OutlinedButton(
                         onClick = {
-                            scope.launch {
-                                importError = null
+                            startHuggingFaceWithNotificationPermission {
+                                clearImportError()
                                 importNotice = null
-                                huggingFaceDiscovery = null
-                                huggingFaceSelection = null
-                                huggingFaceResolving = true
-                                try {
-                                    val result = vm.discoverHuggingFaceAcquisition(huggingFaceUrl)
-                                    importError = result.exceptionOrNull()?.message
-                                    result.getOrNull()?.let { discovery ->
-                                        huggingFaceDiscovery = discovery
-                                        if (discovery.requiresSelection()) {
-                                            importNotice = "Found ${discovery.candidates.size} GGUF/GGML files. " +
-                                                "Select the intended quantization below."
-                                        } else {
-                                            val candidate = discovery.selectedCandidate().orElseThrow()
-                                            huggingFaceSelection = candidate
-                                            val imported = vm.importHuggingFaceModelAndActivate(candidate)
-                                            refreshSelectionFromPrefs()
-                                            importError = imported.exceptionOrNull()?.message
-                                            if (imported.isSuccess) {
-                                                importNotice = "${candidate.path} downloaded into app storage, " +
-                                                    "decoded by SDX, and activated for chat."
-                                            }
-                                        }
-                                    }
-                                } finally {
-                                    huggingFaceResolving = false
-                                }
+                                vm.startHuggingFaceResolution()
                             }
                         },
                         enabled = !importBlocked &&
-                            !huggingFaceResolving &&
+                            !huggingFaceBusy &&
                             huggingFaceUrl.isNotBlank() &&
                             huggingFaceProblem == null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            if (huggingFaceResolving) {
+                            if (huggingFaceBusy &&
+                                (huggingFaceImportState as? HuggingFaceImportUiState.Observable)
+                                    ?.step == HuggingFaceImportStep.RESOLVE) {
                                 "Resolving Hugging Face repository…"
                             } else {
                                 "Resolve Hugging Face GGUF/GGML"
                             }
                         )
                     }
-                    when (val state = huggingFaceImportState) {
-                        HuggingFaceImportUiState.Idle -> if (huggingFaceResolving) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                "Resolving the Hugging Face repository…",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        is HuggingFaceImportUiState.Downloading -> {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            val downloadedMiB = state.downloadedBytes / (1024L * 1024L)
-                            val expected = state.expectedBytes?.let { total ->
-                                " / ${total / (1024L * 1024L)} MiB"
-                            }.orEmpty()
-                            Text(
-                                "Downloading ${state.fileName}: $downloadedMiB MiB$expected",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        is HuggingFaceImportUiState.Activating -> {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                "Loading ${state.fileName} in SDX and running a real decode…",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        is HuggingFaceImportUiState.Active -> Text(
-                            "Running through ${state.route}: ${state.path.substringAfterLast('/')}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        is HuggingFaceImportUiState.Failed -> Unit
-                    }
+                    HuggingFaceImportProgressPanel(
+                        state = huggingFaceImportState,
+                        onCancelStep = vm::cancelHuggingFaceStep,
+                        onRetryStep = { step ->
+                            startHuggingFaceWithNotificationPermission {
+                                vm.retryHuggingFaceStep(step)
+                            }
+                        },
+                        onOpenAppStorageSettings = { vm.openAppStorageSettings() },
+                        diagnostics = importDiagnostics
+                    )
                     huggingFaceDiscovery
-                        ?.takeIf { it.requiresSelection() }
+                        ?.takeIf {
+                            huggingFaceImportState is HuggingFaceImportUiState.SelectionRequired &&
+                                it.requiresSelection()
+                        }
                         ?.let { discovery ->
                             Text(
                                 text = "Choose one resolved model file:",
@@ -419,35 +422,22 @@ fun SettingsScreen(
                             discovery.candidates.forEach { candidate ->
                                 FilterChip(
                                     selected = huggingFaceSelection?.path == candidate.path,
-                                    onClick = { huggingFaceSelection = candidate },
-                                    enabled = !importBlocked && !huggingFaceResolving,
+                                    onClick = { vm.selectHuggingFaceCandidate(candidate) },
+                                    enabled = !importBlocked && !huggingFaceBusy,
                                     label = { Text(huggingFaceCandidateLabel(candidate)) },
                                     modifier = Modifier.fillMaxWidth()
                                 )
                             }
                             OutlinedButton(
                                 onClick = {
-                                    val candidate = huggingFaceSelection
-                                        ?: return@OutlinedButton
-                                    scope.launch {
-                                        importError = null
+                                    startHuggingFaceWithNotificationPermission {
+                                        clearImportError()
                                         importNotice = null
-                                        huggingFaceResolving = true
-                                        try {
-                                            val result = vm.importHuggingFaceModelAndActivate(candidate)
-                                            refreshSelectionFromPrefs()
-                                            importError = result.exceptionOrNull()?.message
-                                            if (result.isSuccess) {
-                                                importNotice = "${candidate.path} downloaded into app storage, " +
-                                                    "decoded by SDX, and activated for chat."
-                                            }
-                                        } finally {
-                                            huggingFaceResolving = false
-                                        }
+                                        vm.startSelectedHuggingFaceImport()
                                     }
                                 },
                                 enabled = !importBlocked &&
-                                    !huggingFaceResolving &&
+                                    !huggingFaceBusy &&
                                     huggingFaceSelection != null,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -508,10 +498,12 @@ fun SettingsScreen(
                     OutlinedButton(
                         onClick = {
                             prefs.modelStagingUrl = stagingUrl
-                            importError = null
+                            clearImportError()
                             importNotice = null
                             val result = vm.openModelStaging(stagingArtifact)
-                            importError = result.exceptionOrNull()?.message
+                            val failure = result.exceptionOrNull()
+                            importError = failure?.message
+                            importErrorStackTrace = failure?.stackTraceToString()
                             if (result.isSuccess) {
                                 importNotice = "Prepared ${stagingArtifact.fileExtension} downloads " +
                                     "opened. Download one, return here, then use the matching import button."
@@ -531,21 +523,17 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (importing) {
-                        Spacer(Modifier.height(12.dp))
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "Verifying the selected archive, required assets, exact target, and a real decode…",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
                     importError?.let { message ->
                         Spacer(Modifier.height(8.dp))
                         Text(
                             text = message,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
+                        )
+                        CopyableStartupError(
+                            message = message,
+                            diagnostics = importDiagnostics,
+                            exactStackTrace = importErrorStackTrace
                         )
                     }
                     importNotice?.let { message ->
@@ -559,23 +547,24 @@ fun SettingsScreen(
                 }
             }
 
-            // ── Durable import diagnostics ─────────────────────────────────────
-            SectionHeader(icon = Icons.Default.Memory, title = "Import Diagnostics")
+            // ── Durable app diagnostics ────────────────────────────────────────
+            SectionHeader(icon = Icons.Default.Memory, title = "App Diagnostics")
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = settingsCardColors()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "Bounded on-device history. URLs, credentials, source references, " +
-                            "and stack traces are never stored.",
+                        text = "Bounded on-device import, activation, and execution history. URLs, " +
+                            "credentials, and source paths are redacted; bounded technical details " +
+                            "remain visible and copyable for diagnosis.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(8.dp))
                     if (importDiagnostics.isEmpty()) {
                         Text(
-                            text = "No import or browser handoff events yet.",
+                            text = "No import, activation, or execution events yet.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     } else {
@@ -607,14 +596,49 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            if (entry.technicalDetails.isNotBlank()) {
+                                SelectionContainer {
+                                    Text(
+                                        text = entry.technicalDetails,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 12,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            if (entry.severity == ImportDiagnosticSeverity.ERROR) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboard.setText(
+                                            AnnotatedString(ImportDiagnosticPolicy.copyText(entry))
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Copy error details")
+                                }
+                            }
                             Spacer(Modifier.height(10.dp))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                clipboard.setText(
+                                    AnnotatedString(
+                                        ImportDiagnosticPolicy.copyText(importDiagnostics.reversed())
+                                    )
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Copy all diagnostics")
                         }
                         OutlinedButton(
                             onClick = { vm.clearImportDiagnostics() },
                             enabled = !importing,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Clear import history")
+                            Text("Clear diagnostics")
                         }
                     }
                 }
@@ -663,11 +687,45 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        is ModelSmokeUiState.Failed -> Text(
-                            text = "Decode failed on ${smoke.route}: ${smoke.message}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        is ModelSmokeUiState.Failed -> {
+                            val diagnostic = ImportDiagnosticPolicy.errorForMessage(
+                                importDiagnostics,
+                                smoke.message,
+                                operationPrefix = "local model"
+                            )
+                            Text(
+                                text = "Decode failed on ${smoke.route}: ${smoke.message}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            if (diagnostic?.technicalDetails?.isNotBlank() == true) {
+                                SelectionContainer {
+                                    Text(
+                                        text = diagnostic.technicalDetails,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 8,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    clipboard.setText(
+                                        AnnotatedString(
+                                            ImportDiagnosticPolicy.copyTextForError(
+                                                smoke.message,
+                                                importDiagnostics,
+                                                operationPrefix = "local model"
+                                            )
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Copy decode error details")
+                            }
+                        }
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(

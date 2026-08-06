@@ -12,9 +12,10 @@ questions about them.
 # 1. Create a project
 kompile project init --name my-docs
 
-# 2. Start the server
+# 2. Start the project services
 kompile project open .
-# Opens http://localhost:8080 with a setup wizard
+# Starts admin (:8080), chat (:8081), crawl manager (:8082), and model staging (:8090).
+# The setup wizard opens at http://localhost:8080.
 
 # 3. Walk through the setup wizard
 #    It confirms model-staging is running, picks an embedding model,
@@ -24,7 +25,7 @@ kompile project open .
 kompile crawl start /path/to/your/documents/
 
 # 5. Chat
-kompile chat --url=http://localhost:8080
+kompile chat --url=http://localhost:8081
 ```
 
 Or skip the server entirely and use the CLI's built-in chat:
@@ -34,8 +35,8 @@ kompile configure chat          # One-time: pick an LLM provider
 kompile chat                    # Direct LLM chat, no server
 ```
 
-The server gives you the web UI, persistent document index, knowledge
-graph, and the full retrieval pipeline. The direct CLI chat is lighter but
+The project services give you the web UI, persistent document index, knowledge
+graph, chat, crawling, and the full retrieval pipeline. The direct CLI chat is lighter but
 has no document retrieval — it's just you and the LLM.
 
 **When to use the server:** You have documents to search. You want a web
@@ -205,7 +206,8 @@ This generates a complete Maven project at
 | Inference pipelines only | `pipeline` | Pipeline executor with SameDiff, ONNX, Python steps |
 | Minimal hosted setup | `minimal` | OpenAI embeddings + OpenAI LLM + Anserini vector store |
 
-After generating, the project has `start-all.sh` and `stop-all.sh` scripts,
+After generating, the project has `start-all.sh` and `stop-all.sh` scripts. The start script
+launches model staging, optional model serving, the admin console, chat, and the crawl manager;
 or you can build a native image:
 
 ```bash

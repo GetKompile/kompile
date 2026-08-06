@@ -659,6 +659,19 @@ class CrawlSourceLoadingService {
             metadata.putIfAbsent(GraphConstants.META_SOURCE_PATH, source.getPathOrUrl());
             metadata.putIfAbsent(GraphConstants.META_SOURCE, source.getPathOrUrl());
         }
+        if (source.getChunkerName() != null && !source.getChunkerName().isBlank()) {
+            metadata.put(GraphConstants.META_CHUNKER_NAME, source.getChunkerName().strip());
+        }
+        if (source.getChunkSize() != null && source.getChunkSize() > 0) {
+            metadata.put(GraphConstants.META_CHUNK_SIZE_OVERRIDE, source.getChunkSize());
+        }
+        if (source.getChunkOverlap() != null && source.getChunkOverlap() >= 0) {
+            metadata.put(GraphConstants.META_CHUNK_OVERLAP_OVERRIDE, source.getChunkOverlap());
+        }
+        if (source.getChunkerOptions() != null && !source.getChunkerOptions().isEmpty()) {
+            metadata.put(GraphConstants.META_CHUNKER_OPTIONS,
+                    new LinkedHashMap<>(source.getChunkerOptions()));
+        }
         return metadata;
     }
 

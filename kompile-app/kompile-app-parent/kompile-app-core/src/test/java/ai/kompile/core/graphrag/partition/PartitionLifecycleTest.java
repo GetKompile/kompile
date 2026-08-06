@@ -112,6 +112,27 @@ class PartitionLifecycleTest {
     }
 
     @Test
+    void batchObserverRunsAfterEachMiniBatchStateIsPersisted() {
+        PartitionStore store = PartitionStore.inMemory();
+        PartitionLifecycle lifecycle = new PartitionLifecycle(store, seeded("c1", "c2", "c3"), 1);
+        List<Integer> visibleProcessedCounts = new ArrayList<>();
+        List<String> observedChunks = new ArrayList<>();
+
+        lifecycle.run(KEY,
+                (member, partition) -> PartitionLifecycle.ProcessOutcome.processed(),
+                (partition, batch) -> {
+                    EntityPartition persisted = store.load(KEY.id()).orElseThrow();
+                    visibleProcessedCounts.add(
+                            persisted.inState(MembershipState.PROCESSED).size());
+                    observedChunks.add(batch.members().get(0).chunkId());
+                });
+
+        assertEquals(List.of(1, 2, 3), visibleProcessedCounts,
+                "the graph flush seam runs only after membership has read-your-writes state");
+        assertEquals(List.of("c1", "c2", "c3"), observedChunks);
+    }
+
+    @Test
     void aBatchIsMarkedInFlightBeforeAnyOfItRuns() {
         // If the process dies mid-batch the store must say "scheduled", not "never seen" —
         // otherwise a resumed run cannot tell abandoned work from undiscovered work.

@@ -118,6 +118,21 @@ class ChatEngineTest {
         }
     }
 
+    @Test
+    void testBlankAssistantAnswerIsRejected() throws Exception {
+        Path kgraph = buildAndSaveTinyGraph();
+        try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
+            ChatEngine engine = new ChatEngine(
+                    new InferenceRouter(ScriptedChatModel.of("   "), null), bridge, 4);
+
+            ChatException failure = assertThrows(
+                    ChatException.class,
+                    () -> engine.chat(List.of(), "Say something", GenOptions.defaults()));
+
+            assertEquals("The model returned no assistant text.", failure.getMessage());
+        }
+    }
+
     // ── 5. Router fallback ───────────────────────────────────────────────────
 
     @Test

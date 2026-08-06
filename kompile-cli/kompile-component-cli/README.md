@@ -55,7 +55,7 @@ kompile-component list --installed-only --format json
 | COMPONENT                | NAME                     | TYPE  | DEFAULT PORT | INSTALLED | STATUS  |
 |--------------------------|--------------------------|-------|--------------|-----------|---------|
 | kompile-app-main         | Kompile App Main         | app   | 8080         | true      | running |
-| kompile-model-staging    | Kompile Model Staging    | staging | 8081       | true      | not_running |
+| kompile-model-staging    | Kompile Model Staging    | staging | 8090       | true      | not_running |
 | kompile-cli              | Kompile CLI              | cli   | N/A          | true      | not_running |
 ```
 

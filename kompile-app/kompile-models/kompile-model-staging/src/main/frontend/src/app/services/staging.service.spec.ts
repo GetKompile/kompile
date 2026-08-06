@@ -62,4 +62,39 @@ describe('StagingService import diagnostics', () => {
     expect(request.request.method).toBe('GET');
     request.flush([]);
   });
+
+  it('loads and updates the UI-managed staging settings', () => {
+    const settings = {
+      callback_url: 'http://localhost:8080',
+      auto_reload_enabled: true,
+      callback_timeout_ms: 30000,
+      optimizer_fp16_enabled: true,
+      optimizer_enabled: true,
+      optimizer_max_iterations: 3,
+      optimizer_log_applied: false,
+      default_optimization_profile: 'default',
+      default_performance_profile: 'BALANCED'
+    };
+
+    service.getSettings().subscribe(result => expect(result).toEqual(settings));
+    const getRequest = http.expectOne(candidate => candidate.url.endsWith('/api/staging/settings'));
+    expect(getRequest.request.method).toBe('GET');
+    getRequest.flush(settings);
+
+    service.updateSettings(settings).subscribe(result => expect(result).toEqual(settings));
+    const putRequest = http.expectOne(candidate => candidate.url.endsWith('/api/staging/settings'));
+    expect(putRequest.request.method).toBe('PUT');
+    expect(putRequest.request.body).toEqual(settings);
+    putRequest.flush(settings);
+  });
+
+  it('tests the managed Admin callback', () => {
+    service.testCallback().subscribe(result => expect(result.success).toBeTrue());
+
+    const request = http.expectOne(candidate =>
+      candidate.url.endsWith('/api/staging/settings/test-callback'));
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({});
+    request.flush({ success: true, message: 'Connection successful' });
+  });
 });

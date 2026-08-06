@@ -82,13 +82,14 @@ import static ai.kompile.cli.main.project.ProjectPrintUtils.printWorkflows;
 
 /**
  * Picocli subcommand group for crawl and workflow management.
- * Contains Crawl, RunCrawlProfile, ListWorkflows, AddWorkflow, RunWorkflow subcommands,
+ * Contains Serve, Crawl, RunCrawlProfile, ListWorkflows, AddWorkflow, RunWorkflow subcommands,
  * plus the full local crawl engine.
  */
 @Command(name = "crawl-group",
         mixinStandardHelpOptions = true,
         description = "Manage Kompile project crawls and workflows.",
         subcommands = {
+                ProjectCrawlCommand.Serve.class,
                 ProjectCrawlCommand.Crawl.class,
                 ProjectCrawlCommand.RunCrawlProfile.class,
                 ProjectCrawlCommand.ListWorkflows.class,
@@ -111,6 +112,60 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     public Integer call() {
         new CommandLine(this).usage(System.out);
         return 0;
+    }
+
+    @Command(name = "serve", mixinStandardHelpOptions = true,
+            description = "Run the project's managed service-start workflow or one service script.")
+    public static class Serve implements Callable<Integer> {
+        @Option(names = {"--root", "-r"}, description = "Project root. Defaults to current directory.", defaultValue = ".")
+        private File root;
+
+        @Option(names = "--workflow", description = "Explicit service-start workflow ID or name.")
+        private String workflowId;
+
+        @Option(names = "--staging-only", description = "Start only model staging.")
+        private boolean stagingOnly;
+
+        @Option(names = "--serving-only", description = "Start only standalone model serving when the project requires it.")
+        private boolean servingOnly;
+
+        @Option(names = "--app-only", description = "Start only the admin application.")
+        private boolean appOnly;
+
+        @Option(names = "--chat-only", description = "Start only the chat application.")
+        private boolean chatOnly;
+
+        @Option(names = "--crawl-manager-only", description = "Start only the crawl-manager application.")
+        private boolean crawlManagerOnly;
+
+        @Option(names = "--url", description = "Pin the backend base URL for workflow template expansion.")
+        private String appUrl;
+
+        @Option(names = {"--port", "-p"}, description = "Pin a localhost backend port for workflow template expansion.")
+        private Integer port;
+
+        @Option(names = "--dry-run", description = "Print selected steps without running them.")
+        private boolean dryRun;
+
+        @Override
+        public Integer call() throws Exception {
+            int selectedServices = (stagingOnly ? 1 : 0)
+                    + (servingOnly ? 1 : 0)
+                    + (appOnly ? 1 : 0)
+                    + (chatOnly ? 1 : 0)
+                    + (crawlManagerOnly ? 1 : 0);
+            if (selectedServices > 1 || (selectedServices == 1
+                    && workflowId != null && !workflowId.isBlank())) {
+                System.err.println("Choose one --*-only option or --workflow, not multiple selections.");
+                return 2;
+            }
+            KompileProjectStore store = new KompileProjectStore();
+            Path projectRoot = requireExistingProjectRoot(store, root);
+            KompileProjectManifest manifest = store.ensureStandardServiceLifecycle(projectRoot);
+            return runServeSelection(store, manifest, projectRoot, workflowId,
+                    stagingOnly, servingOnly, appOnly, chatOnly, crawlManagerOnly,
+                    appUrl, port, dryRun);
+        }
     }
 
     @Command(name = "crawl", mixinStandardHelpOptions = true,
@@ -403,7 +458,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         public Integer call() throws Exception {
             KompileProjectStore store = new KompileProjectStore();
             Path projectRoot = requireExistingProjectRoot(store, root);
-            KompileProjectManifest manifest = store.load(projectRoot);
+            KompileProjectManifest manifest = store.ensureStandardServiceLifecycle(projectRoot);
             KompileProjectWorkflow workflow = store.findWorkflow(manifest, workflowId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown workflow: " + workflowId));
             return runWorkflow(store, manifest, workflow, projectRoot, appUrl, port, dryRun);
@@ -417,6 +472,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                  boolean stagingOnly, boolean servingOnly, boolean appOnly,
                                  boolean chatOnly, boolean crawlManagerOnly,
                                  String appUrl, Integer port, boolean dryRun) throws Exception {
+        manifest = store.ensureStandardServiceLifecycle(projectRoot);
         if (workflowId != null && !workflowId.isBlank()) {
             KompileProjectWorkflow workflow = store.findWorkflow(manifest, workflowId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown serve workflow: " + workflowId));
@@ -457,11 +513,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     "Serve " + scriptId, List.of(scriptStep(scriptId, scriptId)), appUrl, port, dryRun);
         }
 
-        KompileProjectWorkflow workflow = store.findWorkflow(manifest, "start-services")
-                .or(() -> manifest.getWorkflows().stream()
-                        .filter(candidate -> "START".equals(normalizeEnum(candidate.getPhase())))
-                        .findFirst())
-                .orElse(null);
+        KompileProjectWorkflow workflow = store.findWorkflow(manifest, "start-services").orElse(null);
+        if (workflow == null) {
+            workflow = manifest.getWorkflows().stream()
+                    .filter(candidate -> "START".equals(normalizeEnum(candidate.getPhase())))
+                    .findFirst()
+                    .orElse(null);
+        }
         if (workflow != null) {
             return runWorkflow(store, manifest, workflow, projectRoot, appUrl, port, dryRun);
         }
@@ -795,10 +853,10 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     + " or set KOMPILE_STAGING_COMMAND / KOMPILE_MODEL_STAGING_JAR.");
             return Optional.empty();
         }
-        return Optional.of("exec java -jar " + shellQuote(stagingJar.get().toString())
-                + " --server.port=" + shellQuote(stagingPort)
-                + " --kompile.staging.models-dir=" + shellQuote(modelDir.toString())
-                + " --spring.main.banner-mode=off");
+        return Optional.of(artifactLaunchCommand(stagingJar.get(), List.of(
+                "--server.port=" + stagingPort,
+                "--kompile.staging.models-dir=" + modelDir,
+                "--spring.main.banner-mode=off")));
     }
 
     private static Optional<String> defaultServingCommand(KompileProjectManifest manifest,
@@ -902,10 +960,57 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 })
                 .or(() -> findSourceRoot(projectRoot)
                         .flatMap(root -> findModuleExecutableJar(root, launcher.moduleName())));
-        return jar.map(path -> "exec java -jar " + shellQuote(path.toString())
-                + " --server.port=" + shellQuote(String.valueOf(port))
-                + " --kompile.project.root=" + shellQuote(projectRoot.toAbsolutePath().normalize().toString())
-                + " --spring.main.banner-mode=off");
+        return jar.map(path -> artifactLaunchCommand(path, List.of(
+                "--server.port=" + port,
+                "--kompile.project.root=" + projectRoot.toAbsolutePath().normalize(),
+                "--spring.main.banner-mode=off")));
+    }
+
+    /**
+     * Build the direct launch command used by generated project scripts. Native artifacts are
+     * executed directly; JARs use the distribution runtime when available. Artifacts inside a
+     * distribution receive the same side-loaded lib contract as the canonical launch scripts and
+     * {@link ai.kompile.cli.main.manage.ServiceManager}: distribution properties plus lib/bin search
+     * paths, without forced preloading.
+     */
+    static String artifactLaunchCommand(Path artifact, List<String> arguments) {
+        Path normalizedArtifact = artifact.toAbsolutePath().normalize();
+        Optional<Path> distributionHome = Optional.ofNullable(
+                ComponentRegistry.inferDistributionHome(normalizedArtifact)).map(File::toPath);
+        StringBuilder command = new StringBuilder();
+        distributionHome.ifPresent(root -> {
+            String nativeSearchPath = root.resolve("bin") + File.pathSeparator + root.resolve("lib");
+            command.append("export KOMPILE_DIST_HOME=").append(shellQuote(root.toString())).append("; ")
+                    .append("export KOMPILE_NATIVE_LIB_DIR=")
+                    .append(shellQuote(root.resolve("lib").toString())).append("; ")
+                    .append("export LD_LIBRARY_PATH=").append(shellQuote(nativeSearchPath))
+                    .append("${LD_LIBRARY_PATH:+:\"$LD_LIBRARY_PATH\"}; ")
+                    .append("export DYLD_LIBRARY_PATH=").append(shellQuote(nativeSearchPath))
+                    .append("${DYLD_LIBRARY_PATH:+:\"$DYLD_LIBRARY_PATH\"}; ");
+        });
+
+        boolean jar = normalizedArtifact.getFileName().toString().endsWith(".jar");
+        if (jar) {
+            Path bundledJava = distributionHome
+                    .map(root -> root.resolve("runtime/bin/java"))
+                    .filter(Files::isExecutable)
+                    .orElse(null);
+            command.append("exec ")
+                    .append(bundledJava == null ? "java" : shellQuote(bundledJava.toString()));
+            distributionHome.ifPresent(root -> command.append(" ")
+                    .append(shellQuote("-Dkompile.dist.home=" + root)));
+            command.append(" -jar ").append(shellQuote(normalizedArtifact.toString()));
+        } else {
+            command.append("exec ").append(shellQuote(normalizedArtifact.toString()));
+            distributionHome.ifPresent(root -> command.append(" ")
+                    .append(shellQuote("-Dkompile.dist.home=" + root)));
+        }
+        if (arguments != null) {
+            for (String argument : arguments) {
+                command.append(" ").append(shellQuote(argument));
+            }
+        }
+        return command.toString();
     }
 
     /**

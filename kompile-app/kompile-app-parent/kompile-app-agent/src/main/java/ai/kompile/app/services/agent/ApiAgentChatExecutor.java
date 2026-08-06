@@ -124,6 +124,11 @@ public class ApiAgentChatExecutor {
                 connection.setRequestMethod("POST");
                 connection.setRequestProperty("Content-Type", "application/json");
                 connection.setRequestProperty("Accept", "text/event-stream");
+                if (KompileLocalModelService.AGENT_NAME.equals(agent.getName())) {
+                    // Model staging protects browser mutations with a non-simple request
+                    // marker. The chat component is the trusted server-to-server client.
+                    connection.setRequestProperty("X-Kompile-Staging-Request", "1");
+                }
 
                 // Add API key if present
                 if (agent.getApiKey() != null && !agent.getApiKey().isEmpty()) {

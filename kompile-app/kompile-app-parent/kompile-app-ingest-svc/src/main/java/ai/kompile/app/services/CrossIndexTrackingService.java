@@ -23,11 +23,8 @@ import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.app.ingest.repository.IndexedDocumentRepository;
 import ai.kompile.app.ingest.repository.IndexedPassageRepository;
 import ai.kompile.core.retrievers.RetrievedDoc;
-import lombok.AccessLevel;
-import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -49,14 +46,10 @@ import java.util.stream.Collectors;
 @Service
 @Transactional
 @RequiredArgsConstructor
-@NoArgsConstructor(access = AccessLevel.PROTECTED, force = true)
 @Slf4j
 public class CrossIndexTrackingService {
 
-
-    @Autowired
     private final IndexedDocumentRepository documentRepository;
-    @Autowired
     private final IndexedPassageRepository passageRepository;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -164,19 +157,14 @@ public class CrossIndexTrackingService {
     public IndexedPassage registerPassage(IndexedDocument document, String chunkId,
                                            int chunkIndex, String content,
                                            java.util.Map<String, Object> metadata) {
-        // Check if passage already exists
-        Optional<IndexedPassage> existing = passageRepository.findByChunkId(chunkId);
-        if (existing.isPresent()) {
-            return existing.get();
-        }
-
         String contentHash = computeHash(content);
         String contentPreview = content != null && content.length() > 500 ?
                 content.substring(0, 500) : content;
 
-        // Extract content type and full content from metadata
+        // Exact passage text is the reusable crawl corpus. contentPreview remains the cheap browser
+        // projection; fullContent is the model-facing source and therefore must not be table-only.
         String contentType = null;
-        String fullContent = null;
+        String fullContent = content;
         if (metadata != null) {
             Object ct = metadata.get("content_type");
             if (ct instanceof String) {
@@ -186,10 +174,32 @@ public class CrossIndexTrackingService {
             if (ftc instanceof String) {
                 fullContent = (String) ftc;
             }
-            // For table content, if no explicit full_table_content, store the raw content
-            if ("table".equals(contentType) && fullContent == null) {
-                fullContent = content;
+        }
+
+        // Registration is also the migration path for rows written before ordinary passage text
+        // was retained. Do not leave an existing chunk permanently stuck with a 500-char preview.
+        Optional<IndexedPassage> existing = passageRepository.findByChunkId(chunkId);
+        if (existing.isPresent()) {
+            IndexedPassage passage = existing.get();
+            boolean changed = (content != null
+                    && (!Objects.equals(passage.getContentHash(), contentHash)
+                    || !Objects.equals(passage.getContentPreview(), contentPreview)))
+                    || (fullContent != null && !Objects.equals(passage.getFullContent(), fullContent))
+                    || (contentType != null && !Objects.equals(passage.getContentType(), contentType));
+            if (changed) {
+                if (content != null) {
+                    passage.setContentHash(contentHash);
+                    passage.setContentPreview(contentPreview);
+                }
+                if (fullContent != null) {
+                    passage.setFullContent(fullContent);
+                }
+                if (contentType != null) {
+                    passage.setContentType(contentType);
+                }
+                return passageRepository.save(passage);
             }
+            return passage;
         }
 
         IndexedPassage passage = IndexedPassage.create(document, chunkId, chunkIndex,
@@ -247,6 +257,21 @@ public class CrossIndexTrackingService {
     @Transactional(readOnly = true)
     public List<IndexedPassage> findPassagesByChunkIds(Collection<String> chunkIds) {
         return partitionedQuery(chunkIds, batch -> passageRepository.findByChunkIds(batch));
+    }
+
+    /** Find the pooled crawl corpus for one fact sheet. */
+    @Transactional(readOnly = true)
+    public List<IndexedPassage> findPassagesByFactSheetId(Long factSheetId) {
+        if (factSheetId == null) {
+            return List.of();
+        }
+        return passageRepository.findByFactSheetId(factSheetId);
+    }
+
+    /** Return the number of persisted passages registered for a document. */
+    @Transactional(readOnly = true)
+    public long countPassages(Long documentId) {
+        return passageRepository.countByDocumentId(documentId);
     }
 
     /**

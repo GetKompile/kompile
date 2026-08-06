@@ -135,6 +135,36 @@ class StagingServingBridgeTest {
         verifyNoInteractions(launcher);
     }
 
+    @Test
+    void poll_sameActiveModel_restartsDeadServingSubprocess() throws Exception {
+        when(kbConfigManager.current()).thenReturn(configWith(true));
+        when(launcher.isRunning()).thenReturn(false);
+        StagingServingBridge testBridge = new BridgeWithMockHttp(activeResponse("my-llm"));
+        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
+        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
+        ReflectionTestUtils.setField(testBridge, "currentModelId", "my-llm");
+
+        testBridge.poll();
+
+        verify(launcher).loadModel("my-llm", "/tmp/test-model.sdz", null);
+        assertEquals("my-llm", ReflectionTestUtils.getField(testBridge, "currentModelId"));
+    }
+
+    @Test
+    void poll_sameActiveModel_keepsHealthyServingSubprocess() throws Exception {
+        when(kbConfigManager.current()).thenReturn(configWith(true));
+        when(launcher.isRunning()).thenReturn(true);
+        StagingServingBridge testBridge = new BridgeWithMockHttp(activeResponse("my-llm"));
+        ReflectionTestUtils.setField(testBridge, "launcher", launcher);
+        ReflectionTestUtils.setField(testBridge, "kbConfigManager", kbConfigManager);
+        ReflectionTestUtils.setField(testBridge, "currentModelId", "my-llm");
+
+        testBridge.poll();
+
+        verify(launcher).isRunning();
+        verifyNoMoreInteractions(launcher);
+    }
+
     // ── Stop is called when active model removed ──────────────────────────────
 
     @Test
@@ -155,24 +185,22 @@ class StagingServingBridgeTest {
     // ── resolveLLMCacheDir convention ─────────────────────────────────────────
 
     @Test
-    void resolveLocalModelPath_cacheHit_skipsDownload() throws Exception {
-        // Write a fake model file to the expected cache location
-        Path cacheDir = tempDir.resolve("llm-cache");
-        Path modelDir = cacheDir.resolve("test-model");
-        java.nio.file.Files.createDirectories(modelDir);
-        Path fakeModelFile = modelDir.resolve("model.sdz");
-        java.nio.file.Files.writeString(fakeModelFile, "fake-weights");
+    void llmCacheDir_usesManagedCacheDirectory() throws Exception {
+        Path cacheDir = tempDir.resolve("llm-cache").toAbsolutePath();
+        String previous = System.getProperty("kompile.llm.cache.dir");
+        try {
+            System.setProperty("kompile.llm.cache.dir", cacheDir.toString());
+            java.lang.reflect.Method method = StagingServingBridge.class.getDeclaredMethod("llmCacheDir");
+            method.setAccessible(true);
 
-        // Build a bridge whose registry query returns model_file=model.sdz
-        String registryJson = "{\"model_file\":\"model.sdz\",\"vocab_file\":\"tokenizer.json\"}";
-        StagingServingBridge testBridge = new BridgeWithMockHttp(registryJson);
-        // Override the DEFAULT_LLM_CACHE_DIR via reflection
-        java.lang.reflect.Field f = StagingServingBridge.class.getDeclaredField("DEFAULT_LLM_CACHE_DIR");
-        f.setAccessible(true);
-        // We can't replace a static final without Unsafe tricks; check the path is computed correctly
-        // instead by directly calling the protected helper with a subclass override
-        // — just verify the bridge can at least parse the registry response.
-        assertNotNull(testBridge.fetchActiveLlmModelId() == null ? "ok" : "ok");
+            assertEquals(cacheDir, method.invoke(null));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("kompile.llm.cache.dir");
+            } else {
+                System.setProperty("kompile.llm.cache.dir", previous);
+            }
+        }
     }
 
     @Test

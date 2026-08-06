@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.llm.pipeline;
 
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,10 +49,10 @@ import java.util.Objects;
  *
  * <p>Operates in two contexts:</p>
  * <ul>
- *   <li><b>Direct</b> (subprocess context, {@code kompile.llm.serving.url} empty):
+ *   <li><b>Direct</b> (serving-child context, local model bean present):
  *       reads from the local {@link SameDiffLanguageModelImpl}.</li>
- *   <li><b>Subprocess</b> (app-main context, {@code kompile.llm.serving.url} set):
- *       polls the serving subprocess's {@code /api/llm/status} endpoint.</li>
+ *   <li><b>Remote</b> (application persona, no local model bean): polls the UI/CLI-managed
+ *       {@code servingUrl} component's {@code /api/llm/status} endpoint.</li>
  * </ul>
  */
 @Service
@@ -60,8 +61,8 @@ public class LlmObservabilityService {
     private static final Logger logger = LoggerFactory.getLogger(LlmObservabilityService.class);
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
-    private final String servingUrl;
     private final HttpClient httpClient;
+    private final ServiceEndpointsConfigManager endpointConfigManager;
 
     /** Local model impl — non-null only in subprocess (direct) context. */
     private final SameDiffLanguageModelImpl directModel;
@@ -69,15 +70,20 @@ public class LlmObservabilityService {
     @Autowired
     public LlmObservabilityService(
             @Autowired(required = false) SameDiffLanguageModelImpl directModel) {
-        String servingUrl = "";
-        this.servingUrl = (servingUrl != null && !servingUrl.isBlank()) ? servingUrl.trim() : null;
+        this(directModel, ServiceEndpointsConfigManager.shared());
+    }
+
+    LlmObservabilityService(
+            SameDiffLanguageModelImpl directModel,
+            ServiceEndpointsConfigManager endpointConfigManager) {
         this.directModel = directModel;
+        this.endpointConfigManager = Objects.requireNonNull(endpointConfigManager);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
 
         if (isSubprocessMode()) {
-            logger.info("LlmObservabilityService: subprocess-client mode → {}", this.servingUrl);
+            logger.info("LlmObservabilityService: managed serving-client mode → {}", getServingUrl());
         } else if (directModel != null) {
             logger.info("LlmObservabilityService: direct mode (local model)");
         } else {
@@ -87,12 +93,14 @@ public class LlmObservabilityService {
 
     /** True when forwarding to a subprocess via HTTP. */
     public boolean isSubprocessMode() {
-        return servingUrl != null;
+        return directModel == null;
     }
 
-    /** The subprocess URL, or null if direct mode. */
+    /** The current UI/CLI-managed serving URL, or null in direct-serving mode. */
     public String getServingUrl() {
-        return servingUrl;
+        return isSubprocessMode()
+                ? endpointConfigManager.current().effectiveServingUrl()
+                : null;
     }
 
     // ==================== Load / Unload ====================
@@ -199,6 +207,7 @@ public class LlmObservabilityService {
     private void loadViaSubprocess(String modelId, Map<String, Object> opts) {
         Objects.requireNonNull(modelId, "modelId");
         try {
+            String servingUrl = getServingUrl();
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("modelId", modelId);
             if (opts != null && !opts.isEmpty()) {
@@ -231,6 +240,7 @@ public class LlmObservabilityService {
 
     private void unloadViaSubprocess() {
         try {
+            String servingUrl = getServingUrl();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(servingUrl + "/api/llm/unload"))
                     .timeout(Duration.ofSeconds(30))
@@ -247,6 +257,7 @@ public class LlmObservabilityService {
     /** Fetch the full status JSON from the subprocess. Returns null on error. */
     private JsonNode fetchStatus() {
         try {
+            String servingUrl = getServingUrl();
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(servingUrl + "/api/llm/status"))
                     .timeout(Duration.ofSeconds(5))

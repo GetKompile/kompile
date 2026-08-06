@@ -16,13 +16,16 @@
 
 package ai.kompile.cli.main.chat.roles;
 
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Interactive TUI wizard for managing chat roles.
@@ -209,8 +212,16 @@ public class RoleWizard {
             systemPrompt = "You are a specialized assistant for " + description + ".";
         }
 
+        Map<String, RoleAgentDefaults> agentDefaults = Map.of();
+        String configureDefaults = prompt(reader,
+                "\n  Configure per-agent model/thinking defaults now? [y/N]: ");
+        if (configureDefaults != null && configureDefaults.toLowerCase().startsWith("y")) {
+            agentDefaults = promptAgentDefaults(reader, Map.of());
+        }
+
         try {
-            RoleConfig role = roleManager.createRole(name, displayName, description, category, systemPrompt);
+            RoleConfig role = roleManager.createRole(
+                    name, displayName, description, category, systemPrompt, agentDefaults);
             System.out.println();
             System.out.println(GREEN + "  ✓ Role created successfully!" + RESET);
             System.out.println("  Name: " + BOLD + role.getName() + RESET);
@@ -311,13 +322,20 @@ public class RoleWizard {
             systemPrompt = promptBuilder.toString();
         }
 
+        Map<String, RoleAgentDefaults> agentDefaults = null;
+        String defaultsChoice = prompt(reader, "  Edit per-agent model/thinking defaults? [y/N]: ");
+        if (defaultsChoice != null && defaultsChoice.toLowerCase().startsWith("y")) {
+            agentDefaults = promptAgentDefaults(reader, selectedRole.getAgentDefaults());
+        }
+
         try {
             RoleConfig updated = roleManager.updateRole(
                     selectedRole.getName(),
                     displayName != null && !displayName.isBlank() ? displayName : null,
                     description != null && !description.isBlank() ? description : null,
                     category != null && !category.isBlank() ? category : null,
-                    systemPrompt
+                    systemPrompt,
+                    agentDefaults
             );
             System.out.println();
             System.out.println(GREEN + "  ✓ Role updated successfully!" + RESET);
@@ -485,6 +503,15 @@ public class RoleWizard {
         System.out.println(BOLD + "  Max Steps: " + RESET + selectedRole.getMaxSteps());
         System.out.println(BOLD + "  Can Spawn Subagents: " + RESET + selectedRole.isCanSpawnSubagents());
         System.out.println(BOLD + "  Model Hint: " + RESET + selectedRole.getModelHint());
+        System.out.println(BOLD + "  Agent Defaults: " + RESET);
+        if (selectedRole.getAgentDefaults().isEmpty()) {
+            System.out.println("    " + DIM + "(none)" + RESET);
+        } else {
+            selectedRole.getAgentDefaults().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> System.out.println(
+                            "    " + entry.getKey() + ": " + entry.getValue()));
+        }
         System.out.println(BOLD + "  Tools: " + RESET + (selectedRole.getEnabledTools().contains("*") ? "all" : selectedRole.getEnabledTools()));
         if (selectedRole.getSourceFile() != null && !selectedRole.getSourceFile().isEmpty()) {
             System.out.println(BOLD + "  Source: " + RESET + selectedRole.getSourceFile());
@@ -496,6 +523,93 @@ public class RoleWizard {
             System.out.println(DIM + "  │ " + RESET + line);
         }
         System.out.println(DIM + "  └─────────────────────────────────────────" + RESET);
+    }
+
+    private Map<String, RoleAgentDefaults> promptAgentDefaults(
+            LineReader reader,
+            Map<String, RoleAgentDefaults> currentDefaults) {
+        Map<String, RoleAgentDefaults> resolved = new LinkedHashMap<>();
+        Map<String, RoleAgentDefaults> current =
+                currentDefaults != null ? currentDefaults : Map.of();
+
+        System.out.println();
+        System.out.println("  Set launch defaults for Codex, Claude, and OpenCode.");
+        System.out.println("  " + DIM
+                + "Press Enter to keep the shown value; enter '-' to clear it." + RESET);
+
+        for (String agent : AgentLaunchDefaults.SUPPORTED_AGENTS) {
+            RoleAgentDefaults existing = current.get(agent);
+            String currentModel = existing != null ? existing.getModel() : null;
+            String currentThinking = existing != null ? existing.getDefaultThinking() : null;
+            Map<String, String> currentModels = existing != null
+                    ? existing.getThinkingByModel() : Map.of();
+
+            System.out.println("\n  " + BOLD + agent + RESET);
+            String model = resolveOptionalValue(
+                    prompt(reader, "    Model [" + displayDefault(currentModel) + "]: "),
+                    currentModel);
+            String defaultThinking = resolveOptionalValue(
+                    prompt(reader, "    Default thinking [" + displayDefault(currentThinking) + "]: "),
+                    currentThinking);
+
+            String mappings = prompt(reader,
+                    "    Model thinking (model=level, ...) ["
+                            + displayThinkingModels(currentModels) + "]: ");
+            Map<String, String> thinkingByModel;
+            if (mappings == null || mappings.isBlank()) {
+                thinkingByModel = currentModels;
+            } else if ("-".equals(mappings.trim())) {
+                thinkingByModel = Map.of();
+            } else {
+                thinkingByModel = parseThinkingModels(mappings);
+            }
+
+            RoleAgentDefaults providerDefaults =
+                    new RoleAgentDefaults(model, defaultThinking, thinkingByModel);
+            if (!providerDefaults.isEmpty()) {
+                resolved.put(agent, providerDefaults);
+            }
+        }
+        return Map.copyOf(resolved);
+    }
+
+    private static String resolveOptionalValue(String input, String current) {
+        if (input == null || input.isBlank()) {
+            return current;
+        }
+        return "-".equals(input.trim()) ? null : input.trim();
+    }
+
+    private static Map<String, String> parseThinkingModels(String input) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String entry : input.split(",")) {
+            int separator = entry.indexOf('=');
+            if (separator <= 0 || separator == entry.length() - 1) {
+                System.out.println("    " + YELLOW + "Ignoring invalid mapping: "
+                        + entry.trim() + RESET);
+                continue;
+            }
+            String model = entry.substring(0, separator).trim();
+            String thinking = entry.substring(separator + 1).trim();
+            if (!model.isEmpty() && !thinking.isEmpty()) {
+                values.put(model, thinking);
+            }
+        }
+        return Map.copyOf(values);
+    }
+
+    private static String displayDefault(String value) {
+        return value == null || value.isBlank() ? "unset" : value;
+    }
+
+    private static String displayThinkingModels(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return "none";
+        }
+        return values.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .collect(java.util.stream.Collectors.joining(", "));
     }
 
     private static String prompt(LineReader reader, String prompt) {

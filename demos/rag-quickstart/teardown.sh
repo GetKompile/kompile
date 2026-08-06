@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KOMPILE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KOMPILE_CLI="$KOMPILE_ROOT/kompile-cli/target/kompile-cli"
 APP_PORT="${APP_PORT:-8080}"
-STAGING_PORT="${STAGING_PORT:-8081}"
+STAGING_PORT="${STAGING_PORT:-8090}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

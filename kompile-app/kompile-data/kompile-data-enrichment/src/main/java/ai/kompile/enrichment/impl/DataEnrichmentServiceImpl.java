@@ -52,9 +52,6 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class DataEnrichmentServiceImpl implements DataEnrichmentService {
 
-    /** No-arg constructor for CGLIB proxy instantiation in GraalVM native image. */
-    protected DataEnrichmentServiceImpl() {}
-
     private static final Logger log = LoggerFactory.getLogger(DataEnrichmentServiceImpl.class);
 
     private EnrichmentConfigService configService;
@@ -72,6 +69,7 @@ public class DataEnrichmentServiceImpl implements DataEnrichmentService {
 
     private final Map<String, EnrichmentJob> jobs = new ConcurrentHashMap<>();
 
+    @Autowired
     public DataEnrichmentServiceImpl(EnrichmentConfigService configService,
                                      ChunkDeduplicationService chunkDedup,
                                      GraphPruningService graphPruning,
@@ -83,7 +81,7 @@ public class DataEnrichmentServiceImpl implements DataEnrichmentService {
                                      TaxonomySchemaPresetExporter presetExporter,
                                      TaxonomyProcessDefinitionService processDefinitionService,
                                      DomainTaxonomyRepository taxonomyRepository,
-                                     @Autowired(required = false) ApplicationEventPublisher eventPublisher) {
+                                     ApplicationEventPublisher eventPublisher) {
         this.configService = configService;
         this.chunkDedup = chunkDedup;
         this.graphPruning = graphPruning;

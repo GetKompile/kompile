@@ -16,7 +16,7 @@
 
 package ai.kompile.toolgateway.config;
 
-import ai.kompile.app.config.KompileServerConstants;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.toolgateway.model.ToolGatewayConfig;
 import ai.kompile.toolgateway.service.ToolGatewayConfigService;
 import ai.kompile.toolgateway.service.ToolGatewayRulesProvider;
@@ -43,7 +43,7 @@ import org.springframework.context.annotation.Configuration;
  * <ol>
  *   <li>{@link ToolGatewayConfig.ModelSource#STAGING} — creates an
  *       {@link OpenAiChatModel} pointing at the kompile-model-staging
- *       server (resolved from {@code kompile.staging.url})</li>
+ *       server resolved from the managed {@code service-endpoints.json}</li>
  *   <li>{@link ToolGatewayConfig.ModelSource#GLOBAL} — uses the
  *       application's global {@link ChatModel} bean</li>
  * </ol>
@@ -53,6 +53,9 @@ import org.springframework.context.annotation.Configuration;
 public class ToolGatewayConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(ToolGatewayConfiguration.class);
+
+    /** Cached per effective source/URL; refreshed lazily when managed JSON changes. */
+    private volatile ModelBinding modelBinding;
 
     @Bean
     public ToolGatewayRulesProvider toolGatewayRulesProvider(ToolGatewayConfigService configService) {
@@ -65,8 +68,8 @@ public class ToolGatewayConfiguration {
             ToolGatewayRulesProvider rulesProvider,
             @Autowired(required = false) ChatModel globalChatModel) {
 
-        ChatModel chatModel = resolveModel(configService, globalChatModel, KompileServerConstants.DEFAULT_STAGING_URL);
-        return new ToolGatewayService(configService, rulesProvider, chatModel);
+        return new ToolGatewayService(configService, rulesProvider, null,
+                () -> resolveManagedModel(configService, globalChatModel));
     }
 
     /**
@@ -80,12 +83,31 @@ public class ToolGatewayConfiguration {
      *   <li>GLOBAL: uses whatever ChatModel bean Spring AI autoconfigured</li>
      * </ul>
      */
-    private ChatModel resolveModel(ToolGatewayConfigService configService,
+    private ChatModel resolveManagedModel(ToolGatewayConfigService configService,
+                                          ChatModel globalChatModel) {
+        ToolGatewayConfig.ModelSource source = configService.getConfig().getModelSource();
+        String stagingUrl = source == ToolGatewayConfig.ModelSource.STAGING
+                ? ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl()
+                : "";
+        String key = source.name() + "|" + stagingUrl;
+        ModelBinding current = modelBinding;
+        if (current != null && key.equals(current.key())) {
+            return current.model();
+        }
+        synchronized (this) {
+            current = modelBinding;
+            if (current != null && key.equals(current.key())) {
+                return current.model();
+            }
+            ChatModel resolved = resolveModel(source, globalChatModel, stagingUrl);
+            modelBinding = new ModelBinding(key, resolved);
+            return resolved;
+        }
+    }
+
+    private ChatModel resolveModel(ToolGatewayConfig.ModelSource source,
                                    ChatModel globalChatModel,
                                    String stagingUrl) {
-        ToolGatewayConfig config = configService.getConfig();
-        ToolGatewayConfig.ModelSource source = config.getModelSource();
-
         if (source == ToolGatewayConfig.ModelSource.STAGING) {
             log.info("Tool gateway using kompile-model-staging at: {}", stagingUrl);
 
@@ -115,4 +137,6 @@ public class ToolGatewayConfiguration {
                 + "Either start kompile-model-staging or configure a global LLM provider.");
         return null;
     }
+
+    private record ModelBinding(String key, ChatModel model) {}
 }

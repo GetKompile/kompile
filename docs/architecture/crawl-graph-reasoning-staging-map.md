@@ -240,9 +240,9 @@ this map wrongly said none was found):
   toggles + diagnostics, memory limits; on CUDA `Environment.applyOptimalLLMConfig()` is the single
   source of truth) applied pre-Spring by `MainApplication.main()` and synced by
   `Nd4jEnvironmentConfigService` (kompile-app-platform); `SubprocessEnvironmentPropagator` forwards
-  parent `nd4j.*`/`org.nd4j.*` -D flags + `CUDA_VISIBLE_DEVICES` into every subprocess; per-launcher
-  safe defaults (`LearningSubprocessLauncher.getExtraJvmArgs`: `priority=CPU`, `multibackend=false`,
-  `multi.auto=false` — ONLY when the parent doesn't set them).
+  parent `nd4j.*`/`org.nd4j.*` -D flags + `CUDA_VISIBLE_DEVICES` into every subprocess. Backend
+  routing is handled by launcher preferences and scheduler placement; we no longer force multi-backend
+  disable flags at launcher scope.
 - ⚠️ Interplay with the CUDA-only dist variant (gap #4): the learning subprocess's CPU-safe defaults
   (`-Dnd4j.backend.priority=CPU` when parent unset) collide with a classpath that has NO nd4j-native
   backend. Verify the parent (ServiceManager launch) carries `nd4j.backend.priority=CUDA_GPU,CPU` — or

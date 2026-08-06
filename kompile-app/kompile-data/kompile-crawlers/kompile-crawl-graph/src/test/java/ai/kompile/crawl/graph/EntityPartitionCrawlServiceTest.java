@@ -37,10 +37,12 @@ import ai.kompile.core.graphrag.partition.grouping.EntityGroup;
 import ai.kompile.core.graphrag.partition.grouping.GroupingPolicy;
 import ai.kompile.core.graphrag.partition.reuse.ExtractionReuse;
 import ai.kompile.core.graphrag.partition.staging.GraphCommitSink;
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
 import ai.kompile.crawl.graph.EntityPartitionCrawlService.PartitionRequest;
 import ai.kompile.crawl.graph.EntityPartitionCrawlService.StagedRunAllResult;
 import ai.kompile.crawl.graph.EntityPartitionCrawlService.StagedRunResult;
 import ai.kompile.crawl.graph.partition.PartitionFactSheets;
+import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -66,7 +68,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -87,6 +93,7 @@ class EntityPartitionCrawlServiceTest {
     private KnowledgeGraphService graph;
     private GraphMaintenanceService maintenance;
     private ObjectProvider<VectorStore> vectorStores;
+    private VectorStore vectorStore;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -95,6 +102,7 @@ class EntityPartitionCrawlServiceTest {
         graph = mock(KnowledgeGraphService.class);
         maintenance = mock(GraphMaintenanceService.class);
         vectorStores = mock(ObjectProvider.class);
+        vectorStore = mock(VectorStore.class);
         when(vectorStores.getIfAvailable()).thenReturn(null);
     }
 
@@ -104,7 +112,7 @@ class EntityPartitionCrawlServiceTest {
 
     /** The same service with a vector index behind it. */
     private EntityPartitionCrawlService serviceWithIndex() {
-        when(vectorStores.getIfAvailable()).thenReturn(mock(VectorStore.class));
+        when(vectorStores.getIfAvailable()).thenReturn(vectorStore);
         return service();
     }
 
@@ -465,6 +473,19 @@ class EntityPartitionCrawlServiceTest {
         }
 
         @Test
+        void groupedRequestsCarrySearchableEntityNamesInsteadOfTheSyntheticGroupId() {
+            factSheetOfThree();
+
+            PartitionRequest pair = service().groupedRequests(FACT_SHEET).stream()
+                    .filter(PartitionRequest::isGrouped).findFirst().orElseThrow();
+
+            assertTrue(pair.identifiers().containsAll(List.of("acme", "bob")),
+                    "retrieval needs the labels of every grouped member: " + pair.identifiers());
+            assertFalse(pair.identifiers().contains(pair.subject()),
+                    "the hashed group id is routing identity, not a semantic query");
+        }
+
+        @Test
         void everyGroupedRequestRecordsTheGroupingThatChoseIt() {
             factSheetOfThree();
             service().groupedRequests(FACT_SHEET).forEach(request ->
@@ -519,6 +540,25 @@ class EntityPartitionCrawlServiceTest {
         }
 
         @Test
+        void semanticDiscoveryQueriesTheGroupsRealIdentifiers() {
+            PartitionRequest request = PartitionRequest.forGroup(PAIR, GroupingPolicy.defaults(),
+                            FACT_SHEET)
+                    .withIdentifiers(List.of("Acme Corporation", "ACME", "Beta Ltd"))
+                    .withPolicy(DiscoveryPolicy.defaults().withChannels("semantic-only",
+                            DiscoveryChannel.SEMANTIC));
+            when(vectorStore.similaritySearchWithScores(anyString(), anyInt(), anyDouble()))
+                    .thenReturn(List.of());
+            DiscoveryChannelProvider semantic = serviceWithIndex().providersFor(request).stream()
+                    .filter(provider -> provider.channel() == DiscoveryChannel.SEMANTIC)
+                    .findFirst().orElseThrow();
+
+            semantic.discover(EntityPartition.open(request.key()), 1, 20);
+
+            verify(vectorStore).similaritySearchWithScores(
+                    eq("Acme Corporation ACME Beta Ltd"), eq(20), anyDouble());
+        }
+
+        @Test
         void aRunPartitionRecordsWhoItWasAboutAndHowItWasGrouped() {
             graphAboutAcme();
             PartitionRequest request =
@@ -550,6 +590,79 @@ class EntityPartitionCrawlServiceTest {
             assertNull(saved.pins().get(PartitionSubjects.SUBJECTS_PIN),
                     "a pin repeating the key is a second answer to a question the key answers");
             assertEquals(List.of("acme"), PartitionSubjects.resolve(saved));
+        }
+    }
+
+    @Nested
+    @DisplayName("Incremental graph context")
+    class IncrementalGraphContext {
+
+        @Test
+        void materializesPersistedEntitiesAndOnlyEdgesWhoseEndpointsAreAvailable() {
+            when(graph.getNodesByTypeInFactSheet(FACT_SHEET, NodeLevel.ENTITY)).thenReturn(List.of(
+                    node("entity_acme", "acme", "c1"),
+                    node("entity_bob", "bob", "c2")));
+            when(graph.getEdgesInFactSheet(FACT_SHEET)).thenReturn(List.of(
+                    edge("kept", "entity_acme", "entity_bob", "employs", "c3"),
+                    edge("dangling", "entity_acme", "missing", "mentions", "c4")));
+
+            Graph current = service().currentGraph(FACT_SHEET);
+
+            assertEquals("fact-sheet:11:live", current.getId());
+            assertEquals(List.of("acme", "bob"), current.getEntities().stream()
+                    .map(Entity::getTitle).toList());
+            assertEquals(1, current.getRelationships().size());
+            assertEquals("employs", current.getRelationships().get(0).getType());
+        }
+
+        @Test
+        void preservesTypedInferenceAndEmbeddingEvidenceWithoutCopyingRawVectors() {
+            GraphEdge inferred = edge("reasoned", "entity_acme", "entity_bob", "controls", null);
+            inferred.setConfidence(0.91);
+            inferred.setProvenance("inference:run-7");
+            inferred.setProvenanceType(EdgeProvenance.INFERRED);
+            inferred.setMetadataJson("{\"inferenceRunId\":\"run-7\","
+                    + "\"inferenceVersion\":\"fol-v2\","
+                    + "\"supportingRuleIds\":[\"rule:control\"]}");
+            inferred.setSimilarityScore(0.84);
+            inferred.setKgEmbeddingAlgorithm(KGEmbeddingAlgorithm.TRANSE);
+            inferred.setKgEmbeddingVersion(12L);
+            when(graph.getNodesByTypeInFactSheet(FACT_SHEET, NodeLevel.ENTITY)).thenReturn(List.of(
+                    node("entity_acme", "acme", "c1"),
+                    node("entity_bob", "bob", "c2")));
+            when(graph.getEdgesInFactSheet(FACT_SHEET)).thenReturn(List.of(inferred));
+
+            Relationship relationship = service().currentGraph(FACT_SHEET).getRelationships().get(0);
+
+            assertEquals("INFERRED", relationship.getMetadata().get("provenanceType"));
+            assertEquals("inference:run-7", relationship.getMetadata().get("provenance"));
+            assertEquals("run-7", relationship.getMetadata().get("inferenceRunId"));
+            assertEquals(List.of("rule:control"), relationship.getMetadata().get("supportingRuleIds"));
+            assertEquals("TRANSE", relationship.getMetadata().get("kgEmbeddingAlgorithm"));
+            assertEquals(12L, relationship.getMetadata().get("kgEmbeddingVersion"));
+            assertEquals(0.84, relationship.getMetadata().get("similarityScore"));
+            assertFalse(relationship.getMetadata().containsKey("kgRelationEmbedding"),
+                    "raw embedding vectors must never enter model-facing graph context");
+        }
+
+        @Test
+        void preservesSourceNativeEntityTypesAndAliasesForModelCandidates() {
+            GraphNode person = GraphNode.builder()
+                    .nodeId("person-sarah")
+                    .externalId("person:sarah@example.com")
+                    .title("Sarah Chen")
+                    .nodeType(NodeLevel.ENTITY)
+                    .metadataJson("{\"entity_type\":\"PERSON\",\"aliases\":[\"sarah@example.com\"]}")
+                    .build();
+            when(graph.getNodesByTypeInFactSheet(FACT_SHEET, NodeLevel.ENTITY))
+                    .thenReturn(List.of(person));
+            when(graph.getEdgesInFactSheet(FACT_SHEET)).thenReturn(List.of());
+
+            Graph current = service().currentGraph(FACT_SHEET);
+
+            assertEquals("PERSON", current.getEntities().get(0).getType());
+            assertTrue(current.getEntities().get(0).getAliases().contains("sarah@example.com"));
+            assertEquals("PERSON", current.getEntities().get(0).getMetadata().get("entity_type"));
         }
     }
 

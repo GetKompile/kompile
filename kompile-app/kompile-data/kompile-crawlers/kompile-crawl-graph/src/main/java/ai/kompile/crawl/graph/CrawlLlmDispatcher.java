@@ -68,6 +68,25 @@ class CrawlLlmDispatcher {
     private final ConcurrentHashMap<String, CircuitBreaker> circuitBreakers = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
+    /**
+     * Observability-only identity for a decomposed call. It is deliberately separate from
+     * {@code taskType}: backend capability matching must continue to see the canonical "llm" lane.
+     */
+    record LlmCallScope(
+            String phase,
+            String passId,
+            int passInvocation,
+            String taskId,
+            String partitionId,
+            String chunkId,
+            String corpusSnapshotId,
+            String graphRevision,
+            int graphEntities,
+            int graphRelationships) {
+    }
+
+    private final ThreadLocal<LlmCallScope> activeCallScope = new ThreadLocal<>();
+
     // Shared single-thread executor for wrapping blocking LLM calls with timeouts.
     // Using a cached pool so threads are created on demand and reclaimed after idle.
     private final ExecutorService llmTimeoutExecutor = Executors.newCachedThreadPool(r -> {
@@ -180,6 +199,30 @@ class CrawlLlmDispatcher {
     }
 
     // ---- Main dispatch method ----
+
+    /**
+     * Dispatch with decomposed-pass observability while keeping the routing task type unchanged.
+     * The scope is restored in a finally block so pooled crawl threads cannot leak one chunk's
+     * partition/pass identity into the next call.
+     */
+    String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job,
+                                      LlmCallScope scope) {
+        LlmCallScope previous = activeCallScope.get();
+        if (scope == null) {
+            activeCallScope.remove();
+        } else {
+            activeCallScope.set(scope);
+        }
+        try {
+            return promptWithCapacityFallback(prompt, taskType, job);
+        } finally {
+            if (previous == null) {
+                activeCallScope.remove();
+            } else {
+                activeCallScope.set(previous);
+            }
+        }
+    }
 
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job) {
         ProcessingRouteConfig routeConfig = job.getRequest().getProcessingRoute();
@@ -710,10 +753,21 @@ class CrawlLlmDispatcher {
         String truncatedError = errorMessage != null && errorMessage.length() > 200
                 ? errorMessage.substring(0, 200) : errorMessage;
 
+        LlmCallScope scope = activeCallScope.get();
         UnifiedCrawlJob.LlmCallRecord record = UnifiedCrawlJob.LlmCallRecord.builder()
                 .timestamp(Instant.now())
                 .backendId(backendId)
                 .taskType(taskType)
+                .phase(scope != null ? scope.phase() : null)
+                .passId(scope != null ? scope.passId() : null)
+                .passInvocation(scope != null ? scope.passInvocation() : 0)
+                .taskId(scope != null ? scope.taskId() : null)
+                .partitionId(scope != null ? scope.partitionId() : null)
+                .chunkId(scope != null ? scope.chunkId() : null)
+                .corpusSnapshotId(scope != null ? scope.corpusSnapshotId() : null)
+                .graphRevision(scope != null ? scope.graphRevision() : null)
+                .graphEntities(scope != null ? scope.graphEntities() : 0)
+                .graphRelationships(scope != null ? scope.graphRelationships() : 0)
                 .latencyMs(latencyMs)
                 .inputTokens(inputTokens)
                 .outputTokens(outputTokens)
@@ -734,7 +788,7 @@ class CrawlLlmDispatcher {
         if (transcriptLogger != null) {
             try {
                 transcriptLogger.logTranscript(
-                        job.getJobId(), backendId, taskType,
+                        job.getJobId(), backendId, transcriptTaskType(taskType, scope),
                         prompt, response, latencyMs, success, truncatedError,
                         AgentCallContext.getSessionId());
             } catch (Exception e) {
@@ -742,6 +796,16 @@ class CrawlLlmDispatcher {
                         job.getJobId(), e.getMessage());
             }
         }
+    }
+
+    private static String transcriptTaskType(String taskType, LlmCallScope scope) {
+        String base = taskType == null || taskType.isBlank() ? "llm" : taskType;
+        if (scope == null || scope.phase() == null || scope.phase().isBlank()
+                || scope.passId() == null || scope.passId().isBlank()) {
+            return base;
+        }
+        String invocation = scope.passInvocation() > 0 ? "#" + scope.passInvocation() : "";
+        return base + "/" + scope.phase() + "/" + scope.passId() + invocation;
     }
 
     // ---- CLI agent dispatch ----

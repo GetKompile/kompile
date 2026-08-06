@@ -541,17 +541,28 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
         }
 
         try {
+            ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.DENSE_ENCODER;
             Path verifiedDir = stagingDir.resolve("verified").resolve(modelId);
-            if (!Files.exists(verifiedDir)) {
-                log.error("Verified directory not found for model {}", modelId);
+            Path productionDir = modelsDir.resolve(type.getDirectoryName()).resolve(modelId);
+            boolean movePending = Files.isDirectory(verifiedDir);
+            Path artifactDir;
+            if (movePending) {
+                artifactDir = verifiedDir;
+            } else if (Files.isDirectory(productionDir)) {
+                // Promotion may have failed after the verified bundle was moved but before the
+                // registry commit. Resume from that production bundle instead of stranding a
+                // multi-gigabyte model in an unregistered state.
+                log.warn("Verified directory missing for {}; resuming promotion from {}",
+                        modelId, productionDir);
+                artifactDir = productionDir;
+            } else {
+                log.error("Neither verified nor recoverable production directory found for model {}", modelId);
                 return false;
             }
 
-            // Create production directory
-            ModelType type = info.getType() instanceof ModelType ? (ModelType) info.getType() : ModelType.DENSE_ENCODER;
             AudioSynthesisConfig audioSynthesis = null;
             if (type == ModelType.AUDIO_SYNTHESIS) {
-                Path audioConfigPath = verifiedDir.resolve(AUDIO_SYNTHESIS_CONFIG_FILE);
+                Path audioConfigPath = artifactDir.resolve(AUDIO_SYNTHESIS_CONFIG_FILE);
                 if (!Files.isRegularFile(audioConfigPath, LinkOption.NOFOLLOW_LINKS)
                         || Files.isSymbolicLink(audioConfigPath)) {
                     log.error("Verified audio synthesis configuration is missing for {}", modelId);
@@ -560,16 +571,11 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 audioSynthesis = objectMapper.readValue(
                         audioConfigPath.toFile(), AudioSynthesisConfig.class);
             }
-            Path productionDir = modelsDir.resolve(type.getDirectoryName()).resolve(modelId);
-            Files.createDirectories(productionDir);
-
-            // Move files
-            moveDirectory(verifiedDir, productionDir);
 
             // Find model and vocab files using shard-aware helpers
-            Path modelFile = findModelFile(productionDir);
-            Path vocabFile = findVocabFile(productionDir);
-            boolean sharded = isShardedModel(productionDir);
+            Path modelFile = findModelFile(artifactDir);
+            Path vocabFile = findVocabFile(artifactDir);
+            boolean sharded = isShardedModel(artifactDir);
 
             // For sharded models, the logical base name is "model.sdnb" and we also
             // create a 0-byte marker file so SameDiff.load() can discover the shards.
@@ -577,7 +583,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             if (sharded) {
                 modelFileName = "model.sdnb";
                 // Create 0-byte marker if not already present
-                Path marker = productionDir.resolve("model.sdnb");
+                Path marker = artifactDir.resolve("model.sdnb");
                 if (!Files.exists(marker)) {
                     Files.createFile(marker);
                 } else {
@@ -599,7 +605,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 String cName = checksumTarget.getFileName().toString();
                 // If findModelFile returned a shard file, use it; if it returned the marker, find shard0
                 if (!cName.contains(".shard")) {
-                    try (DirectoryStream<Path> ds = Files.newDirectoryStream(productionDir)) {
+                    try (DirectoryStream<Path> ds = Files.newDirectoryStream(artifactDir)) {
                         for (Path p : ds) {
                             if (p.getFileName().toString().contains(".shard0-of-")) {
                                 checksumTarget = p;
@@ -616,11 +622,11 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 metadata = ModelMetadata.builder().build();
             }
             if (type.isVlm()) {
-                probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
+                probeVisionEncoderIOConfig(artifactDir, modelFile, metadata);
             }
             if (type.isLlm()
                     && (metadata.getMaxSequenceLength() == null || metadata.getMaxSequenceLength() <= 0)) {
-                enrichLlmContextFromGguf(productionDir, modelFile, metadata);
+                enrichLlmContextFromGguf(artifactDir, modelFile, metadata);
             }
 
             // Use LLM-style tokenizer config for LLM models (no BERT lowercasing)
@@ -634,6 +640,12 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                             .truncation(true)
                             .build()
                     : TokenizerConfig.defaultBertConfig();
+
+            // All potentially expensive validation and hashing happens before the move. If a
+            // later registry write fails, the next promotion request resumes from production.
+            if (movePending) {
+                moveDirectory(verifiedDir, productionDir);
+            }
 
             // Create registry entry
             ModelEntry entry = ModelEntry.builder()
@@ -2013,13 +2025,28 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
 
     private StagingModelInfo findStagedModel(String modelId) {
         Path verifiedDir = workspace("verified", modelId);
-        if (!Files.exists(verifiedDir)) {
-            return null;
+        Path artifactDir = verifiedDir;
+        ModelType inferredType = ModelType.DENSE_ENCODER;
+        if (!Files.isDirectory(artifactDir)) {
+            artifactDir = null;
+            for (ModelType candidateType : ModelType.values()) {
+                Path candidate = modelsDir
+                        .resolve(candidateType.getDirectoryName())
+                        .resolve(modelId);
+                if (Files.isDirectory(candidate)) {
+                    artifactDir = candidate;
+                    inferredType = candidateType;
+                    break;
+                }
+            }
+            if (artifactDir == null) {
+                return null;
+            }
+            log.warn("Recovered unregistered promotion candidate {} from {}", modelId, artifactDir);
         }
 
-        // Infer model type by inspecting artefacts in the verified directory
-        ModelType inferredType = ModelType.DENSE_ENCODER;
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(verifiedDir)) {
+        // Infer model type by inspecting artefacts in the verified or recoverable production directory.
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(artifactDir)) {
             for (Path p : stream) {
                 String fname = p.getFileName().toString().toLowerCase();
                 if (fname.endsWith(".gguf") || fname.endsWith(".ggml")) {
@@ -2036,7 +2063,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 }
             }
         } catch (IOException e) {
-            log.warn("Could not inspect verified dir {} for type inference", verifiedDir, e);
+            log.warn("Could not inspect staged artifact dir {} for type inference", artifactDir, e);
         }
 
         StagingModelInfo info = new StagingModelInfo();
@@ -2110,13 +2137,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     private String calculateChecksum(Path file) {
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] bytes = Files.readAllBytes(file);
-            byte[] hash = md.digest(bytes);
-            StringBuilder sb = new StringBuilder("sha256:");
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
+            byte[] buffer = new byte[1024 * 1024];
+            try (var input = new java.io.BufferedInputStream(Files.newInputStream(file), buffer.length)) {
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    md.update(buffer, 0, read);
+                }
             }
-            return sb.toString();
+            return "sha256:" + HexFormat.of().formatHex(md.digest());
         } catch (Exception e) {
             log.warn("Failed to calculate checksum for {}", file, e);
             return null;

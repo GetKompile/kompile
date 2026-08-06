@@ -44,6 +44,24 @@ export interface RestoreResult {
   error?: string;
 }
 
+/** UI-managed Model Staging settings persisted by the staging backend. */
+export interface StagingSettings {
+  callback_url: string | null;
+  auto_reload_enabled: boolean;
+  callback_timeout_ms: number;
+  optimizer_fp16_enabled: boolean;
+  optimizer_enabled: boolean;
+  optimizer_max_iterations: number;
+  optimizer_log_applied: boolean;
+  default_optimization_profile: string;
+  default_performance_profile: string;
+}
+
+export interface CallbackTestResult {
+  success: boolean;
+  message: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -61,6 +79,23 @@ export class StagingService {
     } else {
       this.baseUrl = '/api/staging';
     }
+  }
+
+  // ==================== Managed Configuration ====================
+
+  getSettings(): Observable<StagingSettings> {
+    return this.http.get<StagingSettings>(`${this.baseUrl}/settings`)
+      .pipe(catchError(this.handleError));
+  }
+
+  updateSettings(settings: StagingSettings): Observable<StagingSettings> {
+    return this.http.put<StagingSettings>(`${this.baseUrl}/settings`, settings)
+      .pipe(catchError(this.handleError));
+  }
+
+  testCallback(): Observable<CallbackTestResult> {
+    return this.http.post<CallbackTestResult>(`${this.baseUrl}/settings/test-callback`, {})
+      .pipe(catchError(this.handleError));
   }
 
   // ==================== Registry Operations ====================

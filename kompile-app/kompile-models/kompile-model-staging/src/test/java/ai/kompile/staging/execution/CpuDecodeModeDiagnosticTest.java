@@ -46,15 +46,21 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * produced, not only by whether the expected word appears.</p>
  *
  * <p>The modes are ordered cheapest-trust-first: {@code SLOT_BY_SLOT} runs op by op with no graph
- * backend and is the reference; {@code OPENVINO} forces the one backend the AUTO chain reaches
- * first; the {@code AUTO} cascade then adds OneDNN behind it; {@code CPU_CASCADE} additionally
- * freezes and merges DSP segments. Whichever step first turns sane text into repetition is the one
- * that corrupts the logits.</p>
+ * backend and is the reference; {@code OPENVINO} and {@code ONEDNN} each force one layer of the
+ * cascade on its own; the {@code AUTO} rows then run the real chain, with {@code CPU_CASCADE}
+ * additionally freezing and merging DSP segments. Whichever step first turns sane text into
+ * repetition is the one that corrupts the logits.</p>
  *
- * <p>The forced-OpenVINO row is what makes the AUTO rows readable. AUTO builds a chain and hands
- * each segment to the first backend that accepts it, so a wrong answer from AUTO names the chain,
- * not a member of it. OneDNN has no forced execution mode of its own — the native selector only
- * appends it under an auto-like mode — so it can only ever be observed as AUTO minus OpenVINO.</p>
+ * <p>The forced rows are what make the AUTO rows readable. AUTO builds a chain and hands each
+ * segment to the first backend that accepts it, so a wrong answer from AUTO names the chain, not a
+ * member of it. Both layers need their own row: OneDNN sits behind OpenVINO and only sees what
+ * OpenVINO declines, so on a model OpenVINO accepts whole it never executes under AUTO at all and
+ * a defect in it would stay hidden behind a working first layer.</p>
+ *
+ * <p>A forced row is a request, not a guarantee — the cascade still demotes a segment its one
+ * backend declines to slot-by-slot. Read the row together with the native
+ * {@code POST_EXEC ... segs(cpuGraph=N[name])} counter, which names the backend that actually ran;
+ * a forced row that reports {@code cpuGraph=0} ran native and attributes nothing.</p>
  *
  * <p>Opt-in like the other real-model harnesses (loading a multi-GB model is slow):
  * {@code mvn -o test -pl :kompile-model-staging -Dtest=CpuDecodeModeDiagnosticTest
@@ -100,6 +106,7 @@ class CpuDecodeModeDiagnosticTest {
         Map<String, Supplier<BenchmarkConfig>> modes = new LinkedHashMap<>();
         modes.put("SLOT_BY_SLOT (reference)", BenchmarkConfig::cpuSlotBySlot);
         modes.put("OPENVINO only (forced)", BenchmarkConfig::cpuOpenVino);
+        modes.put("ONEDNN only (forced)", BenchmarkConfig::cpuOneDnn);
         modes.put("AUTO cascade, no merge", BenchmarkConfig::cpuCascadeNoMerge);
         modes.put("AUTO cascade + freeze/merge", BenchmarkConfig::cpuCascade);
 

@@ -74,10 +74,14 @@
   "name":"ai.kompile.core.embeddings.EmbeddingModel",
   "queryAllDeclaredMethods":true,
   "queryAllPublicMethods":true,
-  "methods":[{"name":"embedBatch","parameterTypes":["java.util.List"] }, {"name":"getCurrentBatchInfo","parameterTypes":[] }, {"name":"getDimensions","parameterTypes":[] }, {"name":"getDspPlanBatchSize","parameterTypes":[] }, {"name":"getEmbeddingDimension","parameterTypes":[] }, {"name":"getLoadingElapsedMs","parameterTypes":[] }, {"name":"getLoadingMessage","parameterTypes":[] }, {"name":"getLoadingPhase","parameterTypes":[] }, {"name":"getMaxBatchSize","parameterTypes":[] }, {"name":"getModelName","parameterTypes":[] }, {"name":"getOptimalBatchSize","parameterTypes":[] }, {"name":"isLoading","parameterTypes":[] }, {"name":"isSingleDspPlan","parameterTypes":[] }]
+  "methods":[{"name":"canEmbed","parameterTypes":[] }, {"name":"close","parameterTypes":[] }, {"name":"embedBatch","parameterTypes":["java.util.List"] }, {"name":"getCurrentBatchInfo","parameterTypes":[] }, {"name":"getDimensions","parameterTypes":[] }, {"name":"getDspPlanBatchSize","parameterTypes":[] }, {"name":"getEmbeddingDimension","parameterTypes":[] }, {"name":"getInitializationError","parameterTypes":[] }, {"name":"getLoadingElapsedMs","parameterTypes":[] }, {"name":"getLoadingMessage","parameterTypes":[] }, {"name":"getLoadingPhase","parameterTypes":[] }, {"name":"getMaxBatchSize","parameterTypes":[] }, {"name":"getModelIdentifier","parameterTypes":[] }, {"name":"getModelName","parameterTypes":[] }, {"name":"getOptimalBatchSize","parameterTypes":[] }, {"name":"initializeIfNeeded","parameterTypes":[] }, {"name":"isInitialized","parameterTypes":[] }, {"name":"isLoading","parameterTypes":[] }, {"name":"isSingleDspPlan","parameterTypes":[] }]
 },
 {
-  "name":"ai.kompile.core.embeddings.NoOpEmbeddingModelImpl"
+  "name":"ai.kompile.core.embeddings.NoOpEmbeddingModelImpl",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"canEmbed","parameterTypes":[] }, {"name":"dimensions","parameterTypes":[] }, {"name":"embed","parameterTypes":["java.lang.String"] }, {"name":"embed","parameterTypes":["java.util.List"] }, {"name":"embedDocuments","parameterTypes":["java.util.List"] }]
 },
 {
   "name":"ai.kompile.core.embeddings.NoOpVectorStoreImpl"
@@ -154,6 +158,12 @@
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
   "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"cancelCurrentJob","parameterTypes":[] }, {"name":"deleteAll","parameterTypes":["java.lang.String"] }, {"name":"deleteDocuments","parameterTypes":["java.util.List","java.lang.String"] }, {"name":"getApproxTotalDocCount","parameterTypes":["java.lang.String"] }, {"name":"getIndexPath","parameterTypes":[] }, {"name":"getIndexedDocument","parameterTypes":["java.lang.String"] }, {"name":"getJobStatus","parameterTypes":[] }, {"name":"indexDirectory","parameterTypes":["java.nio.file.Path","java.lang.String","java.lang.String"] }, {"name":"indexDocuments","parameterTypes":["java.util.List"] }, {"name":"indexDocuments","parameterTypes":["java.util.List","java.lang.String"] }, {"name":"indexDocumentsWithEmbeddings","parameterTypes":["java.util.List","java.util.List"] }, {"name":"indexFile","parameterTypes":["java.nio.file.Path","java.lang.String","java.lang.String"] }, {"name":"indexFromLucene","parameterTypes":[] }, {"name":"isIndexAvailable","parameterTypes":[] }, {"name":"listIndexedDocuments","parameterTypes":["int","int"] }, {"name":"reprocessAndIndexAllSources","parameterTypes":[] }, {"name":"startVectorIndexCreationAsync","parameterTypes":[] }, {"name":"updateIndexedDocumentContent","parameterTypes":["java.lang.String","java.lang.String"] }]
+},
+{
+  "name":"ai.kompile.core.language.LanguageSupport",
+  "queryAllDeclaredMethods":true,
+  "queryAllPublicMethods":true,
+  "methods":[{"name":"getSupportedLanguages","parameterTypes":[] }, {"name":"supportsLanguage","parameterTypes":["java.lang.String"] }]
 },
 {
   "name":"ai.kompile.core.llm.ConversationalLanguageModel"
@@ -459,14 +469,14 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","ai.kompile.knowledgegraph.audit.PinGuard","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore"] }]
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","ai.kompile.knowledgegraph.audit.PinGuard","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore"] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","ai.kompile.knowledgegraph.audit.PinGuard","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore","ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.grounding.KbGroundingService",
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":["org.springframework.context.ApplicationEventPublisher"] }]
+  "methods":[{"name":"<init>","parameterTypes":["org.springframework.context.ApplicationEventPublisher"] }, {"name":"<init>","parameterTypes":["org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.grounding.LuceneGroundingFactory",
@@ -515,7 +525,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"cancelComputation","parameterTypes":[] }, {"name":"computeEmbeddingSimilarityEdges","parameterTypes":["double","int"] }, {"name":"computeEmbeddingSimilarityEdges","parameterTypes":["java.lang.Long","double","int"] }, {"name":"computeEmbeddingSimilarityEdgesForNode","parameterTypes":["java.lang.String","double"] }, {"name":"computeNameBasedCrossDocEdges","parameterTypes":["java.lang.Long"] }, {"name":"computeSharedEntityEdges","parameterTypes":["int"] }, {"name":"computeSharedEntityEdges","parameterTypes":["java.lang.Long","int"] }, {"name":"deleteAllComputedEdges","parameterTypes":[] }, {"name":"extractEntitiesForAllNodes","parameterTypes":[] }, {"name":"extractEntitiesForNode","parameterTypes":["java.lang.String"] }, {"name":"getComputationStatus","parameterTypes":[] }, {"name":"isComputationRunning","parameterTypes":[] }, {"name":"pruneWeakEdges","parameterTypes":["double","java.time.LocalDateTime"] }, {"name":"rebuildCrossDocEdges","parameterTypes":["java.lang.Long","boolean"] }, {"name":"recomputeAllEdges","parameterTypes":[] }, {"name":"updateSimilarityEdgesIncremental","parameterTypes":["java.util.List","double"] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"backfillDocumentNodeEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"cancelComputation","parameterTypes":[] }, {"name":"computeEmbeddingSimilarityEdges","parameterTypes":["double","int"] }, {"name":"computeEmbeddingSimilarityEdges","parameterTypes":["java.lang.Long","double","int"] }, {"name":"computeEmbeddingSimilarityEdgesForNode","parameterTypes":["java.lang.String","double"] }, {"name":"computeNameBasedCrossDocEdges","parameterTypes":["java.lang.Long"] }, {"name":"computeSharedEntityEdges","parameterTypes":["int"] }, {"name":"computeSharedEntityEdges","parameterTypes":["java.lang.Long","int"] }, {"name":"deleteAllComputedEdges","parameterTypes":[] }, {"name":"extractEntitiesForAllNodes","parameterTypes":[] }, {"name":"extractEntitiesForNode","parameterTypes":["java.lang.String"] }, {"name":"getComputationStatus","parameterTypes":[] }, {"name":"isComputationRunning","parameterTypes":[] }, {"name":"pruneWeakEdges","parameterTypes":["double","java.time.LocalDateTime"] }, {"name":"rebuildCrossDocEdges","parameterTypes":["java.lang.Long","boolean"] }, {"name":"recomputeAllEdges","parameterTypes":[] }, {"name":"updateSimilarityEdgesIncremental","parameterTypes":["java.util.List","double"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.impl.InMemoryNamedGraphStore",
@@ -536,7 +546,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore","ai.kompile.knowledgegraph.neural.NeuralScoreProvider"] }]
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore","ai.kompile.knowledgegraph.neural.NeuralScoreProvider"] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.service.KnowledgeGraphService"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.matrix.service.CommunitySummaryService",
@@ -564,7 +574,14 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"addDocument","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map","java.lang.Long"] }, {"name":"applyNodeEmbeddings","parameterTypes":["java.util.Map"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"clearKgEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"computeNodeRelevance","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"countActiveNodes","parameterTypes":["java.lang.Long"] }, {"name":"countEntityNodesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"countNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"countNodesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"createDocumentNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createEdge","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","java.lang.String"] }, {"name":"createEdge","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"createEdgeWithMetadata","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","java.lang.String","java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeProvenance","java.lang.Long"] }, {"name":"createEdgesBatch","parameterTypes":["java.util.List"] }, {"name":"createNode","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createNode","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.String","java.lang.String","java.lang.String","java.util.Map","java.lang.Long"] }, {"name":"createNodesBatch","parameterTypes":["java.util.List","java.lang.Long"] }, {"name":"createOrUpdateSourceNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createSnippetNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","int"] }, {"name":"createSnippetNodesBatch","parameterTypes":["java.util.List"] }, {"name":"deleteByFactSheetId","parameterTypes":["java.lang.Long"] }, {"name":"deleteEdge","parameterTypes":["java.lang.String"] }, {"name":"deleteNode","parameterTypes":["java.lang.String"] }, {"name":"edgeExists","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"edgeExists","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.String","java.lang.Long"] }, {"name":"edgeExistsInFactSheet","parameterTypes":["java.lang.String","java.lang.String","java.lang.Long"] }, {"name":"expandNeighborhoodVisualization","parameterTypes":["java.lang.String","int","java.util.List"] }, {"name":"exportNodeEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"findActiveEdgeIds","parameterTypes":["java.lang.Long"] }, {"name":"findEdgeBetweenNodes","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"findEntityMention","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String"] }, {"name":"findEntityMentionInFactSheet","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.Long"] }, {"name":"findLowConfidenceEdgeIds","parameterTypes":["java.lang.Long","double"] }, {"name":"findLowConfidenceNodeIds","parameterTypes":["java.lang.Long","double"] }, {"name":"findNodePairsWithSharedEntities","parameterTypes":["int"] }, {"name":"findNodePairsWithSharedEntitiesInFactSheet","parameterTypes":["java.lang.Long","int"] }, {"name":"findNodesWithKgEmbedding","parameterTypes":["java.lang.Long"] }, {"name":"findOrphanNodeIds","parameterTypes":["java.lang.Long","java.util.Set"] }, {"name":"findRelatedNodes","parameterTypes":["java.lang.String","int"] }, {"name":"flushPendingNodes","parameterTypes":[] }, {"name":"getAllNodes","parameterTypes":["int"] }, {"name":"getAllSources","parameterTypes":[] }, {"name":"getChildren","parameterTypes":["java.lang.String"] }, {"name":"getConnectedNodes","parameterTypes":["java.lang.String","int"] }, {"name":"getEdge","parameterTypes":["java.lang.String"] }, {"name":"getEdgeTypeKgEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"getEdgesByType","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType"] }, {"name":"getEdgesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.EdgeType"] }, {"name":"getEdgesForNode","parameterTypes":["java.lang.String"] }, {"name":"getEdgesForNodeInFactSheet","parameterTypes":["java.lang.String","java.lang.Long"] }, {"name":"getEdgesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getEntityMentionsForNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode"] }, {"name":"getEntityMentionsForNode","parameterTypes":["java.lang.String"] }, {"name":"getEntityNamesForNode","parameterTypes":["java.lang.String"] }, {"name":"getEntityNodesInFactSheetPage","parameterTypes":["java.lang.Long","int","int"] }, {"name":"getFactSheetIdsWithGraphs","parameterTypes":[] }, {"name":"getGraphStatistics","parameterTypes":[] }, {"name":"getNode","parameterTypes":["java.lang.String"] }, {"name":"getNodeByExternalId","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodeByExternalIdInFactSheet","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.Long"] }, {"name":"getNodeKgEmbedding","parameterTypes":["java.lang.String"] }, {"name":"getNodesByIds","parameterTypes":["java.util.List"] }, {"name":"getNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"getNodesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getNodesWithEntity","parameterTypes":["java.lang.String"] }, {"name":"getSourcesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getStoredKgAlgorithm","parameterTypes":["java.lang.Long"] }, {"name":"getTemporalBounds","parameterTypes":[] }, {"name":"getTopKVisualizationData","parameterTypes":["java.lang.Long","int","java.lang.String"] }, {"name":"getVisualizationData","parameterTypes":["java.lang.String","int","int"] }, {"name":"hardDeleteStaleNodes","parameterTypes":["java.lang.Long","java.time.Duration"] }, {"name":"pruneEdges","parameterTypes":["java.util.Collection","boolean","boolean"] }, {"name":"pruneNodes","parameterTypes":["java.util.Collection","boolean","java.time.Duration","boolean"] }, {"name":"saveEntityMention","parameterTypes":["ai.kompile.knowledgegraph.domain.EntityMention"] }, {"name":"searchEdges","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","int"] }, {"name":"searchEdgesByTimeRange","parameterTypes":["java.time.LocalDateTime","java.time.LocalDateTime","int"] }, {"name":"searchNodes","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"searchNodesInFactSheet","parameterTypes":["java.lang.Long","java.lang.String","int"] }, {"name":"storeEdgeTypeKgEmbedding","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","ai.kompile.core.kgembedding.KGEmbeddingAlgorithm","java.lang.Long","java.lang.Long"] }, {"name":"storeNodeKgEmbedding","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","ai.kompile.core.kgembedding.KGEmbeddingAlgorithm","java.lang.Long","java.time.Instant"] }, {"name":"updateEdge","parameterTypes":["java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"updateEdgeMetadataBatch","parameterTypes":["java.util.List"] }, {"name":"updateNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"updateNodeKgeMetadataBatch","parameterTypes":["java.util.List"] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"addDocument","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map","java.lang.Long"] }, {"name":"applyNodeEmbeddings","parameterTypes":["java.util.Map"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"clearKgEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"computeNodeRelevance","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"countActiveNodes","parameterTypes":["java.lang.Long"] }, {"name":"countEntityNodesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"countNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"countNodesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"createDocumentNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createEdge","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","java.lang.String"] }, {"name":"createEdge","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"createEdgeWithMetadata","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","java.lang.String","java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeProvenance","java.lang.Long"] }, {"name":"createEdgesBatch","parameterTypes":["java.util.List"] }, {"name":"createNode","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createNode","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.String","java.lang.String","java.lang.String","java.util.Map","java.lang.Long"] }, {"name":"createNodesBatch","parameterTypes":["java.util.List","java.lang.Long"] }, {"name":"createOrUpdateSourceNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"createSnippetNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","int"] }, {"name":"createSnippetNodesBatch","parameterTypes":["java.util.List"] }, {"name":"deleteByFactSheetId","parameterTypes":["java.lang.Long"] }, {"name":"deleteEdge","parameterTypes":["java.lang.String"] }, {"name":"deleteNode","parameterTypes":["java.lang.String"] }, {"name":"edgeExists","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"edgeExists","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.String","java.lang.Long"] }, {"name":"edgeExistsInFactSheet","parameterTypes":["java.lang.String","java.lang.String","java.lang.Long"] }, {"name":"expandNeighborhoodVisualization","parameterTypes":["java.lang.String","int","java.util.List"] }, {"name":"exportNodeEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"findActiveEdgeIds","parameterTypes":["java.lang.Long"] }, {"name":"findEdgeBetweenNodes","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"findEntityMention","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String"] }, {"name":"findEntityMentionInFactSheet","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.Long"] }, {"name":"findLowConfidenceEdgeIds","parameterTypes":["java.lang.Long","double"] }, {"name":"findLowConfidenceNodeIds","parameterTypes":["java.lang.Long","double"] }, {"name":"findNodePairsWithSharedEntities","parameterTypes":["int"] }, {"name":"findNodePairsWithSharedEntitiesInFactSheet","parameterTypes":["java.lang.Long","int"] }, {"name":"findNodesWithKgEmbedding","parameterTypes":["java.lang.Long"] }, {"name":"findOrphanNodeIds","parameterTypes":["java.lang.Long","java.util.Set"] }, {"name":"findRelatedNodes","parameterTypes":["java.lang.String","int"] }, {"name":"flushPendingNodes","parameterTypes":[] }, {"name":"getAllNodes","parameterTypes":["int"] }, {"name":"getAllSources","parameterTypes":[] }, {"name":"getChildren","parameterTypes":["java.lang.String"] }, {"name":"getConnectedNodes","parameterTypes":["java.lang.String","int"] }, {"name":"getEdge","parameterTypes":["java.lang.String"] }, {"name":"getEdgeTypeKgEmbeddings","parameterTypes":["java.lang.Long"] }, {"name":"getEdgesByType","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType"] }, {"name":"getEdgesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.EdgeType"] }, {"name":"getEdgesForNode","parameterTypes":["java.lang.String"] }, {"name":"getEdgesForNodeInFactSheet","parameterTypes":["java.lang.String","java.lang.Long"] }, {"name":"getEdgesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getEdgesInFactSheetPage","parameterTypes":["java.lang.Long","int","int"] }, {"name":"getEntityMentionsForNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode"] }, {"name":"getEntityMentionsForNode","parameterTypes":["java.lang.String"] }, {"name":"getEntityNamesForNode","parameterTypes":["java.lang.String"] }, {"name":"getEntityNodesInFactSheetPage","parameterTypes":["java.lang.Long","int","int"] }, {"name":"getFactSheetIdsWithGraphs","parameterTypes":[] }, {"name":"getGraphStatistics","parameterTypes":[] }, {"name":"getNode","parameterTypes":["java.lang.String"] }, {"name":"getNodeByExternalId","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodeByExternalIdInFactSheet","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.Long"] }, {"name":"getNodeKgEmbedding","parameterTypes":["java.lang.String"] }, {"name":"getNodesByIds","parameterTypes":["java.util.List"] }, {"name":"getNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"getNodesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.NodeLevel"] }, {"name":"getNodesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getNodesInFactSheetPage","parameterTypes":["java.lang.Long","int","int"] }, {"name":"getNodesWithEntity","parameterTypes":["java.lang.String"] }, {"name":"getSourcesInFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"getStoredKgAlgorithm","parameterTypes":["java.lang.Long"] }, {"name":"getTemporalBounds","parameterTypes":[] }, {"name":"getTopKVisualizationData","parameterTypes":["java.lang.Long","int","java.lang.String"] }, {"name":"getVisualizationData","parameterTypes":["java.lang.String","int","int"] }, {"name":"hardDeleteStaleNodes","parameterTypes":["java.lang.Long","java.time.Duration"] }, {"name":"pruneEdges","parameterTypes":["java.util.Collection","boolean","boolean"] }, {"name":"pruneNodes","parameterTypes":["java.util.Collection","boolean","java.time.Duration","boolean"] }, {"name":"saveEntityMention","parameterTypes":["ai.kompile.knowledgegraph.domain.EntityMention"] }, {"name":"searchEdges","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","int"] }, {"name":"searchEdgesByTimeRange","parameterTypes":["java.time.LocalDateTime","java.time.LocalDateTime","int"] }, {"name":"searchNodes","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"searchNodesInFactSheet","parameterTypes":["java.lang.Long","java.lang.String","int"] }, {"name":"storeEdgeTypeKgEmbedding","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","ai.kompile.core.kgembedding.KGEmbeddingAlgorithm","java.lang.Long","java.lang.Long"] }, {"name":"storeNodeKgEmbedding","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","ai.kompile.core.kgembedding.KGEmbeddingAlgorithm","java.lang.Long","java.time.Instant"] }, {"name":"updateEdge","parameterTypes":["java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"updateEdgeMetadataBatch","parameterTypes":["java.util.List"] }, {"name":"updateNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"updateNodeKgeMetadataBatch","parameterTypes":["java.util.List"] }]
+},
+{
+  "name":"ai.kompile.knowledgegraph.matrix.store.GraphRehydrationListener",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore",
@@ -576,7 +593,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean"] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean","java.lang.String"] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean","java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"addEdgesBatch","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"addNode","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }, {"name":"addNodesBatch","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"createGraph","parameterTypes":["java.lang.String","java.lang.Long"] }, {"name":"deleteGraph","parameterTypes":["java.lang.String"] }, {"name":"findSimilarNodes","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"flush","parameterTypes":[] }, {"name":"getAllNodes","parameterTypes":["java.lang.String"] }, {"name":"getEdges","parameterTypes":["java.lang.String","java.lang.String","java.lang.String"] }, {"name":"getGraphStatistics","parameterTypes":["java.lang.String"] }, {"name":"getLoadedGraphIds","parameterTypes":[] }, {"name":"getNode","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"getNodeEmbeddings","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"hasEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String"] }, {"name":"listGraphs","parameterTypes":[] }, {"name":"listGraphsByFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"loadGraph","parameterTypes":["java.lang.String"] }, {"name":"mergeEdgeMetadata","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"removeEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String"] }, {"name":"removeNode","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"saveGraph","parameterTypes":["ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph"] }, {"name":"searchNodes","parameterTypes":["java.lang.String","java.lang.String","int"] }, {"name":"storeNodeEmbeddings","parameterTypes":["java.lang.String","java.util.List","org.nd4j.linalg.api.ndarray.INDArray"] }, {"name":"updateNode","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }, {"name":"updateNodeMetadata","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean"] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean","java.lang.String"] }, {"name":"addEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","double","java.lang.String","boolean","java.lang.String","java.lang.Double","java.lang.String"] }, {"name":"addEdgesBatch","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"addNode","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }, {"name":"addNodesBatch","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"createGraph","parameterTypes":["java.lang.String","java.lang.Long"] }, {"name":"deleteGraph","parameterTypes":["java.lang.String"] }, {"name":"findSimilarNodes","parameterTypes":["java.lang.String","org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"flush","parameterTypes":[] }, {"name":"getAllNodes","parameterTypes":["java.lang.String"] }, {"name":"getEdges","parameterTypes":["java.lang.String","java.lang.String","java.lang.String"] }, {"name":"getGraphStatistics","parameterTypes":["java.lang.String"] }, {"name":"getLoadedGraphIds","parameterTypes":[] }, {"name":"getNode","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"getNodeEmbeddings","parameterTypes":["java.lang.String","java.util.List"] }, {"name":"hasEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String"] }, {"name":"listGraphs","parameterTypes":[] }, {"name":"listGraphsByFactSheet","parameterTypes":["java.lang.Long"] }, {"name":"loadGraph","parameterTypes":["java.lang.String"] }, {"name":"mergeEdgeMetadata","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.util.Map"] }, {"name":"removeEdge","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String"] }, {"name":"removeNode","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"saveGraph","parameterTypes":["ai.kompile.knowledgegraph.matrix.model.AdjacencyMatrixGraph"] }, {"name":"scanEdges","parameterTypes":["java.lang.String","int","int"] }, {"name":"scanNodes","parameterTypes":["java.lang.String","int","int"] }, {"name":"searchNodes","parameterTypes":["java.lang.String","java.lang.String","int"] }, {"name":"storeNodeEmbeddings","parameterTypes":["java.lang.String","java.util.List","org.nd4j.linalg.api.ndarray.INDArray"] }, {"name":"updateNode","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }, {"name":"updateNodeMetadata","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.matrix.model.MatrixGraphNode"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.neural.NeuralScoreProvider",
@@ -595,7 +612,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.service.KnowledgeGraphService"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.reasoning.CommunitySummaryService",
@@ -637,7 +654,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector","ai.kompile.knowledgegraph.audit.PinGuard","ai.kompile.knowledgegraph.grounding.KbCorrectionService","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore","ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter","ai.kompile.knowledgegraph.grounding.LuceneGroundingFactory"] }]
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector","ai.kompile.knowledgegraph.audit.PinGuard","ai.kompile.knowledgegraph.grounding.KbCorrectionService","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore","ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter","ai.kompile.knowledgegraph.grounding.LuceneGroundingFactory"] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.grounding.KbGroundingService","org.springframework.context.ApplicationEventPublisher","ai.kompile.knowledgegraph.reasoning.GraphToFactStoreProjector","ai.kompile.knowledgegraph.audit.PinGuard","ai.kompile.knowledgegraph.grounding.KbCorrectionService","ai.kompile.knowledgegraph.persistence.FileBackedWeightStore","ai.kompile.knowledgegraph.persistence.MebnWeightPersistenceAdapter","ai.kompile.knowledgegraph.persistence.dual.DualStoreGroundingFactory"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.reasoning.InferredFactGraphMaterializer",
@@ -770,25 +787,53 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.service.KnowledgeGraphService"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.service.HierarchicalAggregationService",
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }]
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.service.KnowledgeGraphService"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.service.KnowledgeGraphService",
   "queryAllDeclaredMethods":true,
   "queryAllPublicMethods":true,
-  "methods":[{"name":"createSnippetNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","int","java.util.Map"] }, {"name":"createTableNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","int","int","java.util.List","java.lang.String","java.util.Map"] }, {"name":"deleteEdgesBulk","parameterTypes":["java.util.List"] }, {"name":"findEdgeBetweenNodesBidirectional","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"findFactSheetIds","parameterTypes":[] }, {"name":"findNodeById","parameterTypes":["java.lang.String"] }, {"name":"findOrphanNodeIds","parameterTypes":["java.lang.Long"] }, {"name":"findShortestPath","parameterTypes":["java.lang.String","java.lang.String","int"] }, {"name":"getNodeByExternalId","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.Long"] }, {"name":"getStrongEdgesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","int"] }, {"name":"getStrongEdgesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","int"] }, {"name":"getVisualizationDataInTimeRange","parameterTypes":["java.time.LocalDateTime","java.time.LocalDateTime","int"] }, {"name":"saveEdge","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphEdge"] }, {"name":"saveNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode"] }, {"name":"searchNodesGlobal","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"searchNodesInFactSheetByType","parameterTypes":["java.lang.Long","java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }]
+  "methods":[{"name":"createSnippetNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode","java.lang.String","java.lang.String","int","java.util.Map"] }, {"name":"createTableNode","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","int","int","java.util.List","java.lang.String","java.util.Map"] }, {"name":"deleteEdgesBulk","parameterTypes":["java.util.List"] }, {"name":"edgeExists","parameterTypes":["java.lang.String","java.lang.String","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.String","java.lang.Long"] }, {"name":"findEdgeBetweenNodesBidirectional","parameterTypes":["java.lang.String","java.lang.String"] }, {"name":"findFactSheetIds","parameterTypes":[] }, {"name":"findNodeById","parameterTypes":["java.lang.String"] }, {"name":"findOrphanNodeIds","parameterTypes":["java.lang.Long"] }, {"name":"findShortestPath","parameterTypes":["java.lang.String","java.lang.String","int"] }, {"name":"getFactSheetIdsWithGraphs","parameterTypes":[] }, {"name":"getNodeByExternalId","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","java.lang.Long"] }, {"name":"getNodesByExternalIds","parameterTypes":["java.util.List"] }, {"name":"getStrongEdgesByType","parameterTypes":["ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","int"] }, {"name":"getStrongEdgesByTypeInFactSheet","parameterTypes":["java.lang.Long","ai.kompile.knowledgegraph.domain.EdgeType","java.lang.Double","int"] }, {"name":"getTemporalBounds","parameterTypes":[] }, {"name":"getVisualizationDataInTimeRange","parameterTypes":["java.time.LocalDateTime","java.time.LocalDateTime","int"] }, {"name":"saveEdge","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphEdge"] }, {"name":"saveNode","parameterTypes":["ai.kompile.knowledgegraph.domain.GraphNode"] }, {"name":"searchEdgesByTimeRange","parameterTypes":["java.time.LocalDateTime","java.time.LocalDateTime","int"] }, {"name":"searchNodesGlobal","parameterTypes":["java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"searchNodesInFactSheetByType","parameterTypes":["java.lang.Long","java.lang.String","ai.kompile.knowledgegraph.domain.NodeLevel","int"] }, {"name":"updateNodesBatch","parameterTypes":["java.util.List"] }]
 },
 {
   "name":"ai.kompile.knowledgegraph.service.SourceLinkingService",
   "queryAllDeclaredMethods":true,
   "queryAllPublicMethods":true
+},
+{
+  "name":"ai.kompile.knowledgegraph.unified.GraphReasoningQueryService",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.unified.UnifiedGraphBridge"] }]
+},
+{
+  "name":"ai.kompile.knowledgegraph.unified.GraphSnapshotService",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.unified.UnifiedGraphBridge"] }]
+},
+{
+  "name":"ai.kompile.knowledgegraph.unified.UnifiedGraphAnalysisAssetStore",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"ai.kompile.knowledgegraph.unified.UnifiedGraphBridge",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["ai.kompile.knowledgegraph.service.KnowledgeGraphService"] }]
 },
 {
   "name":"ai.kompile.modelmanager.KompileModelManager",
@@ -822,7 +867,7 @@
   "name":"ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl",
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
-  "methods":[{"name":"add","parameterTypes":["java.util.List"] }, {"name":"add","parameterTypes":["java.util.List","java.util.List"] }, {"name":"addWithEmbeddings","parameterTypes":["java.util.List","org.nd4j.linalg.api.ndarray.INDArray"] }, {"name":"addWithFloatArrayEmbeddings","parameterTypes":["java.util.List","float[][]"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"batchSimilaritySearch","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"delete","parameterTypes":["java.util.List"] }, {"name":"deleteAll","parameterTypes":[] }, {"name":"destroy","parameterTypes":[] }, {"name":"flushAndCommit","parameterTypes":[] }, {"name":"getApproxVectorCount","parameterTypes":[] }, {"name":"getDocumentIdsBySourceId","parameterTypes":["java.lang.String"] }, {"name":"getIndexPath","parameterTypes":[] }, {"name":"getUniqueSourceIds","parameterTypes":[] }, {"name":"getVectorDocument","parameterTypes":["java.lang.String"] }, {"name":"getVectorStorePath","parameterTypes":[] }, {"name":"isUsingFallbackIndex","parameterTypes":[] }, {"name":"isVectorStoreAvailable","parameterTypes":[] }, {"name":"listVectorDocuments","parameterTypes":["int","int"] }, {"name":"refreshReader","parameterTypes":[] }, {"name":"similaritySearch","parameterTypes":["java.lang.String","int"] }, {"name":"similaritySearch","parameterTypes":["java.lang.String","int","double"] }, {"name":"similaritySearch","parameterTypes":["java.util.List","int","double"] }, {"name":"similaritySearchWithReranking","parameterTypes":["java.lang.String","int","double","ai.kompile.core.reranking.RerankerConfig"] }, {"name":"similaritySearchWithReranking","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","java.lang.String","int","double","ai.kompile.core.reranking.RerankerConfig"] }, {"name":"similaritySearchWithScores","parameterTypes":["java.lang.String","int","double"] }, {"name":"similaritySearchWithScores","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"switchIndexPath","parameterTypes":["java.lang.String"] }]
+  "methods":[{"name":"add","parameterTypes":["java.util.List"] }, {"name":"add","parameterTypes":["java.util.List","java.util.List"] }, {"name":"addStoredOnlyDocuments","parameterTypes":["java.util.List"] }, {"name":"addWithEmbeddings","parameterTypes":["java.util.List","org.nd4j.linalg.api.ndarray.INDArray"] }, {"name":"addWithFloatArrayEmbeddings","parameterTypes":["java.util.List","float[][]"] }, {"name":"awaitPendingEmbeddings","parameterTypes":[] }, {"name":"batchSimilaritySearch","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"delete","parameterTypes":["java.util.List"] }, {"name":"deleteAll","parameterTypes":[] }, {"name":"destroy","parameterTypes":[] }, {"name":"flushAndCommit","parameterTypes":[] }, {"name":"getApproxVectorCount","parameterTypes":[] }, {"name":"getDocumentIdsBySourceId","parameterTypes":["java.lang.String"] }, {"name":"getIndexPath","parameterTypes":[] }, {"name":"getUniqueSourceIds","parameterTypes":[] }, {"name":"getVectorDocument","parameterTypes":["java.lang.String"] }, {"name":"getVectorStorePath","parameterTypes":[] }, {"name":"isUsingFallbackIndex","parameterTypes":[] }, {"name":"isVectorStoreAvailable","parameterTypes":[] }, {"name":"listVectorDocuments","parameterTypes":["int","int"] }, {"name":"refreshReader","parameterTypes":[] }, {"name":"similaritySearch","parameterTypes":["java.lang.String","int"] }, {"name":"similaritySearch","parameterTypes":["java.lang.String","int","double"] }, {"name":"similaritySearch","parameterTypes":["java.util.List","int","double"] }, {"name":"similaritySearchWithReranking","parameterTypes":["java.lang.String","int","double","ai.kompile.core.reranking.RerankerConfig"] }, {"name":"similaritySearchWithReranking","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","java.lang.String","int","double","ai.kompile.core.reranking.RerankerConfig"] }, {"name":"similaritySearchWithScores","parameterTypes":["java.lang.String","int","double"] }, {"name":"similaritySearchWithScores","parameterTypes":["org.nd4j.linalg.api.ndarray.INDArray","int","double"] }, {"name":"switchIndexPath","parameterTypes":["java.lang.String"] }]
 },
 {
   "name":"ai.kompile.vectorstore.anserini.AnseriniVectorStoreProperties",
@@ -899,7 +944,7 @@
   "name":"com.fasterxml.jackson.core.ObjectCodec",
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
-  "methods":[{"name":"getJsonFactory","parameterTypes":[] }, {"name":"readValues","parameterTypes":["com.fasterxml.jackson.core.JsonParser","com.fasterxml.jackson.core.type.ResolvedType"] }, {"name":"readValues","parameterTypes":["com.fasterxml.jackson.core.JsonParser","java.lang.Class"] }]
+  "methods":[{"name":"getJsonFactory","parameterTypes":[] }, {"name":"readValues","parameterTypes":["com.fasterxml.jackson.core.JsonParser","com.fasterxml.jackson.core.type.ResolvedType"] }, {"name":"readValues","parameterTypes":["com.fasterxml.jackson.core.JsonParser","com.fasterxml.jackson.core.type.TypeReference"] }, {"name":"readValues","parameterTypes":["com.fasterxml.jackson.core.JsonParser","java.lang.Class"] }]
 },
 {
   "name":"com.fasterxml.jackson.core.TreeCodec",
@@ -961,6 +1006,46 @@
   "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"close","parameterTypes":[] }, {"name":"setupModule","parameterTypes":["com.fasterxml.jackson.databind.Module$SetupContext"] }, {"name":"shutdown","parameterTypes":[] }]
 },
 {
+  "name":"com.sun.crypto.provider.AESCipher$General",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.ARCFOURCipher",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.ChaCha20Cipher$ChaCha20Poly1305",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.DESCipher",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.DESedeCipher",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.DHParameters",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.GaloisCounterMode$AESGCM",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.crypto.provider.TlsMasterSecretGenerator",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"com.sun.management.HotSpotDiagnosticMXBean",
+  "methods":[{"name":"getVMOption","parameterTypes":["java.lang.String"] }]
+},
+{
+  "name":"com.sun.management.VMOption",
+  "methods":[{"name":"getValue","parameterTypes":[] }]
+},
+{
   "name":"jakarta.annotation.ManagedBean"
 },
 {
@@ -990,7 +1075,39 @@
   "name":"jakarta.inject.Qualifier"
 },
 {
+  "name":"jakarta.persistence.Converter",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.Entity",
+  "queryAllDeclaredMethods":true
+},
+{
   "name":"jakarta.persistence.EntityManagerFactory"
+},
+{
+  "name":"jakarta.persistence.Index",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.PrePersist",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.PreUpdate",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.Table",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.Transient",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"jakarta.persistence.UniqueConstraint",
+  "queryAllDeclaredMethods":true
 },
 {
   "name":"jakarta.validation.Validator"
@@ -1021,10 +1138,23 @@
   "name":"java.lang.ClassValue"
 },
 {
+  "name":"java.lang.Integer",
+  "allDeclaredFields":true
+},
+{
+  "name":"java.lang.Long",
+  "allDeclaredFields":true
+},
+{
   "name":"java.lang.NullPointerException"
 },
 {
+  "name":"java.lang.Number",
+  "allDeclaredFields":true
+},
+{
   "name":"java.lang.Object",
+  "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "methods":[{"name":"<init>","parameterTypes":["java.lang.String"] }, {"name":"from","parameterTypes":["java.lang.String"] }, {"name":"of","parameterTypes":["java.lang.String"] }, {"name":"valueOf","parameterTypes":["java.lang.String"] }]
 },
@@ -1035,7 +1165,8 @@
   "name":"java.lang.RuntimePermission"
 },
 {
-  "name":"java.lang.String"
+  "name":"java.lang.String",
+  "allDeclaredFields":true
 },
 {
   "name":"java.lang.UnsatisfiedLinkError"
@@ -1055,6 +1186,14 @@
 {
   "name":"java.lang.annotation.Target",
   "queryAllDeclaredMethods":true
+},
+{
+  "name":"java.lang.management.ManagementFactory",
+  "methods":[{"name":"getPlatformMXBean","parameterTypes":["java.lang.Class"] }]
+},
+{
+  "name":"java.lang.ref.Reference",
+  "methods":[{"name":"refersTo","parameterTypes":["java.lang.Object"] }]
 },
 {
   "name":"java.lang.reflect.ParameterizedType",
@@ -1077,7 +1216,16 @@
   "name":"java.nio.charset.Charset"
 },
 {
+  "name":"java.security.AlgorithmParametersSpi"
+},
+{
   "name":"java.security.AllPermission"
+},
+{
+  "name":"java.security.KeyStoreSpi"
+},
+{
+  "name":"java.security.SecureRandomParameters"
 },
 {
   "name":"java.security.SecurityPermission"
@@ -1116,6 +1264,11 @@
 },
 {
   "name":"javax.naming.InitialContext"
+},
+{
+  "name":"javax.security.auth.x500.X500Principal",
+  "fields":[{"name":"thisX500Name"}],
+  "methods":[{"name":"<init>","parameterTypes":["sun.security.x509.X500Name"] }]
 },
 {
   "name":"javax.smartcardio.CardPermission"
@@ -1160,6 +1313,31 @@
 },
 {
   "name":"org.apache.logging.slf4j.SLF4JProvider"
+},
+{
+  "name":"org.apache.lucene.index.ConcurrentMergeScheduler"
+},
+{
+  "name":"org.apache.lucene.index.IndexWriter"
+},
+{
+  "name":"org.apache.lucene.index.SegmentReader"
+},
+{
+  "name":"org.apache.lucene.store.MemorySegmentIndexInputProvider",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.apache.lucene.util.ByteBlockPool",
+  "allDeclaredFields":true
+},
+{
+  "name":"org.apache.lucene.util.FrequencyTrackingRingBuffer",
+  "allDeclaredFields":true
+},
+{
+  "name":"org.apache.lucene.util.FrequencyTrackingRingBuffer$IntBag",
+  "allDeclaredFields":true
 },
 {
   "name":"org.bytedeco.javacpp.BoolPointer"
@@ -4118,6 +4296,26 @@
   "methods":[{"name":"<init>","parameterTypes":[] }]
 },
 {
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.GgmlQMatMul",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.GgmlQMatMulBp",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.GgmlQMatMulLora",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.GgmlQMatMulLoraBp",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
   "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.GpuTopKSample",
   "allDeclaredFields":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
@@ -4360,6 +4558,11 @@
   "methods":[{"name":"<init>","parameterTypes":[] }]
 },
 {
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.MoeWeightedSum",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
   "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.MultiHeadDotProductAttention",
   "allDeclaredFields":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
@@ -4371,6 +4574,11 @@
 },
 {
   "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.MultiLoraMatmul",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.MultiLoraMatmulBp",
   "allDeclaredFields":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
 },
@@ -4644,6 +4852,11 @@
   "methods":[{"name":"<init>","parameterTypes":[] }]
 },
 {
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.TypicalPFilter",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
   "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.Unique",
   "allDeclaredFields":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
@@ -4665,6 +4878,11 @@
 },
 {
   "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.WindowedAttention",
+  "allDeclaredFields":true,
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.XtcFilter",
   "allDeclaredFields":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
 },
@@ -5885,6 +6103,18 @@
   "name":"org.nd4j.linalg.jcublas.bindings.Nd4jCuda"
 },
 {
+  "name":"org.nd4j.linalg.jmetal.bindings.Nd4jMetal"
+},
+{
+  "name":"org.nd4j.linalg.jtpu.bindings.Nd4jTpu"
+},
+{
+  "name":"org.nd4j.linalg.jzluda.bindings.Nd4jZluda"
+},
+{
+  "name":"org.nd4j.linalg.vulkan.bindings.Nd4jVulkan"
+},
+{
   "name":"org.nd4j.nativeblas.OpaqueConstantDataBuffer"
 },
 {
@@ -6252,6 +6482,18 @@
   "queryAllDeclaredMethods":true
 },
 {
+  "name":"org.springframework.data.annotation.QueryAnnotation",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"org.springframework.data.jpa.repository.Modifying",
+  "queryAllDeclaredMethods":true
+},
+{
+  "name":"org.springframework.data.jpa.repository.Query",
+  "queryAllDeclaredMethods":true
+},
+{
   "name":"org.springframework.data.util.KotlinBeanInfoFactory",
   "queryAllPublicConstructors":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
@@ -6327,6 +6569,10 @@
   "queryAllDeclaredMethods":true
 },
 {
+  "name":"org.springframework.stereotype.Repository",
+  "queryAllDeclaredMethods":true
+},
+{
   "name":"org.springframework.stereotype.Service",
   "queryAllDeclaredMethods":true
 },
@@ -6373,5 +6619,117 @@
 {
   "name":"org.springframework.web.bind.annotation.RestController",
   "queryAllDeclaredMethods":true
+},
+{
+  "name":"sun.security.pkcs12.PKCS12KeyStore",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.pkcs12.PKCS12KeyStore$DualFormatPKCS12",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.DSA$SHA224withDSA",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.DSA$SHA256withDSA",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.NativePRNG",
+  "methods":[{"name":"<init>","parameterTypes":[] }, {"name":"<init>","parameterTypes":["java.security.SecureRandomParameters"] }]
+},
+{
+  "name":"sun.security.provider.SHA",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.SHA2$SHA224",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.SHA2$SHA256",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.SHA5$SHA384",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.SHA5$SHA512",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.provider.X509Factory",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.rsa.PSSParameters",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.rsa.RSAKeyFactory$Legacy",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.rsa.RSAPSSSignature",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.rsa.RSASignature$SHA224withRSA",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.ssl.KeyManagerFactoryImpl$SunX509",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.ssl.SSLContextImpl$DefaultSSLContext",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.ssl.TrustManagerFactoryImpl$PKIXFactory",
+  "methods":[{"name":"<init>","parameterTypes":[] }]
+},
+{
+  "name":"sun.security.x509.AuthorityInfoAccessExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.AuthorityKeyIdentifierExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.BasicConstraintsExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.CRLDistributionPointsExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.CertificatePoliciesExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.ExtendedKeyUsageExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.KeyUsageExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.NetscapeCertTypeExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.PrivateKeyUsageExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
+},
+{
+  "name":"sun.security.x509.SubjectKeyIdentifierExtension",
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Boolean","java.lang.Object"] }]
 }
 ]

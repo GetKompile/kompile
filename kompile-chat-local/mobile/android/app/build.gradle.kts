@@ -1,4 +1,5 @@
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.file.FileSystems
@@ -14,6 +15,14 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+providers.gradleProperty("kompileAppBuildDir").orNull?.let { configuredBuildDir ->
+    val configuredFile = File(configuredBuildDir)
+    if (!configuredFile.isAbsolute) {
+        throw GradleException("kompileAppBuildDir must be an absolute path")
+    }
+    layout.buildDirectory.set(configuredFile)
 }
 
 val defaultHexagonAar = layout.projectDirectory.file(
@@ -43,8 +52,9 @@ val tensorG3Aar = providers.gradleProperty("sdxTensorG3Aar")
 val sdxArtifactMode = providers.gradleProperty("sdxArtifactMode").orElse("source-build")
 val generatedJniLibsDir = providers.gradleProperty("kompileJniLibsDir")
 // Optional prepared-artifact handoff for SDZ/KProject only. Public Hugging Face
-// GGML/GGUF acquisition is app-owned and executes the downloaded model directly through
-// libsdx_llm; it never depends on this service. Override the prepared-artifact endpoint with
+// GGML/GGUF acquisition is app-owned; libsdx_llm only ingests it into canonical SDZ, which
+// then uses the same local provider path as every other model. It never depends on this service.
+// Override the prepared-artifact endpoint with
 // -PkompileModelStagingUrl=https://host/staging or KOMPILE_MODEL_STAGING_URL.
 val modelStagingUrl = providers.gradleProperty("kompileModelStagingUrl")
     .orElse(providers.environmentVariable("KOMPILE_MODEL_STAGING_URL"))
@@ -52,6 +62,13 @@ val modelStagingUrl = providers.gradleProperty("kompileModelStagingUrl")
 val modelStagingUrlLiteral = modelStagingUrl.map { value ->
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 }
+val apkBuildId = providers.gradleProperty("apkBuildId").orElse("local")
+val apkBuildIdLiteral = apkBuildId.map { value ->
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+val apkVersionCode = providers.gradleProperty("apkVersionCode")
+    .map { value -> value.toInt() }
+    .orElse(1)
 
 if (sdxArtifactMode.get() !in setOf("source-build", "release-consumer")) {
     throw GradleException("sdxArtifactMode must be source-build or release-consumer")
@@ -93,6 +110,7 @@ val sdxVersion = providers.gradleProperty("sdxVersion").orElse("1.0.0-SNAPSHOT")
 // Java packages that are identical across providers and safe to refresh in place.
 val sdxSharedPackages = setOf(
     "org/nd4j/dsp/model/",
+    "org/nd4j/dsp/runtime/Sdx",
     "org/eclipse/deeplearning4j/tokenizers/"
 )
 
@@ -112,10 +130,25 @@ val sdxRequiredClasses = setOf(
     "org/nd4j/dsp/model/HuggingFaceGgmlResolver\$Kind.class",
     "org/nd4j/dsp/model/HuggingFaceGgmlResolver\$Reference.class",
     "org/nd4j/dsp/model/HuggingFaceGgmlResolver\$RepositoryFile.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$CancellationHandle.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$DownloadCancelledException.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$DownloadPolicy.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$DownloadRequest.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$DownloadResult.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$EventType.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$ProgressEvent.class",
+    "org/nd4j/dsp/model/ResumableModelDownloader\$ProgressListener.class",
     "org/nd4j/dsp/model/SdxCompiledModel.class",
     "org/nd4j/dsp/model/SdxModelCache.class",
     "org/nd4j/dsp/model/SdxTargetProfile.class",
     "org/nd4j/dsp/model/SdxTextModelAssets.class",
+    "org/nd4j/dsp/runtime/SdxRuntime.class",
+    "org/nd4j/dsp/runtime/SdxRuntime\$ModelOptions.class",
+    "org/nd4j/dsp/runtime/SdxTextSession.class",
+    "org/nd4j/dsp/model/SdxLlmNative.class",
+    "org/nd4j/dsp/model/SdxLlmNative\$ChunkCallback.class",
+    "org/nd4j/dsp/model/SdxLlmNative\$CancelCallback.class",
     "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer.class",
     "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer\$ChatMessage.class"
 )
@@ -167,8 +200,9 @@ android {
         // Stock-Graal graph JNI support is built against Android API 28 bionic.
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-SNAPSHOT"
+        versionCode = apkVersionCode.get()
+        versionName = "0.1.0-SNAPSHOT-${apkBuildId.get()}"
+        buildConfigField("String", "APK_BUILD_ID", apkBuildIdLiteral.get())
         buildConfigField("String", "MODEL_STAGING_URL", modelStagingUrlLiteral.get())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -308,8 +342,8 @@ android {
  * Drops the host hardware probe ND4J pulls in behind the Kompile libraries.
  *
  * oshi-core discovers host CPUs and GPUs through JNA. The probe never runs on a device;
- * leaving it in place only adds dead host classes. Android does intentionally package the
- * small JNA bridge below for the canonical libsdx_llm C ABI, but not oshi or jna-platform.
+ * leaving it in place only adds dead host classes. Android uses the JavaCPP transport
+ * packaged by the canonical SDX SDK and therefore carries no JNA runtime.
  * kompile-graph-reasoning-local already declares the same host-probe exclusions.
  */
 fun ExternalModuleDependency.excludeHostHardwareProbe() {
@@ -345,11 +379,6 @@ dependencies {
     // ── Coroutines ────────────────────────────────────────────────────────────
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Android bridge for DL4J's canonical libsdx_llm C ABI. This is intentionally the
-    // Android AAR (it carries arm64 libjnidispatch), while host-probe transitive JNA stays
-    // excluded from every unrelated dependency above.
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
-
     // ── Separate device-only JavaCPP provider AARs ────────────────────────────
     // Each APK resolves exactly one provider. The build script stages these paths
     // and both runtime verifiers reject BLAS, host, and alternate-backend leakage.
@@ -360,10 +389,11 @@ dependencies {
     add("tensorG3Implementation", files(normalizedTensorG3Aar))
     add("tensorG5Implementation", files(normalizedTensorG5Aar))
 
-    // Canonical provider-independent SDX artifacts. These carry no provider natives:
-    // nd4j-sdx-model is plain Java, and the tokenizer jars supply the facade together
-    // with the arm64 libraries its native entry points bind to.
+    // Canonical provider-independent SDX artifacts. The nd4j-sdx jar contributes only
+    // the stable runtime facade here; each provider AAR keeps its own JavaCPP binding and native
+    // payload. Tokenizer Java is refreshed together with the matching arm64 libraries below.
     add("sdxSharedJava", "org.eclipse.deeplearning4j:nd4j-sdx-model:${sdxVersion.get()}")
+    add("sdxSharedJava", "org.eclipse.deeplearning4j:nd4j-sdx:${sdxVersion.get()}")
     add("sdxSharedJava", "org.eclipse.deeplearning4j:tokenizers-native:${sdxVersion.get()}")
     add("sdxSharedJava", "org.eclipse.deeplearning4j:tokenizers-native-preset:${sdxVersion.get()}")
     add(
@@ -399,6 +429,32 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// Acceptance is explicit. APK assembly must not implicitly run an entire host suite and compile
+// Android tests; callers choose that cost when they ask for modelImportAcceptance.
+val modelImportAcceptanceFlavors = linkedMapOf(
+    "Vulkan" to "testVulkanDebugUnitTest",
+    "Hexagon" to "testHexagonDebugUnitTest",
+    "TensorG3" to "testTensorG3DebugUnitTest",
+    "TensorG5" to "testTensorG5DebugUnitTest"
+)
+val configuredAcceptanceFlavor = providers.gradleProperty("modelImportAcceptanceFlavor")
+    .orNull
+    ?.let { requested ->
+        modelImportAcceptanceFlavors.keys.firstOrNull { it.equals(requested, ignoreCase = true) }
+            ?: throw GradleException(
+                "modelImportAcceptanceFlavor must be one of " +
+                    modelImportAcceptanceFlavors.keys.joinToString()
+            )
+    }
+val representativeAcceptanceFlavor = configuredAcceptanceFlavor ?: "Vulkan"
+tasks.register("modelImportAcceptance") {
+    group = "verification"
+    description =
+        "Explicitly runs the selected flavor's complete model-import suite and compiles its viewport regression."
+    dependsOn(modelImportAcceptanceFlavors.getValue(representativeAcceptanceFlavor))
+    dependsOn("compile${representativeAcceptanceFlavor}DebugAndroidTestKotlin")
 }
 
 /**

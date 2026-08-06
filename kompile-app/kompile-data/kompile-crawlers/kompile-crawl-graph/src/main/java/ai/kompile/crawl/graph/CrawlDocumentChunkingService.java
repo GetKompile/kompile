@@ -17,13 +17,17 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.crawl.graph.CrawlChunkingConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.core.crawl.graph.VectorIndexConfig;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -50,6 +54,16 @@ class CrawlDocumentChunkingService {
 
     @Autowired(required = false)
     private List<TextChunker> textChunkers;
+
+    /** Project defaults emitted by {@code kompile project init}; request/source settings override. */
+    @Value("${kompile.chunker.type:}")
+    private String projectChunkerName = "";
+
+    @Value("${kompile.chunker.chunkSize:0}")
+    private int projectChunkSize;
+
+    @Value("${kompile.chunker.chunkOverlap:-1}")
+    private int projectChunkOverlap = -1;
 
     private final CrawlBatchPlanner batchPlanner;
     private final PipelineStepTracker pipelineStepTracker;
@@ -89,15 +103,7 @@ class CrawlDocumentChunkingService {
             return documents;
         }
 
-        // Select the appropriate chunker based on content type
-        TextChunker chunker = resolveChunkerForContent(documents);
-        if (chunker == null) {
-            log.debug("No suitable chunker found, passing documents through unchunked");
-            return documents;
-        }
-
-        log.info("Using chunker '{}' for {} documents", chunker.getName(), documents.size());
-        Map<String, Object> options = chunker.getDefaultOptions();
+        log.info("Chunking {} documents with project/crawl/source-aware policies", documents.size());
 
         int parallelism = Math.min(Math.max(1, chunkingParallelism), documents.size());
         List<CrawlBatchPlanner.CostBatch<Document>> batches = batchPlanner.planCostBatches(
@@ -123,7 +129,7 @@ class CrawlDocumentChunkingService {
                             "Chunking document " + (docIndex + 1) + "/" + documents.size(),
                             chunkedDocuments.size() + " chunk(s) created");
                 }
-                chunkedDocuments.addAll(chunkOneDocument(documents.get(docIndex), chunker, options, job));
+                chunkedDocuments.addAll(chunkConfiguredDocument(documents.get(docIndex), job));
             }
             return chunkedDocuments;
         }
@@ -139,7 +145,7 @@ class CrawlDocumentChunkingService {
                     List<Document> chunked = new ArrayList<>();
                     for (Document document : batch.items()) {
                         if (isCancelled(job)) break;
-                        chunked.addAll(chunkOneDocument(document, chunker, options, job));
+                        chunked.addAll(chunkConfiguredDocument(document, job));
                     }
                     documentTracker.recordEvent(job, "CHUNKING", "INFO",
                             "Completed chunking task " + batch.index() + "/" + batches.size(),
@@ -175,6 +181,74 @@ class CrawlDocumentChunkingService {
         }
     }
 
+    record ChunkingPlan(TextChunker chunker, Map<String, Object> options) {
+    }
+
+    /** Resolves one document independently so mixed-source crawls retain source-local overrides. */
+    private List<Document> chunkConfiguredDocument(Document document, UnifiedCrawlJob job) {
+        ChunkingPlan plan = resolvePlan(document, job);
+        if (plan.chunker() == null) {
+            log.debug("No suitable chunker found for document {}; passing it through",
+                    document != null ? document.getId() : null);
+            return document == null ? List.of() : List.of(document);
+        }
+        return chunkOneDocument(document, plan.chunker(), plan.options(), job);
+    }
+
+    ChunkingPlan resolvePlan(Document document, UnifiedCrawlJob job) {
+        UnifiedCrawlRequest request = job != null ? job.getRequest() : null;
+        CrawlChunkingConfig crawl = request != null ? request.getChunking() : null;
+        // Compatibility: the original unified request exposed these knobs under vectorIndex even
+        // though the resulting chunks feed graph extraction too.
+        VectorIndexConfig legacy = request != null ? request.getVectorIndex() : null;
+        Map<String, Object> metadata = document != null && document.getMetadata() != null
+                ? document.getMetadata() : Map.of();
+
+        String requestedName = firstNonBlank(
+                stringValue(metadata.get(GraphConstants.META_CHUNKER_NAME)),
+                crawl != null ? crawl.getChunkerName() : null,
+                legacy != null ? legacy.getChunkerName() : null,
+                projectChunkerName);
+        TextChunker chunker = requestedName != null ? findConfiguredChunker(requestedName) : null;
+        if (chunker == null) {
+            if (requestedName != null) {
+                log.warn("Configured chunker '{}' is unavailable; using content-aware fallback",
+                        requestedName);
+            }
+            chunker = resolveChunkerForContent(document == null ? List.of() : List.of(document));
+        }
+        if (chunker == null) {
+            return new ChunkingPlan(null, Map.of());
+        }
+
+        Map<String, Object> options = new LinkedHashMap<>(chunker.getDefaultOptions());
+        applyChunkSize(options, projectChunkSize > 0 ? projectChunkSize : null);
+        applyChunkOverlap(options, projectChunkOverlap >= 0 ? projectChunkOverlap : null);
+        if (legacy != null) {
+            applyChunkSize(options, positive(legacy.getChunkSize()));
+            applyChunkOverlap(options, nonNegative(legacy.getChunkOverlap()));
+        }
+        if (crawl != null) {
+            if (crawl.getOptions() != null) {
+                options.putAll(crawl.getOptions());
+            }
+            applyChunkSize(options, positive(crawl.getChunkSize()));
+            applyChunkOverlap(options, nonNegative(crawl.getChunkOverlap()));
+        }
+        Object sourceOptions = metadata.get(GraphConstants.META_CHUNKER_OPTIONS);
+        if (sourceOptions instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    options.put(String.valueOf(entry.getKey()), entry.getValue());
+                }
+            }
+        }
+        applyChunkSize(options, positive(metadata.get(GraphConstants.META_CHUNK_SIZE_OVERRIDE)));
+        applyChunkOverlap(options,
+                nonNegative(metadata.get(GraphConstants.META_CHUNK_OVERLAP_OVERRIDE)));
+        return new ChunkingPlan(chunker, Map.copyOf(options));
+    }
+
     /**
      * Chunks a single document using the resolved chunker.
      * Falls back to the original document if chunking fails.
@@ -208,6 +282,8 @@ class CrawlDocumentChunkingService {
 
             List<RetrievedDoc> chunks = chunker.chunk(retrievedDoc, options);
             List<Document> chunkedDocuments = new ArrayList<>(chunks.size());
+            Object sourceEventSpans = baseMeta.get(GraphConstants.META_SOURCE_EVENT_SPANS);
+            int nextSourceSearchStart = 0;
             for (RetrievedDoc chunk : chunks) {
                 // Chunk metadata from the chunker may contain chunk-specific fields
                 // (chunk_index, chunk_start, etc.) layered on top of the base metadata.
@@ -215,7 +291,28 @@ class CrawlDocumentChunkingService {
                 // still copy it into the Document since Document.getMetadata() is mutable.
                 Map<String, Object> chunkMeta = chunk.getMetadata();
                 Document chunkDoc;
-                if (chunkMeta == baseMeta || chunkMeta == null) {
+                if (sourceEventSpans != null) {
+                    // Source preprocessors emit offsets against the pre-chunk document. Never
+                    // leak those offsets into a chunk unchanged: rebase exact-substring chunks,
+                    // or remove the plan so atomization safely falls back to its configured mode.
+                    Map<String, Object> projectedMeta = new HashMap<>(
+                            chunkMeta == null ? baseMeta : chunkMeta);
+                    SourceRange range = locateSourceRange(text, chunk.getText(), nextSourceSearchStart);
+                    projectedMeta.remove(GraphConstants.META_SOURCE_EVENT_SPANS);
+                    projectedMeta.remove(GraphConstants.META_CHUNK_SOURCE_START);
+                    projectedMeta.remove(GraphConstants.META_CHUNK_SOURCE_END);
+                    if (range != null) {
+                        nextSourceSearchStart = Math.min(text.length(), range.start() + 1);
+                        projectedMeta.put(GraphConstants.META_CHUNK_SOURCE_START, range.start());
+                        projectedMeta.put(GraphConstants.META_CHUNK_SOURCE_END, range.end());
+                        List<Map<String, Object>> rebased = rebaseSourceEventSpans(
+                                sourceEventSpans, range, text.length());
+                        if (!rebased.isEmpty()) {
+                            projectedMeta.put(GraphConstants.META_SOURCE_EVENT_SPANS, rebased);
+                        }
+                    }
+                    chunkDoc = new Document(chunk.getText(), projectedMeta);
+                } else if (chunkMeta == baseMeta || chunkMeta == null) {
                     // Chunker didn't add chunk-specific fields — share base via shallow copy
                     chunkDoc = new Document(chunk.getText(), new HashMap<>(baseMeta));
                 } else {
@@ -301,9 +398,146 @@ class CrawlDocumentChunkingService {
     private TextChunker findChunkerByName(String name) {
         if (textChunkers == null) return null;
         return textChunkers.stream()
-                .filter(c -> name.equals(c.getName()) && !isNoOpChunker(c))
+                .filter(c -> name.equals(c.getName()))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private TextChunker findConfiguredChunker(String requestedName) {
+        if (textChunkers == null || requestedName == null || requestedName.isBlank()) {
+            return null;
+        }
+        String normalized = normalizeName(requestedName);
+        TextChunker exact = textChunkers.stream()
+                .filter(Objects::nonNull)
+                .filter(chunker -> normalizeName(chunker.getName()).equals(normalized))
+                .findFirst()
+                .orElse(null);
+        if (exact != null) {
+            return exact;
+        }
+        if ("recursive".equals(normalized)) {
+            return textChunkers.stream()
+                    .filter(Objects::nonNull)
+                    .filter(chunker -> normalizeName(chunker.getName()).contains("recursive"))
+                    .findFirst()
+                    .orElse(null);
+        }
+        return null;
+    }
+
+    private static String normalizeName(String name) {
+        return name == null ? "" : name.strip().toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.strip();
+            }
+        }
+        return null;
+    }
+
+    private static String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static Integer positive(Object value) {
+        Integer parsed = integerValue(value);
+        return parsed != null && parsed > 0 ? parsed : null;
+    }
+
+    private static Integer nonNegative(Object value) {
+        Integer parsed = integerValue(value);
+        return parsed != null && parsed >= 0 ? parsed : null;
+    }
+
+    private static Integer integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Integer.valueOf(text.strip());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static void applyChunkSize(Map<String, Object> options, Integer value) {
+        if (value != null) {
+            options.put("chunkSize", value);
+        }
+    }
+
+    private static void applyChunkOverlap(Map<String, Object> options, Integer value) {
+        if (value != null) {
+            options.put("overlap", value);
+            options.put("chunkOverlap", value);
+        }
+    }
+
+    private static SourceRange locateSourceRange(String source, String chunk, int searchStart) {
+        if (source == null || chunk == null || chunk.isEmpty()) {
+            return null;
+        }
+        int boundedStart = Math.max(0, Math.min(searchStart, source.length()));
+        int start = source.indexOf(chunk, boundedStart);
+        if (start < 0 && boundedStart > 0) {
+            // A normalization-aware chunker may revisit an earlier unique region. Accept a
+            // unique exact match, but never guess between duplicate occurrences.
+            int candidate = source.indexOf(chunk);
+            if (candidate >= 0 && source.indexOf(chunk, candidate + 1) < 0) {
+                start = candidate;
+            }
+        }
+        return start < 0 ? null : new SourceRange(start, start + chunk.length());
+    }
+
+    private static List<Map<String, Object>> rebaseSourceEventSpans(Object raw,
+                                                                    SourceRange chunk,
+                                                                    int sourceLength) {
+        if (!(raw instanceof Collection<?> values)) {
+            return List.of();
+        }
+        List<Map<String, Object>> rebased = new ArrayList<>();
+        for (Object value : values) {
+            Integer start = null;
+            Integer end = null;
+            String kind = null;
+            if (value instanceof ai.kompile.core.graphrag.GraphConstructor.SourceSpan span) {
+                start = span.start();
+                end = span.end();
+                kind = span.kind();
+            } else if (value instanceof Map<?, ?> map) {
+                start = integerValue(map.get("start"));
+                end = integerValue(map.get("end"));
+                Object rawKind = map.get("kind");
+                kind = rawKind == null ? null : String.valueOf(rawKind);
+            }
+            if (start == null || end == null || start < 0 || end <= start || end > sourceLength) {
+                continue;
+            }
+            int clippedStart = Math.max(start, chunk.start());
+            int clippedEnd = Math.min(end, chunk.end());
+            if (clippedEnd <= clippedStart) {
+                continue;
+            }
+            Map<String, Object> projected = new LinkedHashMap<>();
+            projected.put("start", clippedStart - chunk.start());
+            projected.put("end", clippedEnd - chunk.start());
+            if (kind != null && !kind.isBlank()) {
+                projected.put("kind", kind);
+            }
+            rebased.add(projected);
+        }
+        return List.copyOf(rebased);
+    }
+
+    private record SourceRange(int start, int end) {
     }
 
     private boolean isNoOpChunker(TextChunker chunker) {

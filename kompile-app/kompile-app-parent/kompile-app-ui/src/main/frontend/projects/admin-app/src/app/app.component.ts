@@ -29,6 +29,7 @@ import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
   selector: 'app-root',
   template: `
     <app-shell
+      persona="admin"
       [navItems]="navItems"
       settingsRoute="/settings"
       stagingRoute="/developer"

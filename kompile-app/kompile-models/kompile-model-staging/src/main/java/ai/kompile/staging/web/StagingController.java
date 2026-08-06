@@ -17,6 +17,7 @@
 package ai.kompile.staging.web;
 
 import ai.kompile.staging.archive.ArchiveModelManager;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.staging.catalog.CatalogModel;
 import ai.kompile.staging.catalog.CatalogService;
 import ai.kompile.staging.catalog.ModelCatalog;
@@ -167,7 +168,31 @@ public class StagingController {
      */
     @PutMapping("/settings")
     public StagingSettings updateSettings(@RequestBody StagingSettings settings) {
+        if (settings == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "settings body is required");
+        }
+        String callbackUrl = settings.getCallbackUrl();
+        if (callbackUrl == null || callbackUrl.isBlank()) {
+            settings.setCallbackUrl(null);
+        } else {
+            try {
+                settings.setCallbackUrl(ServiceEndpointsConfigManager.requireHttpBaseUrl(
+                        "callback_url", callbackUrl));
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
+            }
+        }
+        if (settings.getCallbackTimeoutMs() <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "callback_timeout_ms must be greater than zero");
+        }
         return stagingSettingsService.updateSettings(settings);
+    }
+
+    /** Test the UI/CLI-managed callback dependency without changing it. */
+    @PostMapping("/settings/test-callback")
+    public StagingSettingsService.CallbackTestResult testSettingsCallback() {
+        return stagingSettingsService.testCallback();
     }
 
     /**
@@ -517,6 +542,10 @@ public class StagingController {
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
                         dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
+                    if (catalogModel.getAssetUrls() != null && !catalogModel.getAssetUrls().isEmpty()) {
+                        dlBuilder.textAssetUrls(TextModelAssetUrlMap.fromUrlMap(
+                                new HashMap<>(catalogModel.getAssetUrls())));
+                    }
                     DownloadRequest downloadRequest = dlBuilder.build();
 
                     // Start async staging
@@ -525,7 +554,8 @@ public class StagingController {
                     // If auto-promote is requested, add completion handler
                     if (autoPromote) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == StagingStatus.READY) {
+                            if (info.getStatus() == StagingStatus.READY
+                                    || info.getStatus() == StagingStatus.COMPLETED) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });
@@ -1119,13 +1149,18 @@ public class StagingController {
                     if (catalogModel.getFiles() != null && !catalogModel.getFiles().isEmpty()) {
                         dlBuilder.files(new HashMap<>(catalogModel.getFiles()));
                     }
+                    if (catalogModel.getAssetUrls() != null && !catalogModel.getAssetUrls().isEmpty()) {
+                        dlBuilder.textAssetUrls(TextModelAssetUrlMap.fromUrlMap(
+                                new HashMap<>(catalogModel.getAssetUrls())));
+                    }
                     DownloadRequest downloadRequest = dlBuilder.build();
 
                     CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
 
                     if (request.isAutoPromote()) {
                         future.thenAccept(info -> {
-                            if (info.getStatus() == StagingStatus.READY) {
+                            if (info.getStatus() == StagingStatus.READY
+                                    || info.getStatus() == StagingStatus.COMPLETED) {
                                 stagingService.promoteModel(modelId, null);
                             }
                         });

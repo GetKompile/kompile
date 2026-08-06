@@ -19,6 +19,10 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.evaluation.graph.GraphDecisionTraceEvent;
+import ai.kompile.core.evaluation.graph.GraphDecisionTraceSink;
+import ai.kompile.core.evaluation.graph.GraphMissReason;
+import ai.kompile.core.evaluation.graph.GraphMissStage;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -65,6 +69,9 @@ class GraphPersistenceHelper {
      *  slices without Spring), the legacy scalar-only path is retained so nothing breaks. */
     @Autowired(required = false)
     ExtractionConfidenceStamper confidenceStamper;
+
+    @Autowired(required = false)
+    GraphDecisionTraceSink graphDecisionTraceSink = GraphDecisionTraceSink.noop();
 
     @Autowired
     CrawlDocumentTracker documentTracker;
@@ -117,7 +124,14 @@ class GraphPersistenceHelper {
                 if (isCancelled(job)) {
                     return new GraphPersistResult(entitiesPersisted, relationshipsPersisted);
                 }
-                if (entity == null || belowMinConfidence(entity.getConfidence(), config)) {
+                if (entity == null) {
+                    continue;
+                }
+                if (belowMinConfidence(entity.getConfidence(), config)) {
+                    trace(entity.getId(), GraphMissReason.PERSISTENCE_CONFIDENCE_BELOW_THRESHOLD,
+                            "rejected_persistence_confidence", List.of(entity.getId()),
+                            Map.of("confidence", entity.getConfidence()),
+                            Map.of("threshold", String.valueOf(config.getEffectivePersistenceMinConfidence())));
                     continue;
                 }
                 try {
@@ -185,6 +199,8 @@ class GraphPersistenceHelper {
                     Entity entity = pending.entity();
                     try {
                         entitiesPersisted++;
+                        trace(entity.getId(), null, "persisted_entity", List.of(node.getNodeId()),
+                                finiteScore(entity.getId(), entity.getConfidence()), Map.of());
                         job.incrementEntityType(pending.entityType());
                         externalToNodeId.put(pending.externalId(), node.getNodeId());
                         if (entity.getId() != null && !entity.getId().isBlank()) {
@@ -239,7 +255,15 @@ class GraphPersistenceHelper {
                 if (isCancelled(job)) {
                     return new GraphPersistResult(entitiesPersisted, relationshipsPersisted);
                 }
-                if (rel == null || belowMinConfidence(rel.getConfidence(), config)) {
+                if (rel == null) {
+                    continue;
+                }
+                String relationAtom = rel.getSource() + "-[" + rel.getType() + "]->" + rel.getTarget();
+                if (belowMinConfidence(rel.getConfidence(), config)) {
+                    trace(relationAtom, GraphMissReason.PERSISTENCE_CONFIDENCE_BELOW_THRESHOLD,
+                            "rejected_persistence_confidence", List.of(),
+                            finiteScore(relationAtom, rel.getConfidence()),
+                            Map.of("threshold", String.valueOf(config.getEffectivePersistenceMinConfidence())));
                     continue;
                 }
                 try {
@@ -258,6 +282,11 @@ class GraphPersistenceHelper {
                         }
                     }
                     if (srcNodeId == null || tgtNodeId == null) {
+                        trace(relationAtom, GraphMissReason.MERGE_PERSISTENCE_FAILED,
+                                "rejected_missing_persistence_endpoint",
+                                List.of(rel.getSource(), rel.getTarget()), Map.of(),
+                                Map.of("sourceResolved", String.valueOf(srcNodeId != null),
+                                        "targetResolved", String.valueOf(tgtNodeId != null)));
                         continue;
                     }
 
@@ -315,6 +344,12 @@ class GraphPersistenceHelper {
             try {
                 int created = createEdgesInBoundedBatches(relationshipEdgeSpecs);
                 relationshipsPersisted += created;
+                for (int i = 0; i < Math.min(created, relationshipEdgeSpecs.size()); i++) {
+                    KnowledgeGraphService.EdgeSpec accepted = relationshipEdgeSpecs.get(i);
+                    trace(accepted.sourceNodeId() + "-[" + accepted.label() + "]->" + accepted.targetNodeId(),
+                            null, "persisted_relation",
+                            List.of(accepted.sourceNodeId(), accepted.targetNodeId()), Map.of(), Map.of());
+                }
                 for (int i = 0; i < Math.min(created, relationshipEdgeLabels.size()); i++) {
                     job.incrementRelationshipType(relationshipEdgeLabels.get(i));
                 }
@@ -636,7 +671,20 @@ class GraphPersistenceHelper {
 
     boolean belowMinConfidence(Double confidence, GraphExtractionConfig config) {
         Double value = finiteDouble(confidence);
-        return value != null && config != null && value < config.getMinConfidence();
+        return value != null && config != null && value < config.getEffectivePersistenceMinConfidence();
+    }
+
+    private void trace(String atom, GraphMissReason reason, String disposition,
+                       List<String> candidates, Map<String, Double> scores,
+                       Map<String, String> metadata) {
+        graphDecisionTraceSink.trace(new GraphDecisionTraceEvent(
+                UUID.randomUUID().toString(), null, null, null, null, atom,
+                reason == null ? GraphMissStage.MERGE_PERSISTENCE : reason.stage(), reason,
+                disposition, candidates, scores, metadata));
+    }
+
+    private static Map<String, Double> finiteScore(String id, Double value) {
+        return id == null || value == null || !Double.isFinite(value) ? Map.of() : Map.of(id, value);
     }
 
     Double finiteDouble(Double value) {
@@ -684,10 +732,7 @@ class GraphPersistenceHelper {
     }
 
     double entityResolutionSimilarityThreshold(GraphExtractionConfig config) {
-        if (config == null || config.getEntityResolutionSimilarityThreshold() <= 0.0) {
-            return 0.85;
-        }
-        return Math.max(0.0, Math.min(1.0, config.getEntityResolutionSimilarityThreshold()));
+        return config == null ? 0.85 : config.getEffectiveStringIdentitySimilarity();
     }
 
     String safeEntityType(String type) {

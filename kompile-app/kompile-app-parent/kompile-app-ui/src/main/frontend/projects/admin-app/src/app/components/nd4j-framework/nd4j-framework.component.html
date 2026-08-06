@@ -161,14 +161,14 @@
 
         <div class="setting-row">
           <div class="setting-info">
-            <span class="setting-label">Native Decode Inputs</span>
-            <span class="setting-description">Use native decode operations (disabled = enabled)</span>
+            <span class="setting-label">Portable Java Decode</span>
+            <span class="setting-description">Stable generation path; turn off only to opt into experimental native decode</span>
           </div>
           <div class="setting-control">
             <mat-slide-toggle [(ngModel)]="settings.dspNoNativeDecode" [ngModelOptions]="{standalone: true}"
                               (change)="updateSetting('dspNoNativeDecode', $event.checked)">
             </mat-slide-toggle>
-            <span class="toggle-status">{{ settings.dspNoNativeDecode ? 'Disabled' : 'Enabled' }}</span>
+            <span class="toggle-status">{{ settings.dspNoNativeDecode ? 'Enabled' : 'Experimental native' }}</span>
           </div>
         </div>
 

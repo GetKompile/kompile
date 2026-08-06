@@ -359,6 +359,16 @@ class CrossIndexTrackingServiceTest {
     }
 
     @Test
+    void countPassages_delegatesToPassageRepository() {
+        when(passageRepository.countByDocumentId(DOC_ID)).thenReturn(2L);
+
+        long result = service.countPassages(DOC_ID);
+
+        assertEquals(2L, result);
+        verify(passageRepository).countByDocumentId(DOC_ID);
+    }
+
+    @Test
     void markPassageKeywordIndexed_callsRepositoryWithInstant() {
         service.markPassageKeywordIndexed(CHUNK_ID, 42);
 

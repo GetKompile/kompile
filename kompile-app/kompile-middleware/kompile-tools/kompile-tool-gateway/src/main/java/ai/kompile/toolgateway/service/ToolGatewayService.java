@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.function.Supplier;
 
 /**
  * Core service that evaluates tool calls against the configured rules using an LLM.
@@ -52,7 +53,7 @@ public class ToolGatewayService {
 
     private final ToolGatewayConfigService configService;
     private final ToolGatewayRulesProvider rulesProvider;
-    private final ChatModel chatModel;
+    private final Supplier<ChatModel> chatModelResolver;
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final List<GatewayEvaluationListener> listeners = new ArrayList<>();
     private final ConcurrentLinkedDeque<GatewayJudgeScore> recentScores = new ConcurrentLinkedDeque<>();
@@ -61,9 +62,19 @@ public class ToolGatewayService {
             ToolGatewayConfigService configService,
             ToolGatewayRulesProvider rulesProvider,
             ChatModel chatModel) {
+        this(configService, rulesProvider, chatModel, null);
+    }
+
+    /** Runtime resolver variant used when the model endpoint is UI/CLI managed. */
+    public ToolGatewayService(
+            ToolGatewayConfigService configService,
+            ToolGatewayRulesProvider rulesProvider,
+            ChatModel initialChatModel,
+            Supplier<ChatModel> chatModelResolver) {
         this.configService = configService;
         this.rulesProvider = rulesProvider;
-        this.chatModel = chatModel;
+        this.chatModelResolver = chatModelResolver != null
+                ? chatModelResolver : () -> initialChatModel;
     }
 
     /**
@@ -94,6 +105,7 @@ public class ToolGatewayService {
             return GatewayDecision.allow();
         }
 
+        ChatModel chatModel = chatModelResolver.get();
         if (chatModel == null) {
             log.warn("Tool gateway enabled but no ChatModel available — allowing all tool calls. "
                     + "Start kompile-model-staging or configure a global LLM provider.");
@@ -112,7 +124,7 @@ public class ToolGatewayService {
 
         long startTime = System.currentTimeMillis();
         try {
-            GatewayDecision decision = evaluateWithLlm(toolName, args, matchingRules);
+            GatewayDecision decision = evaluateWithLlm(toolName, args, matchingRules, chatModel);
             long latencyMs = System.currentTimeMillis() - startTime;
 
             logDecision(toolName, decision, config);
@@ -129,7 +141,7 @@ public class ToolGatewayService {
 
             // Judge scoring (self-evaluation of the gateway's decision quality)
             if (config.isJudgeScoringEnabled()) {
-                evaluateGatewayQuality(toolName, args, decision, matchingRules);
+                evaluateGatewayQuality(toolName, args, decision, matchingRules, chatModel);
             }
 
             return decision;
@@ -156,7 +168,8 @@ public class ToolGatewayService {
     private GatewayDecision evaluateWithLlm(
             String toolName,
             Map<String, Object> args,
-            List<ToolGatewayRule> matchingRules) {
+            List<ToolGatewayRule> matchingRules,
+            ChatModel chatModel) {
 
         List<Message> messages = new ArrayList<>();
 
@@ -178,7 +191,8 @@ public class ToolGatewayService {
      * Score the quality of the gateway's own evaluation using the judge prompt.
      */
     private void evaluateGatewayQuality(String toolName, Map<String, Object> args,
-                                         GatewayDecision decision, List<ToolGatewayRule> matchingRules) {
+                                         GatewayDecision decision, List<ToolGatewayRule> matchingRules,
+                                         ChatModel chatModel) {
         try {
             String judgePrompt = buildJudgePrompt(toolName, args, decision, matchingRules);
 

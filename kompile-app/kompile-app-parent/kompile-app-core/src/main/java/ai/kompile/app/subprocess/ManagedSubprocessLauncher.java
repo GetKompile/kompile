@@ -279,6 +279,7 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         String javaPath = ProcessHandle.current().info().command().orElse("java");
 
         long physicalMb = getMaxPhysicalMb() > 0 ? getMaxPhysicalMb() : (long) getHeapMb() * 4L;
+        String childClasspath = resolveClasspath();
 
         List<String> cmd = new ArrayList<>();
         cmd.add(javaPath);
@@ -287,7 +288,7 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         // backend, threads, debug/verbose, …) so EVERY managed subprocess runs the SAME configured ND4J
         // environment as the main app. Added BEFORE the per-subprocess javacpp cap below so that cap
         // (subprocess-specific) overrides any forwarded org.bytedeco.javacpp.max* value.
-        cmd.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags());
+        cmd.addAll(SubprocessEnvironmentPropagator.buildSystemPropertyFlags(childClasspath));
         cmd.add("-XX:+UseG1GC");
         cmd.add("-XX:MaxGCPauseMillis=200");
         cmd.add("-XX:+ExitOnOutOfMemoryError");
@@ -305,7 +306,7 @@ public abstract class ManagedSubprocessLauncher implements RestartableSubprocess
         cmd.addAll(backendSelectionFlags());
         cmd.addAll(getExtraJvmArgs());
         cmd.add("-cp");
-        cmd.add(resolveClasspath());
+        cmd.add(childClasspath);
         cmd.add(getMainClass());
         if (programArgs != null) {
             cmd.addAll(programArgs);

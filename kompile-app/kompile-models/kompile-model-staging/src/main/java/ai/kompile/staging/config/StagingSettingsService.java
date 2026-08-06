@@ -54,9 +54,6 @@ public class StagingSettingsService {
     @Value("${kompile.staging.settings-dir:${kompile.home:${user.home}/.kompile}}")
     private String settingsDir;
 
-    @Value("${kompile.staging.callback-url:}")
-    private String callbackUrlOverride;
-
     public StagingSettingsService() {
         this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
         this.restTemplate = new RestTemplate();
@@ -67,16 +64,6 @@ public class StagingSettingsService {
         this.settingsFile = Paths.get(settingsDir).resolve(SETTINGS_FILENAME);
         log.info("Staging settings file: {}", settingsFile);
         loadSettings();
-        // Apply callback URL override from Spring property if settings file didn't have one
-        if (callbackUrlOverride != null && !callbackUrlOverride.isBlank()) {
-            StagingSettings s = getSettings();
-            if (s.getCallbackUrl() == null || s.getCallbackUrl().isBlank()) {
-                s.setCallbackUrl(callbackUrlOverride);
-                s.setAutoReloadEnabled(true);
-                updateSettings(s);
-                log.info("Set callback URL from property: {}", callbackUrlOverride);
-            }
-        }
     }
 
     /**
@@ -281,7 +268,15 @@ public class StagingSettingsService {
             return success;
         }
 
+        public boolean isSuccess() {
+            return success;
+        }
+
         public String message() {
+            return message;
+        }
+
+        public String getMessage() {
             return message;
         }
     }

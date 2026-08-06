@@ -1,0 +1,38 @@
+<section class="settings-page">
+  <header>
+    <h1>Connections</h1>
+    <p>Configure the service this standalone Chat package uses for local model inference.</p>
+  </header>
+
+  <mat-card>
+    <mat-card-header>
+      <mat-icon mat-card-avatar>model_training</mat-icon>
+      <mat-card-title>Model Staging</mat-card-title>
+      <mat-card-subtitle>Required for the Kompile Local model provider</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p>
+        Chat uses this endpoint to discover staged models and connect the Kompile Local
+        provider. The same value is honored by the CLI and project launcher.
+      </p>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Model Staging base URL</mat-label>
+        <input matInput type="url" [(ngModel)]="stagingUrl"
+               placeholder="http://localhost:8090" [disabled]="loading || saving">
+        <mat-hint>Stored in the managed service-endpoints.json configuration.</mat-hint>
+      </mat-form-field>
+
+      <p class="error" *ngIf="error" role="alert">{{ error }}</p>
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-flat-button color="primary" (click)="save()" [disabled]="loading || saving">
+        <mat-spinner *ngIf="saving" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!saving">save</mat-icon>
+        Save connection
+      </button>
+    </mat-card-actions>
+  </mat-card>
+</section>

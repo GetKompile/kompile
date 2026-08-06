@@ -83,6 +83,10 @@ public class ChatCommand implements Callable<Integer> {
     })
     private String model;
 
+    @CommandLine.Option(names = {"--thinking", "--effort"}, description =
+            "Thinking/effort override for the selected passthrough agent")
+    private String thinking;
+
     @CommandLine.Option(names = {"--rag"}, negatable = true, description = "Enable RAG for chat (default: true)", defaultValue = "true")
     private boolean rag;
 
@@ -472,6 +476,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
             passthrough.model = model;
+            passthrough.thinking = thinking;
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             return passthrough.call();
         } catch (Exception | IOError e) {
@@ -518,6 +523,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
             passthrough.model = model;
+            passthrough.thinking = thinking;
             // Inject system prompt so Codex/OpenCode get AGENTS.md
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             return passthrough.call();
@@ -650,6 +656,7 @@ public class ChatCommand implements Callable<Integer> {
             passthrough.kompileUrl = "";
             passthrough.mcpPort = 0;
             passthrough.model = model;
+            passthrough.thinking = thinking;
             passthrough.systemPromptManager = SystemPromptManager.resolve(null, null, null);
             passthrough.enforcerEvaluator = evaluator;
             passthrough.enforcerPolicy = policy;

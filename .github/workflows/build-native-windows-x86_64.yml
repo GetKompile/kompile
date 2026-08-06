@@ -47,11 +47,11 @@ on:
         required: false
         default: 'windows-2022'
       releaseVersion:
-        description: 'Release version (e.g., 1.0.0). When set, uploads binaries to GitHub Release v<version>'
+        description: 'Version label for workflow artifacts; canonical GitHub Release publishing is handled centrally'
         required: false
         default: ''
       prerelease:
-        description: 'Mark the GitHub Release as a pre-release'
+        description: 'Compatibility input; release state is owned by release.yml'
         required: false
         default: 'true'
       debug_enabled:
@@ -61,17 +61,25 @@ on:
 
 jobs:
   build-nd4j-native:
-    name: "nd4j ${{ matrix.helper || 'base' }}-${{ matrix.extension || 'base' }}"
+    name: "nd4j ${{ matrix.name }}"
     runs-on: ${{ inputs.runsOn || 'windows-2022' }}
     if: ${{ inputs.skipNd4jBuild != 'true' }}
     timeout-minutes: 360
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
+      # Seven real classifiers. A Cartesian helper x extension matrix creates
+      # duplicate compile jobs because the compile classifier ignores AVX extensions.
       matrix:
-        helper: [onednn, compile, ""]
-        extension: [avx2, avx512, ""]
+        include:
+          - { name: base, helper: "", extension: "" }
+          - { name: avx2, helper: "", extension: avx2 }
+          - { name: avx512, helper: "", extension: avx512 }
+          - { name: onednn, helper: onednn, extension: "" }
+          - { name: onednn-avx2, helper: onednn, extension: avx2 }
+          - { name: onednn-avx512, helper: onednn, extension: avx512 }
+          - { name: compile, helper: compile, extension: "" }
     steps:
       - name: Cancel Previous Runs
         uses: styfle/cancel-workflow-action@0.8.0
@@ -289,7 +297,7 @@ jobs:
     if: always() && (needs.build-nd4j-native.result == 'success' || inputs.skipNd4jBuild == 'true')
     timeout-minutes: 120
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Disable Windows Defender
         continue-on-error: true
@@ -435,9 +443,9 @@ jobs:
         timeout-minutes: 60
         run: |
           set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli
+          cd kompile-cli\kompile-cli-main
           mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-cli.exe 2>nul || echo "kompile-cli.exe not found"
+          dir target\kompile-cli-main.exe
 
       - name: Build kompile-agent native image
         if: steps.targets.outputs.build_agent == 'true'
@@ -445,9 +453,9 @@ jobs:
         timeout-minutes: 30
         run: |
           set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-agent-cli
+          cd kompile-cli\kompile-agent-cli
           mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-agent.exe 2>nul || echo "kompile-agent.exe not found"
+          dir target\kompile-agent.exe
 
       - name: Build kompile-app-cli native image
         if: steps.targets.outputs.build_app_cli == 'true'
@@ -455,9 +463,9 @@ jobs:
         timeout-minutes: 30
         run: |
           set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-app-cli
+          cd kompile-cli\kompile-app-cli
           mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-app-cli.exe 2>nul || echo "kompile-app-cli.exe not found"
+          dir target\kompile-app-cli.exe
 
       - name: Build kompile-model native image
         if: steps.targets.outputs.build_model == 'true'
@@ -465,9 +473,9 @@ jobs:
         timeout-minutes: 30
         run: |
           set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-model-cli
+          cd kompile-cli\kompile-model-cli
           mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-model.exe 2>nul || echo "kompile-model.exe not found"
+          dir target\kompile-model.exe
 
       - name: Build kompile-component native image
         if: steps.targets.outputs.build_component == 'true'
@@ -475,23 +483,23 @@ jobs:
         timeout-minutes: 30
         run: |
           set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-component-cli
+          cd kompile-cli\kompile-component-cli
           mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-component.exe 2>nul || echo "kompile-component.exe not found"
+          dir target\kompile-component.exe
 
       - name: Collect native binaries
         shell: bash
         run: |
           mkdir -p native-binaries
-          cp kompile-cli/target/kompile-cli.exe native-binaries/ 2>/dev/null || true
-          cp kompile-agent-cli/target/kompile-agent.exe native-binaries/ 2>/dev/null || true
-          cp kompile-app-cli/target/kompile-app-cli.exe native-binaries/ 2>/dev/null || true
-          cp kompile-model-cli/target/kompile-model.exe native-binaries/ 2>/dev/null || true
-          cp kompile-component-cli/target/kompile-component.exe native-binaries/ 2>/dev/null || true
+          cp kompile-cli/kompile-cli-main/target/kompile-cli-main.exe native-binaries/ 2>/dev/null || true
+          cp kompile-cli/kompile-agent-cli/target/kompile-agent.exe native-binaries/ 2>/dev/null || true
+          cp kompile-cli/kompile-app-cli/target/kompile-app-cli.exe native-binaries/ 2>/dev/null || true
+          cp kompile-cli/kompile-model-cli/target/kompile-model.exe native-binaries/ 2>/dev/null || true
+          cp kompile-cli/kompile-component-cli/target/kompile-component.exe native-binaries/ 2>/dev/null || true
           echo "=== Native binaries collected ==="
           ls -lh native-binaries/
 
-      - name: Publish native binaries
+      - name: Package native binaries as workflow artifact
         uses: ./.github/actions/publish-native-binaries
         with:
           artifact-name: kompile-native-windows-x86_64
@@ -506,6 +514,9 @@ jobs:
         with:
           name: kompile-native-build-logs-windows-x86_64
           path: |
-            kompile-cli/target/*.log
-            kompile-agent-cli/target/*.log
+            kompile-cli/kompile-cli-main/target/*.log
+            kompile-cli/kompile-agent-cli/target/*.log
+            kompile-cli/kompile-app-cli/target/*.log
+            kompile-cli/kompile-model-cli/target/*.log
+            kompile-cli/kompile-component-cli/target/*.log
           retention-days: 3

@@ -17,6 +17,10 @@
 package ai.kompile.app.services;
 
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -125,10 +129,13 @@ public class GraphExtractionConfigService {
                 currentConfig.schemaEnforcement = newConfig.schemaEnforcement;
             }
             if (newConfig.entityTypes != null) {
-                currentConfig.entityTypes = newConfig.entityTypes;
+                currentConfig.entityTypes = List.copyOf(newConfig.entityTypes);
             }
             if (newConfig.relationshipTypes != null) {
-                currentConfig.relationshipTypes = newConfig.relationshipTypes;
+                currentConfig.relationshipTypes = List.copyOf(newConfig.relationshipTypes);
+            }
+            if (newConfig.standardizedSchema != null) {
+                currentConfig.standardizedSchema = GraphExtractionConfig.copySchema(newConfig.standardizedSchema);
             }
             if (newConfig.maxEntitiesPerChunk != null) {
                 currentConfig.maxEntitiesPerChunk = Math.max(1, Math.min(100, newConfig.maxEntitiesPerChunk));
@@ -199,6 +206,7 @@ public class GraphExtractionConfigService {
                 currentConfig.additionalProperties.putAll(newConfig.additionalProperties);
             }
 
+            currentConfig.normalizeValidationPolicy();
             saveConfigInternal();
             logger.info("Updated graph extraction config: graph=mandatory, batchSize={}",
                     currentConfig.batchSize);
@@ -276,8 +284,9 @@ public class GraphExtractionConfigService {
         public List<String> extractionModelAllow;          // Strict model allow-list, empty/null = no pin
         public List<String> extractionModelPriority;       // Soft preferred model order, empty/null = default
 
-        // Schema preset
+        // Canonical graph schema. The type-name lists above remain compatibility/focus fields.
         public String activeSchemaPresetId;
+        public GraphSchema standardizedSchema;
 
         // Deduplication settings
         public Boolean deduplicationEnabled;
@@ -323,6 +332,7 @@ public class GraphExtractionConfigService {
             config.extractionMaxTokens = 4096;           // Reasonable default for entity extraction
             config.customExtractionPrompt = null;        // Use built-in prompt
             config.validationPolicy = GraphExtractionValidationPolicy.defaults();
+            config.standardizedSchema = null;
             config.extractionModelProviderAllow = List.of("opencode", "opencode-go", "local");
             config.extractionModelExcludeMarkers = List.of("claude", "codex", "opus", "sonnet", "gpt", "gemini");
             config.extractionModelAllow = List.of();
@@ -375,6 +385,7 @@ public class GraphExtractionConfigService {
             copy.neo4jPassword = this.neo4jPassword != null && !this.neo4jPassword.isEmpty() ? "********" : "";
             copy.neo4jDatabase = this.neo4jDatabase;
             copy.activeSchemaPresetId = this.activeSchemaPresetId;
+            copy.standardizedSchema = copySchema(this.standardizedSchema);
             copy.additionalProperties.putAll(this.additionalProperties);
             return copy;
         }
@@ -383,6 +394,58 @@ public class GraphExtractionConfigService {
             validationPolicy = validationPolicy == null
                     ? GraphExtractionValidationPolicy.defaults()
                     : validationPolicy.copy();
+            if (standardizedSchema == null) {
+                return;
+            }
+
+            if ((entityTypes == null || entityTypes.isEmpty()) && standardizedSchema.getNodeTypes() != null) {
+                entityTypes = standardizedSchema.getNodeTypes().stream()
+                        .filter(type -> type != null && type.getLabel() != null && !type.getLabel().isBlank())
+                        .map(NodeType::getLabel)
+                        .toList();
+            }
+            if ((relationshipTypes == null || relationshipTypes.isEmpty())
+                    && standardizedSchema.getRelationshipTypes() != null) {
+                relationshipTypes = standardizedSchema.getRelationshipTypes().stream()
+                        .filter(type -> type != null && type.getType() != null && !type.getType().isBlank())
+                        .map(RelationshipType::getType)
+                        .toList();
+            }
+            if (validationPolicy.effectiveRelationPatterns().isEmpty()
+                    && standardizedSchema.getPatterns() != null
+                    && !standardizedSchema.getPatterns().isEmpty()) {
+                validationPolicy.setRelationPatterns(List.copyOf(standardizedSchema.getPatterns()));
+            }
+        }
+
+        private static GraphSchema copySchema(GraphSchema schema) {
+            if (schema == null) {
+                return null;
+            }
+            List<NodeType> nodeTypes = schema.getNodeTypes() == null ? null : schema.getNodeTypes().stream()
+                    .map(type -> type == null ? null : new NodeType(
+                            type.getLabel(),
+                            type.getDescription(),
+                            copyProperties(type.getProperties())))
+                    .toList();
+            List<RelationshipType> relationshipTypes = schema.getRelationshipTypes() == null
+                    ? null
+                    : schema.getRelationshipTypes().stream()
+                            .map(type -> type == null ? null : new RelationshipType(
+                                    type.getType(),
+                                    type.getDescription(),
+                                    copyProperties(type.getProperties()),
+                                    type.getAliases() == null ? List.of() : List.copyOf(type.getAliases())))
+                            .toList();
+            List<String> patterns = schema.getPatterns() == null ? null : List.copyOf(schema.getPatterns());
+            return new GraphSchema(nodeTypes, relationshipTypes, patterns);
+        }
+
+        private static List<PropertyType> copyProperties(List<PropertyType> properties) {
+            return properties == null ? null : properties.stream()
+                    .map(property -> property == null ? null
+                            : new PropertyType(property.getName(), property.getType()))
+                    .toList();
         }
 
         /**

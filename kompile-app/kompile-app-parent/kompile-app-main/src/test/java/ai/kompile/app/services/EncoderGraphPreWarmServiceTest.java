@@ -18,6 +18,7 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.subprocess.model.ModelInitSubprocessArgs;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessLauncher;
+import io.anserini.encoder.samediff.SameDiffEncoder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +66,7 @@ class EncoderGraphPreWarmServiceTest {
 
     private static final String MODEL_ID  = "bge-base-en-v1.5";
     private static final String MODEL_FILE = "model.sdz";
+    private static final String VOCAB_FILE = "vocab.txt";
 
     @Mock
     private ModelInitSubprocessLauncher launcher;
@@ -74,6 +76,7 @@ class EncoderGraphPreWarmServiceTest {
 
     private EncoderGraphPreWarmService service;
     private Path originalRegistryBase;
+    private String originalCacheBackend;
 
     @BeforeEach
     void setUp() {
@@ -83,11 +86,14 @@ class EncoderGraphPreWarmServiceTest {
         // Redirect REGISTRY_BASE to the temp dir so resolveModelPath finds real files
         originalRegistryBase = EncoderGraphPreWarmService.REGISTRY_BASE;
         EncoderGraphPreWarmService.REGISTRY_BASE = tempDir;
+        originalCacheBackend = System.getProperty("kompile.embedding.samediff.cacheBackend");
+        System.setProperty("kompile.embedding.samediff.cacheBackend", "prewarm-test");
 
         // Inject suppliers: model ID source returns our test model; info source returns
         // an empty 'path' (so resolveModelPath falls back to <REGISTRY_BASE>/<modelId>/<file>).
         service.modelIdSource  = () -> Set.of(MODEL_ID);
-        service.modelInfoSource = id -> Map.of("path", "", "modelFile", MODEL_FILE);
+        service.modelInfoSource = id -> Map.of(
+                "path", "", "modelFile", MODEL_FILE, "vocabFile", VOCAB_FILE);
 
         // Default launcher stub: succeed silently
         when(launcher.launchModelInit(any(), isNull(), isNull(), any()))
@@ -98,6 +104,11 @@ class EncoderGraphPreWarmServiceTest {
     void tearDown() {
         // Restore the static field so other test classes are not affected
         EncoderGraphPreWarmService.REGISTRY_BASE = originalRegistryBase;
+        if (originalCacheBackend == null) {
+            System.clearProperty("kompile.embedding.samediff.cacheBackend");
+        } else {
+            System.setProperty("kompile.embedding.samediff.cacheBackend", originalCacheBackend);
+        }
     }
 
     // ── isOptCacheValid ──────────────────────────────────────────────────────
@@ -106,7 +117,7 @@ class EncoderGraphPreWarmServiceTest {
     void isOptCacheValid_returnsFalseWhenOptFileAbsent() throws IOException {
         Path modelFile = tempDir.resolve(MODEL_FILE);
         Files.writeString(modelFile, "dummy");
-        assertFalse(EncoderGraphPreWarmService.isOptCacheValid(modelFile),
+        assertFalse(SameDiffEncoder.hasValidOptimizationCache(modelFile),
                 "No opt file → cache invalid");
     }
 
@@ -116,7 +127,7 @@ class EncoderGraphPreWarmServiceTest {
         Files.writeString(modelFile, "dummy");
         Files.writeString(tempDir.resolve("model.opt.sdz"), "opt");
         // No .fp file
-        assertFalse(EncoderGraphPreWarmService.isOptCacheValid(modelFile),
+        assertFalse(SameDiffEncoder.hasValidOptimizationCache(modelFile),
                 "Missing fingerprint → cache invalid");
     }
 
@@ -128,7 +139,7 @@ class EncoderGraphPreWarmServiceTest {
         // Write stale fingerprint (wrong mtime = 0)
         Files.writeString(tempDir.resolve("model.opt.sdz.fp"),
                 Files.size(modelFile) + ",0");
-        assertFalse(EncoderGraphPreWarmService.isOptCacheValid(modelFile),
+        assertFalse(SameDiffEncoder.hasValidOptimizationCache(modelFile),
                 "Stale mtime → cache invalid");
     }
 
@@ -137,9 +148,9 @@ class EncoderGraphPreWarmServiceTest {
         Path modelFile = tempDir.resolve(MODEL_FILE);
         Files.writeString(modelFile, "some-model-bytes");
         Files.writeString(tempDir.resolve("model.opt.sdz"), "optimized-bytes");
-        String fp = Files.size(modelFile) + "," + Files.getLastModifiedTime(modelFile).toMillis();
+        String fp = cacheFingerprint(modelFile);
         Files.writeString(tempDir.resolve("model.opt.sdz.fp"), fp);
-        assertTrue(EncoderGraphPreWarmService.isOptCacheValid(modelFile),
+        assertTrue(SameDiffEncoder.hasValidOptimizationCache(modelFile),
                 "Matching fingerprint → cache valid");
     }
 
@@ -152,6 +163,7 @@ class EncoderGraphPreWarmServiceTest {
         Path modelDir = tempDir.resolve(MODEL_ID);
         Files.createDirectories(modelDir);
         Files.writeString(modelDir.resolve(MODEL_FILE), "model-bytes");
+        Files.writeString(modelDir.resolve(VOCAB_FILE), "[UNK]\n");
 
         service.runPreWarm();
 
@@ -178,10 +190,11 @@ class EncoderGraphPreWarmServiceTest {
         Files.createDirectories(modelDir);
         Path modelFile = modelDir.resolve(MODEL_FILE);
         Files.writeString(modelFile, "model-bytes");
+        Files.writeString(modelDir.resolve(VOCAB_FILE), "[UNK]\n");
 
         Path optFile = modelDir.resolve("model.opt.sdz");
         Files.writeString(optFile, "optimized-bytes");
-        String fp = Files.size(modelFile) + "," + Files.getLastModifiedTime(modelFile).toMillis();
+        String fp = cacheFingerprint(modelFile);
         Files.writeString(modelDir.resolve("model.opt.sdz.fp"), fp);
 
         service.runPreWarm();
@@ -198,6 +211,7 @@ class EncoderGraphPreWarmServiceTest {
         Path modelDir = tempDir.resolve(MODEL_ID);
         Files.createDirectories(modelDir);
         Files.writeString(modelDir.resolve(MODEL_FILE), "model-bytes");
+        Files.writeString(modelDir.resolve(VOCAB_FILE), "[UNK]\n");
 
         when(launcher.launchModelInit(any(), isNull(), isNull(), any()))
                 .thenThrow(new RuntimeException("subprocess spawn failed"));
@@ -214,6 +228,35 @@ class EncoderGraphPreWarmServiceTest {
         // modelIdSource returns MODEL_ID but the file doesn't exist on disk
         service.runPreWarm();
         verifyNoInteractions(launcher);
+    }
+
+    @Test
+    void runPreWarm_skipsIncompleteBundleWithoutVocabulary() throws IOException {
+        Path modelDir = tempDir.resolve(MODEL_ID);
+        Files.createDirectories(modelDir);
+        Files.writeString(modelDir.resolve(MODEL_FILE), "model-bytes");
+
+        service.runPreWarm();
+
+        verifyNoInteractions(launcher);
+    }
+
+    @Test
+    void resolveModelPathUsesModelIdDirectoryBeforeRegistryPath() throws IOException {
+        Path primary = tempDir.resolve(MODEL_ID);
+        Path alternate = tempDir.resolve("encoders").resolve(MODEL_ID);
+        Files.createDirectories(primary);
+        Files.createDirectories(alternate);
+        Files.writeString(primary.resolve(MODEL_FILE), "primary");
+        Files.writeString(primary.resolve(VOCAB_FILE), "[UNK]\n");
+        Files.writeString(alternate.resolve(MODEL_FILE), "alternate");
+        Files.writeString(alternate.resolve(VOCAB_FILE), "[UNK]\n");
+        service.modelInfoSource = id -> Map.of(
+                "path", "encoders/" + MODEL_ID,
+                "modelFile", MODEL_FILE,
+                "vocabFile", VOCAB_FILE);
+
+        assertEquals(primary.resolve(MODEL_FILE), service.resolveModelPath(MODEL_ID));
     }
 
     // ── runPreWarm — no models registered → nothing to do ──────────────────
@@ -233,5 +276,10 @@ class EncoderGraphPreWarmServiceTest {
         // launcher field left null
         assertDoesNotThrow(noLauncher::schedulePreWarm,
                 "schedulePreWarm must be safe when no launcher is wired");
+    }
+
+    private static String cacheFingerprint(Path modelFile) {
+        return ReflectionTestUtils.invokeMethod(
+                SameDiffEncoder.class, "computeSourceFingerprint", modelFile);
     }
 }

@@ -16,6 +16,7 @@
 
 package ai.kompile.app.runtime;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.utils.NativeImageInfo;
 import io.anserini.search.LuceneRuntimeConfig;
@@ -27,9 +28,6 @@ import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * Everything a Kompile Boot server must do <em>before</em> {@code SpringApplication.run}.
@@ -42,8 +40,9 @@ import java.nio.file.Paths;
  * SameDiff. Getting that ordering wrong fails at native-library load time with a message-less
  * {@code ExceptionInInitializerError}, so it lives here once rather than being copied per app.
  *
- * <p>This class deliberately does <em>not</em> know about subprocess dispatch: only app-main
- * carries the subprocess mains, so {@code --subprocess=} routing stays in {@code MainApplication}.
+ * <p>This class deliberately does <em>not</em> own subprocess dispatch. Each persona entry point
+ * routes {@code --subprocess=} before invoking this bootstrap, using the subprocess mains available
+ * on that persona's classpath; app-main additionally registers its admin-only subprocess types.
  */
 public final class KompileServerRuntime {
 
@@ -89,11 +88,9 @@ public final class KompileServerRuntime {
         // specifying the SLF4J bridge provider, avoiding ServiceLoader entirely.
         System.setProperty("log4j.provider", "org.apache.logging.slf4j.SLF4JProvider");
 
-        // Resolve native libraries BEFORE any ND4J calls.
-        // NativeLibraryResolver handles all modes: native image, JVM, CUDA, CPU.
-        // Resolution chain: KOMPILE_NATIVE_LIB_DIR → lib/ → ~/.javacpp/cache → ~/.kompile/native-libs → ~/.m2/repository
-        ai.kompile.app.config.NativeLibraryResolver.bootstrap();
-        // Also configure JavaCPP paths for native image mode (cachedir, pathsFirst, etc.)
+        // Resolve native libraries BEFORE any ND4J calls. The shared resolver owns the
+        // complete native/JVM, CUDA/CPU side-loading policy; do not rebase its selected
+        // flat lib/ directory in a persona-specific startup path.
         configureJavaCppForNativeImage();
 
         initializeNd4j();
@@ -209,61 +206,28 @@ public final class KompileServerRuntime {
     }
 
     /**
-     * Configure JavaCPP properties for GraalVM native image mode.
-     * In native image mode, JavaCPP uses the same directory as the binary
-     * for its native library cache. Native libraries (libnd4jcpu.so, etc.)
-     * must be placed alongside the binary.
+     * Resolve and configure JavaCPP/ND4J native libraries before their first class
+     * initialization. {@link NativeLibraryResolver} is the single owner of the
+     * side-loading policy for both JVM and native-image execution.
      *
-     * This MUST be called before any ND4J/JavaCPP class initialization.
+     * <p>In a distribution it uses {@link NativeImageInfo#getExecutablePath()} to
+     * select the canonical sibling {@code lib/} directory. Do not overwrite that
+     * cache root with {@code bin/}: JavaCPP would create {@code bin/lib} symlinks,
+     * and a later launch would fail SharedCompilerRuntime's directory trust check.
      */
     public static void configureJavaCppForNativeImage() {
+        boolean resolved = NativeLibraryResolver.bootstrap();
         if (NativeImageInfo.isRunningInNativeImage()) {
-            logger.info("Running as GraalVM native image - configuring JavaCPP for native mode");
-
-            // Get the directory containing the native executable
-            String execPath = NativeImageInfo.getExecutablePath();
-            Path binaryDir;
-            if (execPath != null) {
-                binaryDir = Paths.get(execPath).toAbsolutePath().getParent();
+            if (resolved) {
+                logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
+                        System.getProperty("org.bytedeco.javacpp.cachedir"),
+                        System.getProperty("org.nd4j.presets.sharedRuntimePath"),
+                        System.getProperty("org.bytedeco.javacpp.pathsFirst"));
             } else {
-                // Fallback: use current working directory
-                binaryDir = Paths.get(".").toAbsolutePath();
-                logger.warn("Could not determine native executable path, using CWD: {}", binaryDir);
-            }
-
-            // Set JavaCPP cache directory to the binary's directory.
-            // In native image mode, JavaCPP looks for native libraries here.
-            System.setProperty("org.bytedeco.javacpp.cachedir", binaryDir.toString());
-
-            // Ensure pathsFirst is set so JavaCPP checks the cache dir first
-            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
-
-            // Also set the platform-specific library path so System.loadLibrary can find natives
-            String existingLibPath = System.getProperty("java.library.path", "");
-            if (!existingLibPath.contains(binaryDir.toString())) {
-                String newLibPath = binaryDir.toString() +
-                        (existingLibPath.isEmpty() ? "" : ":" + existingLibPath);
-                System.setProperty("java.library.path", newLibPath);
-            }
-
-            // Set the ND4J resource directory to binary directory as well
-            System.setProperty("org.bytedeco.javacpp.platform.resourcedir", binaryDir.toString());
-
-            logger.info("JavaCPP native image config: cachedir={}, pathsFirst=true, java.library.path includes binary dir",
-                    binaryDir);
-
-            // Also check for a 'natives' subdirectory alongside the binary
-            Path nativesDir = binaryDir.resolve("natives");
-            if (Files.isDirectory(nativesDir)) {
-                String libPath = System.getProperty("java.library.path", "");
-                if (!libPath.contains(nativesDir.toString())) {
-                    System.setProperty("java.library.path",
-                            nativesDir.toString() + ":" + libPath);
-                }
-                logger.info("Found natives/ directory alongside binary: {}", nativesDir);
+                logger.warn("No side-loaded native library directory could be resolved for this native image");
             }
         } else {
-            logger.debug("Running in JVM mode - using default JavaCPP configuration");
+            logger.debug("Running in JVM mode - JavaCPP configured by NativeLibraryResolver");
         }
     }
 }

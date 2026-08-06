@@ -190,6 +190,81 @@
                 </div>
             </mat-tab>
 
+            <!-- Shared service topology -->
+            <mat-tab label="Service Endpoints">
+                <div class="tab-padding">
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h3>Service Endpoints</h3>
+                            <p>One deployment topology used by project startup, CLI routing, chat, staging, and model serving.</p>
+                        </div>
+
+                        <div class="alert alert-warning">
+                            <mat-icon>restart_alt</mat-icon>
+                            <span>
+                                Save first, then run <strong>kompile project stop</strong> and
+                                <strong>kompile project start</strong> to move admin, chat, crawl, or staging bind ports.
+                                The internal serving endpoint is picked up the next time its demand-driven child starts.
+                            </span>
+                        </div>
+
+                        <div class="loading-shade" *ngIf="endpointsLoading">
+                            <mat-spinner diameter="40"></mat-spinner>
+                        </div>
+
+                        <div class="endpoint-grid" *ngIf="!endpointsLoading">
+                            <mat-form-field appearance="outline">
+                                <mat-label>Admin URL</mat-label>
+                                <input matInput type="url" required [(ngModel)]="serviceEndpoints.adminUrl"
+                                    [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8080">
+                                <mat-hint>kompile-app-main; equivalent startup flag: --port</mat-hint>
+                            </mat-form-field>
+
+                            <mat-form-field appearance="outline">
+                                <mat-label>Chat URL</mat-label>
+                                <input matInput type="url" required [(ngModel)]="serviceEndpoints.chatUrl"
+                                    [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8081">
+                                <mat-hint>kompile-app-chat; equivalent startup flag: --chat-port</mat-hint>
+                            </mat-form-field>
+
+                            <mat-form-field appearance="outline">
+                                <mat-label>Crawl Manager URL</mat-label>
+                                <input matInput type="url" required [(ngModel)]="serviceEndpoints.crawlUrl"
+                                    [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8082">
+                                <mat-hint>kompile-app-crawl-manager; startup flag: --crawl-manager-port</mat-hint>
+                            </mat-form-field>
+
+                            <mat-form-field appearance="outline">
+                                <mat-label>Model Staging URL</mat-label>
+                                <input matInput type="url" required [(ngModel)]="serviceEndpoints.stagingUrl"
+                                    [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8090">
+                                <mat-hint>kompile-model-staging; startup flag: --staging-port</mat-hint>
+                            </mat-form-field>
+
+                            <mat-form-field appearance="outline" class="full-width-endpoint">
+                                <mat-label>Internal Model Serving URL</mat-label>
+                                <input matInput type="url" required [(ngModel)]="serviceEndpoints.servingUrl"
+                                    [ngModelOptions]="{standalone: true}" placeholder="http://127.0.0.1:8091">
+                                <mat-hint>Loopback-only child managed by the admin process; starts when a model is loaded.</mat-hint>
+                            </mat-form-field>
+                        </div>
+
+                        <div class="form-actions" *ngIf="!endpointsLoading">
+                            <button mat-raised-button color="primary" (click)="saveServiceEndpoints()"
+                                [disabled]="!serviceEndpointsAreValid()">
+                                <mat-icon>save</mat-icon>
+                                Save Endpoints
+                            </button>
+                            <div *ngIf="endpointsSaveMessage" class="success-message"
+                                [class.restart-required]="endpointsSaveError">
+                                <mat-icon>{{ endpointsSaveError ? 'error' : 'check_circle' }}</mat-icon>
+                                <span>{{ endpointsSaveMessage }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </mat-tab>
+
             <!-- Subprocess Config Tab -->
             <mat-tab label="Ingestion Subprocess">
                 <div class="tab-padding">

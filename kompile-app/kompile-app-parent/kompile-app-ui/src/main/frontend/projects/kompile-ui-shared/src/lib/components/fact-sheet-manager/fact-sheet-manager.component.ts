@@ -54,6 +54,7 @@ import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local
 import { ModelRegistryService } from '../../services/model-registry.service';
 import { UnifiedCrawlService, JobSummary as CrawlJobSummary } from '../../services/unified-crawl.service';
 import { CrossIndexService } from '../../services/cross-index.service';
+import { ServiceEndpointRouter } from '../../services/service-endpoint-routing';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
 import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
@@ -178,6 +179,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   // Backend URL for API calls
   private backendUrl: string;
+
+  // Optional split-persona integrations. Unknown probe state remains permissive in the router;
+  // only an explicit managed health failure disables a dependency.
+  adminServiceAvailable = true;
+  crawlServiceAvailable = true;
 
   // Sheet state
   sheets: FactSheet[] = [];
@@ -402,6 +408,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private modelRegistryService: ModelRegistryService,
     private unifiedCrawlService: UnifiedCrawlService,
     private crossIndexService: CrossIndexService,
+    private serviceEndpointRouter: ServiceEndpointRouter,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
@@ -429,6 +436,9 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    this.adminServiceAvailable = this.serviceEndpointRouter.isReachable('admin');
+    this.crawlServiceAvailable = this.serviceEndpointRouter.isReachable('crawl');
+
     // Set up subscriptions FIRST to ensure we don't miss any emissions
     // Subscribe to sheets
     this.factSheetService.sheets$
@@ -509,13 +519,15 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     // Subscribe to WebSocket model status updates for real-time UI updates
     this.subscribeToModelStatusUpdates();
 
-    // Start crawl job polling (discovery + fallback) and connect the live SSE stream so the inline
-    // step monitor updates in real time without waiting for the next poll.
-    this.loadActiveCrawlJobs();
-    this.crawlPollSubscription = interval(5000).pipe(
-      takeUntil(this.destroy$)
-    ).subscribe(() => this.loadActiveCrawlJobs());
-    this.connectCrawlStream();
+    // Start optional Crawl integration only when its managed endpoint is reachable. This avoids
+    // retrying HTTP and EventSource connections in the end-user standalone Chat distribution.
+    if (this.crawlServiceAvailable) {
+      this.loadActiveCrawlJobs();
+      this.crawlPollSubscription = interval(5000).pipe(
+        takeUntil(this.destroy$)
+      ).subscribe(() => this.loadActiveCrawlJobs());
+      this.connectCrawlStream();
+    }
   }
 
   /**
@@ -529,7 +541,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
     this.modelStatusSubscribed = true;
 
-    this.webSocketService.subscribeToModelStatus().pipe(
+    this.webSocketService.subscribeToModelStatus(this.adminServiceAvailable).pipe(
       takeUntil(this.destroy$)
     ).subscribe({
       next: (status: ModelStatusUpdate) => {
@@ -631,7 +643,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   loadCrossIndexStats(): void {
-    if (!this.activeSheet?.id) return;
+    if (!this.crawlServiceAvailable || !this.activeSheet?.id) return;
     this.crossIndexService.getStatistics(this.activeSheet.id).subscribe({
       next: (stats) => {
         this.crossIndexStats = stats;
@@ -663,7 +675,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.crawlPollSubscription?.unsubscribe();
     this.unsubscribeFromVectorProgress();
     // Unsubscribe from model status WebSocket
-    this.webSocketService.unsubscribeFromModelStatus();
+    this.webSocketService.unsubscribeFromModelStatus(this.adminServiceAvailable);
     this.webSocketService.disconnect();
   }
 
@@ -1031,6 +1043,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private loadActiveCrawlJobs(): void {
+    if (!this.crawlServiceAvailable) return;
     this.unifiedCrawlService.listActiveJobs().subscribe({
       next: (jobs) => {
         // Filter to jobs matching the active fact sheet (or with no factSheetId)
@@ -1063,7 +1076,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    */
   private connectCrawlStream(): void {
     this.disconnectCrawlStream();
-    if (typeof EventSource === 'undefined') return;
+    if (!this.crawlServiceAvailable || typeof EventSource === 'undefined') return;
     let es: EventSource;
     try {
       es = new EventSource(this.unifiedCrawlService.crawlEventsStreamUrl());
@@ -1836,6 +1849,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    * can start a crawl directly from the Fact Sheets surface without navigating to /data.
    */
   openStartCrawlDialog(): void {
+    if (!this.crawlServiceAvailable) {
+      this.showError('Crawl service is offline. Configure or start it in Settings.');
+      return;
+    }
+
     if (!this.activeSheet) {
       this.showError('Please select a fact sheet first');
       return;
@@ -1872,6 +1890,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   openDocumentCrawlDialog(): void {
+    if (!this.crawlServiceAvailable) {
+      this.showError('Crawl service is offline. Configure or start it in Settings.');
+      return;
+    }
+
     if (!this.activeSheet) {
       this.showError('Please select a fact sheet first');
       return;
@@ -1956,6 +1979,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   private startFileSourceCrawl(files: File[], options: AddSourceDialogResult): void {
+    if (!this.crawlServiceAvailable) {
+      this.showError('Crawl service is offline. Configure or start it in Settings.');
+      return;
+    }
+
     this.documentService.addFilesAsSourceCrawl(files, {
       loaderName: options.selectedLoader,
       chunkerName: options.chunkerName,
@@ -2532,6 +2560,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   private restoreActiveVectorPopulationState(): void {
+    if (!this.crawlServiceAvailable) return;
     this.indexBrowserService.getActiveTrackedVectorPopulationTasks().subscribe({
       next: (response) => {
         if (!response.available || response.activeCount === 0 || !response.tasks?.length) {
@@ -2602,6 +2631,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    * This will create vector embeddings for all documents in the keyword index.
    */
   startVectorPopulation(): void {
+    if (!this.crawlServiceAvailable) {
+      this.showError('Crawl service is offline. Configure or start it in Settings.');
+      return;
+    }
+
     if (this.isVectorPopulating) {
       return;
     }
@@ -2648,6 +2682,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    * Cancel the current vector population task.
    */
   cancelVectorPopulation(): void {
+    if (!this.crawlServiceAvailable) {
+      this.showError('Crawl service is offline. Configure or start it in Settings.');
+      return;
+    }
+
     if (!this.isVectorPopulating || !this.currentVectorTaskId) {
       return;
     }
@@ -3222,6 +3261,11 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private loadArchiveModels(): void {
+    if (!this.adminServiceAvailable) {
+      this.isLoadingArchives = false;
+      return;
+    }
+
     // Subscribe to archive status
     this.archiveService.status$
       .pipe(takeUntil(this.destroy$))
@@ -3331,6 +3375,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    * Called when switching fact sheets to ensure archive display is up to date.
    */
   refreshArchiveStatus(): void {
+    if (!this.adminServiceAvailable) return;
+
     // Refresh current archive status
     this.archiveService.getStatus()
       .pipe(takeUntil(this.destroy$))
@@ -3409,6 +3455,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
    * Load system-wide configuration (currently loaded embedding model, reranker, etc.)
    */
   loadSystemConfig(): void {
+    if (!this.adminServiceAvailable) {
+      this.isLoadingSystemConfig = false;
+      return;
+    }
     this.isLoadingSystemConfig = true;
 
     // Also load embedding status to get the source (REGISTRY or ARCHIVE)

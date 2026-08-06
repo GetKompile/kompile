@@ -37,7 +37,7 @@ import java.util.UUID;
  *     .taskId(UUID.randomUUID().toString())
  *     .modelIdentifier("bge-base-en-v1.5")
  *     .modelSourceType("staging")
- *     .stagingUrl("http://localhost:8081")
+     *     .stagingUrl("http://localhost:8090")
  *     .build();
  *
  * // Write to temp file

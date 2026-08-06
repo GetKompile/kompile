@@ -62,6 +62,7 @@ public class WebCrawler extends AbstractCrawler {
     private static final Logger log = LoggerFactory.getLogger(WebCrawler.class);
     private static final int CONNECTION_TIMEOUT_MS = 30_000;
     private static final int MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+    private static final int MAX_LANGUAGE_SAMPLE_CHARS = 8_192;
 
     @Override
     public String getId() {
@@ -206,6 +207,10 @@ public class WebCrawler extends AbstractCrawler {
                 itemMetadata.put(GraphConstants.META_SOURCE_TYPE, "WEB_CRAWL");
                 itemMetadata.put("depth", depth);
                 itemMetadata.put("crawlJobId", job.getJobId());
+                String contentSample = boundedContentSample(bodyText);
+                if (!contentSample.isBlank()) {
+                    itemMetadata.put("contentSample", contentSample);
+                }
 
                 CrawlItem item = CrawlItem.builder()
                         .url(url)
@@ -386,6 +391,16 @@ public class WebCrawler extends AbstractCrawler {
             if (ct.startsWith(a.toLowerCase().trim())) return true;
         }
         return false;
+    }
+
+    static String boundedContentSample(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        int codePointCount = content.codePointCount(0, content.length());
+        int sampleCodePoints = Math.min(codePointCount, MAX_LANGUAGE_SAMPLE_CHARS);
+        int endIndex = content.offsetByCodePoints(0, sampleCodePoints);
+        return content.substring(0, endIndex);
     }
 
     private String computeHash(String content) {

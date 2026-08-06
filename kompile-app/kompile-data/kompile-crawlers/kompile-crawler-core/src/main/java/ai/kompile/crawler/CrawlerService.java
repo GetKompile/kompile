@@ -25,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -55,6 +56,7 @@ public class CrawlerService {
 
     private final CrawlerRegistry registry;
     private final ObjectMapper objectMapper;
+    private final CrawlLanguageDetector languageDetector;
 
     /** Active and recently completed jobs, keyed by jobId */
     private final Map<String, CrawlJob> jobs = new ConcurrentHashMap<>();
@@ -66,14 +68,21 @@ public class CrawlerService {
     private final Path stateDir;
 
     public CrawlerService(CrawlerRegistry registry, ObjectMapper objectMapper) {
-        this(registry, objectMapper, "");
+        this(registry, objectMapper, "", null);
+    }
+
+    public CrawlerService(CrawlerRegistry registry, ObjectMapper objectMapper,
+                          String configuredProjectRoot) {
+        this(registry, objectMapper, configuredProjectRoot, null);
     }
 
     @Autowired
     public CrawlerService(CrawlerRegistry registry, ObjectMapper objectMapper,
-                          @Value("${kompile.project.root:}") String configuredProjectRoot) {
+                          @Value("${kompile.project.root:}") String configuredProjectRoot,
+                          @Nullable CrawlLanguageDetector languageDetector) {
         this.registry = registry;
         this.objectMapper = objectMapper;
+        this.languageDetector = languageDetector;
         this.stateDir = resolveStateDirectory(configuredProjectRoot);
         try {
             Files.createDirectories(stateDir);
@@ -130,8 +139,8 @@ public class CrawlerService {
             loadPreviousState(config).ifPresent(config::setPreviousState);
         }
 
-        // Build the pipeline router from config
-        CrawlPipelineRouter router = new CrawlPipelineRouter(config);
+        // Build the pipeline router from config with the optional crawl-time language detector
+        CrawlPipelineRouter router = new CrawlPipelineRouter(config, languageDetector);
 
         // Wrap listener to add routing and state persistence
         CrawlEventListener safeDelegate = listener != null ? listener : new CrawlEventListener() {};

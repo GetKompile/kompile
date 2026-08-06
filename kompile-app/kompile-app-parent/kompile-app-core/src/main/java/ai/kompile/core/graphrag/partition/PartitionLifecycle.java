@@ -85,6 +85,12 @@ public final class PartitionLifecycle {
         ProcessOutcome process(PartitionMember member, EntityPartition partition);
     }
 
+    /** Called after a complete mini-batch and its membership state have been saved. */
+    @FunctionalInterface
+    public interface BatchObserver {
+        void afterBatch(EntityPartition partition, MiniBatchPlanner.MiniBatch batch);
+    }
+
     /**
      * The result of processing one chunk.
      *
@@ -128,12 +134,21 @@ public final class PartitionLifecycle {
      * @param processor runs extraction for one chunk
      */
     public Result run(PartitionKey key, ChunkProcessor processor) {
+        return run(key, processor, (partition, batch) -> { });
+    }
+
+    /**
+     * Runs with an explicit mini-batch commit observer. Graph-backed callers use this seam to make
+     * one batch's extracted facts visible before the next discovery round.
+     */
+    public Result run(PartitionKey key, ChunkProcessor processor, BatchObserver batchObserver) {
         if (key == null) {
             throw new IllegalArgumentException("cannot run a partition without a key");
         }
         if (processor == null) {
             throw new IllegalArgumentException("cannot run a partition without a chunk processor");
         }
+        BatchObserver observer = batchObserver == null ? (partition, batch) -> { } : batchObserver;
         DiscoveryPolicy policy = coordinator.policy();
         EntityPartition partition = store.loadOrOpen(key);
         Map<DiscoveryChannel, String> channelFailures = new LinkedHashMap<>();
@@ -192,6 +207,7 @@ public final class PartitionLifecycle {
                 // Commit boundary: everything this batch learned is visible to the next batch and
                 // to the next round's channels.
                 store.save(partition);
+                observer.afterBatch(partition, batch);
             }
 
             if (frontierExhausted && !partition.hasOutstandingWork()) {

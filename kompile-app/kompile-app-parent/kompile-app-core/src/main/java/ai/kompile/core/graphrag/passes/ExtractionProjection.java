@@ -21,6 +21,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionMetadata;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.Alternative;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.ClaimProposal;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.EpistemicProposal;
@@ -31,6 +32,8 @@ import ai.kompile.core.graphrag.passes.ExtractionProposals.Polarity;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.PropositionProposal;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.RelationProposal;
 
+import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -38,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -78,6 +82,8 @@ public final class ExtractionProjection {
         public static final String CLAIM_ATOM_KEY = "claimAtomKey";
         public static final String SCHEMA_GAP = "schemaGap";
         public static final String QUALIFIER_PREFIX = "qual.";
+        public static final String SOURCE_TIME_EXPRESSION =
+                QUALIFIER_PREFIX + "sourceTimeExpression";
 
         private Props() {
         }
@@ -240,15 +246,58 @@ public final class ExtractionProjection {
         putIfPresent(properties, Props.REJECTED_CANDIDATES, renderAlternatives(relation.alternatives()));
         addEvidence(properties, relation.evidence());
         relation.qualifiers().forEach((k, v) -> properties.put(Props.QUALIFIER_PREFIX + k, v));
+        // This reserved qualifier is derived below from the source, never trusted from model output.
+        properties.remove(Props.SOURCE_TIME_EXPRESSION);
         if (claim != null) {
             properties.put(Props.CLAIM_OPERATION, claim.operation().name());
             putIfPresent(properties, Props.CLAIM_ATOM_KEY, claim.matchedAtomKey());
         }
 
+        String occurredAt = normalizedOccurredAt(relation.occurredAt());
+        if (occurredAt == null && proposition != null) {
+            occurredAt = normalizedOccurredAt(proposition.timeExpression());
+        }
+        if (occurredAt == null) {
+            String sourceTimeExpression = groundedSourceTimeExpression(relation, proposition, context);
+            if (sourceTimeExpression != null) {
+                properties.put(Props.SOURCE_TIME_EXPRESSION, sourceTimeExpression);
+                notes.add("relation time retained as a source-relative qualifier: "
+                        + sourceTimeExpression + " — " + label);
+            } else if (blankToNull(relation.occurredAt()) != null) {
+                notes.add("relation occurredAt withheld (not ISO-8601 or source-grounded): "
+                        + relation.occurredAt() + " — " + label);
+            }
+        }
+
         String description = proposition != null ? proposition.render() : relation.reason();
         return java.util.Optional.of(new ExtractedRelation(
                 relation.sourceEntityId(), relation.targetEntityId(), relation.type(),
-                description, confidence, Map.copyOf(properties), relation.occurredAt()));
+                description, confidence, Map.copyOf(properties), occurredAt));
+    }
+
+    private static String normalizedOccurredAt(String value) {
+        String candidate = blankToNull(value);
+        return candidate != null && GraphExtractionValidator.isValidOccurredAt(candidate)
+                ? candidate.trim() : null;
+    }
+
+    private static String groundedSourceTimeExpression(
+            RelationProposal relation, PropositionProposal proposition, PassContext context) {
+        String propositionTime = proposition == null ? null : blankToNull(proposition.timeExpression());
+        if (isGroundedRelativeTime(propositionTime, context)) {
+            return propositionTime.trim();
+        }
+        String relationTime = blankToNull(relation.occurredAt());
+        return isGroundedRelativeTime(relationTime, context) ? relationTime.trim() : null;
+    }
+
+    private static boolean isGroundedRelativeTime(String value, PassContext context) {
+        if (value == null || GraphExtractionValidator.isValidOccurredAt(value)
+                || context == null || blankToNull(context.sourceText()) == null) {
+            return false;
+        }
+        return context.sourceText().toLowerCase(Locale.ROOT)
+                .contains(value.trim().toLowerCase(Locale.ROOT));
     }
 
     /** Stable key linking a pass 4 relation to its pass 5 decision. */
@@ -273,11 +322,25 @@ public final class ExtractionProjection {
         return name == null ? null : slug(name);
     }
 
-    /** Lower-cased, underscore-joined slug used as a deterministic provisional entity id. */
+    /**
+     * Unicode-safe, compatibility-normalized slug used as a deterministic provisional entity id.
+     * Non-Latin identities must never collapse to the old shared {@code entity} placeholder.
+     */
     public static String slug(String value) {
-        String slug = value.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_")
+        if (value == null) {
+            return null;
+        }
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .trim().toLowerCase(Locale.ROOT);
+        String slug = normalized.replaceAll("[^\\p{L}\\p{N}]+", "_")
                 .replaceAll("^_+|_+$", "");
-        return slug.isEmpty() ? "entity" : slug;
+        if (!slug.isEmpty()) {
+            return slug;
+        }
+        String fingerprint = UUID.nameUUIDFromBytes(
+                        normalized.getBytes(StandardCharsets.UTF_8))
+                .toString().replace("-", "");
+        return "entity_" + fingerprint;
     }
 
     private static void addEvidence(Map<String, String> properties, EvidenceSpan span) {

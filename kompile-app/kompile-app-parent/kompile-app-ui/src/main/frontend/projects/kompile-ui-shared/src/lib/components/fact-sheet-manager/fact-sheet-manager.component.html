@@ -23,6 +23,19 @@
     <mat-spinner diameter="32"></mat-spinner>
   </div>
 
+  <div class="dependency-status-bar" *ngIf="!adminServiceAvailable || !crawlServiceAvailable">
+    <mat-icon>info</mat-icon>
+    <span>
+      Optional split services are unavailable.
+      <strong>{{
+        !adminServiceAvailable && !crawlServiceAvailable
+          ? 'Admin and Crawl'
+          : (!adminServiceAvailable ? 'Admin' : 'Crawl')
+      }}</strong>
+      integrations are disabled until their managed endpoints are reachable. Core facts and local RAG remain available.
+    </span>
+  </div>
+
   <!-- Tab Navigation -->
   <mat-tab-group [selectedIndex]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)">
 
@@ -46,8 +59,9 @@
             </div>
           </div>
           <div class="header-actions">
-            <button mat-raised-button color="accent" (click)="openStartCrawlDialog()" [disabled]="hasActiveProcessing()"
-              matTooltip="Start a web or directory crawl into this fact sheet">
+            <button mat-raised-button color="accent" (click)="openStartCrawlDialog()"
+              [disabled]="!crawlServiceAvailable || hasActiveProcessing()"
+              [matTooltip]="crawlServiceAvailable ? 'Start a web or directory crawl into this fact sheet' : 'Crawl service is offline; configure its managed endpoint in Settings'">
               <mat-icon>travel_explore</mat-icon>
               Start Crawl
             </button>
@@ -1351,7 +1365,9 @@
             <p>Add documents, URLs, or other sources to "{{ activeSheet.name }}"</p>
             <p class="empty-facts-hint">A fact sheet is an isolated knowledge collection — documents you add are indexed and become searchable and askable in Chat.</p>
             <div class="empty-facts-actions">
-              <button mat-raised-button color="accent" (click)="openStartCrawlDialog()">
+              <button mat-raised-button color="accent" (click)="openStartCrawlDialog()"
+                [disabled]="!crawlServiceAvailable || hasActiveProcessing()"
+                [matTooltip]="crawlServiceAvailable ? 'Start a web or directory crawl into this fact sheet' : 'Crawl service is offline; configure its managed endpoint in Settings'">
                 <mat-icon>travel_explore</mat-icon>
                 Start Crawl
               </button>
@@ -2249,7 +2265,9 @@
       </div>
 
       <!-- Pipeline Settings Panel Component -->
-      <app-pipeline-settings-panel [showAdvanced]="true" [availableLoaders]="availableLoaders">
+      <app-pipeline-settings-panel [showAdvanced]="true" [availableLoaders]="availableLoaders"
+        [processingServiceAvailable]="adminServiceAvailable"
+        [graphServiceAvailable]="crawlServiceAvailable">
       </app-pipeline-settings-panel>
     </div>
   </div>

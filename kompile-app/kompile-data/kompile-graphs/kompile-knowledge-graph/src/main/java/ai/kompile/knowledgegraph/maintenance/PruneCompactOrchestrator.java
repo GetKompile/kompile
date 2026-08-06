@@ -149,7 +149,7 @@ public class PruneCompactOrchestrator {
 
         // ── P2: Entity compaction + RESOLVES_TO rematerialization ─────────────────
         int mergesPerformed = 0;
-        if (budget.runCompaction()) {
+        if (budget.runCompaction() && !dryRun) {
             try {
                 GraphCompactionService.CompactionResult compResult =
                         compactionService.compact(factSheetId,

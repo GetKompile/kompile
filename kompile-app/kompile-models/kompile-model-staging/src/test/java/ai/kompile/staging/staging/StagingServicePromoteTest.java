@@ -198,6 +198,9 @@ class StagingServicePromoteTest {
                 "Sharded GGUF model should use model.sdnb as model_file");
         assertEquals("tokenizer.json", model.getVocabFile(),
                 "GGUF model should use tokenizer.json as vocab_file");
+        assertEquals(
+                "sha256:039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                model.getChecksum());
         assertTrue(model.getPath().contains(modelId));
 
         // Verify 0-byte marker file was created
@@ -215,6 +218,24 @@ class StagingServicePromoteTest {
         assertNotNull(model.getTokenizer());
         assertFalse(model.getTokenizer().isDoLowerCase(),
                 "LLM tokenizer should not lowercase");
+    }
+
+    @Test
+    void promoteModel_resumesFromProductionAfterPostMoveFailure() throws Exception {
+        String modelId = "lfm-resume";
+        Path productionDir = tempDir.resolve(ModelType.LLM_GGML.getDirectoryName()).resolve(modelId);
+        Files.createDirectories(productionDir);
+        Files.write(productionDir.resolve("model.sdz"), new byte[]{7, 8, 9});
+        Files.writeString(productionDir.resolve("tokenizer.json"),
+                "{\"type\":\"BPE\",\"model\":{}}" + "x".repeat(100));
+
+        // Simulate a process restart after the verified directory was moved but before
+        // the registry entry was committed: no in-memory staging status remains.
+        assertTrue(stagingService.promoteModel(modelId, null));
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals("model.sdz", model.getModelFile());
+        assertEquals(ModelStatus.ACTIVE, model.getStatus());
+        assertTrue(Files.exists(productionDir.resolve("model.sdz")));
     }
 
     @Test

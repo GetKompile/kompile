@@ -89,11 +89,17 @@ class ModelUiStateTest {
     @Test
     fun graphActivationFailureIsPreserved() {
         val message = "Native graph format validation failed"
+        val original = IllegalStateException(message)
 
-        assertEquals(
-            GraphImportOutcome.Failed(message),
-            graphImportOutcome("/graphs/imported.kgraph", GraphUiState.Failed(null, message))
+        val outcome = graphImportOutcome(
+            "/graphs/imported.kgraph",
+            GraphUiState.Failed(null, message, original.stackTraceToString())
         )
+
+        assertTrue(outcome is GraphImportOutcome.Failed)
+        outcome as GraphImportOutcome.Failed
+        assertEquals(message, outcome.message)
+        assertEquals(original.stackTraceToString(), outcome.stackTrace)
     }
 
     @Test

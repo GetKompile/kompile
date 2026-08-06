@@ -16,10 +16,8 @@
 
 package ai.kompile.ocr.integration;
 
-import ai.kompile.app.config.KompileServerConstants;
-import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.modelmanager.registry.ModelType;
-import ai.kompile.modelmanager.registry.RegistryService;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
@@ -40,7 +38,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * REST controller for OCR debugging and testing.
@@ -58,15 +55,12 @@ public class OcrDebugController {
             ModelType.LAYOUT_MODEL, ModelType.OCR_PIPELINE, ModelType.VLM_PIPELINE
     );
 
-    private final RegistryService registryService;
     private final RestTemplate restTemplate;
-    private String stagingBaseUrl = KompileServerConstants.DEFAULT_STAGING_URL;
+    private String stagingBaseUrlOverride;
 
     @Autowired
     public OcrDebugController(
-            RegistryService registryService,
             @Autowired(required = false) RestTemplate restTemplate) {
-        this.registryService = registryService;
         this.restTemplate = restTemplate != null ? restTemplate : new RestTemplate();
     }
 
@@ -74,7 +68,7 @@ public class OcrDebugController {
      * Sets the staging service base URL. Can be called at runtime.
      */
     public void setStagingBaseUrl(String url) {
-        this.stagingBaseUrl = url;
+        this.stagingBaseUrlOverride = url;
     }
 
     // ---- Status ----
@@ -87,7 +81,7 @@ public class OcrDebugController {
         Map<String, Object> status = new LinkedHashMap<>();
 
         // Registry model count
-        List<ModelEntry> ocrModels = getOcrVlmModels();
+        List<Map<String, Object>> ocrModels = getOcrVlmModels();
         status.put("registryModelCount", ocrModels.size());
 
         // Try to get VLM status from staging
@@ -104,7 +98,7 @@ public class OcrDebugController {
             status.put("vlmModelStatus", "staging_unreachable");
         }
 
-        status.put("stagingUrl", stagingBaseUrl);
+        status.put("stagingUrl", stagingBase());
 
         return ResponseEntity.ok(status);
     }
@@ -116,10 +110,7 @@ public class OcrDebugController {
      */
     @GetMapping("/models")
     public ResponseEntity<List<Map<String, Object>>> listModels() {
-        List<Map<String, Object>> result = getOcrVlmModels().stream()
-                .map(this::modelEntryToMap)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(getOcrVlmModels());
     }
 
     // ---- VLM Load/Unload (delegated to staging via HTTP) ----
@@ -142,7 +133,7 @@ public class OcrDebugController {
             } else {
                 return ResponseEntity.status(502).body(Map.of(
                         "success", false,
-                        "error", "Staging service unreachable at " + stagingBaseUrl));
+                        "error", "Staging service unreachable at " + stagingBase()));
             }
         } catch (Exception e) {
             logger.error("Failed to load VLM model {}: {}", modelId, e.getMessage());
@@ -163,7 +154,7 @@ public class OcrDebugController {
             } else {
                 return ResponseEntity.status(502).body(Map.of(
                         "success", false,
-                        "error", "Staging service unreachable at " + stagingBaseUrl));
+                        "error", "Staging service unreachable at " + stagingBase()));
             }
         } catch (Exception e) {
             logger.error("Failed to unload VLM: {}", e.getMessage());
@@ -183,7 +174,7 @@ public class OcrDebugController {
         }
         return ResponseEntity.status(502).body(Map.of(
                 "reachable", false,
-                "error", "Staging service unreachable at " + stagingBaseUrl));
+                "error", "Staging service unreachable at " + stagingBase()));
     }
 
     // ---- Test OCR (delegates to staging VLM generate) ----
@@ -259,9 +250,9 @@ public class OcrDebugController {
 
             if (vlmResponse == null) {
                 traceSteps.add(traceStep("vlm_generate", generateTime,
-                        "FAILED: Staging service unreachable at " + stagingBaseUrl));
+                        "FAILED: Staging service unreachable at " + stagingBase()));
                 result.put("success", false);
-                result.put("error", "Staging service unreachable at " + stagingBaseUrl);
+                result.put("error", "Staging service unreachable at " + stagingBase());
                 result.put("steps", traceSteps);
                 result.put("totalTimeMs", System.currentTimeMillis() - totalStart);
                 tempFile.delete();
@@ -399,29 +390,40 @@ public class OcrDebugController {
 
     // ---- Private helpers ----
 
-    private List<ModelEntry> getOcrVlmModels() {
-        List<ModelEntry> all = new ArrayList<>();
-        for (ModelType type : OCR_VLM_TYPES) {
-            try {
-                all.addAll(registryService.getModelsByType(type));
-            } catch (Exception e) {
-                // type may not exist
-            }
+    private List<Map<String, Object>> getOcrVlmModels() {
+        Map<String, Object> registry = callStagingGet("/api/staging/registry");
+        if (registry == null || !(registry.get("models") instanceof Map<?, ?> models)) {
+            return List.of();
         }
-        return all;
+
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map.Entry<?, ?> entry : models.entrySet()) {
+            if (!(entry.getValue() instanceof Map<?, ?> model)) {
+                continue;
+            }
+            ModelType type = ModelType.fromValue(stringValue(model.get("type")));
+            if (!OCR_VLM_TYPES.contains(type)) {
+                continue;
+            }
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            String modelId = stringValue(model.get("model_id"));
+            response.put("modelId", modelId != null ? modelId : String.valueOf(entry.getKey()));
+            response.put("type", type.name());
+            String status = stringValue(model.get("status"));
+            response.put("status", status != null ? status.toUpperCase(Locale.ROOT) : null);
+            response.put("path", model.get("path"));
+            if (model.get("metadata") instanceof Map<?, ?> metadata) {
+                response.put("description", metadata.get("description"));
+                response.put("framework", metadata.get("framework"));
+            }
+            result.add(response);
+        }
+        return result;
     }
 
-    private Map<String, Object> modelEntryToMap(ModelEntry entry) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("modelId", entry.getModelId());
-        m.put("type", entry.getType() != null ? entry.getType().name() : null);
-        m.put("status", entry.getStatus() != null ? entry.getStatus().name() : null);
-        m.put("path", entry.getPath());
-        if (entry.getMetadata() != null) {
-            m.put("description", entry.getMetadata().getDescription());
-            m.put("framework", entry.getMetadata().getFramework());
-        }
-        return m;
+    private static String stringValue(Object value) {
+        return value != null ? String.valueOf(value) : null;
     }
 
     private Map<String, Object> traceStep(String name, long durationMs, String detail) {
@@ -434,11 +436,19 @@ public class OcrDebugController {
 
     // ---- HTTP calls to staging service ----
 
+    private String stagingBase() {
+        String configured = stagingBaseUrlOverride;
+        if (configured == null || configured.isBlank()) {
+            configured = ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
+        }
+        return configured.trim().replaceAll("/+$", "");
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> callStagingGet(String path) {
         try {
             ResponseEntity<Map> response = restTemplate.getForEntity(
-                    stagingBaseUrl + path, Map.class);
+                    stagingBase() + path, Map.class);
             return response.getBody();
         } catch (Exception e) {
             logger.debug("Staging GET {} failed: {}", path, e.getMessage());
@@ -453,7 +463,7 @@ public class OcrDebugController {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Object> entity = new HttpEntity<>(body, headers);
             ResponseEntity<Map> response = restTemplate.postForEntity(
-                    stagingBaseUrl + path, entity, Map.class);
+                    stagingBase() + path, entity, Map.class);
             return response.getBody();
         } catch (Exception e) {
             logger.debug("Staging POST {} failed: {}", path, e.getMessage());
@@ -467,7 +477,7 @@ public class OcrDebugController {
             HttpHeaders headers = new HttpHeaders();
             HttpEntity<Void> entity = new HttpEntity<>(headers);
             ResponseEntity<Map> response = restTemplate.exchange(
-                    stagingBaseUrl + path, HttpMethod.DELETE, entity, Map.class);
+                    stagingBase() + path, HttpMethod.DELETE, entity, Map.class);
             return response.getBody();
         } catch (Exception e) {
             logger.debug("Staging DELETE {} failed: {}", path, e.getMessage());
@@ -492,7 +502,7 @@ public class OcrDebugController {
             body.add("file", new HttpEntity<>(imageResource, createFileHeaders(filename)));
 
             // Build query params
-            StringBuilder url = new StringBuilder(stagingBaseUrl + "/api/vlm/generate");
+            StringBuilder url = new StringBuilder(stagingBase() + "/api/vlm/generate");
             url.append("?maxTokens=").append(maxTokens);
             if (modelId != null && !modelId.isBlank()) {
                 url.append("&modelSetId=").append(modelId);

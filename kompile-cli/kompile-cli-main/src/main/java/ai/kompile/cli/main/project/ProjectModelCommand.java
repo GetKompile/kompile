@@ -375,7 +375,7 @@ public class ProjectModelCommand implements Callable<Integer> {
             json.append("\n    ")
                     .append(jsonString(firstNonBlank(model.getRegistryModelId(), model.getModelId(), model.getId())))
                     .append(" : ")
-                    .append(stagingModelEntryJson(model));
+                    .append(stagingModelEntryJson(projectRoot, model));
             first = false;
         }
         if (!first) {
@@ -387,7 +387,7 @@ public class ProjectModelCommand implements Callable<Integer> {
         Files.writeString(registryPath, json.toString(), StandardCharsets.UTF_8);
     }
 
-    static String stagingModelEntryJson(KompileProjectModel model) {
+    static String stagingModelEntryJson(Path projectRoot, KompileProjectModel model) {
         String type = registryType(model);
         String modelId = firstNonBlank(model.getRegistryModelId(), model.getModelId(), model.getId());
         String modelFile = metadataValue(model, "registry.modelFile", defaultModelFile(type, modelId));
@@ -398,7 +398,9 @@ public class ProjectModelCommand implements Callable<Integer> {
         String supportedLanguages = metadataValue(model, "registry.supportedLanguages", null);
         String source = firstNonBlank(model.getSource(), "project");
         String sourceRepository = model.getSourceRepository();
-        String status = model.getLifecycle() == KompileProjectLifecycleState.ACTIVE ? "active" : "staged";
+        Path modelDirectory = projectModelDirectory(projectRoot, model);
+        boolean materialized = KompileProjectStore.hasCompleteModelArtifact(modelDirectory, modelFile);
+        String status = KompileProjectStore.stagingRegistryStatus(model.getLifecycle(), materialized);
         String version = model.getVersion();
 
         return "{"

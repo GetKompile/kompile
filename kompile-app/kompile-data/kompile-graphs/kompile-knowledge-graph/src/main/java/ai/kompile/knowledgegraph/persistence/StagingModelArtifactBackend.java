@@ -15,8 +15,8 @@
  */
 package ai.kompile.knowledgegraph.persistence;
 
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -37,10 +37,9 @@ import java.util.List;
  * {@link ModelArtifactBackend} that delegates {@code SAMEDIFF_CHECKPOINT} artifacts to the
  * kompile staging registry service.
  *
- * <p>Only {@link ModelArtifactType#SAMEDIFF_CHECKPOINT} is supported and only when
- * {@code kompile.staging.url} is configured. When the staging URL is blank, {@link #supports}
- * returns {@code false} so the {@link ModelArtifactRouter} falls through to the
- * {@link FileModelArtifactBackend}.</p>
+ * <p>Only {@link ModelArtifactType#SAMEDIFF_CHECKPOINT} is supported. Each operation resolves
+ * Model Staging from the UI/CLI-managed {@code service-endpoints.json}; a test may provide the
+ * explicit field override.</p>
  *
  * <p>Priority {@code 10} — takes precedence over the file backend for checkpoints.</p>
  */
@@ -48,7 +47,7 @@ import java.util.List;
 @Component
 public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
-    @Value("${kompile.staging.url:http://localhost:8090}")
+    /** Explicit test override; production resolves the managed endpoint for each operation. */
     private String stagingUrl;
 
     private final RestTemplate restTemplate = new RestTemplate();
@@ -57,8 +56,7 @@ public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     @Override
     public boolean supports(ModelArtifactType type) {
-        return ModelArtifactType.SAMEDIFF_CHECKPOINT == type
-                && stagingUrl != null && !stagingUrl.isBlank();
+        return ModelArtifactType.SAMEDIFF_CHECKPOINT == type;
     }
 
     @Override
@@ -68,8 +66,7 @@ public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     @Override
     public void store(ModelArtifactRef ref, Path sourceFile) throws IOException {
-        requireStagingUrl();
-        String url = stagingUrl + "/api/staging/upload";
+        String url = stagingBase() + "/api/staging/upload";
         log.debug("StagingModelArtifactBackend: uploading {} to {}", ref, url);
 
         HttpHeaders headers = new HttpHeaders();
@@ -93,8 +90,7 @@ public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     @Override
     public Path retrieve(ModelArtifactRef ref, Path targetFile) throws IOException {
-        requireStagingUrl();
-        String url = stagingUrl + "/api/staging/registry/model/" + ref.artifactId() + "/download/model";
+        String url = stagingBase() + "/api/staging/registry/model/" + ref.artifactId() + "/download/model";
         log.debug("StagingModelArtifactBackend: downloading {} from {}", ref, url);
 
         HttpHeaders headers = new HttpHeaders();
@@ -119,10 +115,11 @@ public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private void requireStagingUrl() {
-        if (stagingUrl == null || stagingUrl.isBlank()) {
-            throw new UnsupportedOperationException(
-                    "StagingModelArtifactBackend: kompile.staging.url is not configured");
+    private String stagingBase() {
+        String configured = stagingUrl;
+        if (configured == null || configured.isBlank()) {
+            configured = ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
         }
+        return configured.trim().replaceAll("/+$", "");
     }
 }

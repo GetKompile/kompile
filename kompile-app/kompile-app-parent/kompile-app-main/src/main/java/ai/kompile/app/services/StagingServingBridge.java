@@ -17,6 +17,8 @@
 package ai.kompile.app.services;
 
 import ai.kompile.app.services.subprocess.ServingSubprocessLauncher;
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.knowledgegraph.confidence.KbConfig;
 import ai.kompile.knowledgegraph.confidence.KbConfigManager;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -26,7 +28,6 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -38,7 +39,6 @@ import java.net.http.HttpResponse;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.HashMap;
@@ -55,8 +55,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Staging → serving auto-load bridge.
  *
- * <p>Polls {@code GET /api/staging/active} (on the kompile-model-staging server at
- * {@code kompile.staging.url}) every {@link KbConfig#getServingAutoLoadPollIntervalSeconds()}
+ * <p>Polls {@code GET /api/staging/active} on the Model Staging service resolved from the
+ * managed endpoint configuration every {@link KbConfig#getServingAutoLoadPollIntervalSeconds()}
  * seconds. When an active {@code llm_ggml} model is detected it:</p>
  * <ol>
  *   <li>Resolves the model's local file path via the staging registry API
@@ -82,11 +82,12 @@ public class StagingServingBridge {
     /** ModelType string in the staging active response for GGML/SameDiff LLMs. */
     private static final String LLM_MODEL_TYPE = "llm_ggml";
 
-    /** Local cache directory — mirrors the convention used by the serving subprocess's LlmModelController. */
-    private static final Path DEFAULT_LLM_CACHE_DIR =
-            Paths.get(System.getProperty("user.home"), ".kompile", "llm-cache");
+    /** Local cache directory resolved through the same CLI-managed project rules as serving. */
+    private static Path llmCacheDir() {
+        return KompileHome.llmCacheDirectory().toPath();
+    }
 
-    @Value("${kompile.staging.url:http://localhost:8090}")
+    /** Explicit test override; production resolves the managed endpoint for each poll. */
     private String stagingUrl;
 
     @Autowired(required = false)
@@ -132,7 +133,8 @@ public class StagingServingBridge {
             return;
         }
         int intervalSec = resolveInterval();
-        log.info("StagingServingBridge: starting with poll interval {}s, staging={}", intervalSec, stagingUrl);
+        log.info("StagingServingBridge: starting with poll interval {}s, staging={}", intervalSec,
+                stagingBase());
         pollTask = scheduler.scheduleAtFixedRate(
                 this::poll, 5, intervalSec, TimeUnit.SECONDS);
     }
@@ -160,8 +162,13 @@ public class StagingServingBridge {
         try {
             String activeModelId = fetchActiveLlmModelId();
             if (Objects.equals(activeModelId, currentModelId)) {
-                log.trace("StagingServingBridge: no change (active={})", activeModelId);
-                return;
+                if (activeModelId == null || launcher.isRunning()) {
+                    log.trace("StagingServingBridge: no change (active={})", activeModelId);
+                    return;
+                }
+                log.warn("StagingServingBridge: serving subprocess for active model '{}' is not running; restarting",
+                        activeModelId);
+                currentModelId = null;
             }
             if (activeModelId == null) {
                 // Active LLM removed from staging — stop the subprocess
@@ -279,7 +286,7 @@ public class StagingServingBridge {
         String modelFileName = textOrDefault(entry.get("model_file"), "model.sdz");
 
         // 2. Check local cache — single-file artifact
-        Path modelDir = DEFAULT_LLM_CACHE_DIR.resolve(modelId);
+        Path modelDir = llmCacheDir().resolve(modelId);
         Path modelFile = modelDir.resolve(modelFileName);
         if (Files.exists(modelFile) && Files.size(modelFile) > 0) {
             log.info("StagingServingBridge: model '{}' found in local cache at {}", modelId, modelFile);
@@ -465,9 +472,9 @@ public class StagingServingBridge {
     private String stagingBase() {
         String url = stagingUrl;
         if (url == null || url.isBlank()) {
-            url = "http://localhost:8090";
+            url = ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
         }
-        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+        return url.trim().replaceAll("/+$", "");
     }
 
     private int resolveInterval() {

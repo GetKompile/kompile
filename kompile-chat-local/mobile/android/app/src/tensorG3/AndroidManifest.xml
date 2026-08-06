@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            All JavaCPP/SDX model state and generation run here. A fatal NNAPI/native failure kills
+            only this private worker, leaving the main process alive to render the persisted
+            checkpoint, Android exit evidence, and complete native trace.
+        -->
+        <service
+            android:name=".model.SdxRuntimeService"
+            android:exported="false"
+            android:process=":sdx_model_runtime"
+            android:stopWithTask="false" />
+    </application>
+
+</manifest>

@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.persistence;
 
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.factory.Nd4j;
@@ -43,7 +44,7 @@ public class EmbeddingModelPersistenceService {
     @Value("${kompile.data.dir:}")
     private String dataDir;
 
-    @Value("${kompile.staging.url:http://localhost:8090}")
+    /** Explicit test override; production resolves the managed endpoint when writing a pointer. */
     private String stagingUrl;
 
     private final ObjectMapper objectMapper;
@@ -71,7 +72,7 @@ public class EmbeddingModelPersistenceService {
         String nd4jVersion = resolveNd4jVersion();
         KgeModelRef ref = KgeModelRef.builder()
                 .modelId(modelId)
-                .stagingUrl(stagingUrl != null && !stagingUrl.isBlank() ? stagingUrl : null)
+                .stagingUrl(stagingBase())
                 .algorithm(algorithm)
                 .dim(dim)
                 .snapshotId(snapshotId)
@@ -105,6 +106,14 @@ public class EmbeddingModelPersistenceService {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private String stagingBase() {
+        String configured = stagingUrl;
+        if (configured == null || configured.isBlank()) {
+            configured = ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
+        }
+        return configured.trim().replaceAll("/+$", "");
+    }
 
     private Path resolveBase() {
         return (dataDir == null || dataDir.isBlank())

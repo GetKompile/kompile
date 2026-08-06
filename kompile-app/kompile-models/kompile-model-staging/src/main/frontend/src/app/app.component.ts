@@ -92,6 +92,7 @@ export class AppComponent {
     { path: '/registry', icon: 'inventory_2', label: 'Registry' },
     { path: '/export-import', icon: 'import_export', label: 'Export/Import' },
     { path: '/archives', icon: 'archive', label: 'Archives' },
+    { path: '/connections', icon: 'lan', label: 'Connections' },
     { path: '/config', icon: 'settings', label: 'Configuration' },
     { path: '/experiments', icon: 'science', label: 'Experiments' },
     { path: '/eval-datasets', icon: 'dataset', label: 'Eval Datasets' }

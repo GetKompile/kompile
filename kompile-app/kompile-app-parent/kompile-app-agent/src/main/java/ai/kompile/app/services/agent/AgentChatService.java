@@ -229,6 +229,7 @@ public class AgentChatService {
         executorService.submit(() -> {
             ProcessStatus processStatus = null;
             Process process = null;
+            boolean emitterCompletionDelegated = false;
             List<RetrievedDoc> retrievedSources = new ArrayList<>();
 
             try {
@@ -293,6 +294,7 @@ public class AgentChatService {
                         }
                     }
                     apiAgentChatExecutor.executeApiChat(agent, request, augmentedPrompt, retrievedSources, emitter);
+                    emitterCompletionDelegated = true;
                     return;
                 }
 
@@ -562,10 +564,12 @@ public class AgentChatService {
                 if (process != null && process.isAlive()) {
                     process.destroyForcibly();
                 }
-                try {
-                    emitter.complete();
-                } catch (Exception e) {
-                    log.debug("Error completing emitter", e);
+                if (!emitterCompletionDelegated) {
+                    try {
+                        emitter.complete();
+                    } catch (Exception e) {
+                        log.debug("Error completing emitter", e);
+                    }
                 }
             }
         });

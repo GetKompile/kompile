@@ -126,6 +126,59 @@ describe('CrawlStepMonitorComponent', () => {
     });
   });
 
+  describe('decomposed LLM call scoping', () => {
+    beforeEach(() => {
+      component.job = {
+        recentLlmCalls: [
+          { timestamp: 't0', backendId: 'local', taskType: 'llm', phase: 'GRAPH_EXTRACTION',
+            passId: 'propositions', passInvocation: 1, chunkId: 'chunk-direct', graphRevision: 'graph-1',
+            graphEntities: 3, graphRelationships: 1, latencyMs: 20, promptChars: 100, responseChars: 20, success: true },
+          { timestamp: 't1', backendId: 'local', taskType: 'llm', phase: 'ENTITY_PARTITIONS',
+            passId: 'mentions', passInvocation: 2, partitionId: 'partition-acme', chunkId: 'chunk-7',
+            corpusSnapshotId: 'corpus-v1:abc', graphRevision: 'graph-12', graphEntities: 14,
+            graphRelationships: 9, latencyMs: 40, promptChars: 200, responseChars: 30, success: true },
+          { timestamp: 't2', backendId: 'local', taskType: 'llm', phase: 'w1:ENTITY_PARTITIONS',
+            passId: 'relations', passInvocation: 4, partitionId: 'partition-beta', chunkId: 'chunk-8',
+            latencyMs: 50, promptChars: 220, responseChars: 35, success: false },
+          { timestamp: 'legacy', backendId: 'legacy', taskType: 'llm', latencyMs: 10,
+            promptChars: 80, responseChars: 10, success: true }
+        ]
+      } as any;
+    });
+
+    it('attaches scoped calls only to their owning phase and keeps legacy fallback on graph extraction', () => {
+      expect(component.getStepLlmCalls({ stepId: 'GRAPH_EXTRACTION', stepType: 'GRAPH' } as any).length).toBe(2);
+      expect(component.getStepLlmCalls({ stepId: 'ENTITY_PARTITIONS', stepType: 'GRAPH' } as any).length).toBe(1);
+      expect(component.getStepLlmCalls({ stepId: 'w1:ENTITY_PARTITIONS', stepType: 'GRAPH' } as any).length).toBe(1);
+      expect(component.getStepLlmCalls({ stepId: 'ENRICHMENT', stepType: 'GRAPH' } as any).length).toBe(0);
+    });
+
+    it('scopes the first live transcript before its completed call record arrives', () => {
+      component.job = { recentLlmCalls: [] } as any;
+      expect(component.getStepTranscriptFilter({
+        stepId: 'ENTITY_PARTITIONS', stepType: 'GRAPH', status: 'RUNNING',
+        currentItem: 'propositions #1 | partition-acme | chunk-7'
+      } as any)).toBe('[llm/ENTITY_PARTITIONS/');
+    });
+
+    it('renders the canonical pass breakdown and corpus/graph scope for small-model work', () => {
+      const step = { stepId: 'ENTITY_PARTITIONS', stepType: 'GRAPH', status: 'RUNNING' } as any;
+      const passes = component.getExtractionPassSummaries(step);
+      const mentions = passes.find(pass => pass.id === 'mentions')!;
+      const divisions = component.getExtractionDivisionSummary(step)!;
+
+      expect(passes.map(pass => pass.id)).toEqual(['propositions', 'mentions', 'epistemic', 'relations', 'claims']);
+      expect(mentions.count).toBe(1);
+      expect(mentions.state).toBe('done');
+      expect(divisions.corpusSnapshots).toEqual(['corpus-v1:abc']);
+      expect(divisions.partitions).toEqual(['partition-acme']);
+      expect(divisions.chunks).toEqual(['chunk-7']);
+      expect(divisions.graphEntities).toBe(14);
+      expect(divisions.graphRelationships).toBe(9);
+      expect(component.getStepTranscriptFilter(step)).toBe('[llm/ENTITY_PARTITIONS/');
+    });
+  });
+
   it('single-node (untagged) tuning still matches by base stage', () => {
     component.job = {
       recentTuningDecisions: [

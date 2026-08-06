@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -34,6 +35,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.Optional;
 
 import static org.hamcrest.Matchers.*;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -53,6 +55,9 @@ class ModelRegistryControllerActiveContextTest {
     private AnseriniVectorStoreImpl vectorStore;
 
     @Mock
+    private ObjectProvider<AnseriniVectorStoreImpl> vectorStoreProvider;
+
+    @Mock
     private StagingServiceConfigService stagingConfigService;
 
     @Mock
@@ -62,8 +67,9 @@ class ModelRegistryControllerActiveContextTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(vectorStoreProvider.getIfAvailable()).thenReturn(vectorStore);
         ModelRegistryController controller = new ModelRegistryController(
-                embeddingModel, vectorStore, stagingConfigService, stagingClientService,
+                embeddingModel, vectorStoreProvider, stagingConfigService, stagingClientService,
                 null, null);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }

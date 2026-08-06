@@ -21,6 +21,9 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.roles.RoleAgentDefaults;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
+import ai.kompile.cli.main.chat.roles.RoleManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -44,7 +47,7 @@ class DirectSubagentRunnerStdioTest {
     void codexMcpOverridesPrecedeExecSubcommand() {
         List<String> base = SubprocessAgentRunner.buildManagedCommand(
                 "codex", "/tmp/codex", "review", false, null,
-                false, tempDir, null);
+                false, tempDir, null, "gpt-5.3-codex", "xhigh");
 
         List<String> command = SubprocessAgentRunner.prependGlobalOptions(
                 base, List.of("-c", "mcp_servers.kompile.command=\"/tmp/kompile\""));
@@ -53,9 +56,38 @@ class DirectSubagentRunnerStdioTest {
                 "/tmp/codex",
                 "-c",
                 "mcp_servers.kompile.command=\"/tmp/kompile\"",
+                "--model",
+                "gpt-5.3-codex",
+                "-c",
+                "model_reasoning_effort=\"xhigh\"",
                 "exec",
                 "--json",
                 "review"), command);
+    }
+
+    @Test
+    void managedCommandsMapClaudeAndOpenCodeThinking() {
+        assertEquals(List.of(
+                        "/tmp/claude",
+                        "--model", "claude-opus",
+                        "--effort", "max",
+                        "-p", "review",
+                        "--output-format", "stream-json",
+                        "--verbose"),
+                SubprocessAgentRunner.buildManagedCommand(
+                        "claude", "/tmp/claude", "review", false, null,
+                        false, tempDir, null, "claude-opus", "max"));
+
+        assertEquals(List.of(
+                        "/tmp/opencode",
+                        "run",
+                        "--model", "openai/gpt",
+                        "--variant", "high",
+                        "--format", "json",
+                        "review"),
+                SubprocessAgentRunner.buildManagedCommand(
+                        "opencode", "/tmp/opencode", "review", false, null,
+                        false, tempDir, null, "openai/gpt", "high"));
     }
 
     @Test
@@ -63,7 +95,10 @@ class DirectSubagentRunnerStdioTest {
         ManagedTestRunner runner = new ManagedTestRunner(tempDir);
         runner.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
 
-        String result = runner.runSubagent(AgentConfig.builder("codex").build(), "inspect managed tools");
+        String result = runner.runSubagent(AgentConfig.builder("codex")
+                .modelOverride("gpt-5.3-codex")
+                .thinkingOverride("high")
+                .build(), "inspect managed tools");
 
         FakeManagedRunner fake = runner.fake;
         assertNotNull(fake, "subagent should create the managed passthrough runner");
@@ -74,9 +109,70 @@ class DirectSubagentRunnerStdioTest {
         assertEquals("inspect managed tools", fake.message);
         assertEquals("1", fake.extraEnvironment.get("KOMPILE_SUBAGENT_DEPTH"));
         assertEquals("forked-value", fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
+        assertEquals("gpt-5.3-codex", fake.modelOverride);
+        assertEquals("high", fake.thinkingOverride);
         assertTrue(result.contains("Subagent 'codex' completed"));
         assertTrue(result.contains("managed-output"));
         assertTrue(result.contains("Full output"));
+    }
+
+    @Test
+    void persistedAgentRoleSuppliesPromptModelAndModelSpecificThinking() throws Exception {
+        RoleConfig doer = RoleConfig.builder()
+                .name("doer")
+                .displayName("Focused Doer")
+                .description("Implements bounded changes")
+                .systemPrompt("Work through the implementation carefully.")
+                .agentDefaults(Map.of(
+                        "codex", new RoleAgentDefaults(
+                                "gpt-5.6-terra", "medium",
+                                Map.of("gpt-5.6-sol", "ultra"))))
+                .build();
+        RoleManager roleManager = new TestRoleManager(tempDir, doer, "doer");
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir, roleManager);
+
+        runner.runSubagent(AgentConfig.builder("codex")
+                .modelOverride("gpt-5.6-sol")
+                .build(), "implement the focused change");
+
+        assertTrue(runner.fake.message.contains("# Role: Focused Doer"));
+        assertTrue(runner.fake.message.contains("implement the focused change"));
+        assertEquals("gpt-5.6-sol", runner.fake.modelOverride);
+        assertEquals("ultra", runner.fake.thinkingOverride);
+    }
+
+    @Test
+    void explicitTaskRoleOverridesPersistedAgentRole() throws Exception {
+        RoleConfig assigned = RoleConfig.builder()
+                .name("assigned")
+                .displayName("Assigned Role")
+                .description("Persisted fallback")
+                .systemPrompt("Use the assigned role.")
+                .agentDefaults(Map.of(
+                        "codex", new RoleAgentDefaults(
+                                "gpt-5.6-terra", "low", Map.of())))
+                .build();
+        RoleConfig explicit = RoleConfig.builder()
+                .name("explicit")
+                .displayName("Explicit Role")
+                .description("Task-selected role")
+                .systemPrompt("Use the explicit role.")
+                .agentDefaults(Map.of(
+                        "codex", new RoleAgentDefaults(
+                                "gpt-5.6-sol", "ultra", Map.of())))
+                .build();
+        RoleManager roleManager = new TestRoleManager(
+                tempDir, Map.of("assigned", assigned, "explicit", explicit), "assigned");
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir, roleManager);
+
+        runner.runSubagent(AgentConfig.builder("codex")
+                .roleName("explicit")
+                .build(), "review the integration");
+
+        assertTrue(runner.fake.message.contains("# Role: Explicit Role"));
+        assertFalse(runner.fake.message.contains("# Role: Assigned Role"));
+        assertEquals("gpt-5.6-sol", runner.fake.modelOverride);
+        assertEquals("ultra", runner.fake.thinkingOverride);
     }
 
     @Test
@@ -116,18 +212,24 @@ class DirectSubagentRunnerStdioTest {
 
     static final class ManagedTestRunner extends DirectSubagentRunnerStdio {
         private final Path testWorkDir;
+        private final RoleManager testRoleManager;
         final CountDownLatch runnerCreated = new CountDownLatch(1);
         volatile FakeManagedRunner fake;
         volatile boolean blockRunMessage;
 
         ManagedTestRunner(Path workDir) {
-            super(workDir);
+            this(workDir, new TestRoleManager(workDir, Map.of(), null));
+        }
+
+        ManagedTestRunner(Path workDir, RoleManager roleManager) {
+            super(workDir, roleManager);
             this.testWorkDir = workDir;
+            this.testRoleManager = roleManager;
         }
 
         @Override
         DirectSubagentRunnerStdio forkForSubagent() {
-            ManagedTestRunner fork = new ManagedTestRunner(testWorkDir);
+            ManagedTestRunner fork = new ManagedTestRunner(testWorkDir, testRoleManager);
             fork.setExtraEnvironment(Map.of("KOMPILE_TEST_FORK_ENV", "forked-value"));
             return fork;
         }
@@ -137,6 +239,31 @@ class DirectSubagentRunnerStdioTest {
             fake = new FakeManagedRunner(agentName, testWorkDir, injectMcpTools, () -> blockRunMessage);
             runnerCreated.countDown();
             return fake;
+        }
+    }
+
+    static final class TestRoleManager extends RoleManager {
+        private final Map<String, RoleConfig> roles;
+        private final String assignedRole;
+
+        TestRoleManager(Path workDir, RoleConfig role, String assignedRole) {
+            this(workDir, role != null ? Map.of(role.getName(), role) : Map.of(), assignedRole);
+        }
+
+        TestRoleManager(Path workDir, Map<String, RoleConfig> roles, String assignedRole) {
+            super(workDir);
+            this.roles = roles;
+            this.assignedRole = assignedRole;
+        }
+
+        @Override
+        public RoleConfig getRole(String name) {
+            return roles.get(name);
+        }
+
+        @Override
+        public String getAgentRole(String agentName) {
+            return assignedRole;
         }
     }
 
@@ -150,6 +277,8 @@ class DirectSubagentRunnerStdioTest {
         volatile boolean cleanupCalled;
         volatile boolean cancelCalled;
         volatile String message;
+        volatile String modelOverride;
+        volatile String thinkingOverride;
         volatile Map<String, String> extraEnvironment = Map.of();
         volatile Consumer<String> outputConsumer;
 
@@ -160,6 +289,13 @@ class DirectSubagentRunnerStdioTest {
             this.agentName = agentName;
             this.injectMcpTools = injectMcpTools;
             this.blockRunMessage = blockRunMessage;
+        }
+
+        @Override
+        public void setLaunchOverrides(String modelOverride, String thinkingOverride) {
+            this.modelOverride = modelOverride;
+            this.thinkingOverride = thinkingOverride;
+            super.setLaunchOverrides(modelOverride, thinkingOverride);
         }
 
         @Override

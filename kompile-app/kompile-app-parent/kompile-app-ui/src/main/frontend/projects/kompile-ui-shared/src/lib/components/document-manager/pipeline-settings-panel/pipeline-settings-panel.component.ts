@@ -74,6 +74,8 @@ import { GraphExtractionService, GraphExtractionConfig, SchemaMode, ModelProvide
 export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
   @Input() showAdvanced = false;
   @Input() availableLoaders: LoaderInfo[] = [];
+  @Input() processingServiceAvailable = true;
+  @Input() graphServiceAvailable = true;
   @Output() settingsChanged = new EventEmitter<PipelineConfig>();
 
   // Pipeline configuration
@@ -110,9 +112,17 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit(): void {
-    this.loadConfiguration();
-    this.loadPresets();
-    this.loadGraphConfig();
+    if (this.processingServiceAvailable) {
+      this.loadConfiguration();
+      this.loadPresets();
+    } else {
+      this.isLoading = false;
+      this.errorMessage = 'Admin service is offline. Configure or start it to edit pipeline settings.';
+    }
+
+    if (this.graphServiceAvailable) {
+      this.loadGraphConfig();
+    }
   }
 
   ngOnDestroy(): void {

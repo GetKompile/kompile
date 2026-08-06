@@ -8,7 +8,7 @@
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  * limitations under the License.
@@ -16,31 +16,39 @@
 
 package ai.kompile.staging.mcp;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationContext;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
+import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
-import java.lang.reflect.RecordComponent;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Auto-discovering MCP tool registry for the staging application.
- * Scans all Spring beans for @Tool annotated methods and registers them with the MCP server.
+ *
+ * <p>Schema generation and invocation intentionally use Spring AI's
+ * {@link MethodToolCallbackProvider}. This is the same AOT-aware path used by the
+ * unified server and avoids record/Jackson reflection at native-image runtime.</p>
  */
 @Component
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
@@ -51,7 +59,7 @@ public class StagingMcpToolRegistry {
 
     private final ObjectMapper objectMapper;
     private final ApplicationContext applicationContext;
-    private int toolCount = 0;
+    private int toolCount;
 
     @Autowired
     public StagingMcpToolRegistry(ObjectMapper objectMapper, ApplicationContext applicationContext) {
@@ -60,43 +68,18 @@ public class StagingMcpToolRegistry {
     }
 
     public void registerTools(McpSyncServer server) {
-        List<McpServerFeatures.SyncToolSpecification> allTools = new ArrayList<>();
-
-        // Auto-discover all beans with @Tool methods
-        for (String beanName : applicationContext.getBeanDefinitionNames()) {
+        List<McpServerFeatures.SyncToolSpecification> specifications = discoverToolSpecifications();
+        int registered = 0;
+        for (McpServerFeatures.SyncToolSpecification specification : specifications) {
             try {
-                Object bean = applicationContext.getBean(beanName);
-                Class<?> clazz = bean.getClass();
-
-                for (Method method : clazz.getDeclaredMethods()) {
-                    org.springframework.ai.tool.annotation.Tool toolAnnotation =
-                            method.getAnnotation(org.springframework.ai.tool.annotation.Tool.class);
-                    if (toolAnnotation != null) {
-                        try {
-                            McpServerFeatures.SyncToolSpecification spec = createToolSpec(bean, method, toolAnnotation);
-                            allTools.add(spec);
-                            log.debug("Discovered MCP tool: {}.{}", clazz.getSimpleName(), method.getName());
-                        } catch (Exception e) {
-                            log.error("Failed to create tool spec for {}.{}: {}",
-                                    clazz.getSimpleName(), method.getName(), e.getMessage());
-                        }
-                    }
-                }
-            } catch (Throwable e) {
-                // Skip beans that can't be instantiated (catches GraalVM UnsupportedFeatureError too)
-            }
-        }
-
-        for (McpServerFeatures.SyncToolSpecification toolSpec : allTools) {
-            try {
-                server.addTool(toolSpec);
-                log.debug("Registered MCP tool: {}", toolSpec.tool().name());
+                server.addTool(specification);
+                registered++;
+                log.debug("Registered MCP tool: {}", specification.tool().name());
             } catch (Exception e) {
-                log.error("Failed to register tool '{}'", toolSpec.tool().name(), e);
+                log.error("Failed to register tool '{}'", specification.tool().name(), e);
             }
         }
-
-        toolCount = allTools.size();
+        toolCount = registered;
         log.info("Registered {} MCP tools with the server", toolCount);
     }
 
@@ -104,171 +87,103 @@ public class StagingMcpToolRegistry {
         return toolCount;
     }
 
-    private McpServerFeatures.SyncToolSpecification createToolSpec(
-            Object bean, Method method, org.springframework.ai.tool.annotation.Tool toolAnnotation) {
+    /** Package-visible for the native registration contract test. */
+    List<McpServerFeatures.SyncToolSpecification> discoverToolSpecifications() {
+        Object[] toolObjects = discoverToolBeans().toArray();
+        ToolCallback[] callbacks = MethodToolCallbackProvider.builder()
+                .toolObjects(toolObjects)
+                .build()
+                .getToolCallbacks();
 
-        String toolName = toolAnnotation.name().isEmpty() ? method.getName() : toolAnnotation.name();
-        String description = toolAnnotation.description();
-        String inputSchema = buildInputSchema(method);
+        List<McpServerFeatures.SyncToolSpecification> specifications = new ArrayList<>(callbacks.length);
+        for (ToolCallback callback : callbacks) {
+            specifications.add(createToolSpec(callback));
+        }
+        log.info("Discovered {} staging MCP tool objects and {} callbacks", toolObjects.length, callbacks.length);
+        return specifications;
+    }
 
-        Tool tool = new Tool(toolName, description, inputSchema);
+    private List<Object> discoverToolBeans() {
+        List<Object> toolBeans = new ArrayList<>();
+        String[] beanNames = applicationContext.getBeanDefinitionNames();
+        Arrays.sort(beanNames);
+
+        for (String beanName : beanNames) {
+            try {
+                Class<?> type = applicationContext.getType(beanName);
+                if (type == null || !declaresToolMethods(type)) {
+                    continue;
+                }
+                toolBeans.add(applicationContext.getBean(beanName));
+            } catch (Exception e) {
+                log.warn("Staging tool bean '{}' could not be discovered: {}", beanName, e.getMessage());
+            }
+        }
+        return toolBeans;
+    }
+
+    private static boolean declaresToolMethods(Class<?> type) {
+        for (Method method : ClassUtils.getUserClass(type).getDeclaredMethods()) {
+            if (method.isAnnotationPresent(org.springframework.ai.tool.annotation.Tool.class)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private McpServerFeatures.SyncToolSpecification createToolSpec(ToolCallback callback) {
+        ToolDefinition definition = callback.getToolDefinition();
+        Tool tool = new Tool(
+                definition.name(),
+                definition.description(),
+                toMcpJsonSchema(definition.inputSchema()));
 
         return new McpServerFeatures.SyncToolSpecification(
                 tool,
                 (exchange, args) -> {
                     try {
-                        Object result = invokeToolMethod(bean, method, args);
-                        return successResult(result);
+                        String result = callback.call(objectMapper.writeValueAsString(args));
+                        return new CallToolResult(
+                                List.of(new TextContent(result != null ? result : "null")),
+                                false);
                     } catch (Throwable e) {
-                        log.error("Tool {} failed: {}", toolName, e.getMessage(), e);
-                        return errorResult(e.getMessage());
+                        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                        log.error("Tool {} failed: {}", definition.name(), message, e);
+                        return errorResult(message);
                     }
-                }
-        );
+                });
     }
 
-    private String buildInputSchema(Method method) {
-        ObjectNode schema = objectMapper.createObjectNode();
-        schema.put("type", "object");
-
-        ObjectNode properties = objectMapper.createObjectNode();
-        List<String> required = new ArrayList<>();
-
-        Parameter[] parameters = method.getParameters();
-        for (Parameter param : parameters) {
-            Class<?> paramType = param.getType();
-
-            if (paramType.isRecord()) {
-                RecordComponent[] components = paramType.getRecordComponents();
-                for (RecordComponent component : components) {
-                    ObjectNode propSchema = createPropertySchema(component.getType());
-
-                    ToolParam toolParam = component.getAnnotation(ToolParam.class);
-                    if (toolParam != null) {
-                        propSchema.put("description", toolParam.description());
-                        if (toolParam.required()) {
-                            required.add(component.getName());
-                        }
-                    }
-
-                    properties.set(component.getName(), propSchema);
-                }
-            } else {
-                String paramName = param.getName();
-                ObjectNode propSchema = createPropertySchema(paramType);
-
-                ToolParam toolParam = param.getAnnotation(ToolParam.class);
-                if (toolParam != null) {
-                    propSchema.put("description", toolParam.description());
-                    if (toolParam.required()) {
-                        required.add(paramName);
-                    }
-                }
-
-                properties.set(paramName, propSchema);
-            }
-        }
-
-        schema.set("properties", properties);
-        if (!required.isEmpty()) {
-            schema.set("required", objectMapper.valueToTree(required));
-        }
-
+    private JsonSchema toMcpJsonSchema(String schemaJson) {
         try {
-            return objectMapper.writeValueAsString(schema);
-        } catch (JsonProcessingException e) {
-            return "{}";
-        }
-    }
-
-    private ObjectNode createPropertySchema(Class<?> type) {
-        ObjectNode schema = objectMapper.createObjectNode();
-        if (type == String.class) {
-            schema.put("type", "string");
-        } else if (type == Integer.class || type == int.class) {
-            schema.put("type", "integer");
-        } else if (type == Long.class || type == long.class) {
-            schema.put("type", "integer");
-        } else if (type == Double.class || type == double.class || type == Float.class || type == float.class) {
-            schema.put("type", "number");
-        } else if (type == Boolean.class || type == boolean.class) {
-            schema.put("type", "boolean");
-        } else if (type.isArray() || List.class.isAssignableFrom(type)) {
-            schema.put("type", "array");
-        } else {
-            schema.put("type", "object");
-        }
-        return schema;
-    }
-
-    private Object invokeToolMethod(Object bean, Method method, Map<String, Object> args) throws Exception {
-        method.setAccessible(true);
-
-        Parameter[] parameters = method.getParameters();
-        Object[] invokeArgs = new Object[parameters.length];
-
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter param = parameters[i];
-            Class<?> paramType = param.getType();
-
-            if (paramType.isRecord()) {
-                invokeArgs[i] = createRecordInstance(paramType, args);
-            } else {
-                String paramName = param.getName();
-                Object value = args.get(paramName);
-                invokeArgs[i] = convertValue(value, paramType);
+            JsonNode root = objectMapper.readTree(schemaJson);
+            String type = root.path("type").asText("object");
+            List<String> required = new ArrayList<>();
+            JsonNode requiredNode = root.get("required");
+            if (requiredNode != null && requiredNode.isArray()) {
+                requiredNode.forEach(node -> required.add(node.asText()));
             }
-        }
-
-        return method.invoke(bean, invokeArgs);
-    }
-
-    private Object createRecordInstance(Class<?> recordClass, Map<String, Object> args) throws Exception {
-        RecordComponent[] components = recordClass.getRecordComponents();
-        Class<?>[] paramTypes = new Class<?>[components.length];
-        Object[] paramValues = new Object[components.length];
-
-        for (int i = 0; i < components.length; i++) {
-            RecordComponent component = components[i];
-            paramTypes[i] = component.getType();
-            Object value = args.get(component.getName());
-            paramValues[i] = convertValue(value, component.getType());
-        }
-
-        return recordClass.getDeclaredConstructor(paramTypes).newInstance(paramValues);
-    }
-
-    private Object convertValue(Object value, Class<?> targetType) {
-        if (value == null) return null;
-        if (targetType.isInstance(value)) return value;
-
-        try {
-            return objectMapper.convertValue(value, targetType);
+            Boolean additionalProperties = root.path("additionalProperties").isBoolean()
+                    ? root.path("additionalProperties").booleanValue()
+                    : null;
+            return new JsonSchema(
+                    type,
+                    jsonObjectMap(root.get("properties")),
+                    required,
+                    additionalProperties,
+                    jsonObjectMap(root.get("$defs")),
+                    jsonObjectMap(root.get("definitions")));
         } catch (Exception e) {
-            if (targetType == Integer.class || targetType == int.class) {
-                return ((Number) value).intValue();
-            } else if (targetType == Long.class || targetType == long.class) {
-                return ((Number) value).longValue();
-            } else if (targetType == Double.class || targetType == double.class) {
-                return ((Number) value).doubleValue();
-            } else if (targetType == Float.class || targetType == float.class) {
-                return ((Number) value).floatValue();
-            } else if (targetType == Boolean.class || targetType == boolean.class) {
-                return Boolean.valueOf(value.toString());
-            } else if (targetType == String.class) {
-                return value.toString();
-            }
-            throw e;
+            throw new IllegalArgumentException("Invalid Spring AI schema: " + schemaJson, e);
         }
     }
 
-    private CallToolResult successResult(Object data) {
-        try {
-            String json = objectMapper.writeValueAsString(data);
-            return new CallToolResult(List.of(new TextContent(json)), false);
-        } catch (JsonProcessingException e) {
-            return errorResult("Failed to serialize result: " + e.getMessage());
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> jsonObjectMap(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return Collections.emptyMap();
         }
+        return objectMapper.convertValue(node, Map.class);
     }
 
     private static CallToolResult errorResult(String message) {

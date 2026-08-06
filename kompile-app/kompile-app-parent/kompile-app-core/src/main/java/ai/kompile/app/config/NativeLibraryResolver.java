@@ -64,6 +64,10 @@ public class NativeLibraryResolver {
     /** Kompile cache subdirectory under ~/.kompile/ */
     private static final String KOMPILE_NATIVE_LIBS = "native-libs";
 
+    /** Exact directories trusted for manifest-declared ND4J compiler runtimes. */
+    private static final String ND4J_SHARED_RUNTIME_PATH =
+            "org.nd4j.presets.sharedRuntimePath";
+
     private NativeLibraryResolver() {}
 
     // ======================== Public API ========================
@@ -183,6 +187,10 @@ public class NativeLibraryResolver {
         String pathStr = libDirs.stream()
                 .map(p -> p.toAbsolutePath().toString())
                 .collect(Collectors.joining(File.pathSeparator));
+
+        // SharedCompilerRuntime keeps its manifest authoritative while allowing
+        // AOT packages to side-load the exact files from these selected paths.
+        System.setProperty(ND4J_SHARED_RUNTIME_PATH, pathStr);
 
         String existing = System.getProperty("java.library.path", "");
         if (!existing.contains(pathStr)) {

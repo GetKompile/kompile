@@ -19,6 +19,10 @@ import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfi
 import ai.kompile.app.services.agent.CliAgentModelService;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy.FailureMode;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -345,6 +349,43 @@ class GraphExtractionConfigServiceTest {
         reloaded.init();
         assertEquals(FailureMode.WARN, reloaded.getConfig().validationPolicy.effectiveFailureMode());
         assertTrue(reloaded.getConfig().validationPolicy.isRequirePatternForEveryRelationType());
+    }
+
+    @Test
+    void updateConfigPersistsAndDeepCopiesCanonicalSchema() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person",
+                                List.of(new PropertyType("role", "String"))),
+                        new NodeType("ROLE", "A business role", null)),
+                List.of(new RelationshipType("HAS_ROLE", "Person has role",
+                        List.of(new PropertyType("since", "String")), List.of("serves_as"))),
+                List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"));
+        GraphExtractionConfig update = new GraphExtractionConfig();
+        update.standardizedSchema = schema;
+
+        GraphExtractionConfig result = service.updateConfig(update);
+
+        assertEquals(List.of("PERSON", "ROLE"), result.entityTypes);
+        assertEquals(List.of("HAS_ROLE"), result.relationshipTypes);
+        assertEquals(List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"),
+                result.validationPolicy.effectiveRelationPatterns());
+        assertEquals("role", result.standardizedSchema.getNodeTypes().get(0)
+                .getProperties().get(0).getName());
+        assertEquals(List.of("serves_as"), result.standardizedSchema
+                .getRelationshipTypes().get(0).getAliases());
+
+        schema.getNodeTypes().get(0).setDescription("mutated input");
+        result.standardizedSchema.getRelationshipTypes().get(0).setDescription("mutated result");
+        GraphExtractionConfig stored = service.getConfig();
+        assertEquals("A person", stored.standardizedSchema.getNodeTypes().get(0).getDescription());
+        assertEquals("Person has role",
+                stored.standardizedSchema.getRelationshipTypes().get(0).getDescription());
+
+        GraphExtractionConfigService reloaded = new GraphExtractionConfigService(tempDir.toString());
+        reloaded.init();
+        assertEquals("String", reloaded.getConfig().standardizedSchema
+                .getRelationshipTypes().get(0).getProperties().get(0).getType());
     }
 
     // --- resetToDefaults ---

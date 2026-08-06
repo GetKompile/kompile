@@ -5,7 +5,7 @@
  */
 package ai.kompile.graph.service;
 
-import ai.kompile.knowledgegraph.repository.GraphNodeRepository;
+import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import ai.kompile.knowledgegraph.unified.GraphReasoningQueryService;
 import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
@@ -40,7 +40,7 @@ class GraphServiceApplicationTest {
     private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
-    private GraphNodeRepository graphNodeRepository;
+    private MatrixGraphStore matrixGraphStore;
 
     @Autowired
     private UnifiedGraphBridge unifiedGraphBridge;
@@ -51,7 +51,7 @@ class GraphServiceApplicationTest {
     @Test
     void contextLoadsWithIsolatedGraphStorage() {
         assertNotNull(knowledgeGraphService);
-        assertNotNull(graphNodeRepository);
+        assertNotNull(matrixGraphStore);
         assertNotNull(unifiedGraphBridge);
         assertNotNull(graphReasoningQueryService);
     }

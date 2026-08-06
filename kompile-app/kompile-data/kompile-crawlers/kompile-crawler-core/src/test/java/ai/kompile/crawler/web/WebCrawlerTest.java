@@ -110,6 +110,24 @@ class WebCrawlerTest {
     }
 
     @Test
+    @DisplayName("Language detection content sample is bounded and preserves the prefix")
+    void languageDetectionContentSampleIsBounded() {
+        String content = "language sample ".repeat(1_000);
+
+        String sample = WebCrawler.boundedContentSample(content);
+
+        assertEquals(8_192, sample.length());
+        assertTrue(content.startsWith(sample));
+
+        String unicodeContent = "a".repeat(8_191) + "😀" + "tail";
+        String unicodeSample = WebCrawler.boundedContentSample(unicodeContent);
+        assertEquals(8_192, unicodeSample.codePointCount(0, unicodeSample.length()));
+        assertTrue(unicodeSample.endsWith("😀"));
+        assertEquals("", WebCrawler.boundedContentSample(null));
+        assertEquals("", WebCrawler.boundedContentSample("  "));
+    }
+
+    @Test
     @DisplayName("CrawlConfig respectRobotsTxt defaults to true")
     void crawlConfigRespectRobotsTxtDefaultsTrue() {
         CrawlConfig config = CrawlConfig.builder()

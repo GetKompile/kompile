@@ -202,6 +202,14 @@ public class CatalogService {
             }
         }
 
+        Map<String, String> assetUrls = new HashMap<>();
+        Map<String, Object> assetUrlsMap = (Map<String, Object>) modelData.get("asset_urls");
+        if (assetUrlsMap != null) {
+            for (Map.Entry<String, Object> entry : assetUrlsMap.entrySet()) {
+                assetUrls.put(entry.getKey(), String.valueOf(entry.getValue()));
+            }
+        }
+
         AudioSynthesisConfig audioSynthesis = null;
         Object audioConfig = modelData.get("audio_synthesis");
         if (audioConfig != null) {
@@ -214,6 +222,7 @@ public class CatalogService {
                 .repo((String) modelData.get("repo"))
                 .format((String) modelData.get("format"))
                 .files(files)
+                .assetUrls(assetUrls)
                 .metadata(metadata)
                 .modelType((String) modelData.get("model_type"))
                 .audioSynthesis(audioSynthesis)

@@ -46,6 +46,7 @@ public class AgentConfig {
     private final String modelHint; // e.g. "fast", "default", "powerful" - guides model selection
     private final List<String> allowedModels; // models this agent is allowed to use (empty = all)
     private final String modelOverride; // explicit model override for this agent (null = use default)
+    private final String thinkingOverride; // explicit provider-native thinking/effort override
     private final boolean isCustom; // loaded from .kompile/agents/ file
     private final String roleName; // optional role to apply to this agent
 
@@ -62,6 +63,7 @@ public class AgentConfig {
         this.modelHint = builder.modelHint;
         this.allowedModels = builder.allowedModels;
         this.modelOverride = builder.modelOverride;
+        this.thinkingOverride = builder.thinkingOverride;
         this.isCustom = builder.isCustom;
         this.roleName = builder.roleName;
     }
@@ -78,6 +80,7 @@ public class AgentConfig {
     public String getModelHint() { return modelHint; }
     public List<String> getAllowedModels() { return allowedModels; }
     public String getModelOverride() { return modelOverride; }
+    public String getThinkingOverride() { return thinkingOverride; }
     public boolean isCustom() { return isCustom; }
     public String getRoleName() { return roleName; }
 
@@ -115,6 +118,7 @@ public class AgentConfig {
         private String modelHint = "default";
         private List<String> allowedModels = List.of();
         private String modelOverride = null;
+        private String thinkingOverride = null;
         private boolean isCustom = false;
         private String roleName = null;
 
@@ -175,6 +179,11 @@ public class AgentConfig {
 
         public Builder modelOverride(String modelOverride) {
             this.modelOverride = modelOverride;
+            return this;
+        }
+
+        public Builder thinkingOverride(String thinkingOverride) {
+            this.thinkingOverride = thinkingOverride;
             return this;
         }
 

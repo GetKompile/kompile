@@ -18,6 +18,7 @@ package ai.kompile.core.graphrag;
 
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
+import ai.kompile.core.graphrag.query.GraphRagContextMode;
 
 /**
  * The main entry point for performing Retrieval-Augmented Generation (RAG) queries against a knowledge graph.
@@ -25,6 +26,11 @@ import ai.kompile.core.graphrag.query.GraphRagResult;
  * synthesizing information, and generating a human-readable answer.
  */
 public interface GraphRagService {
+
+    /** Whether this implementation honors the requested factual-context contract. */
+    default boolean supportsContextMode(GraphRagContextMode contextMode) {
+        return contextMode == null || contextMode == GraphRagContextMode.LEGACY_TEXT;
+    }
 
     /**
      * Answers a user's query by leveraging the knowledge graph.

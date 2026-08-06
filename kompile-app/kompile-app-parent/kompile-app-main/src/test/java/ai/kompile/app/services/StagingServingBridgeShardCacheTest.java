@@ -53,14 +53,15 @@ class StagingServingBridgeShardCacheTest {
     }
 
     @Test
-    void completeShardSetWithEmptyManifest_returnsShardZero() throws IOException {
+    void completeShardSetWithEmptyManifest_returnsCanonicalBase() throws IOException {
         // The live failure mode: a botched download truncated the manifest to 0 bytes while
-        // all shards remained valid — the set must still count as cached, entering via shard 0.
-        Path shard0 = shard("model.shard0-of-2.sdnb", 10);
+        // all shards remained valid. SameDiff must still enter through the canonical base name
+        // so its serializer discovers every sibling shard instead of treating shard 0 as standalone.
+        shard("model.shard0-of-2.sdnb", 10);
         shard("model.shard1-of-2.sdnb", 10);
         shard("model.sdnb", 0);
 
-        assertEquals(shard0, StagingServingBridge.findCompleteShardedEntry(dir));
+        assertEquals(dir.resolve("model.sdnb"), StagingServingBridge.findCompleteShardedEntry(dir));
     }
 
     @Test

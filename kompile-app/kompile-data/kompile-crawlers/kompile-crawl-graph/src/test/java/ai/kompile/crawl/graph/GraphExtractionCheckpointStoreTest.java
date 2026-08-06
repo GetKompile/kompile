@@ -16,8 +16,12 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.GraphAdditionCalibration;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +35,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GraphExtractionCheckpointStoreTest {
@@ -130,6 +135,50 @@ class GraphExtractionCheckpointStoreTest {
 
         assertTrue(store.completedChunkKeys(null, original).contains(store.chunkKey(doc)));
         assertFalse(store.completedChunkKeys(null, changedModel).contains(store.chunkKey(doc)));
+    }
+
+    @Test
+    void fingerprintIncludesTheResolvedEntityAndRelationSchema() {
+        GraphSchema firstSchema = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", List.of())),
+                List.of(new RelationshipType("KNOWS", "Knows", List.of())),
+                List.of("(PERSON)-[:KNOWS]->(PERSON)"));
+        GraphSchema changedSchema = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", List.of())),
+                List.of(new RelationshipType("REPORTS_TO", "Reports to", List.of())),
+                List.of("(PERSON)-[:REPORTS_TO]->(PERSON)"));
+        GraphExtractionConfig first = GraphExtractionConfig.builder()
+                .schemaPresetId("people-v1")
+                .standardizedSchema(firstSchema)
+                .build();
+        GraphExtractionConfig changed = GraphExtractionConfig.builder()
+                .schemaPresetId("people-v1")
+                .standardizedSchema(changedSchema)
+                .build();
+
+        assertNotEquals(store.configFingerprint(first), store.configFingerprint(changed),
+                "changing canonical entity/relation facts must invalidate extraction checkpoints");
+    }
+
+    @Test
+    void fingerprintIncludesResolvedCalibration() {
+        GraphExtractionConfig standard = GraphExtractionConfig.builder().build();
+        GraphExtractionConfig recall = GraphExtractionConfig.builder()
+                .graphAdditionCalibration(GraphAdditionCalibration.recallBiased())
+                .build();
+        GraphExtractionConfig explicitLegacyEquivalent = GraphExtractionConfig.builder()
+                .graphAdditionCalibration(GraphAdditionCalibration.builder()
+                        .candidateMinScore(0.55)
+                        .extractionMinConfidence(0.5)
+                        .persistenceMinConfidence(0.5)
+                        .stringIdentitySimilarity(0.85)
+                        .embeddingIdentitySimilarity(0.88)
+                        .build())
+                .build();
+
+        assertNotEquals(store.configFingerprint(standard), store.configFingerprint(recall));
+        assertEquals(store.configFingerprint(standard),
+                store.configFingerprint(explicitLegacyEquivalent));
     }
 
     private static RetrievedDoc doc(String id, String sourcePath, int chunkIndex, String text) {

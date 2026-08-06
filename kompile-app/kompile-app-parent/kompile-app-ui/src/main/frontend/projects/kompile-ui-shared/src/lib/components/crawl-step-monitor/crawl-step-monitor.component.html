@@ -262,6 +262,42 @@
 
         <!-- (7) LLM transcripts (LLM/GRAPH steps only) -->
         <ng-container *ngIf="isLlmStep(step)">
+          <ng-container *ngIf="getExtractionPassSummaries(step) as passes">
+            <div class="csm-section csm-extraction-section" *ngIf="passes.length">
+              <div class="csm-section-head"><mat-icon inline>account_tree</mat-icon><span>Decomposed extraction (recent calls)</span>
+                <span class="csm-live" *ngIf="isJobRunning">LIVE</span>
+              </div>
+              <ng-container *ngIf="getExtractionDivisionSummary(step) as divisions">
+                <div class="csm-division-grid">
+                  <span [title]="divisions.corpusSnapshots[divisions.corpusSnapshots.length - 1] || ''">
+                    <strong>Corpus</strong> {{ divisions.corpusSnapshots.length }} snapshot{{ divisions.corpusSnapshots.length === 1 ? '' : 's' }}
+                    · {{ compactScope(divisions.corpusSnapshots[divisions.corpusSnapshots.length - 1]) }}
+                  </span>
+                  <span><strong>Partitions</strong> {{ divisions.partitions.length || 'direct' }}</span>
+                  <span><strong>Source chunks</strong> {{ divisions.chunks.length }}</span>
+                  <span [title]="divisions.latestGraphRevision || ''"><strong>Graph state</strong>
+                    {{ divisions.graphEntities }} entities / {{ divisions.graphRelationships }} relations
+                    · {{ compactScope(divisions.latestGraphRevision) }}
+                  </span>
+                </div>
+              </ng-container>
+              <div class="csm-pass-list">
+                <div *ngFor="let pass of passes; trackBy: trackByIndex" class="csm-pass-row"
+                     [ngClass]="'csm-pass-' + pass.state">
+                  <mat-icon class="csm-pass-icon">{{ pass.state === 'done' ? 'check_circle' : pass.state === 'running' ? 'sync' : pass.state === 'failed' ? 'error' : 'radio_button_unchecked' }}</mat-icon>
+                  <span class="csm-pass-label">{{ pass.label }}</span>
+                  <span class="csm-pass-stats">{{ pass.count }} call{{ pass.count === 1 ? '' : 's' }}
+                    <ng-container *ngIf="pass.count">· {{ pass.success }} OK · {{ pass.avgLatencyMs }}ms avg</ng-container>
+                  </span>
+                  <span class="csm-pass-scope" *ngIf="pass.latestPartition || pass.latestChunk"
+                        [title]="(pass.latestPartition || '') + ' ' + (pass.latestChunk || '')">
+                    {{ compactScope(pass.latestPartition) }} / {{ compactScope(pass.latestChunk) }}
+                  </span>
+                  <span class="csm-pass-state">{{ pass.state }}</span>
+                </div>
+              </div>
+            </div>
+          </ng-container>
           <div class="csm-section" *ngIf="getStepLlmSummary(step) as llm">
             <div class="csm-section-head"><mat-icon inline>psychology</mat-icon><span>LLM calls</span>
               <span class="csm-live" *ngIf="isJobRunning">LIVE</span>
@@ -290,6 +326,7 @@
                 [isJobRunning]="isJobRunning"
                 logSource="ingest"
                 [source]="'LLM_TRANSCRIPT'"
+                [fixedSearchText]="getStepTranscriptFilter(step)"
                 [maxTailLogs]="compact ? 20 : 100">
               </app-job-log-viewer>
             </div>

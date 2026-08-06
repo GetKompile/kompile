@@ -55,6 +55,9 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
     /** type -> description, in declaration order. */
     private final Map<String, String> types = new LinkedHashMap<>();
 
+    /** type -> audited lexical forms supplied by the schema. */
+    private final Map<String, List<String>> aliases = new LinkedHashMap<>();
+
     /** type -> signatures declared for it. */
     private final Map<String, List<RelationSignature>> signatures = new LinkedHashMap<>();
 
@@ -79,7 +82,7 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
                 if (type == null) {
                     continue;
                 }
-                put(type.getType(), type.getDescription());
+                put(type.getType(), type.getDescription(), type.getAliases());
             }
         }
         if (configuredTypes != null) {
@@ -141,7 +144,8 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
             List<RelationSignature> declared = signatures.get(type);
             if (declared == null || declared.isEmpty()) {
                 unconstrained.add(new RelationCandidate(
-                        type, entry.getValue(), List.of(), List.of(), UNCONSTRAINED_SCORE));
+                        type, entry.getValue(), List.of(), List.of(), UNCONSTRAINED_SCORE,
+                        aliases.getOrDefault(type, List.of())));
                 continue;
             }
             List<String> domains = new ArrayList<>();
@@ -160,7 +164,8 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
             }
             if (admits) {
                 matched.add(new RelationCandidate(
-                        type, entry.getValue(), domains, ranges, SIGNATURE_MATCH_SCORE));
+                        type, entry.getValue(), domains, ranges, SIGNATURE_MATCH_SCORE,
+                        aliases.getOrDefault(type, List.of())));
             }
         }
 
@@ -172,6 +177,10 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
     }
 
     private void put(String type, String description) {
+        put(type, description, List.of());
+    }
+
+    private void put(String type, String description, List<String> lexicalAliases) {
         String normalized = normalize(type);
         if (normalized == null) {
             return;
@@ -179,6 +188,13 @@ public final class SchemaRelationCandidateProvider implements RelationCandidateP
         String existing = types.get(normalized);
         if (existing == null || existing.isBlank()) {
             types.put(normalized, description == null || description.isBlank() ? null : description);
+        }
+        if (lexicalAliases != null && !lexicalAliases.isEmpty()) {
+            LinkedHashSet<String> merged = new LinkedHashSet<>(
+                    aliases.getOrDefault(normalized, List.of()));
+            lexicalAliases.stream().filter(value -> value != null && !value.isBlank())
+                    .map(String::strip).forEach(merged::add);
+            aliases.put(normalized, List.copyOf(merged));
         }
     }
 

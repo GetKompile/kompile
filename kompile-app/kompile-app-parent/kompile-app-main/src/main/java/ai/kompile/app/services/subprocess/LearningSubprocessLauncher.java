@@ -44,7 +44,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -285,34 +284,10 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
     }
 
     /**
-     * Ensure the learning subprocess JVM always carries ND4J CPU-backend flags.
-     *
-     * <p>When the parent was started via {@code run-cpu.sh} with
-     * {@code -Dnd4j.backend.priority=CPU} and {@code -Dnd4j.multibackend.enabled=false},
-     * {@link ai.kompile.app.subprocess.SubprocessEnvironmentPropagator#buildSystemPropertyFlags()}
-     * already propagates those flags (both start with the {@code "nd4j."} prefix and
-     * {@code org.nd4j.backend.multi.auto} starts with {@code "org.nd4j."}).
-     *
-     * <p><b>The gap this fixes</b>: {@code buildSystemPropertyFlags()} only emits flags
-     * that are <em>already set</em> in the parent's {@link System#getProperties()}. If the
-     * parent was started without them (e.g. in tests or a bare {@code java -jar} run),
-     * the subprocess inherits BackendManager's default device-priority order of
-     * {@code [CUDA_GPU, ROCM_GPU, METAL_GPU, TPU, CPU]}. On a no-GPU host
-     * {@code JCublasBackend.canRun()} calls {@code cudaGetDeviceCount}, gets 0 devices,
-     * and throws {@code RuntimeException("No CUDA devices were found")}, crashing
-     * {@code Nd4j.&lt;clinit&gt;} before any training starts.
-     *
-     * <p><b>Dynamic + safe</b>: each property is read from the parent first; the CPU-safe
-     * default is only used when the parent has no value. Because JVM processes
-     * {@code -D} flags left-to-right (later values overwrite), {@code getExtraJvmArgs()}
-     * is only called here for properties the parent does NOT already hold — so
-     * {@code buildSystemPropertyFlags()} (which runs first in the command-line) never
-     * produces a duplicate that we would mistakenly override. GPU runs where the parent
-     * holds {@code nd4j.backend.priority=CUDA_GPU,CPU} continue to work unchanged.
-     *
-     * <p>{@code CUDA_VISIBLE_DEVICES} is propagated as an env var by
-     * {@link ai.kompile.app.subprocess.SubprocessEnvironmentPropagator#propagateToEnvironment}
-     * and does not need a -D flag.
+     * Backend selection is handled centrally via
+     * {@link ManagedSubprocessLauncher#getBackendPreference()} plus scheduler placement.
+     * Multi-backend enablement is intentionally inherited from parent/runtime config and is
+     * not hardcoded at this launcher level.
      */
     /**
      * KGE / SameDiff training defaults to the CPU backend (preserving the long-standing default) so a
@@ -328,20 +303,7 @@ public class LearningSubprocessLauncher extends ManagedSubprocessLauncher
 
     @Override
     protected List<String> getExtraJvmArgs() {
-        List<String> args = new ArrayList<>();
-
-        // Keep multi-backend probing off so nothing re-initialises a second (CUDA) backend after the
-        // CPU one is selected. Backend SELECTION itself is handled by getBackendPreference() above.
-        if (System.getProperty("nd4j.multibackend.enabled") == null) {
-            args.add("-Dnd4j.multibackend.enabled=false");
-            log.debug("[learning] nd4j.multibackend.enabled not set in parent — defaulting subprocess to false");
-        }
-        if (System.getProperty("org.nd4j.backend.multi.auto") == null) {
-            args.add("-Dorg.nd4j.backend.multi.auto=false");
-            log.debug("[learning] org.nd4j.backend.multi.auto not set in parent — defaulting subprocess to false");
-        }
-
-        return args;
+        return List.of();
     }
 
     // ── KgeTrainingExecutor ───────────────────────────────────────────────────

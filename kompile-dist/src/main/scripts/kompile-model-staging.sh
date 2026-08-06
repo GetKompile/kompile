@@ -63,15 +63,24 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Prepend dist lib dir so the JVM/native image can locate libkompile_pipelines
-# and friends at runtime.
-export LD_LIBRARY_PATH="${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# Prepend the dist bin and lib dirs so the JVM/native image can locate
+# libkompile_pipelines and friends at runtime.
+#
+# bin/ is load-bearing for the native path, not decorative: build-dist.sh puts the
+# GraalVM-emitted JDK shim libraries (libjvm.so, libjava.so, ...) next to the binaries,
+# so a native start that omits bin/ dies on the first shim it cannot dlopen. Same two
+# entries as kompile-server.sh / kompile-chat.sh / kompile-crawl-manager.sh — every
+# launcher that can exec a native binary resolves libraries the same way.
+export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
 # Heap defaults (only used in the JVM fallback path).
 KOMPILE_STAGING_HEAP="${KOMPILE_STAGING_HEAP:--Xmx4g}"
 
 if [ -x "${NATIVE_BIN}" ]; then
     exec "${NATIVE_BIN}" \
+        -Dkompile.dist.home="${DIST_HOME}" \
+        -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
         "--server.port=${PORT}" \
         "${PASSTHROUGH_ARGS[@]}"
 fi
@@ -99,7 +108,9 @@ fi
 
 exec "${JAVA_BIN}" \
     ${KOMPILE_STAGING_HEAP} \
-    -Djava.library.path="${DIST_HOME}/lib" \
+    -Djava.library.path="${DIST_HOME}/bin:${DIST_HOME}/lib" \
+    -Dkompile.dist.home="${DIST_HOME}" \
+    -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
     -jar "${JAR}" \
     "--server.port=${PORT}" \
     "${PASSTHROUGH_ARGS[@]}"

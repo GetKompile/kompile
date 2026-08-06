@@ -16,9 +16,16 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.core.crawl.graph.UnifiedCrawlSource;
+import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -34,5 +41,31 @@ class CrawlSourceLoadingServiceTest {
         assertTrue(service.isCrawlPreferredSourceType(DocumentSourceDescriptor.SourceType.DIRECTORY));
         assertTrue(service.isCrawlPreferredSourceType(DocumentSourceDescriptor.SourceType.WEB_CRAWL));
         assertFalse(service.isCrawlPreferredSourceType(DocumentSourceDescriptor.SourceType.SLACK));
+    }
+
+    @Test
+    void sourceChunkOverridesBecomeDocumentMetadataForTheSharedChunkingPhase() {
+        CrawlSourceLoadingService service = new CrawlSourceLoadingService(
+                new CrawlDocumentTracker(), new PipelineStepTracker());
+        UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                .label("mail")
+                .sourceType(DocumentSourceDescriptor.SourceType.FILE)
+                .pathOrUrl("/tmp/mail.txt")
+                .chunkerName("sentence")
+                .chunkSize(640)
+                .chunkOverlap(32)
+                .chunkerOptions(Map.of("preserveParagraphs", false))
+                .build();
+        UnifiedCrawlJob job = UnifiedCrawlJob.builder()
+                .request(UnifiedCrawlRequest.builder().build())
+                .build();
+
+        Map<String, Object> metadata = service.sourceMetadata(source, job);
+
+        assertEquals("sentence", metadata.get(GraphConstants.META_CHUNKER_NAME));
+        assertEquals(640, metadata.get(GraphConstants.META_CHUNK_SIZE_OVERRIDE));
+        assertEquals(32, metadata.get(GraphConstants.META_CHUNK_OVERLAP_OVERRIDE));
+        assertEquals(Map.of("preserveParagraphs", false),
+                metadata.get(GraphConstants.META_CHUNKER_OPTIONS));
     }
 }

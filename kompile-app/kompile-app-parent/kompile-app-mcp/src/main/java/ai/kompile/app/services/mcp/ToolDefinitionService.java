@@ -27,6 +27,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
@@ -56,6 +58,7 @@ public class ToolDefinitionService {
     private final ToolDefinitionRepository repository;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private McpToolCallbackCatalog toolCallbackCatalog;
 
     // Cached unified view of all tools (built-in + custom)
     private final Map<String, EnhancedToolDefinition> unifiedToolCache = new ConcurrentHashMap<>();
@@ -116,6 +119,11 @@ public class ToolDefinitionService {
         this.eventPublisher = eventPublisher;
     }
 
+    @Autowired(required = false)
+    public void setToolCallbackCatalog(McpToolCallbackCatalog toolCallbackCatalog) {
+        this.toolCallbackCatalog = toolCallbackCatalog;
+    }
+
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         // Discover built-in tools and merge with persisted definitions
@@ -172,6 +180,15 @@ public class ToolDefinitionService {
     private Map<String, EnhancedToolDefinition> discoverBuiltInTools() {
         Map<String, EnhancedToolDefinition> tools = new LinkedHashMap<>();
 
+        if (toolCallbackCatalog != null) {
+            for (ToolCallback callback : toolCallbackCatalog.getToolCallbacks()) {
+                EnhancedToolDefinition definition = createDefinitionFromCallback(callback);
+                tools.put(definition.getName(), definition);
+            }
+            return tools;
+        }
+
+        // Compatibility fallback for constructor-only tests without a Spring catalog.
         String[] beanNames = applicationContext.getBeanDefinitionNames();
         for (String beanName : beanNames) {
             try {
@@ -192,6 +209,77 @@ public class ToolDefinitionService {
         }
 
         return tools;
+    }
+
+    private EnhancedToolDefinition createDefinitionFromCallback(ToolCallback callback) {
+        ToolDefinition definition = callback.getToolDefinition();
+        String toolName = definition.name();
+        String description = definition.description();
+        String category = inferCategory(toolName, description);
+        JsonNode inputSchema = parseInputSchema(definition.inputSchema());
+
+        return EnhancedToolDefinition.builder()
+                .id(UUID.randomUUID().toString())
+                .name(toolName)
+                .displayName(formatDisplayName(toolName))
+                .description(description)
+                .detailedDescription(description)
+                .category(category)
+                .tags(generateTags(toolName, description, category))
+                .source(ToolSource.BUILT_IN)
+                .enabled(true)
+                .createdAt(Instant.now())
+                .updatedAt(Instant.now())
+                .inputSchema(inputSchema)
+                .parameters(extractParameters(inputSchema))
+                .usageHints(generateUsageHints(toolName, category))
+                .isWriteOperation(isWriteOperation(toolName))
+                .undoable(isUndoable(toolName))
+                .implementation(ToolImplementation.builder()
+                        .type(ImplementationType.BUILT_IN)
+                        .className(callback.getClass().getName())
+                        .methodName(toolName)
+                        .build())
+                .relatedTools(findRelatedTools(toolName, category))
+                .build();
+    }
+
+    private JsonNode parseInputSchema(String schemaJson) {
+        try {
+            return objectMapper.readTree(schemaJson);
+        } catch (Exception e) {
+            logger.warn("Invalid Spring AI input schema: {}", e.getMessage());
+            ObjectNode fallback = objectMapper.createObjectNode();
+            fallback.put("type", "object");
+            fallback.set("properties", objectMapper.createObjectNode());
+            return fallback;
+        }
+    }
+
+    private List<ParameterDefinition> extractParameters(JsonNode schema) {
+        List<ParameterDefinition> parameters = new ArrayList<>();
+        JsonNode properties = schema.path("properties");
+        if (!properties.isObject()) {
+            return parameters;
+        }
+        Set<String> required = new HashSet<>();
+        JsonNode requiredNode = schema.path("required");
+        if (requiredNode.isArray()) {
+            requiredNode.forEach(node -> required.add(node.asText()));
+        }
+        properties.fields().forEachRemaining(entry -> {
+            JsonNode property = entry.getValue();
+            parameters.add(ParameterDefinition.builder()
+                    .name(entry.getKey())
+                    .displayName(formatDisplayName(entry.getKey()))
+                    .type(property.path("type").asText("object"))
+                    .description(property.path("description").isTextual()
+                            ? property.path("description").asText()
+                            : null)
+                    .required(required.contains(entry.getKey()))
+                    .build());
+        });
+        return parameters;
     }
 
     /**

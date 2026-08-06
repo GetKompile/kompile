@@ -134,9 +134,9 @@
              libnd4j. ${javacpp.platform} is set by the root pom's OS profiles. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>${nd4j.backend}</artifactId>
+            <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
-            <classifier>${javacpp.platform}</classifier>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
         </dependency>
         <dependency>
             <groupId>org.bytedeco</groupId>
@@ -191,6 +191,130 @@
                     <classifier>${javacpp.platform}</classifier>
                 </dependency>
             </dependencies>
+        </profile>
+
+        <!--
+            GraalVM native image, same contract as kompile-app-main's `native` profile:
+            activated by -Dkompile.dist so a dist build produces BOTH the AOT binary and the
+            exec jar, and the launcher can prefer the binary with the jar as fallback.
+
+            imageName MUST be the shipped DIST name, not the artifactId: kompile-dist/dist.xml
+            picks the binary up with a fileSet, which cannot rename, so build-dist.sh and the
+            assembly only agree if the built name is already the shipped name.
+
+            The class-initialization policy is NOT repeated here — kompile-app-web-shared ships
+            META-INF/native-image/ai.kompile/kompile-app-web-shared/native-image.properties and
+            GraalVM auto-discovers it off the image classpath. Only build-machine flags, the
+            resource policy and the config directories live in this pom.
+        -->
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <!-- Side-loaded natives: the image cannot carry the JavaCPP/ND4J .so files,
+                         so unpack them from the dependency jars into target/native-libs.
+                         NativeLibraryResolver loads them from the dist lib/ dir at runtime. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-libs</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>${start-class}</mainClass>
+                            <imageName>kompile-chat</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx80g</buildArg>
+                                <buildArg>--enable-monitoring=jfr</buildArg>
+                                <!-- Oracle GraalVM enterprise-only; loads its bundled ai.onnxruntime
+                                     inside the compiler and collides with initialize-at-run-time.
+                                     Keep in the pom, never in native-image.properties (CE breaks). -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
+                                <buildArg>--verbose</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
+                                <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
+                                <!-- Agent-generated reflection/JNI/resource configs. These were
+                                     traced against app-main and cover the Spring + ND4J + Lucene
+                                     surface the personas share, plus the subprocess types this
+                                     binary self-execs (see SubprocessDispatcher). Referenced in
+                                     place rather than copied: one traced config, three images. -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/main,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/ingest,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/vector,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/embedding,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/model-init,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/graph,${project.basedir}/../kompile-app-main/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
+                                <!-- Resource inclusion -->
+                                <buildArg>-H:IncludeResources=static/.*</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=META-INF/services/org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring\.factories</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                                <!-- Exclude native binaries from image - side-loaded at runtime -->
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dll$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/nd4j/.*\.dylib$</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/lib.*\.so.*</buildArg>
+                                <buildArg>-H:ExcludeResources=org/eclipse/deeplearning4j/tokenizers/.*/libjni.*\.so</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so$</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-x86_64/.*\.so\..*</buildArg>
+                                <buildArg>-H:ExcludeResources=linux-aarch64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=windows-x86_64/.*</buildArg>
+                                <buildArg>-H:ExcludeResources=macosx-.*/.*</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <version>${spring-boot.version}</version>
+                        <executions>
+                            <execution>
+                                <id>process-aot</id>
+                                <goals>
+                                    <goal>process-aot</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 

@@ -17,6 +17,7 @@
 package ai.kompile.app.chat;
 
 import ai.kompile.app.runtime.KompileServerRuntime;
+import ai.kompile.app.runtime.SubprocessDispatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
@@ -38,8 +39,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  *
  * <p>Startup mirrors {@code MainApplication}: the pre-Spring native bootstrap (Lucene mmap provider,
  * native-library resolution, JavaCPP paths, ND4J backend and the persisted ND4J environment) runs
- * through {@link KompileServerRuntime} before any bean touches ND4J. What this app deliberately does
- * NOT carry is subprocess dispatch — only app-main has the subprocess mains on its classpath.
+ * through {@link KompileServerRuntime} before any bean touches ND4J, and {@code --subprocess=}
+ * routing goes through {@link SubprocessDispatcher}. This app launches graph-matrix and model-init
+ * jobs like any other, and as a native image {@code ManagedSubprocessLauncher} runs those by
+ * re-execing <i>this</i> binary — so it has to route the flag rather than boot a second web app on
+ * an already-bound port. It hosts the six subprocess types web-shared carries; the four that need
+ * admin-only modules stay with {@code MainApplication}.
  */
 @SpringBootApplication(scanBasePackages = "ai.kompile")
 @EnableScheduling
@@ -50,8 +55,15 @@ public class ChatApplication {
 
     private static final Logger logger = LoggerFactory.getLogger(ChatApplication.class);
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
+        // Ahead of the subprocess check: a subprocess main opens Lucene indexes too, and the mmap
+        // provider has to be chosen before the first MMapDirectory either way.
         KompileServerRuntime.ensureLuceneRuntime();
+
+        if (SubprocessDispatcher.dispatchIfRequested(args)) {
+            return; // Subprocess has exited, do not start Spring Boot
+        }
+
         KompileServerRuntime.bootstrap(args);
 
         try {

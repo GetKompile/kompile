@@ -58,6 +58,7 @@ import { MatDatepickerModule } from '@angular/material/datepicker';
 import { MatNativeDateModule } from '@angular/material/core';
 
 import { HttpErrorInterceptor } from '@shared/services/http-error.interceptor';
+import { ServiceEndpointRoutingModule } from '@shared/services/service-endpoint-routing';
 import { AppRoutingModule } from './app-routing.module';
 import { AppComponent } from './app.component';
 
@@ -203,6 +204,7 @@ import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-or
     BrowserAnimationsModule,
     CommonModule,
     HttpClientModule,
+    ServiceEndpointRoutingModule,
     FormsModule,
     ReactiveFormsModule,
     AppRoutingModule,

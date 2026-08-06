@@ -20,14 +20,16 @@ import { RouterModule, Routes } from '@angular/router';
 import { UnifiedChatComponent } from './components/unified-chat/unified-chat.component';
 import { ProjectPageComponent } from './components/project-page/project-page.component';
 import { GraphPageComponent } from './components/graph-page/graph-page.component';
+import { ChatSettingsComponent } from './components/settings/chat-settings.component';
 import { FactSheetPageComponent } from '@shared/components/fact-sheet-page/fact-sheet-page.component';
 
 /**
  * Chat app routes — chat, project browsing, fact sheets and read-only graph exploration.
  *
- * Deliberately absent: /data, /developer, /agents, /enforcer, /settings and the graph
- * build / reason / audit / ontology surfaces. Those are admin routes and their components are
- * not on this project's classpath, so they cannot be added here by accident.
+ * Deliberately absent: /data, /developer, /agents, /enforcer and the graph build / reason /
+ * audit / ontology surfaces. Those are admin routes and their components are not on this
+ * project's classpath, so they cannot be added here by accident. /settings is Chat-owned and
+ * configures the independently distributed Model Staging dependency.
  */
 // Exported so app-routing.module.spec.ts asserts the real table rather than a copy of it.
 export const routes: Routes = [
@@ -39,6 +41,7 @@ export const routes: Routes = [
   { path: 'project',     component: ProjectPageComponent,  title: 'Kompile Chat — Project' },
   { path: 'fact-sheets', component: FactSheetPageComponent, title: 'Kompile Chat — Fact Sheets' },
   { path: 'graph',       component: GraphPageComponent,    title: 'Kompile Chat — Graph' },
+  { path: 'settings',    component: ChatSettingsComponent, title: 'Kompile Chat — Connections' },
 
   // ── Legacy path redirects ────────────────────────────────────────────────
   { path: 'knowledge', redirectTo: 'fact-sheets', pathMatch: 'full' },

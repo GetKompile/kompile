@@ -31,6 +31,14 @@ describe('SettingsComponent', () => {
     fixture.detectChanges();
     const req = httpMock.expectOne('/api/config/k-app');
     req.flush({});
+    const endpointsReq = httpMock.expectOne('/api/service-endpoints');
+    endpointsReq.flush({
+      adminUrl: 'http://localhost:8080',
+      chatUrl: 'http://localhost:8081',
+      crawlUrl: 'http://localhost:8082',
+      stagingUrl: 'http://localhost:8090',
+      servingUrl: 'http://127.0.0.1:8091'
+    });
   }
 
   beforeEach(async () => {
@@ -60,6 +68,9 @@ describe('SettingsComponent', () => {
       const req = httpMock.expectOne('/api/config/k-app');
       expect(req.request.method).toBe('GET');
       req.flush({});
+      const endpointsReq = httpMock.expectOne('/api/service-endpoints');
+      expect(endpointsReq.request.method).toBe('GET');
+      endpointsReq.flush({});
     });
   });
 
@@ -115,6 +126,38 @@ describe('SettingsComponent', () => {
 
       expect(component.isLoading).toBeFalse();
     }));
+  });
+
+  describe('service endpoints', () => {
+    beforeEach(fakeAsync(() => {
+      initComponent();
+      tick();
+    }));
+
+    it('should persist the complete shared topology', fakeAsync(() => {
+      component.serviceEndpoints.chatUrl = 'http://localhost:19081';
+      component.serviceEndpoints.stagingUrl = 'http://localhost:19090';
+
+      component.saveServiceEndpoints();
+
+      const req = httpMock.expectOne('/api/service-endpoints');
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body.chatUrl).toBe('http://localhost:19081');
+      expect(req.request.body.stagingUrl).toBe('http://localhost:19090');
+      req.flush(req.request.body);
+      tick();
+
+      expect(component.endpointsSaveMessage).toBe('Service endpoints saved.');
+      expect(component.endpointsSaveError).toBeFalse();
+      tick(5000);
+    }));
+
+    it('should reject invalid URL fields before save', () => {
+      component.serviceEndpoints.servingUrl = 'not-a-url';
+      expect(component.serviceEndpointsAreValid()).toBeFalse();
+      component.serviceEndpoints.servingUrl = 'http://127.0.0.1:8091';
+      expect(component.serviceEndpointsAreValid()).toBeTrue();
+    });
   });
 
   describe('saveSettings', () => {

@@ -531,7 +531,7 @@ public class CrossIndexController {
                 doc.getKeywordIndexStatus().name(),
                 doc.getVectorStoreStatus().name(),
                 doc.getGraphStatus().name(),
-                doc.getKeywordPassageCount() + doc.getVectorPassageCount(),
+                Math.toIntExact(trackingService.countPassages(doc.getId())),
                 doc.getCreatedAt(),
                 doc.getUpdatedAt()
         );

@@ -2,9 +2,9 @@
 # Deliberately not kept wholesale. The app calls this layer directly, so R8's
 # own reachability analysis retains everything it uses, and the core loads
 # nothing by name: it has no reflection and no Java serialization. A blanket
-# keep would pin desktop-only HTTP and subprocess routes into the APK. Android
-# has its own guarded JNA binding to libsdx_llm for raw GGUF execution and keeps
-# the JavaCPP provider path for prepared SDZ artifacts.
+# keep would pin desktop-only HTTP, subprocess, and JNA routes into the APK.
+# Android uses DL4J's JavaCPP SDX transport for both GGUF preparation and model
+# execution; the desktop-only core facade must therefore remain unreachable.
 
 # ── Graph reasoning ──────────────────────────────────────────────────────────
 # Also not kept wholesale. Java serialization would need it, but no graph is
@@ -14,9 +14,14 @@
 # R8 reaches on its own.
 
 # ── JavaCPP / SDX native bindings ─────────────────────────────────────────────
-# JavaCPP and JNA resolve native entry points and callback/interface methods by exact name.
+# JavaCPP resolves generated JNI entry points and callback methods by exact name.
 -keep class org.bytedeco.javacpp.** { *; }
--keep class com.sun.jna.** { *; }
+-keep class org.nd4j.dsp.model.SdxLlmNative { *; }
+-keep class org.nd4j.dsp.model.SdxLlmNative$* { *; }
+# Fail shrinking immediately if a desktop JNA execution route becomes reachable.
+-checkdiscard class ai.kompile.chat.local.sdx.SdxLlmAbi
+-checkdiscard class ai.kompile.chat.local.sdx.SdxLlmAbi$*
+-checkdiscard class ai.kompile.chat.local.sdx.SdxChatModel
 -keep class org.nd4j.dsp.runtime.** { *; }
 -keep class org.eclipse.deeplearning4j.tokenizers.** { *; }
 

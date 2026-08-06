@@ -28,6 +28,7 @@ import ai.kompile.process.ontology.EntityTypeDefinition;
 import ai.kompile.process.ontology.OntologySchema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,6 +38,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -44,6 +46,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -101,6 +104,39 @@ class OntologyDerivationServiceTest {
     }
 
     @Test
+    void systemPromptContainsNoCopyableOntologyPlaceholders() {
+        String prompt = OntologyDerivationService.systemPromptContract();
+
+        assertTrue(prompt.contains("0.45 through 1.0"));
+        assertTrue(prompt.contains("source-grounded UPPERCASE_WITH_UNDERSCORES verb phrase"));
+        assertFalse(prompt.contains("VERB_PHRASE_IN_CAPS"));
+        assertFalse(prompt.contains("PascalCaseTypeName"));
+        assertFalse(prompt.contains("\"confidence\": 0.0"));
+        assertFalse(prompt.contains("\"description\": \"string\""));
+        for (String splitPrompt : OntologyDerivationService.splitPromptContracts()) {
+            assertFalse(splitPrompt.contains("PascalCaseTypeName"));
+            assertFalse(splitPrompt.contains("VERB_PHRASE_IN_CAPS"));
+            assertFalse(splitPrompt.contains("\"name\": \"string\""));
+        }
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("engine adds the identifier and primary key")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("Classify exactly one engine-fixed validation rule")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("Select the violation action for exactly one")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("2 = TRANSACTIONAL: a business record")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("1 = ASSERTION: a general business or record condition")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("fixed action is halt")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("zero, one, or many relationships")));
+        assertTrue(OntologyDerivationService.splitPromptContracts().stream()
+                .anyMatch(contract -> contract.contains("2 = halt")));
+    }
+
+    @Test
     void derive_withLlm_parsesSchemaAndStampsProvenance() {
         LLMChat llm = mock(LLMChat.class, RETURNS_DEEP_STUBS);
         when(llm.prompt().system(anyString()).user(anyString()).call().content()).thenReturn(VALID_LLM_JSON);
@@ -116,6 +152,305 @@ class OntologyDerivationServiceTest {
         assertEquals("Acme Ontology", schema.getName());
         assertEquals("llm", schema.getMetadata().get("generationMethod"));
         assertEquals(1L, schema.getMetadata().get("derivedFromFactSheetId"));
+    }
+
+    @Test
+    void derive_splitModelPathFixesTypesBeforeFieldsAndMapsRelationOrdinals() {
+        ExtractionLlmServiceRegistry registry = mock(ExtractionLlmServiceRegistry.class);
+        ExtractionLlmService svc = mock(ExtractionLlmService.class);
+        when(registry.getOrFallback("split-provider")).thenReturn(svc);
+        when(svc.isAvailable()).thenReturn(true);
+        when(svc.getId()).thenReturn("split-provider");
+        when(svc.getEffectiveModel()).thenReturn("small-model");
+        when(svc.complete(anyString())).thenReturn("""
+                {"entityTypes":[
+                  {"name":"Revenue","description":"Revenue metric","classification":"METRIC",
+                   "confidence":0.9,"parentType":"Invoice"},
+                  {"name":"Invoice","description":"Invoice record","classification":"TRANSACTIONAL",
+                   "confidence":0.88,"parentType":"Revenue"}]}
+                """, """
+                {"selectedOrdinal":5}
+                """, """
+                {"selectedOrdinal":2}
+                """, """
+                {"fields":[
+                  {"name":"id","type":"STRING","required":true,"primaryKey":true,
+                   "description":"Identifier"},
+                  {"name":"Revenue","type":"STRING","required":false,"primaryKey":false,
+                   "description":"Wrongly repeated entity type"},
+                  {"name":"amount","type":"DECIMAL","required":true,"primaryKey":false,
+                   "description":"Recorded amount"}]}
+                """, """
+                {"fields":[
+                  {"name":"invoiceNumber","type":"STRING","required":true,"primaryKey":true,
+                   "description":"Invoice identifier"}]}
+                """, """
+                {"relationshipTypes":[
+                  {"type":"recorded on","sourceOrdinal":1,"targetOrdinal":2,
+                   "cardinality":"MANY_TO_ONE","transitive":false,
+                   "description":"Revenue is recorded on an invoice"},
+                  {"type":"recorded on","sourceOrdinal":2,"targetOrdinal":1,
+                   "cardinality":"ONE_TO_MANY","transitive":false,
+                   "description":"Unsupported inverse duplicate"}]}
+                """, """
+                {"relationshipTypes":[
+                  {"type":"recorded on","sourceOrdinal":1,"targetOrdinal":2,
+                   "cardinality":"MANY_TO_ONE","transitive":false,
+                   "description":"Revenue is recorded on an invoice"}]}
+                """, """
+                {"globalRules":[{"name":"Revenue amount positive",
+                  "expression":"Revenue.amount must be positive",
+                  "description":"Revenue amount must be positive"}]}
+                """, """
+                {"selectedOrdinal":1}
+                """, """
+                {"selectedOrdinal":1,"escalateTo":"Finance"}
+                """, """
+                {"selectedOrdinal":2,"escalateTo":null}
+                """, """
+                {"selectedOrdinal":3}
+                """);
+        service.setExtractionRegistry(registry);
+
+        OntologySchema schema = service.derive(
+                reqWithModel(1L, "split-provider", "small-model",
+                        "Revenue has amount field. Invoice has invoiceNumber field. "
+                                + "Revenue is recorded on Invoice. "
+                                + "Revenue.amount must be positive; halt on violation."));
+
+        assertEquals(List.of("Revenue", "Invoice"), schema.getEntityTypes().stream()
+                .map(EntityTypeDefinition::getName).toList());
+        assertTrue(schema.getEntityTypes().stream().allMatch(type -> type.getParentType() == null),
+                "hierarchy is not part of entity discovery and reciprocal model parents must be ignored");
+        assertEquals(List.of("id", "amount"), schema.getEntityTypes().get(0).getFields().stream()
+                .map(field -> field.getName()).toList());
+        assertEquals(List.of("id", "invoiceNumber"), schema.getEntityTypes().get(1).getFields().stream()
+                .map(field -> field.getName()).toList());
+        assertTrue(schema.getEntityTypes().get(0).getFields().get(0).isPrimaryKey());
+        assertFalse(schema.getEntityTypes().get(0).getFields().get(1).isPrimaryKey(),
+                "the engine, not the model, owns the primary key");
+        assertEquals(1, schema.getRelationshipTypes().size());
+        assertEquals("RECORDED_ON", schema.getRelationshipTypes().get(0).getType());
+        assertEquals("Revenue", schema.getRelationshipTypes().get(0).getSourceEntityType());
+        assertEquals("Invoice", schema.getRelationshipTypes().get(0).getTargetEntityType());
+        assertEquals(1, schema.getGlobalRules().size());
+        assertEquals("ASSERTION", schema.getGlobalRules().get(0).getRuleType().name());
+        assertEquals("ERROR", schema.getGlobalRules().get(0).getSeverity().name());
+        assertEquals("halt", schema.getGlobalRules().get(0).getOnViolation());
+        assertNull(schema.getGlobalRules().get(0).getEscalateTo(),
+                "a non-escalation action cannot retain a model-invented escalation target");
+
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(svc, times(12)).complete(prompts.capture());
+        assertTrue(prompts.getAllValues().get(0).contains("Identify only the entity types"));
+        assertFalse(prompts.getAllValues().get(0).contains("sourceOrdinal"));
+        assertTrue(prompts.getAllValues().get(1).contains("Classify exactly one engine-fixed entity type"));
+        assertTrue(prompts.getAllValues().get(1).contains("- name: Revenue"));
+        assertTrue(prompts.getAllValues().get(1).contains("6 = ACTOR: a person, role, team, or organization"));
+        assertTrue(prompts.getAllValues().get(2).contains("- name: Invoice"));
+        assertTrue(prompts.getAllValues().get(3).contains("ENGINE-FIXED ENTITY TYPE"));
+        assertTrue(prompts.getAllValues().get(3).contains("ENGINE-GROUNDED DOMAIN FIELD BALLOT"));
+        assertTrue(prompts.getAllValues().get(3).contains("- amount"));
+        assertTrue(prompts.getAllValues().get(3).contains("engine adds id and owns primaryKey"));
+        assertTrue(prompts.getAllValues().get(4).contains("- name: Invoice"));
+        assertTrue(prompts.getAllValues().get(4).contains("- invoiceNumber"));
+        assertTrue(prompts.getAllValues().get(5).contains("ordinal=1 | name=Revenue"));
+        assertFalse(prompts.getAllValues().get(5).contains("sourceEntityType"),
+                "the model chooses endpoint ordinals; the engine writes canonical type names");
+        assertTrue(prompts.getAllValues().get(6).contains("Correct one rejected relationship extraction"));
+        assertTrue(prompts.getAllValues().get(6).contains("duplicates or reverses an earlier RECORDED_ON"));
+        assertTrue(prompts.getAllValues().get(6).contains("Preserve every distinct relationship"));
+        assertTrue(prompts.getAllValues().get(7).contains("ENGINE-FIXED ONTOLOGY"));
+        assertTrue(prompts.getAllValues().get(7).contains("Revenue -[RECORDED_ON]-> Invoice"));
+        assertTrue(prompts.getAllValues().get(7).contains("ENGINE-GROUNDED EXECUTABLE EXPRESSION BALLOT"));
+        assertTrue(prompts.getAllValues().get(7).contains("Revenue.amount must be positive"));
+        assertTrue(prompts.getAllValues().get(7).contains("Do not classify ruleType"),
+                "rule-core discovery must explicitly defer enum classification");
+        assertFalse(prompts.getAllValues().get(7).contains("BUDGET_LIMIT"),
+                "rule-type enum choices belong only to the classification call");
+        assertTrue(prompts.getAllValues().get(8).contains("ENGINE-FIXED RULE CORE"));
+        assertTrue(prompts.getAllValues().get(8).contains("Revenue.amount must be positive"));
+        assertTrue(prompts.getAllValues().get(8).contains("ordinary record-field validation"));
+        assertTrue(prompts.getAllValues().get(9).contains("selectedOrdinal"));
+        assertTrue(prompts.getAllValues().get(9).contains("2 = halt"));
+        assertTrue(prompts.getAllValues().get(9).contains("halt on violation"));
+        assertTrue(prompts.getAllValues().get(9).contains("severity is a separate task"));
+        assertFalse(prompts.getAllValues().get(9).contains("Revenue is recorded on Invoice"),
+                "the action shard must exclude unrelated relationship evidence");
+        assertFalse(prompts.getAllValues().get(9).contains("Additional guidance from the user"),
+                "the action shard must not re-inject the full guidance block");
+        assertTrue(prompts.getAllValues().get(10).contains("Correct one rejected validation-rule action"));
+        assertTrue(prompts.getAllValues().get(10).contains("ENGINE-VALIDATED REQUIRED SELECTION"));
+        assertTrue(prompts.getAllValues().get(10).contains("- selectedOrdinal=2"));
+        assertTrue(prompts.getAllValues().get(10)
+                .contains("source evidence explicitly requires selectedOrdinal=2 (halt)"));
+        assertTrue(prompts.getAllValues().get(11).contains("ENGINE-FIXED VIOLATION ACTION"));
+        assertTrue(prompts.getAllValues().get(11).contains("- onViolation: halt"));
+        assertTrue(prompts.getAllValues().get(11).contains("3 = ERROR"));
+    }
+
+    @Test
+    void derive_skipsFieldModelCallWhenAlgorithmicBallotIsEmpty() {
+        ExtractionLlmServiceRegistry registry = mock(ExtractionLlmServiceRegistry.class);
+        ExtractionLlmService svc = mock(ExtractionLlmService.class);
+        when(registry.getOrFallback("split-provider")).thenReturn(svc);
+        when(svc.isAvailable()).thenReturn(true);
+        when(svc.getId()).thenReturn("split-provider");
+        when(svc.getEffectiveModel()).thenReturn("small-model");
+        when(svc.complete(anyString())).thenReturn("""
+                {"entityTypes":[{"name":"Approver","description":"Designated approver",
+                  "classification":"ACTOR","confidence":0.9}]}
+                """, """
+                {"selectedOrdinal":6}
+                """);
+        service.setExtractionRegistry(registry);
+
+        OntologySchema schema = service.derive(new DeriveOntologyRequest(
+                1L, "Approval Ontology", "Define only Approver.", 1, false, false,
+                List.of(), List.of("Approver"), 10, "split-provider", "small-model"));
+
+        assertEquals(List.of("id"), schema.getEntityTypes().get(0).getFields().stream()
+                .map(field -> field.getName()).toList());
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(svc, times(2)).complete(prompts.capture());
+        assertTrue(prompts.getAllValues().stream()
+                .noneMatch(prompt -> prompt.contains("Select domain fields for exactly one")));
+    }
+
+    @Test
+    void derive_classificationValidationCorrectsStrongRoleMismatch() {
+        ExtractionLlmServiceRegistry registry = mock(ExtractionLlmServiceRegistry.class);
+        ExtractionLlmService svc = mock(ExtractionLlmService.class);
+        when(registry.getOrFallback("split-provider")).thenReturn(svc);
+        when(svc.isAvailable()).thenReturn(true);
+        when(svc.getId()).thenReturn("split-provider");
+        when(svc.getEffectiveModel()).thenReturn("small-model");
+        when(svc.complete(anyString())).thenReturn("""
+                {"entityTypes":[{"name":"Approver","description":"Designated approver",
+                  "confidence":0.9}]}
+                """, """
+                {"selectedOrdinal":2}
+                """, """
+                {"selectedOrdinal":6}
+                """);
+        service.setExtractionRegistry(registry);
+
+        OntologySchema schema = service.derive(new DeriveOntologyRequest(
+                1L, "Approval Ontology", "Define only Approver.", 1, false, false,
+                List.of(), List.of("Approver"), 10, "split-provider", "small-model"));
+
+        assertEquals(EntityClassification.ACTOR, schema.getEntityTypes().get(0).getClassification());
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(svc, times(3)).complete(prompts.capture());
+        assertTrue(prompts.getAllValues().get(2).contains("Correct one rejected entity classification"));
+        assertTrue(prompts.getAllValues().get(2).contains("requires ordinal 6 (ACTOR)"));
+    }
+
+    @Test
+    void derive_relationshipFeedbackPreservesMultipleDistinctRelationsAndSalvagesValidGroups() {
+        ExtractionLlmServiceRegistry registry = mock(ExtractionLlmServiceRegistry.class);
+        ExtractionLlmService svc = mock(ExtractionLlmService.class);
+        when(registry.getOrFallback("split-provider")).thenReturn(svc);
+        when(svc.isAvailable()).thenReturn(true);
+        when(svc.getId()).thenReturn("split-provider");
+        when(svc.getEffectiveModel()).thenReturn("small-model");
+        when(svc.complete(anyString())).thenReturn("""
+                {"entityTypes":[
+                  {"name":"Forecast","description":"Forecast record","confidence":0.9},
+                  {"name":"Approver","description":"Approval role","confidence":0.9},
+                  {"name":"Region","description":"Forecast region","confidence":0.9}]}
+                """, """
+                {"selectedOrdinal":2}
+                """, """
+                {"selectedOrdinal":6}
+                """, """
+                {"selectedOrdinal":1}
+                """, """
+                {"relationshipTypes":[
+                  {"type":"APPROVED_BY","sourceOrdinal":2,"targetOrdinal":1,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"wrong inverse"},
+                  {"type":"APPROVED_BY","sourceOrdinal":1,"targetOrdinal":2,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"Forecast approved by Approver"},
+                  {"type":"APPLIES_TO","sourceOrdinal":1,"targetOrdinal":3,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"Forecast applies to Region"}]}
+                """, """
+                {"relationshipTypes":[
+                  {"type":"APPROVED_BY","sourceOrdinal":2,"targetOrdinal":1,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"wrong inverse"},
+                  {"type":"APPROVED_BY","sourceOrdinal":1,"targetOrdinal":2,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"Forecast approved by Approver"},
+                  {"type":"APPLIES_TO","sourceOrdinal":1,"targetOrdinal":3,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"Forecast applies to Region"}]}
+                """);
+        service.setExtractionRegistry(registry);
+
+        OntologySchema schema = service.derive(new DeriveOntologyRequest(
+                1L, "Approval Ontology",
+                "Define only Forecast, Approver, and Region. A Forecast is approved by an Approver. "
+                        + "A Forecast applies to a Region.",
+                3, true, false, List.of(), List.of("Forecast", "Approver", "Region"), 10,
+                "split-provider", "small-model"));
+
+        assertEquals(2, schema.getRelationshipTypes().size(),
+                "validation salvage must not collapse the full response to one relation");
+        assertTrue(schema.getRelationshipTypes().stream().anyMatch(relationship ->
+                "APPROVED_BY".equals(relationship.getType())
+                        && "Forecast".equals(relationship.getSourceEntityType())
+                        && "Approver".equals(relationship.getTargetEntityType())));
+        assertTrue(schema.getRelationshipTypes().stream().anyMatch(relationship ->
+                "APPLIES_TO".equals(relationship.getType())
+                        && "Forecast".equals(relationship.getSourceEntityType())
+                        && "Region".equals(relationship.getTargetEntityType())));
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(svc, times(6)).complete(prompts.capture());
+        assertTrue(prompts.getAllValues().get(5).contains("source must be the non-ACTOR object"));
+        assertTrue(prompts.getAllValues().get(5).contains("zero, one, or many distinct supported"));
+    }
+
+    @Test
+    void derive_relationshipValidationFailureDoesNotDiscardEarlierStages() {
+        ExtractionLlmServiceRegistry registry = mock(ExtractionLlmServiceRegistry.class);
+        ExtractionLlmService svc = mock(ExtractionLlmService.class);
+        when(registry.getOrFallback("split-provider")).thenReturn(svc);
+        when(svc.isAvailable()).thenReturn(true);
+        when(svc.getId()).thenReturn("split-provider");
+        when(svc.getEffectiveModel()).thenReturn("small-model");
+        String malformedRelationships = """
+                {"relationshipTypes":[
+                  {"type":"APPROVED_BY","sourceOrdinal":2,"targetOrdinal":1,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"wrong inverse"}},
+                  {"type":"APPROVED_BY","sourceOrdinal":1,"targetOrdinal":2,
+                   "cardinality":"MANY_TO_ONE","transitive":false,"description":"correct"}]}
+                """;
+        when(svc.complete(anyString())).thenReturn("""
+                {"entityTypes":[
+                  {"name":"Forecast","description":"Forecast record","confidence":0.9},
+                  {"name":"Approver","description":"Approval role","confidence":0.9}]}
+                """, """
+                {"selectedOrdinal":2}
+                """, """
+                {"selectedOrdinal":6}
+                """, """
+                {"fields":[{"name":"region","type":"STRING","required":true,
+                  "description":"Forecast region"}]}
+                """, malformedRelationships, malformedRelationships);
+        service.setExtractionRegistry(registry);
+
+        OntologySchema schema = service.derive(new DeriveOntologyRequest(
+                1L, "Approval Ontology",
+                "Define only Forecast and Approver. Forecast has region field. "
+                        + "A Forecast is approved by an Approver.",
+                2, true, false, List.of(), List.of("Forecast", "Approver"), 10,
+                "split-provider", "small-model"));
+
+        assertEquals(List.of("id", "region"), schema.getEntityTypes().get(0).getFields().stream()
+                .map(field -> field.getName()).toList());
+        assertTrue(schema.getRelationshipTypes() == null || schema.getRelationshipTypes().isEmpty());
+        assertEquals("llm:split-provider", schema.getMetadata().get("generationMethod"),
+                "a rejected relationship stage must not replace valid earlier model stages structurally");
+        ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+        verify(svc, times(6)).complete(prompts.capture());
+        assertTrue(prompts.getAllValues().get(5).contains("response is not valid JSON"));
     }
 
     @Test
@@ -272,7 +607,12 @@ class OntologyDerivationServiceTest {
     }
 
     private static DeriveOntologyRequest reqWithModel(Long factSheetId, String provider, String model) {
+        return reqWithModel(factSheetId, provider, model, null);
+    }
+
+    private static DeriveOntologyRequest reqWithModel(Long factSheetId, String provider, String model,
+                                                       String guidance) {
         return new DeriveOntologyRequest(
-                factSheetId, null, null, null, null, null, null, null, null, provider, model);
+                factSheetId, null, guidance, null, null, null, null, null, null, provider, model);
     }
 }

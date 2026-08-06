@@ -126,6 +126,20 @@ fi
 MVN="${MVN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
 BUILD_THREADS="${BUILD_THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 
+# DL4J dependency source. When DL4J_MAVEN_REPOSITORY_URL is non-empty,
+# Kompile resolves the complete ND4J/DL4J graph from that Maven 2 repository
+# and never clones or compiles DL4J. Credentials are supplied through a Maven
+# settings.xml <server> whose id matches DL4J_MAVEN_REPOSITORY_ID.
+ND4J_VERSION="${ND4J_VERSION:-1.0.0-SNAPSHOT}"
+DL4J_MAVEN_REPOSITORY_URL="${DL4J_MAVEN_REPOSITORY_URL:-}"
+DL4J_MAVEN_REPOSITORY_ID="${DL4J_MAVEN_REPOSITORY_ID:-dl4j-release}"
+MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-}"
+
+# An explicit publish operation defaults to the same target that supplied DL4J.
+KOMPILE_PUBLISH="${KOMPILE_PUBLISH:-0}"
+KOMPILE_DEPLOY_REPOSITORY_URL="${KOMPILE_DEPLOY_REPOSITORY_URL:-}"
+KOMPILE_DEPLOY_REPOSITORY_ID="${KOMPILE_DEPLOY_REPOSITORY_ID:-}"
+
 # GraalVM — try several locations
 if [ -z "${GRAALVM_HOME:-}" ]; then
   for _candidate in \
@@ -157,35 +171,73 @@ GRAALVM_HOME="${GRAALVM_HOME:-}"
 #   all            — all of the above
 NATIVE_TARGETS="${NATIVE_TARGETS:-all}"
 
-# Distribution variant
-VARIANT="${VARIANT:-cli-only}"
+# Distribution variant. Entry points resolve an unset value from the requested
+# backend/platform; forcing cli-only here previously defeated that auto-detection.
+VARIANT="${VARIANT:-}"
 
 # Output directory
 KOMPILE_OUTPUT_DIR="${KOMPILE_OUTPUT_DIR:-${KOMPILE_ROOT}/dist}"
 
 # SDX bindings output — mirrors DL4J's SDX_OUTPUT_DIR, collected into kompile dist
 KOMPILE_SDX_OUTPUT_DIR="${KOMPILE_SDX_OUTPUT_DIR:-${KOMPILE_OUTPUT_DIR}/sdx-sdk}"
+# Repository-only builds cannot derive the non-Maven runtime SDK packages from
+# DL4J JARs. Point this at an extracted DL4J sdk-assets shard (or a root with
+# one subdirectory per platform).
+DL4J_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR:-}"
 
-# Maven flags for kompile Java builds
-KOMPILE_MVN_FLAGS="--batch-mode -Dmaven.test.skip=true"
+# Maven flags for Kompile Java builds. Keep these as an array so repository
+# URLs and local repository paths are never reparsed by the shell.
+KOMPILE_MVN_ARGS=(--batch-mode --no-transfer-progress -Dmaven.test.skip=true)
 
-# All supported kompile platform targets (subset of DL4J platforms)
+# Classifiers attested by ../deeplearning4j/release. Keep this list closed:
+# requesting a missing classifier must fail instead of silently using a base JAR.
 KOMPILE_PLATFORMS=(
-  # CPU
   "linux-x86_64"
+  "linux-x86_64-avx2"
+  "linux-x86_64-avx512"
   "linux-x86_64-onednn"
+  "linux-x86_64-onednn-avx2"
+  "linux-x86_64-onednn-avx512"
+  "linux-x86_64-compile"
+  "linux-x86_64-compat"
   "linux-arm64"
+  "linux-arm64-armcompute"
+  "linux-arm64-onednn"
+  "linux-arm64-compile"
+  "android-arm64"
+  "android-arm64-armcompute"
+  "android-arm64-nnapi"
+  "android-arm64-compile"
+  "android-arm64-compile-nnapi"
+  "android-x86_64"
+  "android-x86_64-onednn"
+  "android-x86_64-compile"
   "macosx-arm64"
+  "macosx-arm64-compile"
+  "macosx-arm64-mps"
+  "macosx-arm64-mps-compile"
   "windows-x86_64"
+  "windows-x86_64-avx2"
+  "windows-x86_64-avx512"
   "windows-x86_64-onednn"
-  # CUDA
+  "windows-x86_64-onednn-avx2"
+  "windows-x86_64-onednn-avx512"
   "linux-x86_64-cuda-12.6"
+  "linux-x86_64-cuda-12.6-cudnn"
+  "linux-x86_64-cuda-12.6-compile"
   "linux-x86_64-cuda-12.9"
-  "linux-x86_64-cuda-13.1"
+  "linux-x86_64-cuda-12.9-cudnn"
+  "linux-x86_64-cuda-12.9-compile"
   "windows-x86_64-cuda-12.6"
+  "windows-x86_64-cuda-12.6-cudnn"
   "windows-x86_64-cuda-12.9"
-  # ROCm/ZLUDA
-  "linux-x86_64-rocm-6.4"
+  "windows-x86_64-cuda-12.9-cudnn"
+  "linux-x86_64-cuda-12.9-zluda"
+  "windows-x86_64-cuda-12.9-zluda"
+  "linux-x86_64-vulkan"
+  "linux-x86_64-vulkan-compile"
+  "linux-x86_64-hexagon"
+  "linux-x86_64-tpu"
 )
 
 
@@ -209,6 +261,18 @@ kompile_detect_platform() {
   echo "${os}-${arch}"
 }
 
+kompile_validate_platform() {
+  local requested="$1" candidate
+  for candidate in "${KOMPILE_PLATFORMS[@]}"; do
+    if [ "${requested}" = "${candidate}" ]; then
+      return 0
+    fi
+  done
+  log "ERROR: unsupported DL4J release classifier '${requested}'"
+  log "Run build-kompile-platform.sh --list for the attested classifier matrix."
+  return 1
+}
+
 # Check that GraalVM is available and has native-image
 kompile_check_graalvm() {
   if [ -z "${GRAALVM_HOME}" ] || [ ! -x "${GRAALVM_HOME}/bin/native-image" ]; then
@@ -220,16 +284,93 @@ kompile_check_graalvm() {
   return 0
 }
 
-# Resolve backend type (cpu/cuda) and artifact from platform string
+# Resolve the public Kompile backend alias from an attested classifier.
 _resolve_backend_from_platform() {
   local platform="$1"
   case "$platform" in
-    *cuda-13.1*) echo "cuda" "13.1" "nd4j-cuda-13.1" ;;
-    *cuda-12.9*) echo "cuda" "12.9" "nd4j-cuda-12.9" ;;
-    *cuda-12.6*) echo "cuda" "12.6" "nd4j-cuda-12.6" ;;
-    *rocm*)      echo "cpu"  ""     "nd4j-native" ;;     # ZLUDA uses CPU-side nd4j-native
-    *)           echo "cpu"  ""     "nd4j-native" ;;
+    *cuda-12.9-zluda)  echo "cuda" "12.9" "zluda" ;;
+    *cuda-12.9-cudnn)  echo "cuda" "12.9" "cuda-12.9-cudnn" ;;
+    *cuda-12.9-compile) echo "cuda" "12.9" "cuda-12.9-compile" ;;
+    *cuda-12.9)        echo "cuda" "12.9" "cuda-12.9" ;;
+    *cuda-12.6-cudnn)  echo "cuda" "12.6" "cuda-12.6-cudnn" ;;
+    *cuda-12.6-compile) echo "cuda" "12.6" "cuda-12.6-compile" ;;
+    *cuda-12.6)        echo "cuda" "12.6" "cuda-12.6" ;;
+    *vulkan-compile)   echo "vulkan" "" "vulkan-compile" ;;
+    *vulkan)           echo "vulkan" "" "vulkan" ;;
+    *hexagon)          echo "hexagon" "" "hexagon" ;;
+    *tpu)              echo "tpu" "" "tpu" ;;
+    *onednn-avx512)    echo "cpu" "" "cpu-onednn-avx512" ;;
+    *onednn-avx2)      echo "cpu" "" "cpu-onednn-avx2" ;;
+    *onednn)           echo "cpu" "" "cpu-onednn" ;;
+    *avx512)           echo "cpu" "" "cpu-avx512" ;;
+    *avx2)             echo "cpu" "" "cpu-avx2" ;;
+    *armcompute)       echo "cpu" "" "cpu-armcompute" ;;
+    *mps-compile)      echo "cpu" "" "cpu-mps-compile" ;;
+    *mps)              echo "cpu" "" "cpu-mps" ;;
+    *compile-nnapi)    echo "cpu" "" "cpu-compile-nnapi" ;;
+    *nnapi)            echo "cpu" "" "cpu-nnapi" ;;
+    *compat)           echo "cpu" "" "cpu-compat" ;;
+    *compile)          echo "cpu" "" "cpu-compile" ;;
+    *)                 echo "cpu" "" "cpu" ;;
   esac
+}
+
+_resolve_javacpp_platform() {
+  case "$1" in
+    linux-x86_64*) echo "linux-x86_64" ;;
+    linux-arm64*) echo "linux-arm64" ;;
+    macosx-arm64*) echo "macosx-arm64" ;;
+    windows-x86_64*) echo "windows-x86_64" ;;
+    android-arm64*) echo "android-arm64" ;;
+    android-x86_64*) echo "android-x86_64" ;;
+    *) log "ERROR: unsupported release classifier '$1'"; return 1 ;;
+  esac
+}
+
+# The SDK archive classifier is not always the JavaCPP base platform. CPU helper
+# lanes retain their full release identity; accelerator helpers are represented
+# as suffixes on their base JavaCPP platform.
+_resolve_sdk_classifier() {
+  local platform="$1" base
+  base="$(_resolve_javacpp_platform "${platform}")" || return 1
+  case "${platform}" in
+    *cuda*-cudnn) echo "${base}-cudnn" ;;
+    *cuda*-compile) echo "${base}-compile" ;;
+    *cuda*-zluda) echo "${base}-zluda" ;;
+    *cuda*) echo "${base}" ;;
+    *) echo "${platform}" ;;
+  esac
+}
+
+_kompile_lane_requires_runtime() {
+  case "$1" in
+    *-compat|*vulkan*|*hexagon*|*tpu*|*zluda*) return 1 ;;
+    linux-x86_64*|linux-arm64*|macosx-arm64*|windows-x86_64*|android-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+kompile_prepare_dependency_maven_args() {
+  KOMPILE_DEPENDENCY_MAVEN_ARGS=("-Dnd4j.version=${ND4J_VERSION}")
+  if [ -n "${MAVEN_REPO_LOCAL}" ]; then
+    KOMPILE_DEPENDENCY_MAVEN_ARGS+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
+  fi
+  if [ -n "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
+    KOMPILE_DEPENDENCY_MAVEN_ARGS+=(
+      "-Ddl4j.repository.id=${DL4J_MAVEN_REPOSITORY_ID}"
+      "-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"
+    )
+  fi
+}
+
+kompile_prepare_deploy_maven_args() {
+  local repository_url="${KOMPILE_DEPLOY_REPOSITORY_URL:-${DL4J_MAVEN_REPOSITORY_URL}}"
+  local repository_id="${KOMPILE_DEPLOY_REPOSITORY_ID:-${DL4J_MAVEN_REPOSITORY_ID}}"
+  if [ -z "${repository_url}" ]; then
+    log "ERROR: publishing requires KOMPILE_DEPLOY_REPOSITORY_URL or DL4J_MAVEN_REPOSITORY_URL"
+    return 1
+  fi
+  KOMPILE_DEPLOY_MAVEN_ARGS=("-DaltDeploymentRepository=${repository_id}::${repository_url}")
 }
 
 
@@ -258,14 +399,15 @@ kompile_build_dl4j_backend() {
 # 3b. SDX BINDINGS COLLECTION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Collect SDX runtime SDK artifacts produced by the DL4J build into the
-# kompile output directory. DL4J's build_platform() calls package_sdx_bindings()
-# which writes to DL4J's SDX_OUTPUT_DIR. This function copies those artifacts
-# into kompile's own SDX output location.
+# Collect the complete SDK shard produced by a DL4J source build: runtime
+# packages plus the platform-classified Maven JARs needed by native SDK users.
 #
 # Usage: kompile_collect_sdx_bindings <platform>
 kompile_collect_sdx_bindings() {
-  local platform="$1"
+  local platform="$1" sdk_classifier javacpp_platform runtime_required=0
+  javacpp_platform="$(_resolve_javacpp_platform "${platform}")" || return 1
+  sdk_classifier="$(_resolve_sdk_classifier "${platform}")" || return 1
+  _kompile_lane_requires_runtime "${platform}" && runtime_required=1
 
   # DL4J's SDX output dir (set by DL4J build-common.sh when sourced)
   local dl4j_sdx_dir="${DL4J_PROJECT_ROOT}/build-output/sdx-sdk/${platform}"
@@ -280,59 +422,110 @@ kompile_collect_sdx_bindings() {
   esac
   local blasbuild_dist="${blasbuild_dir}/sdx-runtime-sdk/dist"
 
-  # Determine source directory
+  # Maven-only lanes deliberately have no SDK runtime source tree.
   local src_dir=""
-  if [ -d "${dl4j_sdx_dir}" ] && [ -n "$(ls -A "${dl4j_sdx_dir}" 2>/dev/null)" ]; then
+  if [ "${runtime_required}" -eq 1 ] && [ -d "${dl4j_sdx_dir}" ] && [ -n "$(ls -A "${dl4j_sdx_dir}" 2>/dev/null)" ]; then
     src_dir="${dl4j_sdx_dir}"
-  elif [ -d "${blasbuild_dist}" ] && [ -n "$(ls -A "${blasbuild_dist}" 2>/dev/null)" ]; then
+  elif [ "${runtime_required}" -eq 1 ] && [ -d "${blasbuild_dist}" ] && [ -n "$(ls -A "${blasbuild_dist}" 2>/dev/null)" ]; then
     src_dir="${blasbuild_dist}"
-  else
-    log "SDX bindings not found for ${platform} — skipping collection"
-    return 0
+  elif [ "${runtime_required}" -eq 1 ]; then
+    log "ERROR: SDX runtime packages were not produced for ${platform}"
+    return 1
   fi
 
   local dest="${KOMPILE_SDX_OUTPUT_DIR}/${platform}"
+  rm -rf "${dest}"
   mkdir -p "${dest}"
-
-  local count=0
-
-  # Copy ZIP bundles
-  while IFS= read -r -d '' f; do
-    cp -p "${f}" "${dest}/"
-    count=$((count + 1))
-  done < <(find "${src_dir}" -maxdepth 2 -type f -name "*.zip" -print0 2>/dev/null)
-
-  # Android: .aar files
-  if [[ "${platform}" == android-* ]]; then
-    while IFS= read -r -d '' f; do
-      cp -p "${f}" "${dest}/"
-      count=$((count + 1))
-    done < <(find "${src_dir}" -maxdepth 2 -type f -name "*.aar" -print0 2>/dev/null)
+  if [ -n "${src_dir}" ]; then
+    cp -a "${src_dir}/." "${dest}/"
   fi
 
-  # macOS: .xcframework bundles
-  if [[ "${platform}" == macosx-* ]]; then
-    while IFS= read -r -d '' d; do
-      cp -rp "${d}" "${dest}/"
-      count=$((count + 1))
-    done < <(find "${src_dir}" -maxdepth 2 -type d -name "*.xcframework" -print0 2>/dev/null)
-  fi
-
-  # Also copy binding.json if present in the bindings tree
+  # Preserve binding descriptors even when build_platform wrote its packages
+  # from the dist directory rather than its bindings tree.
   while IFS= read -r -d '' f; do
     local rel_dir
     rel_dir="$(dirname "${f}")"
     rel_dir="${rel_dir##*/}"  # variant name (cpu, cuda, etc.)
     mkdir -p "${dest}/${rel_dir}"
     cp -p "${f}" "${dest}/${rel_dir}/"
-    count=$((count + 1))
   done < <(find "${blasbuild_dir}/sdx-runtime-sdk/bindings" -name "binding.json" -print0 2>/dev/null)
 
-  if [ "${count}" -gt 0 ]; then
-    log "SDX bindings collected: ${count} artifact(s) → ${dest}"
-  else
-    log "WARNING: SDX dist directory found but contained no artifacts"
+  # Match the DL4J release driver's package_sdk_jars output: keep unclassified
+  # API/platform JARs for the lane and only the requested platform classifier.
+  local maven_repository
+  maven_repository="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}"
+  mkdir -p "${dest}/jars"
+  local -a sdk_artifact_ids
+  case "${platform}" in
+    *zluda*)
+      if [[ "${platform}" == windows-* ]]; then
+        sdk_artifact_ids=(nd4j-cuda-12.9 nd4j-cuda-12.9-preset)
+      else
+        sdk_artifact_ids=(nd4j-cuda-12.9 nd4j-cuda-12.9-preset nd4j-zluda nd4j-zluda-platform)
+      fi
+      ;;
+    *cuda-12.6*)
+      sdk_artifact_ids=(nd4j-cuda-12.6 nd4j-cuda-12.6-preset nd4j-cuda-12.6-platform)
+      ;;
+    *cuda*)
+      sdk_artifact_ids=(nd4j-cuda-12.9 nd4j-cuda-12.9-preset nd4j-cuda-12.9-platform)
+      ;;
+    android-*|*compat*) sdk_artifact_ids=(nd4j-native nd4j-native-preset) ;;
+    *vulkan*) sdk_artifact_ids=(nd4j-vulkan nd4j-vulkan-preset) ;;
+    *hexagon*) sdk_artifact_ids=(nd4j-hexagon nd4j-hexagon-preset) ;;
+    *tpu*) sdk_artifact_ids=(nd4j-tpu nd4j-tpu-preset) ;;
+    linux-x86_64*|windows-x86_64*)
+      sdk_artifact_ids=(nd4j-native nd4j-native-preset nd4j-native-platform libtokenizers tokenizers-native-preset tokenizers-native)
+      ;;
+    linux-arm64*|macosx-arm64*)
+      sdk_artifact_ids=(nd4j-native nd4j-native-preset libtokenizers tokenizers-native-preset tokenizers-native)
+      ;;
+    *) log "ERROR: no release-plan artifact set for ${platform}"; return 1 ;;
+  esac
+  local namespace artifact_id artifact_dir jar_name f
+  for namespace in org/eclipse/deeplearning4j org/nd4j; do
+    for artifact_id in "${sdk_artifact_ids[@]}"; do
+      artifact_dir="${maven_repository}/${namespace}/${artifact_id}/${ND4J_VERSION}"
+      [ -d "${artifact_dir}" ] || continue
+      while IFS= read -r -d '' f; do
+        jar_name="$(basename "${f}")"
+        case "${jar_name}" in
+          *-sources.jar|*-javadoc.jar|*-tests.jar) continue ;;
+        esac
+        if [[ "${jar_name}" =~ (linux-|windows-|macosx-|android-|ios-) ]] \
+            && [[ "${jar_name}" != *-"${sdk_classifier}".jar ]]; then
+          continue
+        fi
+        cp -p "${f}" "${dest}/jars/"
+      done < <(find "${artifact_dir}" -type f -name '*.jar' -print0 2>/dev/null)
+    done
+  done
+
+  local runtime_count jar_count
+  runtime_count=$(find "${dest}" -type f \( -name '*.zip' -o -name '*.aar' \) | wc -l)
+  jar_count=$(find "${dest}/jars" -type f -name '*.jar' | wc -l)
+  if [ "${jar_count}" -eq 0 ] || { [ "${runtime_required}" -eq 1 ] && [ "${runtime_count}" -eq 0 ]; }; then
+    log "ERROR: incomplete DL4J SDK shard for ${platform}: runtime=${runtime_count}, jars=${jar_count}"
+    return 1
   fi
+
+  local backend_type lane_cuda_version backend_profile backend_artifact validation_cuda_version
+  read -r backend_type lane_cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
+  case "${backend_profile}" in
+    cpu*) backend_artifact=nd4j-native ;;
+    cuda-12.6*) backend_artifact=nd4j-cuda-12.6 ;;
+    cuda-12.9*) backend_artifact=nd4j-cuda-12.9 ;;
+    zluda) backend_artifact=nd4j-zluda ;;
+    vulkan*) backend_artifact=nd4j-vulkan ;;
+    hexagon) backend_artifact=nd4j-hexagon ;;
+    tpu) backend_artifact=nd4j-tpu ;;
+    *) log "ERROR: unsupported backend profile for ${platform}: ${backend_profile}"; return 1 ;;
+  esac
+  validation_cuda_version="${lane_cuda_version:-12.9}"
+  bash "${KOMPILE_ROOT}/kompile-dist/src/main/build/validate-sdx-assets.sh" \
+    "${dest}" "${VARIANT}" "${javacpp_platform}" "${ND4J_VERSION}" \
+    "${validation_cuda_version}" "${backend_artifact}" "${sdk_classifier}" || return 1
+  log "Complete DL4J SDK shard collected: ${runtime_count} runtime package(s), ${jar_count} JAR(s) → ${dest}"
 }
 
 
@@ -340,16 +533,22 @@ kompile_collect_sdx_bindings() {
 # 4. KOMPILE JAVA BUILD
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Install all kompile Java modules to local Maven repo.
-# This is a prerequisite for native image builds.
+# Install all Kompile Java modules. Publication is intentionally deferred until
+# the distribution ZIP has also been installed in the same local repository.
 kompile_build_java_modules() {
-  local extra_flags="${1:-}"
-  log "Building kompile Java modules"
+  local -a extra_args=("$@")
+  log "Building kompile Java modules (goal: install)"
   cd "${KOMPILE_ROOT}"
 
-  local cmd="${MVN} clean install ${KOMPILE_MVN_FLAGS} ${extra_flags}"
-  log "Command: ${cmd}"
-  eval "${cmd}" 2>&1 | tee "${KOMPILE_OUTPUT_DIR}/kompile-java-build.log"
+  kompile_prepare_dependency_maven_args
+  local -a cmd=(
+    "${MVN}" clean install
+    "${KOMPILE_MVN_ARGS[@]}"
+    "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
+    "${extra_args[@]}"
+  )
+  log "Command: ${cmd[*]}"
+  "${cmd[@]}" 2>&1 | tee "${KOMPILE_OUTPUT_DIR}/kompile-java-build.log"
   local rc=${PIPESTATUS[0]}
   if [ "${rc}" -ne 0 ]; then
     log "FAILED: kompile Java build (exit ${rc})"
@@ -365,10 +564,11 @@ kompile_build_java_modules() {
 
 # Build a single native image target.
 #   $1 = target name (see NATIVE_TARGETS comment above for valid values)
-#   $2 = extra Maven flags (optional)
+#   remaining arguments = extra Maven arguments (optional)
 kompile_build_native_image() {
   local target="$1"
-  local extra_flags="${2:-}"
+  shift
+  local -a extra_args=("$@")
 
   kompile_check_graalvm || return 1
 
@@ -446,13 +646,16 @@ kompile_build_native_image() {
   log "  Profile: ${profile}"
   log "  GraalVM: ${GRAALVM_HOME}"
 
-  local cmd="JAVA_HOME=${GRAALVM_HOME} ${MVN} package \
-    -P${profile} -DskipTests \
-    ${extra_flags}"
+  kompile_prepare_dependency_maven_args
+  local -a cmd=(
+    "${MVN}" package "-P${profile}" -DskipTests
+    "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
+    "${extra_args[@]}"
+  )
 
   cd "${module_dir}"
-  log "Command: ${cmd}"
-  eval "${cmd}" 2>&1 | tee "${log_file}"
+  log "Command: JAVA_HOME=${GRAALVM_HOME} ${cmd[*]}"
+  JAVA_HOME="${GRAALVM_HOME}" "${cmd[@]}" 2>&1 | tee "${log_file}"
   local rc=${PIPESTATUS[0]}
   cd "${KOMPILE_ROOT}"
 
@@ -469,7 +672,7 @@ ALL_NATIVE_TARGETS="cli,component-cli,app,app-lite,staging,ingest,vector,embeddi
 # Build all requested native image targets.
 # Reads NATIVE_TARGETS (comma-separated, or "all" for everything)
 kompile_build_all_native() {
-  local extra_flags="${1:-}"
+  local -a extra_args=("$@")
 
   kompile_check_graalvm || return 1
   mkdir -p "${KOMPILE_OUTPUT_DIR}"
@@ -488,7 +691,7 @@ kompile_build_all_native() {
 
   for target in "${targets[@]}"; do
     target="$(echo "${target}" | tr -d ' ')"
-    if ! kompile_build_native_image "${target}" "${extra_flags}"; then
+    if ! kompile_build_native_image "${target}" "${extra_args[@]}"; then
       failed=$((failed + 1))
     fi
   done
@@ -505,121 +708,37 @@ kompile_build_all_native() {
 # 6. DISTRIBUTION ASSEMBLY
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Assemble a distribution tarball from built artifacts.
-# Mirrors build-dist.sh logic but driven by variables, not CLI args.
+# Assemble through the canonical distribution builder so platform builds,
+# direct builds, and AWS releases enforce one payload contract.
 #   $1 = platform (optional, defaults to auto-detect)
 kompile_assemble_dist() {
   local platform="${1:-$(kompile_detect_platform)}"
-
-  local version
-  version="$(grep -m1 '<version>' "${KOMPILE_ROOT}/pom.xml" \
-    | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')"
-
-  local dist_name="kompile-dist-${version}-${VARIANT}-${platform}"
-  local dist_dir="${KOMPILE_OUTPUT_DIR}/${dist_name}"
-
-  log "Assembling distribution: ${dist_name}"
-  rm -rf "${dist_dir}"
-  mkdir -p "${dist_dir}"/{bin,lib,config,data}
-
-  # ── Collect all native image binaries ──────────────────────────────────────
-  # Each entry: source_path → dist_name
-  # Uses || true so missing binaries (not built) are silently skipped.
-  local -a NATIVE_BINARIES=(
-    # CLIs
-    "${KOMPILE_ROOT}/kompile-cli/target/kompile-cli-main:kompile-cli"
-    "${KOMPILE_ROOT}/kompile-cli/kompile-component-cli/target/kompile-component:kompile-component"
-    # Application servers
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app:kompile-app"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite-native:kompile-app-lite"
-    # Model staging orchestrator
-    "${KOMPILE_ROOT}/kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging:kompile-model-staging"
-    # Subprocess binaries (built from kompile-app-main with per-subprocess profiles)
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-ingest:kompile-ingest"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vector:kompile-vector"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-embedding:kompile-embedding"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-model-init:kompile-model-init"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test:kompile-vlm-test"
-    "${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main/target/kompile-training:kompile-training"
+  local javacpp_platform backend_type cuda_version backend_profile sdk_classifier distribution_classifier
+  javacpp_platform="$(_resolve_javacpp_platform "${platform}")" || return 1
+  sdk_classifier="$(_resolve_sdk_classifier "${platform}")" || return 1
+  read -r backend_type cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
+  distribution_classifier="${VARIANT}-${platform}"
+  local -a args=(
+    "${VARIANT}" --skip-java-build --skip-native
+    --platform "${javacpp_platform}"
+    --backend-profile "${backend_profile}"
+    --sdk-classifier "${sdk_classifier}"
+    --distribution-classifier "${distribution_classifier}"
+    --output-dir "${KOMPILE_OUTPUT_DIR}"
   )
-
-  local bin_count=0
-  for entry in "${NATIVE_BINARIES[@]}"; do
-    local src="${entry%%:*}"
-    local dest_name="${entry##*:}"
-    if [ -f "${src}" ]; then
-      cp "${src}" "${dist_dir}/bin/${dest_name}"
-      chmod +x "${dist_dir}/bin/${dest_name}"
-      log "  bin/${dest_name} ($(du -h "${src}" | cut -f1))"
-      bin_count=$((bin_count + 1))
-    fi
-  done
-  log "  ${bin_count} native image(s) collected"
-
-  # Copy build scripts into the distribution for platform rebuilds
-  local scripts_src="${KOMPILE_ROOT}/build-scripts"
-  if [ -d "${scripts_src}" ]; then
-    mkdir -p "${dist_dir}/build-scripts"
-    cp "${scripts_src}/"*.sh "${dist_dir}/build-scripts/"
-    chmod +x "${dist_dir}/build-scripts/"*.sh
-    local script_count
-    script_count=$(ls "${dist_dir}/build-scripts/"*.sh 2>/dev/null | wc -l)
-    log "  build-scripts/ (${script_count} scripts)"
+  if [ -n "${KOMPILE_ACTIVE_SDX_ASSETS_DIR:-}" ]; then
+    args+=(--sdx-assets "${KOMPILE_ACTIVE_SDX_ASSETS_DIR}")
   fi
-
-  # Copy native .so libraries if extracted
-  if [ -d "${KOMPILE_ROOT}/kompile-rag-builds/kompile-sample/project/target/native-libs" ]; then
-    local so_count
-    so_count=$(find "${KOMPILE_ROOT}/kompile-rag-builds/kompile-sample/project/target/native-libs" \
-      -maxdepth 1 \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) 2>/dev/null | wc -l)
-    if [ "${so_count}" -gt 0 ]; then
-      cp -a "${KOMPILE_ROOT}/kompile-rag-builds/kompile-sample/project/target/native-libs/"*.so* \
-        "${dist_dir}/lib/" 2>/dev/null || true
-      chmod +x "${dist_dir}/lib/"*.so* 2>/dev/null || true
-      log "  lib/ (${so_count} native libraries)"
-    fi
-  fi
-
-  # Copy SDX runtime SDK artifacts if present
-  local sdx_platform_dir="${KOMPILE_SDX_OUTPUT_DIR}/${platform}"
-  if [ -d "${sdx_platform_dir}" ] && [ -n "$(ls -A "${sdx_platform_dir}" 2>/dev/null)" ]; then
-    mkdir -p "${dist_dir}/sdx-sdk"
-    cp -rp "${sdx_platform_dir}"/* "${dist_dir}/sdx-sdk/"
-    local sdx_count
-    sdx_count=$(find "${dist_dir}/sdx-sdk" -maxdepth 1 \( -name '*.zip' -o -name '*.aar' -o -name '*.xcframework' \) 2>/dev/null | wc -l)
-    log "  sdx-sdk/ (${sdx_count} artifact(s))"
-  fi
-
-  # Create seed data directories
-  mkdir -p "${dist_dir}/data"/{input_documents/uploads,shared_files}
-  mkdir -p "${dist_dir}/data"/{prompt-templates,models/.staging}
-  mkdir -p "${dist_dir}/data"/{logs,tool-definitions,folders}
-  mkdir -p "${dist_dir}/data"/{mcp-servers,mcp-bridges,pids}
-
-  # Metadata
-  local sdx_present="false"
-  [ -d "${dist_dir}/sdx-sdk" ] && sdx_present="true"
-
-  echo "${version}" > "${dist_dir}/.version"
-  echo "${VARIANT}" > "${dist_dir}/.variant"
-  cat > "${dist_dir}/.dist-info.json" << EOF
-{
-  "version": "${version}",
-  "variant": "${VARIANT}",
-  "platform": "${platform}",
-  "sdxSdk": ${sdx_present},
-  "buildDate": "$(date -Iseconds)"
-}
-EOF
-
-  # Create tarball
-  local archive="${KOMPILE_OUTPUT_DIR}/${dist_name}.tar.gz"
-  tar -czf "${archive}" -C "${KOMPILE_OUTPUT_DIR}" "${dist_name}/"
-  sha256sum "${archive}" > "${archive}.sha256" 2>/dev/null || shasum -a 256 "${archive}" > "${archive}.sha256"
-
-  log "Distribution: ${archive}"
-  log "Size: $(du -h "${archive}" | cut -f1)"
-  log "SHA256: $(cat "${archive}.sha256")"
+  case "${platform}" in
+    *cuda-12.6*) args+=(--cuda-version 12.6) ;;
+    *cuda-12.9*) args+=(--cuda-version 12.9) ;;
+  esac
+  log "Assembling canonical ${distribution_classifier} distribution ZIP"
+  (
+    cd "${KOMPILE_ROOT}"
+    KOMPILE_MAVEN_REPO="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}" \
+      "${KOMPILE_ROOT}/build-dist.sh" "${args[@]}"
+  )
 }
 
 
@@ -632,7 +751,7 @@ EOF
 #   2. Collect SDX runtime SDK bindings from DL4J build output
 #   3. Build kompile Java modules (picks up the nd4j-* JARs)
 #   4. Build kompile native images
-#   5. Assemble distribution tarball (includes SDX artifacts)
+#   5. Assemble and install the complete distribution ZIP
 #
 # Usage:
 #   kompile_build_for_platform linux-x86_64-cuda-12.9
@@ -644,12 +763,32 @@ kompile_build_for_platform() {
   local skip_native="${4:-0}"
   local skip_dist="${5:-0}"
 
+  if [ -z "${VARIANT}" ]; then
+    case "${platform}" in
+      *zluda*) VARIANT="amd-zluda" ;;
+      *cuda*) VARIANT="cuda" ;;
+      *arm64*) VARIANT="cpu-arm" ;;
+      *) VARIANT="cpu-intel" ;;
+    esac
+  fi
+
   log "START: kompile build for ${platform}"
   local start_time; start_time=$(date +%s)
 
   mkdir -p "${KOMPILE_OUTPUT_DIR}"
 
-  # Ensure repos are cloned and on the right branch
+  if [ "${KOMPILE_PUBLISH}" -eq 1 ] && [ "${skip_dist}" -ne 0 ]; then
+    log "ERROR: --publish requires distribution assembly so the ZIP is published with the reactor"
+    return 1
+  fi
+
+  # Repository mode is explicit and never falls back to a source build.
+  if [ -n "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
+    skip_dl4j=1
+    log "DL4J source: Maven repository ${DL4J_MAVEN_REPOSITORY_URL}"
+  fi
+
+  # Ensure source repositories only when they are actually needed.
   kompile_ensure_kompile
   if [ "${skip_dl4j}" -eq 0 ]; then
     kompile_ensure_dl4j
@@ -660,13 +799,18 @@ kompile_build_for_platform() {
     fi
   fi
 
-  # Resolve backend type
-  local backend_type cuda_version nd4j_artifact
-  read -r backend_type cuda_version nd4j_artifact < <(_resolve_backend_from_platform "$platform")
+  # Resolve an exact backend profile and classifier from the release matrix.
+  local backend_type cuda_version backend_alias javacpp_platform sdk_classifier
+  read -r backend_type cuda_version backend_alias < <(_resolve_backend_from_platform "$platform")
+  javacpp_platform="$(_resolve_javacpp_platform "$platform")" || return 1
+  sdk_classifier="$(_resolve_sdk_classifier "$platform")" || return 1
 
-  local extra_mvn_flags=""
+  local -a extra_mvn_args=(
+    "-Dkompile.backend=${backend_alias}"
+    "-Djavacpp.platform=${javacpp_platform}"
+  )
   if [ "${backend_type}" = "cuda" ]; then
-    extra_mvn_flags="-Dnd4j.backend=${nd4j_artifact} -Dkompile.cuda=true"
+    extra_mvn_args+=("-Dkompile.cuda=true")
   fi
 
   # Step 1: Build DL4J backend
@@ -674,21 +818,50 @@ kompile_build_for_platform() {
     log "Step 1/5: Building DL4J backend (${platform})"
     kompile_build_dl4j_backend "${platform}" || return 1
   else
-    log "Step 1/5: Skipped DL4J backend build"
+    if [ -n "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
+      log "Step 1/5: Consuming DL4J ${ND4J_VERSION} from ${DL4J_MAVEN_REPOSITORY_URL}"
+    else
+      log "Step 1/5: Skipped DL4J backend build (using the configured Maven local repository)"
+    fi
   fi
 
-  # Step 2: Collect SDX runtime SDK bindings
+  # Step 2: Resolve the complete DL4J SDK shard.
+  KOMPILE_ACTIVE_SDX_ASSETS_DIR=""
   if [ "${skip_dl4j}" -eq 0 ] && [ -n "${DL4J_PROJECT_ROOT:-}" ]; then
-    log "Step 2/5: Collecting SDX bindings (${platform})"
-    kompile_collect_sdx_bindings "${platform}"
+    log "Step 2/5: Collecting complete DL4J SDK assets (${platform})"
+    kompile_collect_sdx_bindings "${platform}" || return 1
+    KOMPILE_ACTIVE_SDX_ASSETS_DIR="${KOMPILE_SDX_OUTPUT_DIR}/${platform}"
+  elif [ -n "${DL4J_SDX_ASSETS_DIR}" ]; then
+    # Repository lanes always need their exact Maven JAR set. Only runtime
+    # lanes additionally require ZIP/AAR payloads, which the validator enforces.
+    if [ -z "${DL4J_SDX_ASSETS_DIR}" ]; then
+      log "ERROR: repository-only backend builds require --dl4j-sdk-assets DIR"
+      return 1
+    fi
+    if [ -d "${DL4J_SDX_ASSETS_DIR}/${platform}" ]; then
+      KOMPILE_ACTIVE_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR}/${platform}"
+    else
+      KOMPILE_ACTIVE_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR}"
+    fi
+    if [ ! -d "${KOMPILE_ACTIVE_SDX_ASSETS_DIR}" ]; then
+      log "ERROR: DL4J SDK assets not found for ${platform}: ${KOMPILE_ACTIVE_SDX_ASSETS_DIR}"
+      return 1
+    fi
+    log "Step 2/5: Using repository companion SDK assets from ${KOMPILE_ACTIVE_SDX_ASSETS_DIR}"
+  elif _kompile_lane_requires_runtime "${platform}"; then
+    log "ERROR: repository-only ${platform} builds require --dl4j-sdk-assets DIR"
+    log "       DL4J publishes runtime ZIP/AAR payloads beside Maven, not inside it."
+    return 1
   else
-    log "Step 2/5: Skipped SDX collection (DL4J build skipped)"
+    log "Step 2/5: Collecting Maven-only SDK JARs from the configured repository"
+    kompile_collect_sdx_bindings "${platform}" || return 1
+    KOMPILE_ACTIVE_SDX_ASSETS_DIR="${KOMPILE_SDX_OUTPUT_DIR}/${platform}"
   fi
 
   # Step 3: Build kompile Java modules
   if [ "${skip_java}" -eq 0 ]; then
     log "Step 3/5: Building kompile Java modules"
-    kompile_build_java_modules "${extra_mvn_flags}" || return 1
+    kompile_build_java_modules "${extra_mvn_args[@]}" || return 1
   else
     log "Step 3/5: Skipped kompile Java build"
   fi
@@ -696,17 +869,27 @@ kompile_build_for_platform() {
   # Step 4: Build native images
   if [ "${skip_native}" -eq 0 ]; then
     log "Step 4/5: Building native images (${NATIVE_TARGETS})"
-    kompile_build_all_native "${extra_mvn_flags}" || return 1
+    kompile_build_all_native "${extra_mvn_args[@]}" || return 1
   else
     log "Step 4/5: Skipped native image build"
   fi
 
   # Step 5: Assemble distribution
   if [ "${skip_dist}" -eq 0 ]; then
-    log "Step 5/5: Assembling distribution"
+    log "Step 5/5: Assembling and installing complete distribution ZIP"
     kompile_assemble_dist "${platform}" || return 1
   else
     log "Step 5/5: Skipped distribution assembly"
+  fi
+
+  if [ "${KOMPILE_PUBLISH}" -eq 1 ]; then
+    local version
+    version="$(grep -m1 '<version>' "${KOMPILE_ROOT}/pom.xml" \
+      | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')"
+    log "Publishing installed reactor and distribution ZIP artifacts"
+    MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}" \
+      KOMPILE_VERSION="${version}" \
+      "${KOMPILE_ROOT}/build-scripts/publish-maven.sh" || return 1
   fi
 
   local end_time; end_time=$(date +%s)

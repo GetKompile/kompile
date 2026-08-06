@@ -33,6 +33,8 @@ import static ai.kompile.cli.main.project.ProjectPrintUtils.printScripts;
 
 import ai.kompile.cli.common.config.HardwareAutoConfigurator;
 import ai.kompile.cli.common.config.ProjectHardwareProvisioner;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.GitRunner;
 import ai.kompile.cli.main.GlobalBootstrap;
 import ai.kompile.cli.main.Info;
@@ -136,6 +138,7 @@ import java.util.stream.Stream;
                 ProjectCommand.ListNoteSyncConnections.class,
                 ProjectCommand.ListIndexedDocuments.class,
                 ProjectCrawlCommand.class,
+                ProjectCrawlCommand.Serve.class,
                 ProjectCrawlCommand.Crawl.class,
                 // `kompile project workflow-run` — double-registered from crawl-group so
                 // the runbook/script/summary paths (kompile project workflow-run …) are real.
@@ -239,7 +242,7 @@ public class ProjectCommand implements Callable<Integer> {
 
         // ---- One-command end-to-end (init -> serve -> crawl -> commit -> push) ----
 
-        @Option(names = "--serve", description = "After scaffolding, start the project's services (staging + app) in the background.")
+        @Option(names = "--serve", description = "After scaffolding, start model staging plus the admin, chat, and crawl-manager services in the background.")
         private boolean serve;
 
         @Option(names = "--crawl", description = "After services are healthy, run the project's crawl profiles and wait for them to finish. Implies --serve.")
@@ -251,11 +254,13 @@ public class ProjectCommand implements Callable<Integer> {
         @Option(names = "--keep-running", description = "Leave services running after the end-to-end run completes (default: stop them).")
         private boolean keepRunning;
 
-        @Option(names = "--serve-port", defaultValue = "8080", description = "App port used by --serve. Default: 8080.")
-        private int servePort;
+        @Option(names = "--serve-port",
+                description = "App port used by --serve. Default: Service Endpoints admin URL (initially 8080).")
+        private Integer servePort;
 
-        @Option(names = "--staging-port", defaultValue = "8090", description = "Staging port used by --serve. Default: 8090.")
-        private int stagingPort;
+        @Option(names = "--staging-port",
+                description = "Staging port used by --serve. Default: Service Endpoints staging URL (initially 8090).")
+        private Integer stagingPort;
 
         @Option(names = "--no-staging", description = "Do not start the model staging server during --serve.")
         private boolean noStaging;
@@ -264,6 +269,12 @@ public class ProjectCommand implements Callable<Integer> {
         public Integer call() throws IOException {
             KompileProjectStore store = new KompileProjectStore();
             Path rootPath = root.toPath().toAbsolutePath().normalize();
+            ServiceEndpointsConfigManager.ServiceEndpointsConfig projectEndpoints =
+                    ServiceEndpointsConfigManager.forProjectDirectory(rootPath).current();
+            int resolvedServePort = servePort != null ? servePort
+                    : projectEndpoints.port(KompileService.ADMIN);
+            int resolvedStagingPort = stagingPort != null ? stagingPort
+                    : projectEndpoints.stagingPort();
 
             // Auto-install git-xet if git-xet backend is selected
             KompileProjectStorageBackend parsedBackend = parseBackend(backend);
@@ -420,7 +431,7 @@ public class ProjectCommand implements Callable<Integer> {
             // .mcp.json + opencode config + AGENTS.md, fall back to a local API lane.
             try {
                 InitAgentProvisioner.AgentProvisionResult agents =
-                        InitAgentProvisioner.provision(rootPath, servePort, stagingPort);
+                        InitAgentProvisioner.provision(rootPath, resolvedServePort, resolvedStagingPort);
                 agents.summaryLines().forEach(System.out::println);
                 agents.warnings().forEach(w -> System.out.println("  ! " + w));
             } catch (Exception e) {
@@ -435,7 +446,7 @@ public class ProjectCommand implements Callable<Integer> {
                 String commitMessage = "Initialize Kompile project"
                         + (manifest.getName() != null ? ": " + manifest.getName() : "");
                 return ProjectServiceCommand.runQuickstart(
-                        rootPath, servePort, stagingPort, noStaging,
+                        rootPath, resolvedServePort, resolvedStagingPort, noStaging,
                         plan.crawl(), plan.push(), keepRunning, commitMessage, null);
             }
 

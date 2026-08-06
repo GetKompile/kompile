@@ -1,0 +1,72 @@
+name: Attach external AWS release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      runId:
+        description: AWS external build run ID
+        required: true
+        type: string
+      bucket:
+        description: Managed private S3 staging bucket
+        required: true
+        type: string
+      region:
+        description: AWS region used by the builders
+        required: true
+        type: string
+      version:
+        description: Release or -SNAPSHOT version
+        required: true
+        type: string
+      commit:
+        description: Immutable 40-character commit built by every shard
+        required: true
+        type: string
+      dl4jCommit:
+        description: Immutable deeplearning4j commit built by native SDK shards
+        required: true
+        type: string
+      releaseTag:
+        description: Existing canonical GitHub release tag to receive supplemental assets
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  # Shared with release.yml and publish-release.yml for the same canonical tag.
+  group: release-${{ inputs.releaseTag }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-attach:
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install collector dependency
+        run: python -m pip install --disable-pip-version-check boto3
+      - name: Verify and attach staged outputs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ inputs.region }}
+          AWS_DEFAULT_REGION: ${{ inputs.region }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python release/aws/release.py collect \
+            --run-id "${{ inputs.runId }}" \
+            --bucket "${{ inputs.bucket }}" \
+            --release-tag "${{ inputs.releaseTag }}" \
+            --version "${{ inputs.version }}" \
+            --commit "${{ inputs.commit }}" \
+            --dl4j-commit "${{ inputs.dl4jCommit }}" \
+            --github-repository "${{ github.repository }}"

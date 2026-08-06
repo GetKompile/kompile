@@ -174,6 +174,232 @@ class LlmProcessDiscoveryServiceTest {
         }
 
         @Test
+        void productionSplitExtractsStepsBeforeGroupingAndMapsOnlyEngineOwnedIds() {
+            GraphNode document = makeNode("doc-process", NodeLevel.DOCUMENT, "Procedure",
+                    "Fill out HR form. Manager approves the request.", null);
+            GraphNode manager = makeNode("actor-manager", NodeLevel.ENTITY, "Manager",
+                    "Approval role", "PERSON");
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
+                    .thenReturn(List.of(document));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+                    .thenReturn(List.of(manager));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.TABLE), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.getEdgesForNode("doc-process")).thenReturn(List.of());
+            when(knowledgeGraphService.getEdgesForNode("actor-manager")).thenReturn(List.of());
+            when(llmServiceRegistry.getOrFallback(null)).thenReturn(llmService);
+            when(llmService.getId()).thenReturn("test-llm");
+            when(llmService.complete(anyString())).thenReturn("""
+                    {"steps":[
+                      {"name":"Fill out HR form","description":"Complete the form",
+                       "stepType":"HUMAN","evidence":"Fill out HR form","sourceNodeId":"doc-process"},
+                      {"name":"Approve request","description":"Approve the request",
+                       "stepType":"APPROVE","evidence":"Manager approves the request",
+                       "sourceNodeId":"doc-process"}]}
+                    """, """
+                    {"processes":[{"name":"Request procedure","description":"A supported procedure",
+                      "confidence":0.91,"phaseName":"Execution",
+                      "orderedStepIds":["step-1","step-2"]}]}
+                    """, """
+                    {"assignment":{"actorOrdinal":null,"confidence":0.9,
+                      "reason":"no actor is explicit"}}
+                    """, """
+                    {"assignment":{"actorOrdinal":1,"confidence":0.95,
+                      "reason":"Manager is the grammatical subject"}}
+                    """);
+
+            List<ProcessSuggestion> suggestions = service.discoverProcesses(null, Map.of());
+
+            assertEquals(1, suggestions.size());
+            ProcessSuggestion suggestion = suggestions.get(0);
+            assertEquals(1, suggestion.getPhases().size());
+            assertEquals(List.of("Fill out HR form", "Approve request"),
+                    suggestion.getPhases().get(0).getSteps().stream()
+                            .map(ProcessSuggestion.SuggestedStep::getName).toList());
+            assertEquals("Manager",
+                    suggestion.getPhases().get(0).getSteps().get(1).getSuggestedAssignee());
+            assertEquals(List.of("doc-process"), suggestion.getSourceGraphNodeIds());
+            assertEquals(List.of("Fill out HR form", "Manager approves the request"),
+                    suggestion.getEvidence());
+
+            ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+            verify(llmService, times(4)).complete(prompts.capture());
+            assertFalse(prompts.getAllValues().get(0).contains("ENGINE-FIXED ACTOR BALLOT"));
+            assertTrue(prompts.getAllValues().get(0).contains("Do not name a process"));
+            assertTrue(prompts.getAllValues().get(1).contains("orderedStepIds"));
+            assertTrue(prompts.getAllValues().get(1).contains("copy \"step-2\""));
+            assertTrue(prompts.getAllValues().get(1).contains("belongs to one coherent process"));
+            assertFalse(prompts.getAllValues().get(1).contains("ENGINE-FIXED ACTOR BALLOT"));
+            assertTrue(prompts.getAllValues().get(2).contains("ENGINE-FIXED ACTOR BALLOT"));
+            assertTrue(prompts.getAllValues().get(2).contains("ordinal=1 | name=Manager"));
+            assertTrue(prompts.getAllValues().get(2).contains("not the earlier co-mention"));
+            assertTrue(prompts.getAllValues().get(3).contains("ENGINE LEXICAL CANDIDATE HINT"));
+            assertTrue(prompts.getAllValues().get(3).contains("actorOrdinal must be 1"));
+            assertFalse(prompts.getAllValues().get(1).contains("doc-process"),
+                    "the grouping model receives fixed activities, not copyable graph IDs");
+        }
+
+        @Test
+        void unambiguousActorHintGetsOneBoundedCorrectionInsteadOfAcceptingCopiedNulls() {
+            GraphNode document = makeNode("doc-process", NodeLevel.DOCUMENT, "Procedure",
+                    "Maya exports the forecast.", null);
+            GraphNode maya = makeNode("actor-maya", NodeLevel.ENTITY, "Maya",
+                    "Forecast analyst", "PERSON");
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
+                    .thenReturn(List.of(document));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+                    .thenReturn(List.of(maya));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.TABLE), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.getEdgesForNode(anyString())).thenReturn(List.of());
+            when(llmServiceRegistry.getOrFallback(null)).thenReturn(llmService);
+            when(llmService.getId()).thenReturn("test-llm");
+            when(llmService.complete(anyString())).thenReturn("""
+                    {"steps":[{"name":"Maya exports the forecast","description":"Export forecast",
+                      "stepType":"HUMAN","evidence":"Maya exports the forecast.",
+                      "sourceNodeId":"doc-process"}]}
+                    """, """
+                    {"processes":[{"name":"Forecast export","description":"Export workflow",
+                      "confidence":0.9,"orderedStepIds":["step-1"]}]}
+                    """, """
+                    {"assignment":{"actorOrdinal":null,"confidence":null,"reason":null}}
+                    """, """
+                    {"assignment":{"actorOrdinal":1,"confidence":1.0,
+                      "reason":"the fixed activity explicitly starts with Maya"}}
+                    """);
+
+            List<ProcessSuggestion> suggestions = service.discoverProcesses(null, Map.of());
+
+            assertEquals("Maya", suggestions.get(0).getPhases().get(0).getSteps().get(0)
+                    .getSuggestedAssignee());
+            ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+            verify(llmService, times(4)).complete(prompts.capture());
+            assertTrue(prompts.getAllValues().get(2).contains("SAFE SHAPE FOR THIS BALLOT"));
+            assertTrue(prompts.getAllValues().get(3).contains("VALIDATION CORRECTION"));
+            assertTrue(prompts.getAllValues().get(3).contains("do not copy null"));
+        }
+
+        @Test
+        void fixedActivityNameOutranksAnEarlierActorInCoordinatedEvidence() {
+            GraphNode erin = makeNode("actor-erin", NodeLevel.ENTITY, "Erin", null, "PERSON");
+            GraphNode finance = makeNode("actor-finance", NodeLevel.ENTITY, "Finance", null, "TEAM");
+            LlmProcessDiscoveryService.GraphContext context = new LlmProcessDiscoveryService.GraphContext(
+                    List.of(erin, finance), List.of(), List.of());
+            LlmProcessDiscoveryService.DiscoveredStep step =
+                    new LlmProcessDiscoveryService.DiscoveredStep(
+                            "step-4", "Finance publishes the forecast", "Publish forecast",
+                            "HUMAN", "doc-process",
+                            "Finally, Erin approves it and Finance publishes the forecast.");
+
+            String prompt = service.buildActorAssignmentPrompt(context, step);
+
+            assertTrue(prompt.contains("ordinal=2 | name=Finance"));
+            assertTrue(prompt.contains("actorOrdinal must be 2"));
+            assertFalse(prompt.contains("none or ambiguous"));
+        }
+
+        @Test
+        void explicitEmptyStepBallotGetsOneGroundedValidationRetry() {
+            GraphNode document = makeNode("doc-process", NodeLevel.DOCUMENT, "Forecast procedure",
+                    "Maya exports the forecast.", null);
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
+                    .thenReturn(List.of(document));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.TABLE), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.getEdgesForNode("doc-process")).thenReturn(List.of());
+            when(llmServiceRegistry.getOrFallback(null)).thenReturn(llmService);
+            when(llmService.getId()).thenReturn("test-llm");
+            when(llmService.complete(anyString())).thenReturn("""
+                    {"steps":[]}
+                    """, """
+                    {"steps":[{"name":"Export forecast","description":"Export the forecast",
+                      "stepType":"HUMAN","evidence":"Maya exports the forecast.",
+                      "sourceNodeId":"doc-process"}]}
+                    """, """
+                    {"processes":[{"name":"Forecast procedure","description":"Export workflow",
+                      "confidence":0.9,"orderedStepIds":["step-1"]}]}
+                    """);
+
+            List<ProcessSuggestion> suggestions = service.discoverProcesses(null, Map.of());
+
+            assertEquals(1, suggestions.size());
+            assertEquals("Export forecast",
+                    suggestions.get(0).getPhases().get(0).getSteps().get(0).getName());
+            ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+            verify(llmService, times(3)).complete(prompts.capture());
+            assertTrue(prompts.getAllValues().get(0).contains("Begin exactly with {\"steps\":["));
+            assertTrue(prompts.getAllValues().get(0).contains("Coordinated action verbs are separate activities"));
+            assertTrue(prompts.getAllValues().get(1).contains("VALIDATION RETRY"));
+            assertTrue(prompts.getAllValues().get(1).contains("Maya exports the forecast"));
+        }
+
+        @Test
+        void coordinatedClauseEvidenceIsRebasedToTheExactContainingSourceSentence() {
+            String source = "Finally, Erin approves it and Finance publishes the consolidated forecast.";
+            GraphNode snippet = makeNode("snippet-process", NodeLevel.SNIPPET, "Workflow", source, null);
+            LlmProcessDiscoveryService.GraphContext context =
+                    new LlmProcessDiscoveryService.GraphContext(List.of(), List.of(snippet), List.of());
+
+            List<LlmProcessDiscoveryService.DiscoveredStep> steps =
+                    service.parseStepExtractionResponse("""
+                            {"steps":[
+                              {"name":"Erin approves it","description":"Approve forecast",
+                               "stepType":"APPROVE","evidence":"Finally, Erin approves it."},
+                              {"name":"Finance publishes the consolidated forecast",
+                               "description":"Publish forecast","stepType":"TOOL_CALL",
+                               "evidence":"And Finance publishes the consolidated forecast."}]}
+                            """, context);
+
+            assertEquals(2, steps.size());
+            assertEquals(List.of(source, source),
+                    steps.stream().map(LlmProcessDiscoveryService.DiscoveredStep::evidence).toList());
+        }
+
+        @Test
+        void organizationNormalizesOnlyUnambiguousEngineBallotOrdinals() {
+            LlmProcessDiscoveryService.GraphContext context =
+                    new LlmProcessDiscoveryService.GraphContext(List.of(), List.of(), List.of());
+            List<LlmProcessDiscoveryService.DiscoveredStep> steps = List.of(
+                    new LlmProcessDiscoveryService.DiscoveredStep(
+                            "step-1", "Export", "Export", "HUMAN", null, "Export source"),
+                    new LlmProcessDiscoveryService.DiscoveredStep(
+                            "step-2", "Review", "Review", "HUMAN", null, "Review source"));
+
+            List<ProcessSuggestion> suggestions = service.parseOrganizationResponse("""
+                    {"processes":[{"name":"Workflow","description":"Ordered workflow",
+                      "confidence":0.9,"orderedStepIds":[1,"2","invented"]}]}
+                    """, context, steps);
+
+            assertEquals(1, suggestions.size());
+            assertEquals(List.of("Export", "Review"), suggestions.get(0).getPhases().get(0)
+                    .getSteps().stream().map(ProcessSuggestion.SuggestedStep::getName).toList());
+        }
+
+        @Test
+        void unsupportedStepEvidenceStopsBeforeTheOrganizationCall() {
+            GraphNode document = makeNode("doc-process", NodeLevel.DOCUMENT, "Procedure",
+                    "The source states one concrete action.", null);
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
+                    .thenReturn(List.of(document));
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.ENTITY), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.TABLE), anyInt()))
+                    .thenReturn(List.of());
+            when(knowledgeGraphService.getEdgesForNode("doc-process")).thenReturn(List.of());
+            when(llmServiceRegistry.getOrFallback(null)).thenReturn(llmService);
+            when(llmService.getId()).thenReturn("test-llm");
+            when(llmService.complete(anyString())).thenReturn("""
+                    {"steps":[{"name":"Invented action","description":"not in source",
+                      "stepType":"HUMAN","evidence":"fabricated evidence"}]}
+                    """);
+
+            assertTrue(service.discoverProcesses(null, Map.of()).isEmpty());
+            verify(llmService, times(1)).complete(anyString());
+        }
+
+        @Test
         void respectsMinConfidenceFilter() {
             GraphNode node = makeNode("doc-1", NodeLevel.DOCUMENT, "Notes", "Some notes", null);
             when(knowledgeGraphService.searchNodes(eq(""), eq(NodeLevel.DOCUMENT), anyInt()))
@@ -406,6 +632,19 @@ class LlmProcessDiscoveryServiceTest {
 
     @Nested
     class PromptConstruction {
+
+        @Test
+        void outputContractContainsNoCopyableExampleProcess() {
+            String instructions = LlmProcessDiscoveryService.getProcessDiscoveryPromptInstructions();
+
+            assertTrue(instructions.contains("{\"processes\":[]}"));
+            assertTrue(instructions.contains("Never copy a value from this output contract"));
+            assertFalse(instructions.contains("Quarterly Budget Review"));
+            assertFalse(instructions.contains("Distribute budget template"));
+            assertFalse(instructions.contains("Department Heads"));
+            assertFalse(instructions.contains("Spreadsheet Computation"));
+            assertFalse(instructions.contains("node-id-1"));
+        }
 
         @Test
         void includesNodeDetailsInPrompt() {

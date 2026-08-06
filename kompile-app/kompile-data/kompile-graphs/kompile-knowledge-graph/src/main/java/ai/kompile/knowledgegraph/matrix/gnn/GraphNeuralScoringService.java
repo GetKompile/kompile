@@ -29,19 +29,20 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Computes a bounded, one-hop neural-style edge overlay from graph-resident information.
+ * Trains and applies a bounded message-passing link predictor over one fact-sheet graph.
  *
- * <p>The service deliberately depends on {@link KnowledgeGraphService}, not a graph-store or
- * tensor backend. Persisted KGE vectors are used when available; deterministic hashed features
- * from node type, text, and metadata provide coverage for sparse graphs. A distribution remains
- * responsible for supplying any backend needed to create the persisted vectors.
+ * <p>Persisted KGE vectors are used when available; deterministic hashed graph features provide
+ * coverage for sparse graphs. The model itself is genuinely trained from retained edges and
+ * deterministic absent-pair negatives. It uses only on-heap Java arrays, is closed after every
+ * invocation, and therefore cannot retain a tensor backend, native workspace, thread, or GPU.
  */
 @Service
 public class GraphNeuralScoringService {
 
     public static final String SCORE_KEY = "gnn.score";
     public static final String MODEL_KEY = "gnn.model";
-    public static final String MODEL_NAME = "mean-aggregate-v1";
+    public static final String MODEL_NAME = "trainable-message-passing-link-v1";
+    public static final String RUNTIME_NAME = "cpu-heap";
 
     private static final int FEATURE_DIMENSION = 64;
     private static final int MAX_METADATA_ENTRIES = 32;
@@ -61,8 +62,8 @@ public class GraphNeuralScoringService {
      * @param maxNodes safety bound; non-positive means unbounded
      * @param maxEdges safety bound; non-positive means unbounded
      * @param batchSize maximum metadata updates per store call
-     * @param selfWeight contribution of each node's own features
-     * @param neighborWeight contribution of its weighted neighbor mean
+     * @param selfWeight initial scale for each node's own features
+     * @param neighborWeight initial scale for the neighbor mean
      */
     public ScoringResult scoreFactSheetEdges(
             long factSheetId,
@@ -71,6 +72,21 @@ public class GraphNeuralScoringService {
             int batchSize,
             double selfWeight,
             double neighborWeight) {
+        return scoreFactSheetEdges(
+                factSheetId,
+                maxNodes,
+                maxEdges,
+                batchSize,
+                TrainingConfig.defaults(selfWeight, neighborWeight));
+    }
+
+    /** Train a fresh bounded model, persist its scores, then deterministically dispose it. */
+    public ScoringResult scoreFactSheetEdges(
+            long factSheetId,
+            int maxNodes,
+            int maxEdges,
+            int batchSize,
+            TrainingConfig trainingConfig) {
 
         String graphId = GraphToSameDiffDataset.FACTSHEET_GRAPH_PREFIX + factSheetId;
         List<GraphNode> nodes = activeNodes(knowledgeGraphService.getNodesInFactSheet(factSheetId));
@@ -106,82 +122,80 @@ public class GraphNeuralScoringService {
             baseFeatures.put(entry.getKey(), features(entry.getValue()));
         }
 
-        Map<String, double[]> neighborSums = new LinkedHashMap<>();
-        Map<String, Double> neighborMass = new LinkedHashMap<>();
-        for (GraphEdge edge : edges) {
-            String sourceId = edge.getSourceNodeId();
-            String targetId = edge.getTargetNodeId();
-            double[] source = baseFeatures.get(sourceId);
-            double[] target = baseFeatures.get(targetId);
-            if (source == null || target == null) {
-                continue;
+        TrainingConfig safeConfig = trainingConfig == null
+                ? TrainingConfig.defaults(0.7, 0.3)
+                : trainingConfig;
+        try (TrainableMessagePassingLinkModel.TrainingAttempt attempt =
+                     TrainableMessagePassingLinkModel.train(baseFeatures, edges, safeConfig)) {
+            if (!attempt.trained()) {
+                return skipped(graphId, nodes.size(), edges.size(), attempt.reason());
             }
 
-            double weight = contextWeight(edge.getWeight());
-            accumulateNeighbor(neighborSums, neighborMass, sourceId, target,
-                    relationToken(edge, "out"), weight);
-            accumulateNeighbor(neighborSums, neighborMass, targetId, source,
-                    relationToken(edge, "in"), weight);
-        }
+            TrainableMessagePassingLinkModel model = attempt.model();
+            TrainableMessagePassingLinkModel.Diagnostics diagnostics = attempt.diagnostics();
+            String scoredAt = Instant.now().toString();
+            List<KnowledgeGraphService.EdgeMetadataUpdate> updates = new ArrayList<>(edges.size());
+            for (GraphEdge edge : edges) {
+                String edgeId = edge.getEdgeId();
+                if (edgeId == null || edgeId.isBlank()
+                        || !baseFeatures.containsKey(edge.getSourceNodeId())
+                        || !baseFeatures.containsKey(edge.getTargetNodeId())) {
+                    continue;
+                }
 
-        double safeSelfWeight = nonNegativeFinite(selfWeight, 1.0);
-        double safeNeighborWeight = nonNegativeFinite(neighborWeight, 1.0);
-        if (safeSelfWeight + safeNeighborWeight <= EPSILON) {
-            safeSelfWeight = 1.0;
-        }
-
-        Map<String, double[]> contextualFeatures = new LinkedHashMap<>();
-        for (Map.Entry<String, double[]> entry : baseFeatures.entrySet()) {
-            double[] contextual = scaledCopy(entry.getValue(), safeSelfWeight);
-            double mass = neighborMass.getOrDefault(entry.getKey(), 0.0);
-            double[] neighbors = neighborSums.get(entry.getKey());
-            if (neighbors != null && mass > EPSILON) {
-                addScaled(contextual, neighbors, safeNeighborWeight / mass);
-            }
-            normalizeInPlace(contextual);
-            contextualFeatures.put(entry.getKey(), contextual);
-        }
-
-        String scoredAt = Instant.now().toString();
-        List<KnowledgeGraphService.EdgeMetadataUpdate> updates = new ArrayList<>(edges.size());
-        for (GraphEdge edge : edges) {
-            String edgeId = edge.getEdgeId();
-            double[] source = contextualFeatures.get(edge.getSourceNodeId());
-            double[] target = contextualFeatures.get(edge.getTargetNodeId());
-            if (edgeId == null || edgeId.isBlank() || source == null || target == null) {
-                continue;
+                double score = clampUnit(model.score(edge));
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                metadata.put(SCORE_KEY, score);
+                metadata.put(MODEL_KEY, MODEL_NAME);
+                metadata.put("gnn.runtime", RUNTIME_NAME);
+                metadata.put("gnn.featureSource", "persisted-embedding-or-graph-content");
+                metadata.put("gnn.selfWeightInitial", safeConfig.selfWeight());
+                metadata.put("gnn.neighborWeightInitial", safeConfig.neighborWeight());
+                metadata.put("gnn.trainingExamples", diagnostics.trainingExamples());
+                metadata.put("gnn.validationExamples", diagnostics.validationExamples());
+                putFinite(metadata, "gnn.initialLoss", diagnostics.initialLoss());
+                putFinite(metadata, "gnn.finalLoss", diagnostics.finalLoss());
+                putFinite(metadata, "gnn.validationPositiveMean", diagnostics.validationPositiveMean());
+                putFinite(metadata, "gnn.validationNegativeMean", diagnostics.validationNegativeMean());
+                metadata.put("gnn.modelFingerprint", diagnostics.fingerprint());
+                metadata.put("gnn.scoredAt", scoredAt);
+                metadata.put("neural.score", score);
+                metadata.put("neural.model", MODEL_NAME);
+                updates.add(new KnowledgeGraphService.EdgeMetadataUpdate(edgeId, Map.copyOf(metadata)));
             }
 
-            double score = clampUnit((cosine(source, target) + 1.0) / 2.0);
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put(SCORE_KEY, score);
-            metadata.put(MODEL_KEY, MODEL_NAME);
-            metadata.put("gnn.featureSource", "persisted-embedding-or-graph-content");
-            metadata.put("gnn.selfWeight", safeSelfWeight);
-            metadata.put("gnn.neighborWeight", safeNeighborWeight);
-            metadata.put("gnn.scoredAt", scoredAt);
-            metadata.put("neural.score", score);
-            metadata.put("neural.model", MODEL_NAME);
-            updates.add(new KnowledgeGraphService.EdgeMetadataUpdate(edgeId, Map.copyOf(metadata)));
-        }
+            if (updates.isEmpty()) {
+                return skipped(graphId, nodes.size(), edges.size(),
+                        "no edges had resolvable endpoints and identifiers");
+            }
 
-        if (updates.isEmpty()) {
-            return skipped(graphId, nodes.size(), edges.size(),
-                    "no edges had resolvable endpoints and identifiers");
-        }
+            int updated = 0;
+            int safeBatchSize = Math.max(1, batchSize);
+            for (int start = 0; start < updates.size(); start += safeBatchSize) {
+                int end = Math.min(start + safeBatchSize, updates.size());
+                updated += knowledgeGraphService.updateEdgeMetadataBatch(
+                        List.copyOf(updates.subList(start, end)));
+            }
 
-        int updated = 0;
-        int safeBatchSize = Math.max(1, batchSize);
-        for (int start = 0; start < updates.size(); start += safeBatchSize) {
-            int end = Math.min(start + safeBatchSize, updates.size());
-            updated += knowledgeGraphService.updateEdgeMetadataBatch(
-                    List.copyOf(updates.subList(start, end)));
+            String reason = updated == updates.size()
+                    ? "ok"
+                    : "metadata persisted for " + updated + " of " + updates.size() + " scored edges";
+            return new ScoringResult(
+                    graphId,
+                    nodes.size(),
+                    edges.size(),
+                    updated,
+                    false,
+                    reason,
+                    MODEL_NAME,
+                    diagnostics.trainingExamples(),
+                    diagnostics.validationExamples(),
+                    diagnostics.initialLoss(),
+                    diagnostics.finalLoss(),
+                    diagnostics.validationPositiveMean(),
+                    diagnostics.validationNegativeMean(),
+                    diagnostics.fingerprint());
         }
-
-        String reason = updated == updates.size()
-                ? "ok"
-                : "metadata persisted for " + updated + " of " + updates.size() + " scored edges";
-        return new ScoringResult(graphId, nodes.size(), edges.size(), updated, false, reason);
     }
 
     private static List<GraphNode> activeNodes(List<GraphNode> nodes) {
@@ -279,65 +293,14 @@ public class GraphNeuralScoringService {
         target[index] += sign * weight;
     }
 
-    private static void accumulateNeighbor(
-            Map<String, double[]> sums,
-            Map<String, Double> mass,
-            String nodeId,
-            double[] neighbor,
-            String relationToken,
-            double weight) {
-        double[] sum = sums.computeIfAbsent(nodeId, ignored -> new double[FEATURE_DIMENSION]);
-        addScaled(sum, neighbor, weight);
-        hashFeature(sum, relationToken, 0.25 * weight);
-        mass.merge(nodeId, weight, Double::sum);
-    }
-
-    private static String relationToken(GraphEdge edge, String direction) {
-        String relation = edge.getRelationType();
-        if (relation == null || relation.isBlank()) {
-            relation = edge.getEdgeType() == null ? "unknown" : edge.getEdgeType().name();
-        }
-        return "relation:" + direction + ":" + relation.toLowerCase(Locale.ROOT);
-    }
-
-    private static double contextWeight(Double weight) {
-        if (weight == null || !Double.isFinite(weight)) {
-            return 1.0;
-        }
-        return Math.max(0.05, Math.min(1.0, Math.abs(weight)));
-    }
-
     private static double nonNegativeFinite(double value, double fallback) {
         return Double.isFinite(value) && value >= 0.0 ? value : fallback;
     }
 
-    private static double[] scaledCopy(double[] source, double scale) {
-        double[] result = new double[source.length];
-        for (int i = 0; i < source.length; i++) {
-            result[i] = source[i] * scale;
+    private static void putFinite(Map<String, Object> metadata, String key, double value) {
+        if (Double.isFinite(value)) {
+            metadata.put(key, value);
         }
-        return result;
-    }
-
-    private static void addScaled(double[] target, double[] source, double scale) {
-        for (int i = 0; i < target.length; i++) {
-            target[i] += source[i] * scale;
-        }
-    }
-
-    private static double cosine(double[] left, double[] right) {
-        double dot = 0.0;
-        double leftNorm = 0.0;
-        double rightNorm = 0.0;
-        for (int i = 0; i < left.length; i++) {
-            dot += left[i] * right[i];
-            leftNorm += left[i] * left[i];
-            rightNorm += right[i] * right[i];
-        }
-        if (leftNorm <= EPSILON || rightNorm <= EPSILON) {
-            return 0.0;
-        }
-        return dot / Math.sqrt(leftNorm * rightNorm);
     }
 
     private static void normalizeInPlace(double[] vector) {
@@ -371,12 +334,62 @@ public class GraphNeuralScoringService {
         return new ScoringResult(graphId, nodeCount, edgesSeen, 0, true, reason);
     }
 
+    /** Bounded, deterministic training controls for the per-crawl model. */
+    public record TrainingConfig(
+            double selfWeight,
+            double neighborWeight,
+            int epochs,
+            double learningRate,
+            int negativeSamplesPerPositive,
+            int maxPositiveEdges,
+            long seed,
+            double l2) {
+
+        public TrainingConfig {
+            selfWeight = nonNegativeFinite(selfWeight, 0.7);
+            neighborWeight = nonNegativeFinite(neighborWeight, 0.3);
+            if (selfWeight + neighborWeight <= EPSILON) {
+                selfWeight = 1.0;
+            }
+            epochs = Math.max(1, epochs);
+            learningRate = Double.isFinite(learningRate) && learningRate > 0.0
+                    ? learningRate : 0.03;
+            negativeSamplesPerPositive = Math.max(1, negativeSamplesPerPositive);
+            maxPositiveEdges = Math.max(1, maxPositiveEdges);
+            l2 = Double.isFinite(l2) && l2 >= 0.0 ? l2 : 1.0e-4;
+        }
+
+        public static TrainingConfig defaults(double selfWeight, double neighborWeight) {
+            return new TrainingConfig(
+                    selfWeight, neighborWeight, 30, 0.03, 1, 20_000, 1_729L, 1.0e-4);
+        }
+    }
+
     public record ScoringResult(
             String graphId,
             int nodeCount,
             int edgesSeen,
             int edgesScored,
             boolean skipped,
-            String reason) {
+            String reason,
+            String modelName,
+            int trainingExamples,
+            int validationExamples,
+            double initialLoss,
+            double finalLoss,
+            double validationPositiveMean,
+            double validationNegativeMean,
+            String modelFingerprint) {
+
+        public ScoringResult(
+                String graphId,
+                int nodeCount,
+                int edgesSeen,
+                int edgesScored,
+                boolean skipped,
+                String reason) {
+            this(graphId, nodeCount, edgesSeen, edgesScored, skipped, reason,
+                    null, 0, 0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, null);
+        }
     }
 }

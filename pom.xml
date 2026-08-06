@@ -72,6 +72,12 @@
          (see build-scripts/build-dl4j-backend.sh for the full custom-build script). -->
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
     <nd4j.backend>nd4j-native</nd4j.backend>
+    <!-- The Java backend POM and the classified native binary normally share an
+         artifactId. ZLUDA is the exception: Java APIs come from nd4j-zluda while
+         its native binary is attached to nd4j-cuda-12.9. -->
+    <nd4j.native.backend>${nd4j.backend}</nd4j.native.backend>
+    <!-- Activated repository credentials belong in settings.xml under this id. -->
+    <dl4j.repository.id>dl4j-release</dl4j.repository.id>
 
     <ztexec.version>1.12</ztexec.version>
     <ztprocesskiller.version>1.10</ztprocesskiller.version>
@@ -86,6 +92,10 @@
     <commons-io.version>2.18.0</commons-io.version>
     <commons-compress.version>1.27.1</commons-compress.version>
     <commons-lang3.version>3.14.0</commons-lang3.version>
+    <!-- Keep the jdk18on provider, PKIX, utility, and mail artifacts binary-compatible.
+         Several document loaders contribute different transitive versions; a mixed
+         set fails GraalVM class initialization before the application image is built. -->
+    <bouncycastle.version>1.80</bouncycastle.version>
     <guava.version>32.1.3-jre</guava.version>
     <vertx.version>4.5.7</vertx.version>
 
@@ -103,11 +113,16 @@
     <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
     <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
     <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
+    <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
     <hibernate.version>6.4.4.Final</hibernate.version>
     <jline.version>3.26.1</jline.version>
 
     <!-- Platform-specific native resource configurations -->
     <javacpp.platform.extension></javacpp.platform.extension>
+    <!-- SDK/native artifacts use their release classifier; distributions retain the full release lane. -->
+    <kompile.distribution.platform.classifier>${javacpp.platform}</kompile.distribution.platform.classifier>
+    <!-- tokenizers-native is published on CPU lanes, independently of an accelerator backend. -->
+    <tokenizers.platform.classifier>${javacpp.platform}</tokenizers.platform.classifier>
 
     <!-- Default exclusions (will be overridden by profiles) -->
     <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
@@ -166,6 +181,29 @@
         <groupId>org.jline</groupId>
         <artifactId>jline</artifactId>
         <version>${jline.version}</version>
+      </dependency>
+
+      <!-- A single Bouncy Castle release is required because document loaders pull
+           these artifacts through independent dependency paths. -->
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcprov-jdk18on</artifactId>
+        <version>${bouncycastle.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcpkix-jdk18on</artifactId>
+        <version>${bouncycastle.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcutil-jdk18on</artifactId>
+        <version>${bouncycastle.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcjmail-jdk18on</artifactId>
+        <version>${bouncycastle.version}</version>
       </dependency>
 
       <dependency>
@@ -379,6 +417,12 @@
               </path>
             </annotationProcessorPaths>
           </configuration>
+        </plugin>
+
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <version>${maven-deploy-plugin.version}</version>
         </plugin>
 
         <plugin>
@@ -755,6 +799,7 @@
       </activation>
       <properties>
         <javacpp.platform.extension>-avx2</javacpp.platform.extension>
+        <tokenizers.platform.classifier>${javacpp.platform}-avx2</tokenizers.platform.classifier>
       </properties>
     </profile>
 
@@ -768,98 +813,167 @@
       </activation>
       <properties>
         <javacpp.platform.extension>-avx512</javacpp.platform.extension>
+        <tokenizers.platform.classifier>${javacpp.platform}-avx512</tokenizers.platform.classifier>
       </properties>
+    </profile>
+
+    <!-- Opt-in DL4J/ND4J repository. Authentication is intentionally not
+         embedded here: configure a matching <server> in Maven settings.xml. -->
+    <profile>
+      <id>dl4j-repository</id>
+      <activation>
+        <property>
+          <name>dl4j.repository.url</name>
+        </property>
+      </activation>
+      <repositories>
+        <repository>
+          <id>${dl4j.repository.id}</id>
+          <url>${dl4j.repository.url}</url>
+          <releases>
+            <enabled>true</enabled>
+          </releases>
+          <snapshots>
+            <enabled>true</enabled>
+            <updatePolicy>always</updatePolicy>
+          </snapshots>
+        </repository>
+      </repositories>
     </profile>
 
     <!-- ── ND4J backend variant profiles ────────────────────────────────────
-         Activated by -Dkompile.backend=<value>. These set nd4j.backend (and
-         optionally javacpp.platform.extension) so child modules resolve the
-         correct backend artifact without per-module pom changes.
-         Usage: mvn clean install -Dkompile.backend=cuda-12.9 -Dnd4j.version=...
+         Activated by -Dkompile.backend=<value>. Classifiers exactly mirror the
+         attested ../deeplearning4j/release matrix:
+           ${javacpp.platform}${javacpp.platform.extension}
+         Usage:
+           mvn verify -Dkompile.backend=cuda-12.9-cudnn \
+             -Dnd4j.version=... -Ddl4j.repository.url=file:///repo
     -->
-    <!-- CPU explicit default alias: nd4j-native (same as property default) -->
     <profile>
       <id>backend-cpu</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>cpu</value>
-        </property>
-      </activation>
-      <properties>
-        <nd4j.backend>nd4j-native</nd4j.backend>
-      </properties>
+      <activation><property><name>kompile.backend</name><value>cpu</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><kompile.distribution.platform.classifier>${javacpp.platform}</kompile.distribution.platform.classifier></properties>
     </profile>
-
-    <!-- CPU + MLIR/Triton JIT compile classifier (-compile) -->
     <profile>
-      <id>backend-cpu-compile</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>cpu-compile</value>
-        </property>
-      </activation>
-      <properties>
-        <nd4j.backend>nd4j-native</nd4j.backend>
-        <javacpp.platform.extension>-compile</javacpp.platform.extension>
-      </properties>
+      <id>backend-cpu-avx2</id>
+      <activation><property><name>kompile.backend</name><value>cpu-avx2</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-avx2</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-avx2</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-avx2</kompile.distribution.platform.classifier></properties>
     </profile>
-
-    <!-- CPU + OneDNN + AVX-512 extension classifier -->
+    <profile>
+      <id>backend-cpu-avx512</id>
+      <activation><property><name>kompile.backend</name><value>cpu-avx512</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-avx512</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-avx512</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-avx512</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-onednn</id>
+      <activation><property><name>kompile.backend</name><value>cpu-onednn</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-onednn</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-onednn</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-onednn</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-onednn-avx2</id>
+      <activation><property><name>kompile.backend</name><value>cpu-onednn-avx2</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-onednn-avx2</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-onednn-avx2</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-onednn-avx2</kompile.distribution.platform.classifier></properties>
+    </profile>
     <profile>
       <id>backend-cpu-onednn-avx512</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>cpu-onednn-avx512</value>
-        </property>
-      </activation>
-      <properties>
-        <nd4j.backend>nd4j-native</nd4j.backend>
-        <javacpp.platform.extension>-onednn-avx512</javacpp.platform.extension>
-      </properties>
+      <activation><property><name>kompile.backend</name><value>cpu-onednn-avx512</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-onednn-avx512</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-onednn-avx512</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-onednn-avx512</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-compile</id>
+      <activation><property><name>kompile.backend</name><value>cpu-compile</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-compile</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-compile</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-armcompute</id>
+      <activation><property><name>kompile.backend</name><value>cpu-armcompute</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-armcompute</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-armcompute</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-armcompute</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-mps</id>
+      <activation><property><name>kompile.backend</name><value>cpu-mps</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-mps</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-mps</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-mps</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-mps-compile</id>
+      <activation><property><name>kompile.backend</name><value>cpu-mps-compile</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-mps-compile</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-mps-compile</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-mps-compile</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-nnapi</id>
+      <activation><property><name>kompile.backend</name><value>cpu-nnapi</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-nnapi</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-nnapi</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-nnapi</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-compile-nnapi</id>
+      <activation><property><name>kompile.backend</name><value>cpu-compile-nnapi</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compile-nnapi</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-compile-nnapi</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-compile-nnapi</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-compat</id>
+      <activation><property><name>kompile.backend</name><value>cpu-compat</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compat</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-compat</kompile.distribution.platform.classifier></properties>
     </profile>
 
-    <!-- CUDA 12.6 backend -->
     <profile>
       <id>backend-cuda-12.6</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>cuda-12.6</value>
-        </property>
-      </activation>
-      <properties>
-        <nd4j.backend>nd4j-cuda-12.6</nd4j.backend>
-      </properties>
+      <activation><property><name>kompile.backend</name><value>cuda-12.6</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6</kompile.distribution.platform.classifier></properties>
     </profile>
-
-    <!-- CUDA 12.9 backend -->
+    <profile>
+      <id>backend-cuda-12.6-cudnn</id>
+      <activation><property><name>kompile.backend</name><value>cuda-12.6-cudnn</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-cudnn</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cuda-12.6-compile</id>
+      <activation><property><name>kompile.backend</name><value>cuda-12.6-compile</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-compile</kompile.distribution.platform.classifier></properties>
+    </profile>
     <profile>
       <id>backend-cuda-12.9</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>cuda-12.9</value>
-        </property>
-      </activation>
-      <properties>
-        <nd4j.backend>nd4j-cuda-12.9</nd4j.backend>
-      </properties>
+      <activation><property><name>kompile.backend</name><value>cuda-12.9</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cuda-12.9-cudnn</id>
+      <activation><property><name>kompile.backend</name><value>cuda-12.9-cudnn</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-cudnn</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cuda-12.9-compile</id>
+      <activation><property><name>kompile.backend</name><value>cuda-12.9-compile</value></property></activation>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-compile</kompile.distribution.platform.classifier></properties>
     </profile>
 
-    <!-- ZLUDA (AMD GPU via CUDA-compat layer) -->
+    <profile>
+      <id>backend-vulkan</id>
+      <activation><property><name>kompile.backend</name><value>vulkan</value></property></activation>
+      <properties><nd4j.backend>nd4j-vulkan</nd4j.backend><kompile.distribution.platform.classifier>${javacpp.platform}-vulkan</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-vulkan-compile</id>
+      <activation><property><name>kompile.backend</name><value>vulkan-compile</value></property></activation>
+      <properties><nd4j.backend>nd4j-vulkan</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-vulkan-compile</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-hexagon</id>
+      <activation><property><name>kompile.backend</name><value>hexagon</value></property></activation>
+      <properties><nd4j.backend>nd4j-hexagon</nd4j.backend><kompile.distribution.platform.classifier>${javacpp.platform}-hexagon</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-tpu</id>
+      <activation><property><name>kompile.backend</name><value>tpu</value></property></activation>
+      <properties><nd4j.backend>nd4j-tpu</nd4j.backend><kompile.distribution.platform.classifier>${javacpp.platform}-tpu</kompile.distribution.platform.classifier></properties>
+    </profile>
     <profile>
       <id>backend-zluda</id>
-      <activation>
-        <property>
-          <name>kompile.backend</name>
-          <value>zluda</value>
-        </property>
-      </activation>
+      <activation><property><name>kompile.backend</name><value>zluda</value></property></activation>
       <properties>
         <nd4j.backend>nd4j-zluda</nd4j.backend>
+        <nd4j.native.backend>nd4j-cuda-12.9</nd4j.native.backend>
+        <javacpp.platform.extension>-zluda</javacpp.platform.extension>
+        <kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-zluda</kompile.distribution.platform.classifier>
       </properties>
     </profile>
 

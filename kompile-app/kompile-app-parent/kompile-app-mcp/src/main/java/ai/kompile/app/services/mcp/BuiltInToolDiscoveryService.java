@@ -29,6 +29,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
@@ -53,6 +55,7 @@ public class BuiltInToolDiscoveryService {
     private final ObjectMapper objectMapper;
     private final ServerPortService serverPortService;
     private ToolDefinitionService toolDefinitionService;
+    private McpToolCallbackCatalog toolCallbackCatalog;
 
     // Cache of discovered tools
     private final List<DiscoveredTool> discoveredTools = new ArrayList<>();
@@ -102,6 +105,11 @@ public class BuiltInToolDiscoveryService {
         this.toolDefinitionService = toolDefinitionService;
     }
 
+    @Autowired(required = false)
+    public void setToolCallbackCatalog(McpToolCallbackCatalog toolCallbackCatalog) {
+        this.toolCallbackCatalog = toolCallbackCatalog;
+    }
+
     @EventListener(ApplicationReadyEvent.class)
     public void init() {
         discoverBuiltInTools();
@@ -113,7 +121,16 @@ public class BuiltInToolDiscoveryService {
     public void discoverBuiltInTools() {
         discoveredTools.clear();
 
-        // Get all beans and scan for @Tool annotations
+        if (toolCallbackCatalog != null) {
+            for (ToolCallback callback : toolCallbackCatalog.getToolCallbacks()) {
+                discoveredTools.add(discoveredTool(callback));
+            }
+            logger.info("Discovered {} built-in MCP tools through Spring AI callbacks",
+                    discoveredTools.size());
+            return;
+        }
+
+        // Compatibility fallback for constructor-only tests without a Spring catalog.
         String[] beanNames = applicationContext.getBeanDefinitionNames();
 
         for (String beanName : beanNames) {
@@ -149,6 +166,57 @@ public class BuiltInToolDiscoveryService {
         }
 
         logger.info("Discovered {} built-in MCP tools", discoveredTools.size());
+    }
+
+    private DiscoveredTool discoveredTool(ToolCallback callback) {
+        ToolDefinition definition = callback.getToolDefinition();
+        JsonNode schema = parseInputSchema(definition.inputSchema());
+        return DiscoveredTool.builder()
+                .name(definition.name())
+                .description(definition.description())
+                .beanClass(callback.getClass().getName())
+                .methodName(definition.name())
+                .returnType("String")
+                .inputSchema(schema)
+                .parameters(parametersFromSchema(schema))
+                .build();
+    }
+
+    private JsonNode parseInputSchema(String schemaJson) {
+        try {
+            return objectMapper.readTree(schemaJson);
+        } catch (Exception e) {
+            logger.warn("Invalid Spring AI tool schema: {}", e.getMessage());
+            ObjectNode fallback = objectMapper.createObjectNode();
+            fallback.put("type", "object");
+            fallback.set("properties", objectMapper.createObjectNode());
+            return fallback;
+        }
+    }
+
+    private List<ToolParameter> parametersFromSchema(JsonNode schema) {
+        List<ToolParameter> parameters = new ArrayList<>();
+        JsonNode properties = schema.path("properties");
+        if (!properties.isObject()) {
+            return parameters;
+        }
+        Set<String> required = new HashSet<>();
+        JsonNode requiredNode = schema.path("required");
+        if (requiredNode.isArray()) {
+            requiredNode.forEach(node -> required.add(node.asText()));
+        }
+        properties.fields().forEachRemaining(entry -> {
+            JsonNode property = entry.getValue();
+            parameters.add(ToolParameter.builder()
+                    .name(entry.getKey())
+                    .type(property.path("type").asText("object"))
+                    .description(property.path("description").isTextual()
+                            ? property.path("description").asText()
+                            : null)
+                    .required(required.contains(entry.getKey()))
+                    .build());
+        });
+        return parameters;
     }
 
     /**

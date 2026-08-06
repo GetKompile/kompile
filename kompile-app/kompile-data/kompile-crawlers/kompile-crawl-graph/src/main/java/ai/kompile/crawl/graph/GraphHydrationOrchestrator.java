@@ -429,7 +429,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
             }
         }
 
-        // ── Stage 3: GNN_SCORING — annotate retained edges with neural/link scores ──────
+        // ── Stage 3: GNN_SCORING — train, score, and dispose a bounded link model ──────
         if (config.stageEnabled(STAGE_GNN_SCORING)) {
             KbConfig cfg = kbCfg();
             if (!cfg.isGnnScoringOnCrawlEnabled()) {
@@ -437,16 +437,24 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                         "GNN_SCORING skipped: disabled by kbGnnScoringOnCrawlEnabled=false");
             } else if (graphNeuralScoringService != null) {
                 try {
-                    log.info("[Hydration factSheet={}] GNN_SCORING: scoring retained edges "
-                                    + "(maxNodes={}, maxEdges={}, batchSize={})",
-                            factSheetId, cfg.getGnnMaxNodes(), cfg.getGnnMaxEdges(), cfg.getGnnScoreBatchSize());
+                    log.info("[Hydration factSheet={}] GNN_SCORING: training bounded CPU link model "
+                                    + "(maxNodes={}, maxEdges={}, batchSize={}, epochs={})",
+                            factSheetId, cfg.getGnnMaxNodes(), cfg.getGnnMaxEdges(),
+                            cfg.getGnnScoreBatchSize(), cfg.getGnnTrainingEpochs());
                     GraphNeuralScoringService.ScoringResult gnn = graphNeuralScoringService.scoreFactSheetEdges(
                             factSheetId,
                             cfg.getGnnMaxNodes(),
                             cfg.getGnnMaxEdges(),
                             cfg.getGnnScoreBatchSize(),
-                            cfg.getGnnSelfWeight(),
-                            cfg.getGnnNeighborWeight());
+                            new GraphNeuralScoringService.TrainingConfig(
+                                    cfg.getGnnSelfWeight(),
+                                    cfg.getGnnNeighborWeight(),
+                                    cfg.getGnnTrainingEpochs(),
+                                    cfg.getGnnLearningRate(),
+                                    cfg.getGnnNegativeSamplesPerPositive(),
+                                    cfg.getGnnMaxPositiveTrainingEdges(),
+                                    cfg.getGnnTrainingSeed(),
+                                    cfg.getGnnL2()));
                     gnnEdgesScored = gnn.edgesScored();
                     stagesRun++;
                     String msg = gnn.skipped()
@@ -454,7 +462,11 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                                     + " (nodes=" + gnn.nodeCount() + ", edges=" + gnn.edgesSeen() + ")"
                             : "GNN_SCORING complete: scoredEdges=" + gnnEdgesScored
                                     + " edgesSeen=" + gnn.edgesSeen()
-                                    + " graphId=" + gnn.graphId();
+                                    + " graphId=" + gnn.graphId()
+                                    + " model=" + gnn.modelName()
+                                    + " initialLoss=" + gnn.initialLoss()
+                                    + " finalLoss=" + gnn.finalLoss()
+                                    + " fingerprint=" + gnn.modelFingerprint();
                     log.info("[Hydration factSheet={}] {}", factSheetId, msg);
                     safeCallback(progressCallback, STAGE_GNN_SCORING, msg);
                 } catch (Exception e) {
@@ -467,7 +479,7 @@ public class GraphHydrationOrchestrator implements GraphEnrichmentService {
                 log.debug("[Hydration factSheet={}] GNN_SCORING skipped: GraphNeuralScoringService not available",
                         factSheetId);
                 safeCallback(progressCallback, STAGE_GNN_SCORING,
-                        "GNN_SCORING skipped: neural scoring service not available");
+                        "GNN_SCORING skipped: trainable link-scoring service not available");
             }
         }
 

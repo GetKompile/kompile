@@ -23,7 +23,10 @@
     <app-branding></app-branding>
 
     <!-- Model Status Indicator -->
-    <app-model-status-indicator (openStaging)="openModelStaging()"></app-model-status-indicator>
+    <app-model-status-indicator
+      [persona]="persona"
+      (openStaging)="openModelStaging()">
+    </app-model-status-indicator>
 
     <!-- Fact Sheet Selector -->
     <div class="fact-sheet-selector">

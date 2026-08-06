@@ -255,6 +255,45 @@ class PartitionGraphTransactionTest {
         }
 
         @Test
+        void eachBatchFlushIsVisibleWithoutRewritingTheEarlierBatch() {
+            RecordingSink sink = new RecordingSink();
+            PartitionGraphTransaction tx = PartitionGraphTransaction.openOn(KEY, 42L);
+
+            tx.stage(member("c1"), oneEntity("Acme"));
+            GraphCommitSink.CommitOutcome first = tx.flush(sink);
+
+            assertEquals(Status.OPEN, tx.status(), "a batch flush must not close the partition");
+            assertEquals(1, first.entities());
+            assertEquals(1, tx.flushCount());
+            assertTrue(tx.checkpoints().isEmpty(),
+                    "a rollback cannot cross output already exposed to graph discovery");
+            assertEquals(List.of("Acme"), sink.committed.get(0).getEntities().stream()
+                    .map(Entity::getTitle).toList());
+
+            tx.stage(member("c2"), oneEntity("Bob"));
+            CommitReport report = tx.commit(sink);
+
+            assertEquals(2, sink.committed.size());
+            assertEquals(List.of("Bob"), sink.committed.get(1).getEntities().stream()
+                    .map(Entity::getTitle).toList(),
+                    "the second write is the pending delta, not the whole partition again");
+            assertEquals(2, report.outcome().entities());
+            assertEquals(2, report.staged().entities().size());
+            assertEquals(2, tx.flushCount());
+            assertEquals(Status.COMMITTED, tx.status());
+        }
+
+        @Test
+        void aCheckpointCannotRollBackAcrossAVisibleBatchBoundary() {
+            PartitionGraphTransaction tx = PartitionGraphTransaction.openOn(KEY, 42L);
+            Checkpoint beforeFirstChunk = tx.stage(member("c1"), oneEntity("Acme"));
+
+            tx.flush(new RecordingSink());
+
+            assertThrows(IllegalArgumentException.class, () -> tx.rollbackTo(beforeFirstChunk));
+        }
+
+        @Test
         void anEmptyPartitionStillCommitsAndSaysItFoundNothing() {
             RecordingSink sink = new RecordingSink();
             PartitionGraphTransaction tx = PartitionGraphTransaction.openOn(KEY, null);

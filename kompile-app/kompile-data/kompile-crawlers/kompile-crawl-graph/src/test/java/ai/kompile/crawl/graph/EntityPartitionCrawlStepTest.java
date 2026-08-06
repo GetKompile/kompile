@@ -22,6 +22,7 @@ import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob.PipelineStepProgress;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob.PipelineStepStatus;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
+import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.partition.ChunkCandidate;
 import ai.kompile.core.graphrag.partition.DiscoveryChannel;
@@ -52,6 +53,7 @@ import org.springframework.ai.document.Document;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -328,6 +330,12 @@ class EntityPartitionCrawlStepTest {
             assertEquals(2, recorded.getTotalItems().get());
             assertEquals(2, recorded.getCompletedItems().get());
             assertEquals(0, recorded.getFailedItems().get());
+            assertEquals(2, job.getRecentEvents().stream()
+                    .filter(event -> event.getMessage().matches("Partition [0-9]+/[0-9]+ started"))
+                    .count(), "every partition must emit a live start snapshot");
+            assertEquals(2, job.getRecentEvents().stream()
+                    .filter(event -> event.getMessage().matches("Partition [0-9]+/[0-9]+ complete"))
+                    .count(), "every successful partition must emit a live completion snapshot");
         }
 
         @Test
@@ -396,21 +404,69 @@ class EntityPartitionCrawlStepTest {
             expectGroups("acme-corp");
             everyPartitionSucceeds();
             Graph produced = new Graph();
-            when(extraction.extractChunkGraph(any(), any(), any())).thenReturn(produced);
+            when(extraction.extractChunkGraph(any(), any(), any(), any(), any()))
+                    .thenReturn(produced);
             UnifiedCrawlJob job = job();
 
             step.run(job, null, chunks, config);
 
+            ArgumentCaptor<PartitionRequest> request =
+                    ArgumentCaptor.forClass(PartitionRequest.class);
             ArgumentCaptor<StagedExtractor> extractor =
                     ArgumentCaptor.forClass(StagedExtractor.class);
-            verify(partitions).runStaged(any(), any(), extractor.capture(), any(), any());
+            verify(partitions).runStaged(request.capture(), any(), extractor.capture(), any(), any());
 
             PartitionKey key = PartitionKey.forEntity("acme-corp", "policy-v1", "7");
             Graph learned = extractor.getValue()
                     .extract(member("chunk-1"), EntityPartition.open(key));
 
             assertSame(produced, learned, "what a chunk taught is what the transaction stages");
-            verify(extraction).extractChunkGraph(same(chunks.get(0)), same(config), same(job));
+            ArgumentCaptor<Graph> graphContext = ArgumentCaptor.forClass(Graph.class);
+            ArgumentCaptor<ExtractionTaskContext> task =
+                    ArgumentCaptor.forClass(ExtractionTaskContext.class);
+            verify(extraction).extractChunkGraph(same(chunks.get(0)), same(config), same(job),
+                    graphContext.capture(), task.capture());
+            assertEquals(request.getValue().key().id(), task.getValue().partitionId());
+            assertEquals(request.getValue().snapshotId(), task.getValue().corpusSnapshotId());
+            assertEquals("chunk-1", task.getValue().chunkId());
+            assertEquals("SEED", task.getValue().discoveryChannel());
+            assertTrue(task.getValue().corpusSnapshotId().startsWith("partition-corpus-v1:"));
+            verify(extraction).mergeIntoContext(same(produced), same(graphContext.getValue()),
+                    same(config));
+        }
+
+        @Test
+        @DisplayName("hydrates exact persisted chunks, overrides them with current text, and defers previews")
+        void pooledCorpusUsesOnlyCompleteTextAndCarriesAStableSnapshot() {
+            CrawlIndexTrackingCallback corpus = mock(CrawlIndexTrackingCallback.class);
+            step.setCorpusAccess(corpus);
+            when(corpus.loadCorpusSnapshot(FACT_SHEET)).thenReturn(Optional.of(
+                    new CrawlIndexTrackingCallback.CrawlCorpusSnapshot("tracked-snapshot-9", List.of(
+                            new CrawlIndexTrackingCallback.CrawlCorpusPassage(
+                                    "persisted-full", 7, "Exact text retained from an earlier crawl.",
+                                    "hash-full", Map.of("source", "prior"), true),
+                            new CrawlIndexTrackingCallback.CrawlCorpusPassage(
+                                    "legacy-preview", 8, "First 500 characters only...",
+                                    "hash-longer-than-preview", Map.of(), false),
+                            new CrawlIndexTrackingCallback.CrawlCorpusPassage(
+                                    "chunk-1", 0, "STALE current-run copy",
+                                    "hash-stale", Map.of(), true)))));
+            expectGroups("acme-corp");
+            everyPartitionSucceeds();
+
+            step.run(job(), null, chunks, config);
+
+            ArgumentCaptor<PartitionRequest> request =
+                    ArgumentCaptor.forClass(PartitionRequest.class);
+            verify(partitions).runStaged(request.capture(), any(), any(), any(), any());
+            Map<String, Document> pooled = request.getValue().chunks();
+            assertEquals("Exact text retained from an earlier crawl.",
+                    pooled.get("persisted-full").getText());
+            assertEquals(chunks.get(0).getText(), pooled.get("chunk-1").getText(),
+                    "the current crawl is authoritative for a duplicate chunk id");
+            assertFalse(pooled.containsKey("legacy-preview"),
+                    "a truncated preview must never masquerade as source evidence");
+            assertTrue(request.getValue().snapshotId().startsWith("partition-corpus-v1:"));
         }
 
         @Test

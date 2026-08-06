@@ -17,6 +17,10 @@ package ai.kompile.knowledgegraph.resolution;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.evaluation.graph.GraphDecisionTraceEvent;
+import ai.kompile.core.evaluation.graph.GraphDecisionTraceSink;
+import ai.kompile.core.evaluation.graph.GraphMissReason;
+import ai.kompile.core.evaluation.graph.GraphMissStage;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -277,6 +281,9 @@ public class GraphCompactionService {
     @Autowired(required = false)
     private EmbeddingModel embeddingModel;
 
+    @Autowired(required = false)
+    private GraphDecisionTraceSink graphDecisionTraceSink = GraphDecisionTraceSink.noop();
+
     private int embeddingCacheSize = 128;
 
     private int embeddingNativeMemoryThresholdPercent = 80;
@@ -315,6 +322,10 @@ public class GraphCompactionService {
 
     public GraphCompactionService(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
+    }
+
+    void setGraphDecisionTraceSink(GraphDecisionTraceSink traceSink) {
+        this.graphDecisionTraceSink = traceSink == null ? GraphDecisionTraceSink.noop() : traceSink;
     }
 
     private synchronized CompactionRuntimeConfig refreshRuntimeConfig() {
@@ -1567,6 +1578,9 @@ public class GraphCompactionService {
         List<String> reasons = new ArrayList<>();
         double score = 0.0;
         double threshold = config.similarityThreshold();
+        Double stringSimilarity = null;
+        Double embeddingSimilarity = null;
+        boolean purityRejected = false;
 
         // Signal 1: Exact normalized title match
         if (normA.equals(normB)) {
@@ -1596,6 +1610,7 @@ public class GraphCompactionService {
         // Signal 3: Levenshtein similarity
         if (score < threshold) {
             double sim = levenshteinSimilarity(normA, normB);
+            stringSimilarity = sim;
             if (sim >= threshold) {
                 score = Math.max(score, sim);
                 reasons.add(String.format("LEVENSHTEIN:%.3f", sim));
@@ -1615,6 +1630,7 @@ public class GraphCompactionService {
                 try {
                     checkInterrupted();
                     double cosineSim = computeEmbeddingSimilarity(a.getTitle(), b.getTitle());
+                    embeddingSimilarity = cosineSim;
                     double embThreshold = config.embeddingThreshold();
                     if (cosineSim >= embThreshold) {
                         score = Math.max(score, cosineSim);
@@ -1645,6 +1661,7 @@ public class GraphCompactionService {
                         reasons.add("BARCODE_MATCH");
                     }
                     case COLLISION -> {
+                        purityRejected = true;
                         reasons.add("IDENTIFIER_COLLISION");
                         log.warn("Identifier collision (compaction): shared barcode but conflicting " +
                                 "names \"{}\" / \"{}\" — withholding barcode-driven merge",
@@ -1691,7 +1708,9 @@ public class GraphCompactionService {
             }
         }
 
-        if (score >= threshold) {
+        if (!purityRejected && score >= threshold) {
+            traceResolution(a, b, score, threshold, config.embeddingThreshold(), stringSimilarity,
+                    embeddingSimilarity, purityRejected, null, "merge_candidate", reasons);
             return new MatchCandidate(
                     a.getNodeId(), b.getNodeId(),
                     a.getTitle(), b.getTitle(),
@@ -1699,7 +1718,30 @@ public class GraphCompactionService {
                     score, reasons
             );
         }
+        traceResolution(a, b, score, threshold, config.embeddingThreshold(), stringSimilarity,
+                embeddingSimilarity, purityRejected,
+                purityRejected ? GraphMissReason.MENTION_IDENTITY_UNRESOLVED
+                        : GraphMissReason.IDENTITY_SIMILARITY_BELOW_THRESHOLD,
+                purityRejected ? "rejected_entity_purity" : "rejected_similarity", reasons);
         return null;
+    }
+
+    private void traceResolution(GraphNode a, GraphNode b, double score, double stringThreshold,
+                                 double embeddingThreshold, Double stringSimilarity,
+                                 Double embeddingSimilarity, boolean purityRejected,
+                                 GraphMissReason reason, String disposition, List<String> reasons) {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("stringThreshold", String.valueOf(stringThreshold));
+        metadata.put("embeddingThreshold", String.valueOf(embeddingThreshold));
+        metadata.put("purityRejected", String.valueOf(purityRejected));
+        metadata.put("signals", String.join(" | ", reasons));
+        if (stringSimilarity != null) metadata.put("stringSimilarity", String.valueOf(stringSimilarity));
+        if (embeddingSimilarity != null) metadata.put("embeddingSimilarity", String.valueOf(embeddingSimilarity));
+        String atom = a.getNodeId() + "~" + b.getNodeId();
+        graphDecisionTraceSink.trace(new GraphDecisionTraceEvent(
+                UUID.randomUUID().toString(), null, null, null, null, atom,
+                reason == null ? GraphMissStage.MENTION_IDENTITY : reason.stage(), reason,
+                disposition, List.of(a.getNodeId(), b.getNodeId()), Map.of(atom, score), metadata));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -19,7 +19,6 @@ package ai.kompile.app.services.subprocess;
 import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.config.KompileServerConstants;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
-import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.subprocess.BackendConfigurable;
@@ -30,9 +29,13 @@ import ai.kompile.app.subprocess.SubprocessEnvironmentPropagator;
 import ai.kompile.app.subprocess.SubprocessPlacement;
 import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.app.subprocess.SubprocessRegistry;
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.NativeImageInfo;
+import ai.kompile.utils.NativeRuntimePathSelector;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JEnvironmentVars;
@@ -77,10 +80,10 @@ import java.util.jar.JarFile;
  *       the process.</li>
  * </ol>
  *
- * <h3>Configuration properties</h3>
+ * <h3>Managed endpoints</h3>
  * <pre>
- * kompile.llm.serving.port=8091        # HTTP port for the subprocess server
- * kompile.staging.url=http://localhost:8090  # Parent staging URL forwarded to subprocess
+ * service-endpoints.json: servingUrl=http://127.0.0.1:8091
+ * service-endpoints.json: stagingUrl=http://localhost:8090
  * </pre>
  *
  * <h3>JVM command construction</h3>
@@ -248,12 +251,13 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
 
     // ── Configuration ────────────────────────────────────────────────────────
 
-    private int servingPort = 8091;
+    static final String SERVING_BIND_HOST = "127.0.0.1";
 
-    private String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
+    private volatile int servingPort = 8091;
 
-    /** When set (non-blank), the main app is in proxy mode — auto-start the subprocess. */
-    private String servingUrl = "";
+    private volatile String stagingUrl = KompileServerConstants.DEFAULT_STAGING_URL;
+
+    private ServiceEndpointsConfigManager endpointConfigManager = ServiceEndpointsConfigManager.shared();
 
     // ── Injected dependencies (all optional to avoid circular wiring) ─────────
 
@@ -262,9 +266,6 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
 
     @Autowired(required = false)
     private Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
-
-    @Autowired(required = false)
-    private SubprocessExecutableConfig subprocessExecutableConfig;
 
     @Autowired(required = false)
     private ObjectMapper objectMapper;
@@ -343,6 +344,23 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         return objectMapper != null ? objectMapper : JsonUtils.standardMapper();
     }
 
+    private void refreshManagedEndpoints() {
+        try {
+            ServiceEndpointsConfigManager.ServiceEndpointsConfig endpoints =
+                    endpointConfigManager.current();
+            servingPort = endpoints.servingPort();
+            stagingUrl = endpoints.effectiveStagingUrl();
+        } catch (Exception e) {
+            logger.warn("Could not refresh managed serving/staging endpoints; using {} and {}: {}",
+                    servingPort, stagingUrl, e.getMessage());
+        }
+    }
+
+    /** Package-private test seam for an isolated managed-config file. */
+    void setEndpointConfigManager(ServiceEndpointsConfigManager endpointConfigManager) {
+        this.endpointConfigManager = Objects.requireNonNull(endpointConfigManager);
+    }
+
     // ── Auto-start ────────────────────────────────────────────────────────────
 
     /**
@@ -352,7 +370,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      */
     @PostConstruct
     public void init() {
-        logger.info("ServingSubprocessLauncher ready (demand-driven — subprocess starts on model load)");
+        refreshManagedEndpoints();
+        logger.info("ServingSubprocessLauncher ready on {} (staging {}; demand-driven — subprocess starts on model load)",
+                servingPort, stagingUrl);
     }
 
     // ── Public lifecycle API ──────────────────────────────────────────────────
@@ -385,6 +405,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
             throw new IllegalArgumentException("modelId and modelPath are required — subprocess does not start empty");
         }
 
+        // Pick up changes made in the central admin Service Endpoints panel before each child start.
+        refreshManagedEndpoints();
+
         this.lastModelId = modelId;
         this.lastModelPath = modelPath;
         logger.info("Starting LLM serving subprocess on port {} with model '{}' from {}...",
@@ -405,7 +428,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         //    on startup so it's ready to serve as soon as it reports healthy.
         ServingSubprocessArgs args = new ServingSubprocessArgs(
                 servingPort,
-                "0.0.0.0",
+                SERVING_BIND_HOST,
                 stagingUrl,
                 modelId,
                 modelPath,
@@ -418,8 +441,12 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 85, 90, 95,
                 // LLM defaults
                 256, 0.7, 0,
-                // DSP / optimizer flags — inherit from ND4J config
-                null, null, null
+                // DSP / optimizer flags — inherit from the persisted project ND4J config.
+                // The existing "Native Decode Inputs" recovery toggle is the managed master
+                // switch for decoder DSP compilation in the isolated serving process.
+                !Boolean.TRUE.equals(nd4jConfig.dspNoNativeDecode()),
+                nd4jConfig.optimizerEnabled(),
+                nd4jConfig.optimizerFp16()
         );
 
         Path argsFileTmp = Files.createTempFile("serving-subprocess-args-", ".json");
@@ -445,6 +472,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
 
         process = pb.start();
         running.set(true);
+        Process startedProcess = process;
+        startedProcess.onExit().thenAccept(this::handleProcessExit);
 
         // Register with subprocess registry for lifecycle tracking and watchdog restart
         if (subprocessRegistry != null) {
@@ -539,6 +568,27 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         }
     }
 
+    synchronized void handleProcessExit(Process exitedProcess) {
+        if (exitedProcess == null || process != exitedProcess) {
+            return;
+        }
+        int exitCode;
+        try {
+            exitCode = exitedProcess.exitValue();
+        } catch (IllegalThreadStateException stillRunning) {
+            return;
+        }
+        running.set(false);
+        activeModelId = null;
+        invalidateModelLoadedCache();
+        if (shuttingDown.get()) {
+            logger.info("Serving subprocess exited during shutdown with code {}", exitCode);
+        } else {
+            logger.error("Serving subprocess exited unexpectedly with code {}{}",
+                    exitCode, prematureExitDetail());
+        }
+    }
+
     /**
      * Load a model by starting (or restarting) the serving subprocess.
      *
@@ -555,8 +605,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      */
     public synchronized String loadModel(String modelId, String modelPath, Map<String, Object> options)
             throws IOException, InterruptedException {
-        // If already running, stop the old subprocess first
-        if (running.get()) {
+        // Clean up an existing live or exited child before starting the requested model.
+        if (process != null) {
             logger.info("Stopping existing serving subprocess to load new model '{}'...", modelId);
             stop();
             shuttingDown.set(false); // reset so we can start again
@@ -650,23 +700,27 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     @PreDestroy
     public synchronized void stop() {
         activeModelId = null;
-        if (!running.compareAndSet(true, false)) {
+        boolean wasRunning = running.getAndSet(false);
+        Process existingProcess = this.process;
+        if (!wasRunning && existingProcess == null) {
             logger.debug("Serving subprocess is not running — stop() is a no-op");
             return;
         }
         shuttingDown.set(true);
         logger.info("Stopping LLM serving subprocess...");
 
-        // Attempt a graceful unload
-        try {
-            postJson("/api/llm/unload", Map.of());
-            logger.info("Sent unload request to serving subprocess");
-        } catch (Exception e) {
-            logger.debug("Unload request failed (subprocess may already be down): {}", e.getMessage());
+        // Attempt a graceful unload only while the child is reachable.
+        if (wasRunning && existingProcess != null && existingProcess.isAlive()) {
+            try {
+                postJson("/api/llm/unload", Map.of());
+                logger.info("Sent unload request to serving subprocess");
+            } catch (Exception e) {
+                logger.debug("Unload request failed (subprocess may already be down): {}", e.getMessage());
+            }
         }
 
         // Terminate the process
-        Process p = this.process;
+        Process p = existingProcess;
         if (p != null && p.isAlive()) {
             p.destroy();
             try {
@@ -800,6 +854,9 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      * Return the configured HTTP port for the subprocess server.
      */
     public int getServingPort() {
+        if (!running.get()) {
+            refreshManagedEndpoints();
+        }
         return servingPort;
     }
 
@@ -878,32 +935,102 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
     }
 
     /**
-     * Build the full JVM command (or native-image command) for launching the subprocess.
+     * Build the native self-exec or JVM classpath command for launching the subprocess.
      *
-     * <p>Follows the same conventions as {@link ai.kompile.app.services.subprocess.VlmTestSubprocessLauncher}:
-     * <ul>
-     *   <li>Use {@link SubprocessExecutableConfig} when available, otherwise fall back to
-     *       building the JVM command manually.</li>
-     *   <li>Forward all relevant system properties with the prefixes in
-     *       {@link #FORWARDED_PROPERTY_PREFIXES}.</li>
-     *   <li>Set {@code -Dnd4j.environment.*} properties from the resolved ND4J config to
-     *       propagate device-routing overrides.</li>
-     *   <li>Set {@code -Dorg.bytedeco.javacpp.cachedir} to a fresh per-subprocess temp dir.</li>
-     * </ul>
+     * <p>A classpathless GraalVM image must re-exec the unified binary and dispatch through
+     * {@code --subprocess=serving}. JVM-only classpath discovery, Java executable lookup, GC
+     * flags, and JavaCPP extraction directories remain confined to the JVM branch.</p>
      */
-    private List<String> buildCommand(Path argsFile, Nd4jEnvironmentConfig nd4jConfig) throws IOException {
-        // If SubprocessExecutableConfig is present, use its buildServingCommand helper
-        // (which handles native-image mode automatically).
-        if (subprocessExecutableConfig != null) {
-            String classpath = buildClasspath();
-            String javaPath = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-            return buildJvmCommand(argsFile, nd4jConfig, javaPath, classpath);
+    List<String> buildCommand(Path argsFile, Nd4jEnvironmentConfig nd4jConfig) throws IOException {
+        if (shouldUseNativeSelfExec()) {
+            return buildNativeSelfExecCommand(argsFile, nd4jConfig, nativeSelfExecutablePath());
         }
 
-        // Fallback: build the JVM command directly
-        String javaPath = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String javaHome = System.getProperty("java.home");
+        if (javaHome == null || javaHome.isBlank()) {
+            throw new IllegalStateException("JVM serving subprocess launch requires java.home");
+        }
+        String javaPath = Path.of(javaHome, "bin", "java").toString();
         String classpath = buildClasspath();
         return buildJvmCommand(argsFile, nd4jConfig, javaPath, classpath);
+    }
+
+    /** Native launch-mode seam kept package-private for focused command-selection tests. */
+    boolean shouldUseNativeSelfExec() {
+        return NativeImageInfo.isRunningInNativeImage() && !NativeImageInfo.hasClasspath();
+    }
+
+    /** Native executable-resolution seam kept package-private for focused command-selection tests. */
+    String nativeSelfExecutablePath() {
+        return NativeImageInfo.getExecutablePath();
+    }
+
+    /**
+     * Build the classpathless native-image command. Package-private for focused command tests.
+     */
+    List<String> buildNativeSelfExecCommand(
+            Path argsFile, Nd4jEnvironmentConfig nd4jConfig, String executablePath) {
+        if (executablePath == null || executablePath.isBlank()) {
+            throw new IllegalStateException(
+                    "Native serving subprocess launch could not resolve the native self-executable");
+        }
+
+        List<String> command = new ArrayList<>();
+        command.add(executablePath);
+        command.add("-Xmx" + DEFAULT_HEAP_SIZE);
+        command.add("-Dfile.encoding=UTF-8");
+
+        appendNd4jEnvironmentProperties(command, nd4jConfig);
+        appendForwardedSystemProperties(command);
+        appendJavaCppChildProperties(command, null);
+        appendManagedChildProperties(command);
+        command.addAll(placement.jvmFlags());
+        command.add("--subprocess=serving");
+        command.add(argsFile.toAbsolutePath().toString());
+        return command;
+    }
+
+    /** Child-specific JavaCPP settings must follow forwarded parent properties so they win. */
+    private void appendJavaCppChildProperties(List<String> command, String childClasspath) {
+        command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
+        command.add("-Dorg.bytedeco.javacpp.logger.debug="
+                + System.getProperty("kompile.serving.javacpp.debug", "false"));
+        command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
+
+        String sharedRuntimePath = System.getProperty("org.nd4j.presets.sharedRuntimePath");
+        String compatibleRuntimePath = backendCompatibleSharedRuntimePath(sharedRuntimePath, childClasspath);
+        if (compatibleRuntimePath != null && !compatibleRuntimePath.isBlank()) {
+            command.add("-Dorg.nd4j.presets.sharedRuntimePath=" + compatibleRuntimePath);
+        }
+
+        long heapBytes = DEFAULT_HEAP_GB * 1024L * 1024L * 1024L;
+        long offHeapBytes = heapBytes * 2L;
+        command.add("-Dorg.bytedeco.javacpp.maxbytes=" + offHeapBytes);
+        command.add("-Dorg.bytedeco.javacpp.maxphysicalbytes="
+                + resolveSystemPhysicalCeilingBytes(offHeapBytes));
+    }
+
+    static String backendCompatibleSharedRuntimePath(String runtimePath, String childClasspath) {
+        return NativeRuntimePathSelector.forChild(runtimePath, childClasspath);
+    }
+
+    /**
+     * Resolve JavaCPP's system-wide physical-memory guard independently from the per-process
+     * {@code maxbytes} budget. Using the off-heap budget for both values makes a healthy serving
+     * process false-OOM whenever sibling processes push total host usage above that budget.
+     */
+    long resolveSystemPhysicalCeilingBytes(long offHeapFloorBytes) {
+        try {
+            long totalBytes = ((com.sun.management.OperatingSystemMXBean)
+                    java.lang.management.ManagementFactory.getOperatingSystemMXBean())
+                    .getTotalMemorySize();
+            double fraction = Double.parseDouble(
+                    System.getProperty("kompile.subprocess.maxphysical-fraction", "0.95"));
+            long ceilingBytes = (long) (totalBytes * fraction);
+            return Math.max(offHeapFloorBytes, ceilingBytes);
+        } catch (Throwable t) {
+            return offHeapFloorBytes * 3L;
+        }
     }
 
     /**
@@ -920,15 +1047,6 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         command.add("-XX:MaxGCPauseMillis=200");
         command.add("-XX:+ExitOnOutOfMemoryError");
         command.add("-Dfile.encoding=UTF-8");
-        command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
-        command.add("-Dorg.bytedeco.javacpp.logger.debug=false");
-        command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
-
-        // Off-heap: 2× heap for LLM (pinned host memory shared with VRAM)
-        long heapBytes = DEFAULT_HEAP_GB * 1024L * 1024L * 1024L;
-        long offHeapBytes = heapBytes * 2L;
-        command.add("-Dorg.bytedeco.javacpp.maxbytes=" + offHeapBytes);
-        command.add("-Dorg.bytedeco.javacpp.maxphysicalbytes=" + offHeapBytes);
 
         // Per-subprocess temp dir for native lib extraction
         try {
@@ -943,7 +1061,34 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         // Forward relevant ND4J environment settings as system properties
         appendNd4jEnvironmentProperties(command, nd4jConfig);
 
-        // Forward all matching system properties from the parent JVM
+        appendForwardedSystemProperties(command);
+        appendJavaCppChildProperties(command, classpath);
+        appendManagedChildProperties(command);
+
+        // Device-agnostic backend/device selection from the shared base infra — added last so scheduler
+        // placement wins over any forwarded parent org.nd4j.* property. No CUDA_VISIBLE_DEVICES.
+        command.addAll(placement.jvmFlags());
+
+        command.add("-cp");
+        command.add(classpath);
+        command.add("ai.kompile.app.subprocess.ServingSubprocessMain");
+        command.add(argsFile.toAbsolutePath().toString());
+
+        return command;
+    }
+
+    /** Propagate project-scoped, CLI-managed process configuration to either child mode. */
+    private void appendManagedChildProperties(List<String> command) {
+        String dataDir = System.getProperty("kompile.data.dir");
+        if (dataDir != null && !dataDir.isBlank()) {
+            command.add("-Dkompile.data.dir=" + dataDir);
+        }
+        command.add("-Dkompile.llm.cache.dir="
+                + KompileHome.llmCacheDirectory().getAbsolutePath());
+    }
+
+    /** Forward matching parent system properties to either JVM or native subprocess commands. */
+    private void appendForwardedSystemProperties(List<String> command) {
         for (String key : System.getProperties().stringPropertyNames()) {
             for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
                 if (key.startsWith(prefix)) {
@@ -956,17 +1101,6 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 }
             }
         }
-
-        // Device-agnostic backend/device selection from the shared base infra — added last so scheduler
-        // placement wins over any forwarded parent org.nd4j.* property. No CUDA_VISIBLE_DEVICES.
-        command.addAll(placement.jvmFlags());
-
-        command.add("-cp");
-        command.add(classpath);
-        command.add("ai.kompile.app.subprocess.ServingSubprocessMain");
-        command.add(argsFile.toAbsolutePath().toString());
-
-        return command;
     }
 
     /**

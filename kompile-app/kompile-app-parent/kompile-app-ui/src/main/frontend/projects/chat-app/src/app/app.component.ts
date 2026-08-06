@@ -21,16 +21,18 @@ import { ShellNavItem } from '@shared/components/app-shell/app-shell.component';
  * Chat app root. All chrome lives in the shared AppShellComponent; this supplies the tab bar
  * and the legacy-key routes for the chat persona.
  *
- * settingsRoute and stagingRoute are left unset: settings and model staging are admin surfaces
- * served by kompile-app-main, and this app declares no route for either.
+ * The settings gear is Chat-owned and configures this end-user package's Model Staging
+ * dependency. Model Staging itself remains independently distributed, so stagingRoute is unset.
  */
 @Component({
   standalone: false,
   selector: 'app-root',
   template: `
     <app-shell
+      persona="chat"
       [navItems]="navItems"
       [legacyKeyMap]="legacyKeyMap"
+      [settingsRoute]="'/settings'"
       [showProjectExplorer]="true">
     </app-shell>
   `

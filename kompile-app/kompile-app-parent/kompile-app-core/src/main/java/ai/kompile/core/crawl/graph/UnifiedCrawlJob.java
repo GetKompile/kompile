@@ -705,8 +705,28 @@ public class UnifiedCrawlJob {
         private Instant timestamp;
         /** Backend that handled the call (e.g. "default", "claude-cli", "openai-api") */
         private String backendId;
-        /** Processing task type (e.g. "llm", "vlm", "embedding") */
+        /** Processing task type used for backend routing (e.g. "llm", "vlm", "embedding") */
         private String taskType;
+        /** Crawl phase that owns this call (e.g. GRAPH_EXTRACTION or ENTITY_PARTITIONS). */
+        private String phase;
+        /** Decomposed extraction pass (propositions, mentions, epistemic, relations, claims). */
+        private String passId;
+        /** Monotonic call number within the current chunk's decomposed extraction. */
+        private int passInvocation;
+        /** Stable extraction task identifier supplied by the unified-corpus planner. */
+        private String taskId;
+        /** Entity partition identifier, when this call belongs to the partition pass. */
+        private String partitionId;
+        /** Exact source chunk handed to the small model. */
+        private String chunkId;
+        /** Unified corpus snapshot from which the chunk was selected. */
+        private String corpusSnapshotId;
+        /** Incremental graph revision visible to identity/reconciliation passes. */
+        private String graphRevision;
+        /** Number of graph entities visible when the call was dispatched. */
+        private int graphEntities;
+        /** Number of graph relationships visible when the call was dispatched. */
+        private int graphRelationships;
         /** Wall-clock latency of the call in milliseconds */
         private long latencyMs;
         /** Approximate input tokens (prompt length / 4) */

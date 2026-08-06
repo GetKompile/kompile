@@ -186,15 +186,60 @@ class ProjectCrawlWorkflowBugFixTest {
                 "Should throw when ref is null and no profiles exist");
     }
 
-    // ── Generator correctness: auto-ingest workflow has no hardcoded URL ──────
+    // ── Generator correctness: auto-ingest waits for the crawl-manager persona ──
+
+    @Test
+    void artifactLaunchCommand_executesNativeDistributionComponentWithSideLoadedLibs(
+            @TempDir Path tmp) throws Exception {
+        Path distribution = tmp.resolve("kompile-dist");
+        Path nativeComponent = distribution.resolve("bin/kompile-chat");
+        Files.createDirectories(nativeComponent.getParent());
+        Files.createDirectories(distribution.resolve("lib"));
+        Files.writeString(nativeComponent, "#!/usr/bin/env bash\nexit 0\n");
+        nativeComponent.toFile().setExecutable(true);
+
+        String command = ProjectCrawlCommand.artifactLaunchCommand(nativeComponent,
+                List.of("--server.port=18081"));
+
+        assertTrue(command.contains("KOMPILE_DIST_HOME='" + distribution + "'"), command);
+        assertTrue(command.contains("KOMPILE_NATIVE_LIB_DIR='" + distribution.resolve("lib") + "'"), command);
+        assertTrue(command.contains("LD_LIBRARY_PATH='" + distribution.resolve("bin") + ":"
+                + distribution.resolve("lib") + "'"), command);
+        assertTrue(command.contains("exec '" + nativeComponent + "' '-Dkompile.dist.home="
+                + distribution + "' '--server.port=18081'"), command);
+        assertFalse(command.contains("java -jar"), command);
+        assertFalse(command.contains("LD_PRELOAD"), command);
+        assertEquals(0, new ProcessBuilder("bash", "-lc", command).start().waitFor(), command);
+    }
+
+    @Test
+    void artifactLaunchCommand_usesBundledRuntimeForDistributionJar(@TempDir Path tmp) throws Exception {
+        Path distribution = tmp.resolve("kompile-dist");
+        Path jar = distribution.resolve("lib/kompile-chat.jar");
+        Path java = distribution.resolve("runtime/bin/java");
+        Files.createDirectories(distribution.resolve("bin"));
+        Files.createDirectories(jar.getParent());
+        Files.createDirectories(java.getParent());
+        Files.writeString(jar, "not-a-real-jar");
+        Files.writeString(java, "#!/usr/bin/env bash\nexit 0\n");
+        java.toFile().setExecutable(true);
+
+        String command = ProjectCrawlCommand.artifactLaunchCommand(jar,
+                List.of("--server.port=18081"));
+
+        assertTrue(command.contains("exec '" + java + "' '-Dkompile.dist.home=" + distribution
+                + "' -jar '" + jar + "' '--server.port=18081'"), command);
+        assertFalse(command.contains("LD_PRELOAD"), command);
+        assertEquals(0, new ProcessBuilder("bash", "-lc", command).start().waitFor(), command);
+    }
 
     /**
      * After `kompile project init`, the generated auto-ingest workflow's HEALTH_CHECK step
-     * must have a null URL (so the runner uses isHealthy()), and the CRAWL step must have
+     * must target an endpoint owned by the crawl manager, and the CRAWL step must have
      * ref="auto-ingest".
      */
     @Test
-    void projectInit_generatesAutoIngestWorkflow_withNullHealthCheckUrlAndAutoIngestCrawlRef(
+    void projectInit_generatesAutoIngestWorkflow_withCrawlManagerHealthUrlAndAutoIngestCrawlRef(
             @TempDir Path tmp) {
         Path docs = tmp.resolve("data/input_documents");
         assertDoesNotThrow(() -> {
@@ -222,9 +267,9 @@ class ProjectCrawlWorkflowBugFixTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(healthStep, "auto-ingest workflow should have a HEALTH_CHECK step");
-        assertNull(healthStep.getUrl(),
-                "HEALTH_CHECK step must have null URL so runner uses KompileHttpClient.isHealthy() "
-                        + "— /actuator/health 404s on generated apps; got: " + healthStep.getUrl());
+        assertEquals("${appUrl}/api/unified-crawl/jobs/active", healthStep.getUrl(),
+                "HEALTH_CHECK must wait for the persona that serves the next crawl step");
+        assertEquals(200, healthStep.getExpectedStatus());
 
         KompileProjectWorkflowStep crawlStep = autoIngest.getSteps().stream()
                 .filter(s -> "CRAWL".equals(s.getType()))
@@ -262,6 +307,26 @@ class ProjectCrawlWorkflowBugFixTest {
         assertNotNull(crawlStep, "auto-ingest workflow should have a CRAWL step");
         assertEquals("vlm-ocr-docs", crawlStep.getRef(),
                 "auto-ingest CRAWL step should reference the generated VLM crawl profile");
+    }
+
+    @Test
+    void projectServe_chatOnlyRunsGeneratedLifecycleScript(@TempDir Path tmp) {
+        int initExit = execute("project", "init",
+                "--root", tmp.toString(),
+                "--name", "serve-chat-test",
+                "--backend", "local");
+        assertEquals(0, initExit);
+
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try {
+            System.setOut(new PrintStream(captured));
+            assertEquals(0, execute("project", "serve", "--root", tmp.toString(),
+                    "--chat-only", "--dry-run"));
+        } finally {
+            System.setOut(originalOut);
+        }
+        assertTrue(captured.toString().contains("./scripts/start-chat.sh"), captured.toString());
     }
 
     @Test

@@ -19,6 +19,8 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.PartitionPassConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
+import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.partition.DiscoveryPolicy;
 import ai.kompile.core.graphrag.partition.PartitionStore;
 import ai.kompile.core.graphrag.partition.grouping.GroupingPolicy;
@@ -32,13 +34,21 @@ import ai.kompile.crawl.graph.partition.PartitionChunkTexts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * The crawl's entity-partition pass: a durable, per-subject coverage claim over what this run read.
@@ -106,6 +116,9 @@ public class EntityPartitionCrawlStep {
     private final PipelineStepTracker steps;
     private final CrawlDocumentTracker events;
 
+    /** Optional read side of the cross-index tracker; write-only deployments keep current-run behavior. */
+    private CrawlIndexTrackingCallback corpusAccess;
+
     EntityPartitionCrawlStep(EntityPartitionCrawlService partitions,
                              PartitionGraphCommitter committer,
                              PartitionStore store,
@@ -120,6 +133,11 @@ public class EntityPartitionCrawlStep {
         this.events = Objects.requireNonNull(events, "the crawl event tracker");
     }
 
+    @Autowired(required = false)
+    void setCorpusAccess(CrawlIndexTrackingCallback corpusAccess) {
+        this.corpusAccess = corpusAccess;
+    }
+
     /**
      * Runs one partition per entity group of {@code job}'s fact sheet.
      *
@@ -130,6 +148,12 @@ public class EntityPartitionCrawlStep {
      */
     public Outcome run(UnifiedCrawlJob job, CrawlStepPlan stepPlan, List<Document> chunks,
                        GraphExtractionConfig config) {
+        return run(job, stepPlan, chunks, config, null);
+    }
+
+    /** Runs with the graph accumulated by the main extraction phase when it was retained. */
+    public Outcome run(UnifiedCrawlJob job, CrawlStepPlan stepPlan, List<Document> chunks,
+                       GraphExtractionConfig config, Graph initialGraphContext) {
         if (job == null) {
             return Outcome.of(Status.SKIPPED, "no job");
         }
@@ -142,39 +166,49 @@ public class EntityPartitionCrawlStep {
             return skip(job, "Entity partitions skipped: no knowledge graph is configured to "
                     + "write them into");
         }
-        if (!extraction.hasGraphConstructor()) {
+        if (!extraction.hasGraphConstructor() && !extraction.hasDecomposedDispatcher(config)) {
             return skip(job, "Entity partitions skipped: this deployment has no graph constructor "
-                    + "to re-read a partition's chunks with");
+                    + "or decomposed LLM dispatcher to re-read a partition's chunks with");
         }
         Long factSheetId = job.getRequest() == null ? null : job.getRequest().getFactSheetId();
         if (factSheetId == null) {
             return skip(job, "Entity partitions skipped: the job has no fact sheet to scope "
                     + "coverage to");
         }
-        Map<String, Document> index = PartitionChunkTexts.index(chunks);
+        CorpusInput corpus = corpus(factSheetId, chunks);
+        Map<String, Document> index = PartitionChunkTexts.index(corpus.documents());
         if (index.isEmpty()) {
-            return skip(job, "Entity partitions skipped: this run holds no chunk text for a "
+            return skip(job, "Entity partitions skipped: the pooled corpus holds no complete "
+                    + "chunk text for a "
                     + "partition to read");
         }
 
+        var activeCorpus = extraction.activateExtractionCorpus(
+                job, corpus.documents(), corpus.snapshotId());
         try {
-            return partition(job, factSheetId, index, chunks, config);
+            return partition(job, factSheetId, index, corpus.documents(), corpus.snapshotId(),
+                    config, initialGraphContext);
         } catch (RuntimeException e) {
             String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             steps.failPipelineStep(job, STEP_ID, "Entity partitions failed: " + detail);
             events.recordEvent(job, STEP_ID, "ERROR", "Entity partition pass failed", detail);
             log.warn("[Job {}] Entity partition pass failed: {}", job.getJobId(), detail, e);
             return Outcome.of(Status.FAILED, detail);
+        } finally {
+            extraction.deactivateExtractionCorpus(job, activeCorpus);
         }
     }
 
     private Outcome partition(UnifiedCrawlJob job, Long factSheetId, Map<String, Document> index,
-                              List<Document> chunks, GraphExtractionConfig config) {
+                              List<Document> corpusDocuments, String snapshotId,
+                              GraphExtractionConfig config, Graph initialGraphContext) {
         PartitionPassConfig settings = config == null
                 ? PartitionPassConfig.defaults() : config.getPartition();
         GroupingPolicy grouping = settings.groupingPolicy();
         List<PartitionRequest> requests = partitions.groupedRequests(factSheetId, grouping,
-                discoveryPolicy(job, settings));
+                discoveryPolicy(job, settings)).stream()
+                .map(request -> request.withSnapshot(snapshotId))
+                .toList();
         if (settings.hasBatchCaps()) {
             requests = requests.stream()
                     .map(request -> request.withBatching(
@@ -206,12 +240,20 @@ public class EntityPartitionCrawlStep {
         // comparable, and that is invisible unless it is said.
         events.recordEvent(job, STEP_ID, "INFO", "Entity partitions starting",
                 total + " group(s), " + index.size() + " chunk key(s), grouping "
-                        + grouping.version());
+                        + grouping.version() + ", corpus " + snapshotId);
 
         GraphCommitSink sink = committer.sinkFor(job, config,
-                GraphExtractionOrchestrator.filterAndConvertDocs(chunks, job.getJobId()));
-        PartitionChunkExtractor extractor = PartitionChunkExtractor.over(index,
-                doc -> extraction.extractChunkGraph(doc, config, job));
+                GraphExtractionOrchestrator.filterAndConvertDocs(corpusDocuments, job.getJobId()));
+        Graph loadedContextGraph = partitions.currentGraph(factSheetId);
+        Graph contextGraph = loadedContextGraph == null
+                ? Graph.builder()
+                        .id("fact-sheet:" + factSheetId + ":in-run")
+                        .factSheetId(factSheetId)
+                        .entities(new ArrayList<>())
+                        .relationships(new ArrayList<>())
+                        .build()
+                : loadedContextGraph;
+        extraction.mergeIntoContext(initialGraphContext, contextGraph, config);
 
         // One ledger across every partition: the overlap between partitions is the point of
         // partitioning, and without sharing it a chunk naming two subjects is extracted twice.
@@ -232,12 +274,40 @@ public class EntityPartitionCrawlStep {
                 return new Outcome(Status.CANCELLED, detail,
                         new StagedRunAllResult(runs, failed, reuse.stats()));
             }
+            PartitionRequest scheduled = request.withChunks(index);
+            int ordinal = runs.size() + failed.size() + 1;
+            String liveMessage = "Partition " + ordinal + " of " + total + ": " + request.subject();
+            steps.updatePipelineStep(job, STEP_ID, UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                    runs.size(), total, failed.size(), -1, -1, -1, scheduled.key().id(), liveMessage);
+            events.recordEvent(job, STEP_ID, "INFO",
+                    "Partition " + ordinal + "/" + total + " started",
+                    "partition=" + scheduled.key().id() + ", subject=" + request.subject()
+                            + ", corpus=" + scheduled.snapshotId()
+                            + ", members=" + scheduled.members().size());
             try {
-                StagedRunResult ran = partitions.runStaged(request.withChunks(index), store,
+                PartitionChunkExtractor extractor = PartitionChunkExtractor.contextual(index,
+                        (doc, member, partition) -> {
+                            List<String> subjects = scheduled.identifiers().isEmpty()
+                                    ? scheduled.members() : scheduled.identifiers();
+                            ExtractionTaskContext task = new ExtractionTaskContext(
+                                    job.getJobId() + ":" + scheduled.key().id() + ":" + member.chunkId(),
+                                    scheduled.key().id(), scheduled.snapshotId(), subjects,
+                                    member.chunkId(), member.channel().name(), member.reason(),
+                                    member.confidence(), contextGraph.getId(), null);
+                            Graph produced = extraction.extractChunkGraph(doc, config, job,
+                                    contextGraph, task);
+                            extraction.mergeIntoContext(produced, contextGraph, config);
+                            return produced;
+                        });
+                StagedRunResult ran = partitions.runStaged(scheduled, store,
                         extractor, sink, reuse);
                 runs.put(request.subject(), ran);
                 log.info("[Job {}] Partition {}: {}", job.getJobId(), request.subject(),
                         ran.describe());
+                events.recordEvent(job, STEP_ID, "INFO",
+                        "Partition " + ordinal + "/" + total + " complete",
+                        "partition=" + scheduled.key().id() + ", subject=" + request.subject()
+                                + ", " + ran.describe());
             } catch (RuntimeException e) {
                 // One subject failing is not the others failing — but it is also not a covered
                 // subject, so it is named here and counted against the step.
@@ -250,8 +320,8 @@ public class EntityPartitionCrawlStep {
                         "Partition failed for " + request.subject(), detail);
             }
             steps.updatePipelineStep(job, STEP_ID, UnifiedCrawlJob.PipelineStepStatus.RUNNING,
-                    runs.size(), total, failed.size(), -1, -1, -1, request.subject(),
-                    "Partition " + (runs.size() + failed.size()) + " of " + total);
+                    runs.size(), total, failed.size(), -1, -1, -1, scheduled.key().id(),
+                    "Partition " + (runs.size() + failed.size()) + " of " + total + " finished");
         }
 
         StagedRunAllResult result = new StagedRunAllResult(runs, failed, reuse.stats());
@@ -269,6 +339,97 @@ public class EntityPartitionCrawlStep {
                 "Entity partitions complete", detail);
         log.info("[Job {}] Entity partitions: {}", job.getJobId(), detail);
         return new Outcome(Status.RAN, detail, result);
+    }
+
+    private record CorpusInput(List<Document> documents, String snapshotId) {}
+
+    /** Current-run chunks override persisted copies; exact persisted text fills retry/incremental gaps. */
+    private CorpusInput corpus(Long factSheetId, List<Document> currentChunks) {
+        List<Document> documents = new ArrayList<>();
+        Set<String> currentIds = new HashSet<>();
+        if (currentChunks != null) {
+            for (Document chunk : currentChunks) {
+                if (chunk != null) {
+                    documents.add(chunk);
+                    if (chunk.getId() != null) {
+                        currentIds.add(chunk.getId());
+                    }
+                }
+            }
+        }
+
+        String persistedSnapshot = null;
+        int incomplete = 0;
+        if (corpusAccess != null) {
+            try {
+                Optional<CrawlIndexTrackingCallback.CrawlCorpusSnapshot> loaded =
+                        corpusAccess.loadCorpusSnapshot(factSheetId);
+                if (loaded.isPresent()) {
+                    persistedSnapshot = loaded.get().snapshotId();
+                    for (CrawlIndexTrackingCallback.CrawlCorpusPassage passage
+                            : loaded.get().passages()) {
+                        if (!passage.completeText()) {
+                            incomplete++;
+                            continue;
+                        }
+                        if (passage.chunkId() != null && !currentIds.contains(passage.chunkId())) {
+                            documents.add(new Document(passage.chunkId(), passage.content(),
+                                    passage.metadata()));
+                        }
+                    }
+                }
+            } catch (RuntimeException e) {
+                log.warn("Could not load pooled corpus snapshot for fact sheet {}: {}",
+                        factSheetId, e.toString());
+            }
+        }
+        if (incomplete > 0) {
+            log.warn("Fact sheet {} has {} legacy passage(s) with preview-only text; they remain "
+                    + "deferred until recrawled instead of being sent to extraction truncated",
+                    factSheetId, incomplete);
+        }
+        return new CorpusInput(List.copyOf(documents),
+                snapshotId(persistedSnapshot, documents));
+    }
+
+    private static String snapshotId(String persistedSnapshot, List<Document> documents) {
+        MessageDigest digest = sha256();
+        update(digest, persistedSnapshot == null ? "current-run" : persistedSnapshot);
+        documents.stream()
+                .filter(Objects::nonNull)
+                .sorted(java.util.Comparator.comparing(document ->
+                        Objects.toString(document.getId(), "")))
+                .forEach(document -> {
+                    update(digest, document.getId());
+                    update(digest, document.getText());
+                });
+        return "partition-corpus-v1:" + hex(digest.digest());
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
+    private static void update(MessageDigest digest, String value) {
+        byte[] bytes = Objects.toString(value, "").getBytes(StandardCharsets.UTF_8);
+        digest.update((byte) (bytes.length >>> 24));
+        digest.update((byte) (bytes.length >>> 16));
+        digest.update((byte) (bytes.length >>> 8));
+        digest.update((byte) bytes.length);
+        digest.update(bytes);
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            result.append(Character.forDigit((value >>> 4) & 0xF, 16));
+            result.append(Character.forDigit(value & 0xF, 16));
+        }
+        return result.toString();
     }
 
     /**

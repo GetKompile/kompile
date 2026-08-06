@@ -45,9 +45,12 @@ kompile-rag-builds/myapp/project/
   src/main/resources/
     application.properties        # Structural config (ports, paths, provider flags)
   scripts/
-    start-all.sh                  # Starts staging -> serving -> app in order
+    start-all.sh                  # Starts staging -> serving -> admin -> chat -> crawl manager
     stop-all.sh
     start-app.sh
+    start-chat.sh
+    start-crawl-manager.sh
+    start-serving.sh
     start-staging.sh
   data/
     input_documents/              # Drop documents here
@@ -64,4 +67,5 @@ kompile-rag-builds/myapp/project/
 kompile build dist
 ```
 
-Builds all three binaries (CLI, server, model-staging) into a distribution tarball for deployment.
+Builds all five binaries (CLI, admin server, chat, crawl manager, and model staging) into a
+distribution tarball for deployment.

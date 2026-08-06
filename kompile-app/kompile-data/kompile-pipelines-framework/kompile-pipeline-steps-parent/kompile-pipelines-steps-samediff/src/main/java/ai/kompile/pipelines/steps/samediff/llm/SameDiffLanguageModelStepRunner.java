@@ -28,6 +28,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.deeplearning4j.llm.generation.DecoderInputBuilder;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -88,6 +89,13 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 throw new IOException("SameDiff model file not found at: " + modelFile.getAbsolutePath());
             }
             this.sameDiffModel = SameDiff.load(modelFile, true);
+            Object dspSetting = this.config.getGenerationParameters().get("dspEnabled");
+            boolean dspEnabled = dspSetting == null || Boolean.parseBoolean(String.valueOf(dspSetting));
+            if (!dspEnabled) {
+                this.sameDiffModel.setDspAutoCompileEnabled(false);
+                this.sameDiffModel.setDspNativeAutoCompileEnabled(false);
+                log.info("Disabled SameDiff DSP compilation for Java generation recovery on step '{}'", config.getName());
+            }
             log.info("Loaded SameDiff model for step '{}' from: {}", config.getName(), this.config.getModelUri());
 
             String configuredLogitsOutputName = (String) this.config.getGenerationParameters()
@@ -215,13 +223,19 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
 
         try {
             for (int i = 0; i < maxNewTokens; i++) {
-                Map<String, INDArray> placeholderMap = new HashMap<>();
-                placeholderMap.put(inputIdsName, currentSequenceIds);
-                if (attentionMask != null && sameDiffModel.getVariable(attentionMaskName) != null) {
-                    placeholderMap.put(attentionMaskName, attentionMask);
+                Map<String, INDArray> placeholderMap =
+                        DecoderInputBuilder.buildScoringInputMap(sameDiffModel, currentSequenceIds);
+                Map<String, INDArray> outputMap;
+                try {
+                    outputMap = sameDiffModel.output(placeholderMap, logitsName);
+                } finally {
+                    Set<INDArray> releasedInputs = Collections.newSetFromMap(new IdentityHashMap<>());
+                    for (INDArray arr : placeholderMap.values()) {
+                        if (arr != null && arr != currentSequenceIds && releasedInputs.add(arr)) {
+                            closeArraySafely(arr);
+                        }
+                    }
                 }
-
-                Map<String, INDArray> outputMap = sameDiffModel.output(placeholderMap, logitsName);
                 INDArray logits = outputMap.get(logitsName);
 
                 // Track output arrays for cleanup

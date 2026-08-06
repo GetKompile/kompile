@@ -1,8 +1,8 @@
-name: Publish SDK JARs
+name: Package SDK JARs
 
 description: >
   Collect platform-classified backend JARs (nd4j-native / nd4j-cuda with native libraries)
-  and upload them as workflow artifacts and optionally to a GitHub Release.
+  and upload them as workflow artifacts for the controlled release collector.
 
 inputs:
   artifact-name:
@@ -23,9 +23,7 @@ inputs:
     required: false
     default: ""
   release-version:
-    description: >
-      When set, upload JARs to a GitHub Release with tag sdk-v<version>.
-      The release is created if it does not already exist.
+    description: Compatibility version input; this action never writes a GitHub Release.
     required: false
     default: ""
   retention-days:
@@ -109,7 +107,7 @@ runs:
               echo "  Collected: ${BASENAME} (from ${jar})"
               FOUND=1
             fi
-          done < <(find "${GITHUB_WORKSPACE}" -path "*/target/${MODULE}-*.jar" -type f -print0 2>/dev/null | head -z -n 5)
+          done < <(find "${GITHUB_WORKSPACE}" -path "*/target/${MODULE}-*.jar" -type f -print0 2>/dev/null)
         done
 
         if [ "${FOUND}" -eq 1 ]; then
@@ -132,46 +130,3 @@ runs:
         path: ${{ steps.collect_jars.outputs.staging-dir }}/*.jar
         if-no-files-found: warn
         retention-days: ${{ inputs.retention-days }}
-
-    - name: Upload SDK JARs to GitHub Release
-      if: steps.collect_jars.outputs.found == '1' && inputs.release-version != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: sdk-v${{ inputs.release-version }}
-        RELEASE_VERSION: ${{ inputs.release-version }}
-        STAGING_DIR: ${{ steps.collect_jars.outputs.staging-dir }}
-      run: |
-        set -euo pipefail
-
-        # Create the release if it does not exist yet
-        if ! gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-          echo "Creating GitHub Release ${RELEASE_TAG}"
-          gh release create "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "SDX Runtime SDK ${RELEASE_VERSION}" \
-            --notes "Per-platform SDX Runtime SDK packages for release ${RELEASE_VERSION}.
-
-        Contains both native C++ SDK packages and platform-classified Java JAR artifacts.
-
-        **Platforms:** Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, Windows x86_64, Android ARM64, Android x86_64
-        **Variants:** CPU, CUDA 12.6, CUDA 12.9 (with optional cuDNN, compile/MLIR, oneDNN, AVX2/AVX512 extensions)" \
-            --prerelease \
-          || echo "Release may have been created by another job (expected in parallel builds)"
-        fi
-
-        # Upload all JARs
-        UPLOAD_COUNT=0
-        for jar in "${STAGING_DIR}"/*.jar; do
-          if [ -f "${jar}" ]; then
-            BASENAME="$(basename "${jar}")"
-            echo "Uploading ${BASENAME} to release ${RELEASE_TAG}"
-            gh release upload "${RELEASE_TAG}" "${jar}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber \
-            || echo "WARNING: Failed to upload ${BASENAME}"
-            UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
-          fi
-        done
-
-        echo "Uploaded ${UPLOAD_COUNT} JAR(s) to release ${RELEASE_TAG}"

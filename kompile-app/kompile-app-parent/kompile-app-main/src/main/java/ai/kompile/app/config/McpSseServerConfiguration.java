@@ -16,7 +16,7 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.app.services.mcp.McpToolBeanDiscovery;
+import ai.kompile.app.services.mcp.McpToolCallbackCatalog;
 import ai.kompile.app.services.mcp.optimization.CompressingToolCallbackProvider;
 import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
@@ -26,17 +26,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.lang.reflect.Method;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
 /**
@@ -63,12 +58,8 @@ public class McpSseServerConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(McpSseServerConfiguration.class);
 
-    /**
-     * Tool beans are discovered from the context by annotation, not injected one field per tool.
-     * See {@link McpToolBeanDiscovery}.
-     */
-    @Autowired(required = false)
-    private ApplicationContext applicationContext;
+    @Autowired
+    private McpToolCallbackCatalog toolCallbackCatalog;
 
     @Autowired(required = false)
     private ToolResponseCompressorRegistry compressorRegistry;
@@ -88,27 +79,18 @@ public class McpSseServerConfiguration {
      * is wrapped in {@link CompressingToolCallbackProvider} so every tool result
      * goes through the configured compressor chain before reaching the client.
      *
-     * <p>Tool objects come from {@link McpToolBeanDiscovery} rather than a hand-written list of
-     * {@code addToolIfAvailable} calls. The old list had drifted to roughly half of what the stdio
-     * registry exposed, so an SSE client saw a smaller tool surface than a stdio client against the
-     * same server — a difference nothing declared or tested. Discovery makes the two paths agree by
-     * construction, and drops the compile-time edge to each tool class that kept the whole surface
-     * pinned to this module.
+     * <p>The shared callback catalog is also consumed by stdio registration, discovery,
+     * and dynamic invocation. That guarantees every transport uses Spring AI's same
+     * native-safe schema and invocation implementation.
      */
     @Bean
     public ToolCallbackProvider kompileToolCallbackProvider() {
       try {
-        // Meta-tools are discovered along with everything else; the mode filter below decides which
-        // tool *names* the MCP client actually sees.
-        List<Object> toolObjects = McpToolBeanDiscovery.discoverToolBeans(applicationContext);
+        ToolCallbackProvider base = toolCallbackCatalog::getToolCallbacks;
+        logger.info("Created MCP SSE tool callback provider with {} callbacks",
+                toolCallbackCatalog.getToolCallbacks().length);
 
-        logger.info("Created MCP SSE tool callback provider with {} tool objects", toolObjects.size());
-
-        ToolCallbackProvider base = MethodToolCallbackProvider.builder()
-                .toolObjects(toolObjects.toArray())
-                .build();
-
-        Set<String> allowedToolNames = resolveAllowedToolNames(toolObjects);
+        Set<String> allowedToolNames = resolveAllowedToolNames();
         if (allowedToolNames != null) {
             logger.info("MCP SSE meta-tool mode active: exposing {} tool names", allowedToolNames.size());
         }
@@ -135,7 +117,7 @@ public class McpSseServerConfiguration {
      * exposes only meta-tools + {@code alwaysExposedTools}; for HYBRID the
      * same plus a small built-in whitelist.
      */
-    private Set<String> resolveAllowedToolNames(List<Object> toolObjects) {
+    private Set<String> resolveAllowedToolNames() {
         McpOptimizationConfig cfg = optimizationConfigProvider != null
                 ? optimizationConfigProvider.getConfiguration()
                 : null;
@@ -180,23 +162,8 @@ public class McpSseServerConfiguration {
             });
         }
 
-        // Sanity: if a listed tool doesn't exist among toolObjects we still
-        // leave it in the set (Spring AI just won't match it); no harm done.
+        // If a configured name does not exist, filtering simply never matches it.
         return allowed;
-    }
-
-    @SuppressWarnings("unused")
-    private Set<String> extractToolNames(List<Object> toolObjects) {
-        Set<String> names = new HashSet<>();
-        for (Object bean : toolObjects) {
-            for (Method m : bean.getClass().getDeclaredMethods()) {
-                Tool t = m.getAnnotation(Tool.class);
-                if (t != null) {
-                    names.add(t.name().isBlank() ? m.getName() : t.name());
-                }
-            }
-        }
-        return names;
     }
 
     // Note: SpringMvcSseServerTransport is now created in McpServerConfig.java

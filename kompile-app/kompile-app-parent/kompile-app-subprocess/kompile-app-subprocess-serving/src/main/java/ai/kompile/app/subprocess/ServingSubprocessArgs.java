@@ -25,7 +25,7 @@ import java.nio.file.Path;
 /**
  * Arguments passed to the LLM serving subprocess via JSON file.
  *
- * <p>The serving subprocess starts a lightweight Spring Boot HTTP server exposing
+ * <p>The serving subprocess starts a bounded JDK HTTP server exposing
  * LLM load/unload/generate/status endpoints. It runs as an independent process
  * with its own ND4J backend (CPU or CUDA) and can be deployed modularly.</p>
  */
@@ -33,7 +33,7 @@ import java.nio.file.Path;
 public record ServingSubprocessArgs(
         // Server configuration
         int port,                           // HTTP server port (default 8091)
-        String host,                        // Bind address (default 0.0.0.0)
+        String host,                        // Bind address (default 127.0.0.1)
 
         // Staging server URL for model resolution
         String stagingUrl,                  // e.g. http://localhost:8090
@@ -82,7 +82,7 @@ public record ServingSubprocessArgs(
      */
     public static ServingSubprocessArgs defaults() {
         return new ServingSubprocessArgs(
-                8091, "0.0.0.0",
+                8091, "127.0.0.1",
                 KompileServerConstants.DEFAULT_STAGING_URL,
                 null, null, null,
                 null,

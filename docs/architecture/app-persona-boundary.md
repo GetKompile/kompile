@@ -417,6 +417,38 @@ the `chatHeap` / `crawlHeap` keys in `project-runtime.json`; only the artifact a
 "crawl-manager". The launchers accept a heap as either `8g` or `-Xmx8g`, because the JSON config uses
 the bare form and `java 8g` is a confusing failure.
 
+### Runtime connections and port configuration
+
+`~/.kompile/config/service-endpoints.json` is the single persisted deployment topology for the web
+personas and support processes. It owns `adminUrl`, `chatUrl`, `crawlUrl`, `stagingUrl`, and the
+loopback-only `servingUrl`; production consumers resolve this managed JSON at use time instead of
+binding parallel Spring endpoint properties. The defaults are 8080, 8081, 8082, 8090, and 8091.
+
+Each independently distributable component exposes only the dependencies it owns:
+
+- **Admin → Settings → Service Endpoints** edits the full topology used by orchestration and CLI
+  routing.
+- **Chat → Settings → Model Staging Connection** edits `stagingUrl`. Chat uses Model Staging for
+  local model discovery and inference and can otherwise be tested without Crawl or Admin.
+- **Crawl → Connections** edits `stagingUrl`. Crawl uses it for local LLM fallback, embedding/model
+  initialization, OCR/VLM execution, and graph model artifacts.
+- **Model Staging → Connections** edits its optional Admin callback in `staging-settings.json` and
+  can save and test that connection. Leaving it blank keeps Model Staging standalone.
+- **Serving** is an Admin/CLI-owned internal child; Admin supplies its managed staging and serving
+  endpoints when it starts the child.
+
+All persona backends mount `/api/service-endpoints`, so their browser SPAs write the same managed
+file through same-origin HTTP. CLI clients route each API path through `KompileServiceEndpoints` to
+Admin, Chat, or Crawl. `kompile project open/start`, `kompile project init --serve`, and `kompile web`
+persist the exact topology they launch instead of injecting a Spring staging URL. Explicit
+`--port`/`--serve-port`, `--chat-port`, `--crawl-manager-port`, and `--staging-port` flags still win.
+`kompile config endpoints` displays that topology, and its `--admin-url`, `--chat-url`,
+`--crawl-url`, `--staging-url`, and `--serving-url` options edit the same managed file as the UIs.
+
+Endpoint configuration selects where outbound clients connect; it never rebinds a live server.
+Stop and restart a project to move the four long-lived process bind ports. A changed serving port
+applies when the demand-driven serving child next starts.
+
 There are **two** dist builders and they must agree: `build-dist.sh` (hand-rolled) and
 `kompile-dist/src/main/assembly/dist.xml` (Maven assembly, plus the `copy-persona-exec-jars`
 dependency-plugin execution that stages the jars into `target/persona-deps`). Neither persona declares

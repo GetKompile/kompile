@@ -16,6 +16,7 @@
 
 package ai.kompile.knowledgegraph.builder.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
@@ -32,12 +33,14 @@ public final class ExtractedGraphDTO {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ExtractedGraph {
         private List<ExtractedEntity> entities;
         private List<ExtractedRelationship> relationships;
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ExtractedEntity {
         private String id;
         private String title;
@@ -48,6 +51,7 @@ public final class ExtractedGraphDTO {
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ExtractedRelationship {
         private String source;
         private String target;

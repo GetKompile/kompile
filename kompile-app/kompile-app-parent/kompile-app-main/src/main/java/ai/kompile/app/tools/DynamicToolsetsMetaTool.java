@@ -18,12 +18,14 @@ package ai.kompile.app.tools;
 
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.services.mcp.DiscoveredTool;
+import ai.kompile.app.services.mcp.McpToolCallbackCatalog;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
@@ -66,6 +68,7 @@ public class DynamicToolsetsMetaTool {
     private final ObjectMapper objectMapper;
     private final BuiltInToolDiscoveryService toolDiscoveryService;
     private final ToolDefinitionService toolDefinitionService;
+    private McpToolCallbackCatalog toolCallbackCatalog;
 
     @Autowired
     public DynamicToolsetsMetaTool(ApplicationContext applicationContext,
@@ -76,6 +79,11 @@ public class DynamicToolsetsMetaTool {
         this.objectMapper = objectMapper;
         this.toolDiscoveryService = toolDiscoveryService;
         this.toolDefinitionService = toolDefinitionService;
+    }
+
+    @Autowired(required = false)
+    public void setToolCallbackCatalog(McpToolCallbackCatalog toolCallbackCatalog) {
+        this.toolCallbackCatalog = toolCallbackCatalog;
     }
 
     public record SearchToolsInput(String query, List<String> tags) {}
@@ -185,6 +193,30 @@ public class DynamicToolsetsMetaTool {
         String name = input.name();
         Map<String, Object> args = input.args() != null ? input.args() : Map.of();
 
+        if (toolCallbackCatalog != null) {
+            Optional<ToolCallback> callback = toolCallbackCatalog.findByName(name);
+            if (callback.isEmpty()) {
+                return error("unknown tool: " + name);
+            }
+            try {
+                String rawResult = callback.get().call(objectMapper.writeValueAsString(args));
+                Object result;
+                try {
+                    result = objectMapper.readValue(rawResult, Object.class);
+                } catch (Exception nonJson) {
+                    result = rawResult;
+                }
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("tool", name);
+                response.put("result", result);
+                return response;
+            } catch (Exception e) {
+                log.warn("execute_tool callback failed for '{}': {}", name, e.getMessage(), e);
+                return error("execution failed: " + rootCause(e));
+            }
+        }
+
+        // Compatibility fallback for constructor-only tests without the catalog.
         DiscoveredTool tool = findDiscoveredTool(name);
         if (tool == null) {
             return error("unknown tool: " + name);

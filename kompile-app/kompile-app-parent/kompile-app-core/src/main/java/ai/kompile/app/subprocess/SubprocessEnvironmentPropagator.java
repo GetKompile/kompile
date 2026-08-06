@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.utils.NativeRuntimePathSelector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -194,6 +195,18 @@ public final class SubprocessEnvironmentPropagator {
      * @return list of "-Dkey=value" strings ready to add to a JVM command
      */
     public static List<String> buildSystemPropertyFlags() {
+        return buildSystemPropertyFlags(null);
+    }
+
+    /**
+     * Build propagated system-property flags for a specific child classpath.
+     *
+     * <p>The shared JavaCPP runtime path is special: cache directories can contain stale
+     * same-SONAME LLVM/MLIR links from another ND4J backend. Select and order that property
+     * for the child's actual backend before forwarding it. All other properties retain their
+     * configured value.</p>
+     */
+    public static List<String> buildSystemPropertyFlags(String childClasspath) {
         String[] prefixes = {
                 "org.nd4j.",
                 "org.bytedeco.",
@@ -211,6 +224,9 @@ public final class SubprocessEnvironmentPropagator {
             for (String prefix : prefixes) {
                 if (key.startsWith(prefix)) {
                     String value = System.getProperty(key);
+                    if ("org.nd4j.presets.sharedRuntimePath".equals(key)) {
+                        value = NativeRuntimePathSelector.forChild(value, childClasspath);
+                    }
                     if (value != null && !value.isBlank()) {
                         flags.add("-D" + key + "=" + value);
                     }

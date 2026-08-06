@@ -142,7 +142,7 @@ class ProcessEngineScriptExecutionTest {
                     .filter(se -> se.getStepId().equals("1.1"))
                     .findFirst().orElseThrow();
             assertEquals(StepExecutionStatus.COMPLETED, stepExec.getStatus());
-            assertEquals("script:javascript", stepExec.getExecutedBy());
+            assertEquals("script:javascript:inline", stepExec.getExecutedBy());
         }
 
         @Test

@@ -6,6 +6,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.eclipse.deeplearning4j.llm.generation.ChatGenerationResult;
+import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.springframework.ai.chat.model.ChatResponse;
 
@@ -77,6 +79,53 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
+    void structuredChatDelegatesWithoutFlatteningTheRequest() throws Exception {
+        ChatTemplate.Request[] captured = new ChatTemplate.Request[1];
+        int[] capturedBudget = new int[1];
+        SameDiffLanguageModelImpl.StructuredChatInferenceBackend backend =
+                new SameDiffLanguageModelImpl.StructuredChatInferenceBackend() {
+                    @Override
+                    public String generate(String prompt) {
+                        throw new AssertionError("structured chat was flattened to text");
+                    }
+
+                    @Override
+                    public ChatGenerationResult generateChat(
+                            ChatTemplate.Request request) {
+                        captured[0] = request;
+                        return null;
+                    }
+
+                    @Override
+                    public ChatGenerationResult generateChat(
+                            ChatTemplate.Request request,
+                            int maxNewTokens) {
+                        captured[0] = request;
+                        capturedBudget[0] = maxNewTokens;
+                        return null;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                };
+        injectLoadedModel("test-model", backend);
+        ChatTemplate.Request request = ChatTemplate.Request.builder()
+                .messages(List.of(
+                        ChatTemplate.Message.system("Use tools."),
+                        ChatTemplate.Message.user("Find Revenue.")))
+                .tools(List.of(ChatTemplate.Tool.function(
+                        "search_graph",
+                        "Search the graph",
+                        Map.of("type", "object"))))
+                .build();
+
+        assertNull(impl.generateChat(request, 192));
+        assertSame(request, captured[0]);
+        assertEquals(192, capturedBudget[0]);
+    }
+
+    @Test
     void requestScopedTokenBudgetMustBePositive() {
         assertThrows(IllegalArgumentException.class,
                 () -> impl.generateResponse("test query", List.of(), 0));
@@ -135,17 +184,22 @@ class SameDiffLanguageModelImplTest {
         assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline("HF"));
         assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline("bpe"));
         assertFalse(SameDiffLanguageModelImpl.usesGenerationPipeline("wordpiece"));
+        assertFalse(SameDiffLanguageModelImpl.usesGenerationPipeline(
+                "huggingface", Map.of("legacyGeneration", true)));
+        assertTrue(SameDiffLanguageModelImpl.usesGenerationPipeline(
+                "huggingface", Map.of("legacyGeneration", false)));
     }
 
     @Test
-    void detectsGgufBackedStagedModelForContinuation() throws Exception {
+    void implicitContinuationRequiresTheExecutedDecoderToBeGguf() throws Exception {
         Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
-        assertFalse(SameDiffLanguageModelImpl.isGgufBackedModel(stagedModel));
-
         Files.createFile(tempDir.resolve("source-model.gguf"));
-        assertTrue(SameDiffLanguageModelImpl.isGgufBackedModel(stagedModel));
-        assertTrue(SameDiffLanguageModelImpl.isGgufBackedModel(
+
+        assertFalse(SameDiffLanguageModelImpl.isDirectGgufDecoder(stagedModel),
+                "a sibling GGUF is provenance, not proof that the executed SDNB supports sessions");
+        assertTrue(SameDiffLanguageModelImpl.isDirectGgufDecoder(
                 tempDir.resolve("direct.GGUF")));
+        assertFalse(SameDiffLanguageModelImpl.isDirectGgufDecoder(null));
     }
 
     @Test

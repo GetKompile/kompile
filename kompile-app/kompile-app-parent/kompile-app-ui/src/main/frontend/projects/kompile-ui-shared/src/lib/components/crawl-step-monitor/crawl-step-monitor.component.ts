@@ -74,6 +74,36 @@ interface LlmSummary {
   avgResponseChars: number;
 }
 
+type ScopedLlmCallRecord = LlmCallRecord & {
+  phase?: string;
+  passId?: string;
+  passInvocation?: number;
+  taskId?: string;
+  partitionId?: string;
+  chunkId?: string;
+  corpusSnapshotId?: string;
+  graphRevision?: string;
+  graphEntities?: number;
+  graphRelationships?: number;
+};
+
+interface ExtractionPassSummary extends LlmSummary {
+  id: string;
+  label: string;
+  state: 'pending' | 'running' | 'done' | 'failed';
+  latestPartition?: string;
+  latestChunk?: string;
+}
+
+interface ExtractionDivisionSummary {
+  corpusSnapshots: string[];
+  partitions: string[];
+  chunks: string[];
+  latestGraphRevision?: string;
+  graphEntities: number;
+  graphRelationships: number;
+}
+
 /**
  * Shared, reusable real-time crawl-step monitor. Renders every pipeline step as an expandable
  * accordion row; when expanded each step surfaces ALL available detail in real time — a log id,
@@ -95,6 +125,14 @@ interface LlmSummary {
   styleUrls: ['./crawl-step-monitor.component.css']
 })
 export class CrawlStepMonitorComponent {
+  private static readonly EXTRACTION_PASSES: Array<{ id: string; label: string }> = [
+    { id: 'propositions', label: 'Atomic propositions' },
+    { id: 'mentions', label: 'Entity mentions' },
+    { id: 'epistemic', label: 'Epistemic status' },
+    { id: 'relations', label: 'Relations' },
+    { id: 'claims', label: 'Claims' }
+  ];
+
   /** The per-step progress array (e.g. job.pipelineSteps). */
   @Input() steps: PipelineStepProgress[] = [];
   /** The rich job object for per-step detail (events/retries/llm-calls/tuning/batch telemetry). */
@@ -445,6 +483,7 @@ export class CrawlStepMonitorComponent {
       // GRAPH_EXTRACTION owns MODEL_ROUTING decisions (KGE backend selection) and may gate on
       // RESOURCE_GATE events (heavy-memory OOM-floor defers).
       'GRAPH_EXTRACTION':       ['GRAPH_EXTRACTION', 'MODEL_ROUTING', 'RESOURCE_GATE'],
+      'ENTITY_PARTITIONS':      ['ENTITY_PARTITIONS'],
       'CRAWL_SURFACE':          ['CRAWL_SURFACE'],
       'SURFACING':              ['CRAWL_SURFACE'],
       'ENTITY_RESOLUTION':      ['ENTITY_RESOLUTION'],
@@ -546,15 +585,100 @@ export class CrawlStepMonitorComponent {
     });
   }
 
-  /** LLM call records relevant to a step (embedding steps → embedding calls; else llm/vlm calls). */
-  getStepLlmCalls(step: PipelineStepProgress): LlmCallRecord[] {
-    const calls = this.job?.recentLlmCalls;
+  /**
+   * LLM calls owned by this exact step. New records carry an authoritative phase; legacy unscoped
+   * non-embedding records fall back only to GRAPH_EXTRACTION so they are never repeated under every
+   * graph-shaped step (especially ENTITY_PARTITIONS and enrichment).
+   */
+  getStepLlmCalls(step: PipelineStepProgress): ScopedLlmCallRecord[] {
+    const calls = this.job?.recentLlmCalls as ScopedLlmCallRecord[] | undefined;
     if (!calls || !calls.length) return [];
     const isEmbedding = (step.stepType || '').toUpperCase().includes('EMBEDDING');
+    const phases = this.stepIdToPhases(step.stepId);
+    const rawStep = (step.stepId || '').toUpperCase();
+    const workerMatch = rawStep.match(/^(W[0-9]+:)(.*)$/);
+    const baseStep = workerMatch ? workerMatch[2] : rawStep;
     return calls.filter(c => {
-      const t = (c.taskType || '').toLowerCase();
-      return isEmbedding ? t === 'embedding' : t !== 'embedding';
+      const taskType = (c.taskType || '').toLowerCase();
+      if (isEmbedding ? taskType !== 'embedding' : taskType === 'embedding') return false;
+      const phase = (c.phase || '').toUpperCase();
+      if (phase) return phases.includes(phase);
+      if (isEmbedding) return !workerMatch;
+      return !workerMatch && baseStep === 'GRAPH_EXTRACTION';
     });
+  }
+
+  /** Canonical per-pass rows for production decomposed extraction. */
+  getExtractionPassSummaries(step: PipelineStepProgress): ExtractionPassSummary[] {
+    const calls = this.getStepLlmCalls(step).filter(call => !!call.passId);
+    if (!calls.length) return [];
+    const currentItem = (step.currentItem || '').toLowerCase();
+    const passStarting = (step.message || '').toLowerCase().endsWith('pass started');
+    return CrawlStepMonitorComponent.EXTRACTION_PASSES.map(definition => {
+      const passCalls = calls.filter(call => (call.passId || '').toLowerCase() === definition.id);
+      const latest = passCalls.length ? passCalls[passCalls.length - 1] : undefined;
+      const success = passCalls.filter(call => call.success).length;
+      const failed = passCalls.length - success;
+      const active = step.status === 'RUNNING' && passStarting
+        && currentItem.includes(definition.id + ' #');
+      const state: ExtractionPassSummary['state'] = active ? 'running'
+        : success > 0 ? 'done'
+          : failed > 0 ? 'failed' : 'pending';
+      const count = passCalls.length;
+      return {
+        id: definition.id,
+        label: definition.label,
+        state,
+        count,
+        success,
+        failed,
+        avgLatencyMs: count ? Math.round(passCalls.reduce((sum, call) => sum + (call.latencyMs || 0), 0) / count) : 0,
+        avgPromptChars: count ? Math.round(passCalls.reduce((sum, call) => sum + (call.promptChars || 0), 0) / count) : 0,
+        avgResponseChars: count ? Math.round(passCalls.reduce((sum, call) => sum + (call.responseChars || 0), 0) / count) : 0,
+        latestPartition: latest?.partitionId,
+        latestChunk: latest?.chunkId
+      };
+    });
+  }
+
+  /** Corpus → partition → chunk scope and incremental graph state represented by recent calls. */
+  getExtractionDivisionSummary(step: PipelineStepProgress): ExtractionDivisionSummary | null {
+    const calls = this.getStepLlmCalls(step).filter(call => !!call.passId);
+    if (!calls.length) return null;
+    const unique = (values: Array<string | undefined>): string[] =>
+      Array.from(new Set(values.filter((value): value is string => !!value)));
+    const latest = calls[calls.length - 1];
+    return {
+      corpusSnapshots: unique(calls.map(call => call.corpusSnapshotId)),
+      partitions: unique(calls.map(call => call.partitionId)),
+      chunks: unique(calls.map(call => call.chunkId)),
+      latestGraphRevision: latest.graphRevision,
+      graphEntities: latest.graphEntities || 0,
+      graphRelationships: latest.graphRelationships || 0
+    };
+  }
+
+  /** Stable transcript header filter produced by CrawlLlmDispatcher for scoped pass calls. */
+  getStepTranscriptFilter(step: PipelineStepProgress): string {
+    const scoped = this.getStepLlmCalls(step).find(call => !!call.phase && !!call.passId);
+    if (scoped?.phase) {
+      const basePhase = scoped.phase.toUpperCase().replace(/^W[0-9]+:/, '');
+      return `[llm/${basePhase}/`;
+    }
+    // The first call has a live "started" progress event before its completed call record exists.
+    // Scope that initial transcript panel from the current pass marker without hiding legacy jobs.
+    const current = (step.currentItem || '').toLowerCase();
+    const isActivePass = CrawlStepMonitorComponent.EXTRACTION_PASSES.some(pass =>
+      current.includes(pass.id + ' #'));
+    if (!isActivePass) return '';
+    const baseStep = (step.stepId || '').toUpperCase().replace(/^W[0-9]+:/, '');
+    return baseStep === 'GRAPH_EXTRACTION' || baseStep === 'ENTITY_PARTITIONS'
+      ? `[llm/${baseStep}/` : '';
+  }
+
+  compactScope(value: string | undefined): string {
+    if (!value || value.length <= 42) return value || '—';
+    return `${value.slice(0, 23)}…${value.slice(-14)}`;
   }
 
   /** Aggregate LLM-call stats for a step, or null when there are no matching calls. */

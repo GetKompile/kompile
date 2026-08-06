@@ -1,0 +1,30 @@
+[
+{
+  "name":"ai.kompile.app.learning.subprocess.LearningSubprocessArgs",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Long","java.lang.String","int","int","double","double","int","boolean","int","java.lang.String","java.lang.String","java.lang.String"] }, {"name":"algorithm","parameterTypes":[] }, {"name":"batchSize","parameterTypes":[] }, {"name":"embeddingDim","parameterTypes":[] }, {"name":"epochs","parameterTypes":[] }, {"name":"factSheetId","parameterTypes":[] }, {"name":"learningRate","parameterTypes":[] }, {"name":"margin","parameterTypes":[] }, {"name":"negativeSamples","parameterTypes":[] }, {"name":"normalizeEntities","parameterTypes":[] }, {"name":"outputEmbeddingsPath","parameterTypes":[] }, {"name":"triplesFilePath","parameterTypes":[] }, {"name":"warmStartEmbeddingsPath","parameterTypes":[] }]
+},
+{
+  "name":"ai.kompile.app.learning.subprocess.ReasoningLearningSubprocessArgs",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.Long","java.lang.String","java.lang.String","java.lang.String","int","double"] }, {"name":"algorithm","parameterTypes":[] }, {"name":"factSheetId","parameterTypes":[] }, {"name":"inputFilePath","parameterTypes":[] }, {"name":"isMebn","parameterTypes":[] }, {"name":"isPsl","parameterTypes":[] }, {"name":"learningRate","parameterTypes":[] }, {"name":"maxEpochs","parameterTypes":[] }, {"name":"outputWeightsFilePath","parameterTypes":[] }]
+},
+{
+  "name":"ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","int","java.lang.String","int","int","int","long","int","int","int","long","java.lang.String"] }, {"name":"callbackBaseUrl","parameterTypes":[] }, {"name":"executionMode","parameterTypes":[] }, {"name":"gpuMemoryCriticalPercent","parameterTypes":[] }, {"name":"gpuMemoryKillPercent","parameterTypes":[] }, {"name":"gpuMemoryStopPercent","parameterTypes":[] }, {"name":"heartbeatIntervalMs","parameterTypes":[] }, {"name":"memoryCheckIntervalMs","parameterTypes":[] }, {"name":"memoryCriticalPercent","parameterTypes":[] }, {"name":"memoryKillPercent","parameterTypes":[] }, {"name":"memoryStopPercent","parameterTypes":[] }, {"name":"nd4jConfigJson","parameterTypes":[] }, {"name":"pipelineDefinitionJson","parameterTypes":[] }, {"name":"requestDataJson","parameterTypes":[] }, {"name":"servingPort","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }]
+},
+{
+  "name":"ai.kompile.app.subprocess.ServingSubprocessArgs",
+  "allDeclaredFields":true,
+  "queryAllDeclaredMethods":true,
+  "queryAllDeclaredConstructors":true,
+  "methods":[{"name":"<init>","parameterTypes":["int","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","java.lang.String","int","int","int","long","int","int","int","int","int","int","int","int","double","int","java.lang.Boolean","java.lang.Boolean","java.lang.Boolean"] }, {"name":"dspEnabled","parameterTypes":[] }, {"name":"gpuMemoryCriticalPercent","parameterTypes":[] }, {"name":"gpuMemoryKillThresholdPercent","parameterTypes":[] }, {"name":"gpuMemoryThresholdPercent","parameterTypes":[] }, {"name":"gpuSoftLimitPercent","parameterTypes":[] }, {"name":"host","parameterTypes":[] }, {"name":"maxNewTokens","parameterTypes":[] }, {"name":"memoryCheckIntervalMs","parameterTypes":[] }, {"name":"memoryCriticalPercent","parameterTypes":[] }, {"name":"memoryKillThresholdPercent","parameterTypes":[] }, {"name":"memoryThresholdPercent","parameterTypes":[] }, {"name":"modelId","parameterTypes":[] }, {"name":"modelPath","parameterTypes":[] }, {"name":"nd4jConfigJson","parameterTypes":[] }, {"name":"offHeapCriticalPercent","parameterTypes":[] }, {"name":"offHeapKillThresholdPercent","parameterTypes":[] }, {"name":"offHeapThresholdPercent","parameterTypes":[] }, {"name":"optimizerEnabled","parameterTypes":[] }, {"name":"optimizerFp16","parameterTypes":[] }, {"name":"port","parameterTypes":[] }, {"name":"stagingUrl","parameterTypes":[] }, {"name":"temperature","parameterTypes":[] }, {"name":"tokenizerPath","parameterTypes":[] }, {"name":"topK","parameterTypes":[] }]
+}
+]

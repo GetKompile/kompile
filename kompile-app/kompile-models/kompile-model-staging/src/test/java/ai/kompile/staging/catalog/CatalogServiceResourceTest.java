@@ -166,6 +166,14 @@ class CatalogServiceResourceTest {
         assertEquals("LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
                 opt.get().getFiles().get("model"),
                 "model file must be Q4_K_M GGUF");
+        assertEquals(6, opt.get().getAssetUrls().size(),
+                "lfm2.5 catalog entry must ship a complete runnable companion bundle");
+        assertTrue(opt.get().getAssetUrls().values().stream()
+                        .allMatch(url -> url.contains("/resolve/868df74dd56ff8a0c2ac5dbf281690c2dbebe4c9/")),
+                "lfm2.5 companion assets must be pinned to one immutable upstream revision");
+        assertTrue(opt.get().getAssetUrls().containsKey("tokenizer"));
+        assertTrue(opt.get().getAssetUrls().containsKey("tokenizer_config"));
+        assertTrue(opt.get().getAssetUrls().containsKey("model_config"));
     }
 
     @Test

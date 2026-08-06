@@ -69,7 +69,29 @@ class KompileServiceEndpointsTest {
         assertEquals(KompileService.CHAT, KompileServiceEndpoints.serviceForPath("/api/chat-sessions/42"));
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/unified-crawl/jobs"));
         assertEquals(KompileService.CRAWL, KompileServiceEndpoints.serviceForPath("/api/indexing/status"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/staging-config/configs/active"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/embedding-restart/status"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/models/active-context"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/models/embedding/status"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/processing/pipeline-config"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/processing/pipeline-presets"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/processing-settings"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/mcp/tools/list"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/process/ontology/conformance"));
+        assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/graph-ontology/owl"));
         assertEquals(KompileService.ADMIN, KompileServiceEndpoints.serviceForPath("/api/nd4j/environment"));
+    }
+
+    @Test
+    void defaultRoutes_exposesAdminContractsConsumedBySplitClients() {
+        Map<String, KompileService> routes = KompileServiceEndpoints.defaultRoutes();
+
+        assertEquals(KompileService.ADMIN, routes.get("/api/staging-config"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/models"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/processing"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/mcp"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/process"));
+        assertEquals(KompileService.ADMIN, routes.get("/api/graph-ontology"));
     }
 
     @Test
@@ -259,6 +281,8 @@ class KompileServiceEndpointsTest {
                 {
                   "adminUrl": "http://admin-box:8080/",
                   "chatUrl": "http://chat-box:8081",
+                  "stagingUrl": "http://staging-box:19090/",
+                  "servingUrl": "http://127.0.0.1:19091/",
                   "routes": { "/api/graph/aggregate": "crawl", "/api/bogus": "nosuchservice" }
                 }
                 """);
@@ -270,6 +294,10 @@ class KompileServiceEndpointsTest {
         // Absent stays absent: null is what lets the resolver fall through to the instance
         // registry instead of pinning crawl to a value nobody configured.
         assertNull(config.url(KompileService.CRAWL));
+        assertEquals("http://staging-box:19090", config.stagingUrl());
+        assertEquals("http://127.0.0.1:19091", config.servingUrl());
+        assertEquals(19090, config.stagingPort());
+        assertEquals(19091, config.servingPort());
 
         assertEquals(KompileService.CRAWL, config.routes().get("/api/graph/aggregate"));
         assertFalse(config.routes().containsKey("/api/bogus"), "unknown service ids must be dropped");
@@ -281,12 +309,14 @@ class KompileServiceEndpointsTest {
                 .currentAsMap();
 
         // The display/REST view fills in effective values even when the file is missing, so the
-        // settings panel always shows all three services rather than three blanks.
+        // settings panel always shows every process rather than blank fields.
         for (KompileService service : KompileService.values()) {
             Object url = view.get(service.configKey());
             assertNotNull(url, service.configKey() + " must be shown");
             assertTrue(String.valueOf(url).startsWith("http"), service.configKey() + " = " + url);
         }
+        assertEquals(ServiceEndpointsConfigManager.DEFAULT_STAGING_URL, view.get("stagingUrl"));
+        assertEquals(ServiceEndpointsConfigManager.DEFAULT_SERVING_URL, view.get("servingUrl"));
 
         @SuppressWarnings("unchecked")
         Map<String, String> routes = (Map<String, String>) view.get("routes");
@@ -294,5 +324,23 @@ class KompileServiceEndpointsTest {
         assertEquals("crawl", routes.get("/api/unified-crawl"));
         assertEquals("chat", routes.get("/api/agents"));
         assertEquals("admin", routes.get("/api/agents/api-config"));
+    }
+
+    @Test
+    void configManager_updatesSupportEndpointsWithoutClobberingForeignKeys(@TempDir Path tmpDir)
+            throws Exception {
+        Path file = tmpDir.resolve("service-endpoints.json");
+        Files.writeString(file, "{\"foreign\":\"keep-me\",\"stagingUrl\":\"http://localhost:8090\"}");
+        ServiceEndpointsConfigManager manager = new ServiceEndpointsConfigManager(file);
+
+        Map<String, Object> updated = manager.update(Map.of(
+                ServiceEndpointsConfigManager.STAGING_URL_KEY, "http://localhost:19090/",
+                ServiceEndpointsConfigManager.SERVING_URL_KEY, "http://127.0.0.1:19091/"));
+
+        assertEquals("http://localhost:19090", updated.get("stagingUrl"));
+        assertEquals("http://127.0.0.1:19091", updated.get("servingUrl"));
+        String persisted = Files.readString(file);
+        assertTrue(persisted.contains("keep-me"));
+        assertTrue(persisted.contains("19091"));
     }
 }

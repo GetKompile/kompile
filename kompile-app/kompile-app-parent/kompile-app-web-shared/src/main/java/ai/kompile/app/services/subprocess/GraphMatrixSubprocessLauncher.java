@@ -162,11 +162,8 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
 
     /**
      * The matrix store does no GPU compute (sparse JVM-heap maps + trivial INDArray node embeddings);
-     * it must select the CPU ND4J backend so it neither contends for GPU memory with the embedding
-     * lane nor crashes loading a CUDA context it never set up. Declared via the device-abstract
-     * backend-preference mechanism — the base emits the real {@code org.nd4j.*.priority} selection
-     * flags, no CUDA env vars. (Before: it set the inert {@code nd4j.backend.priority=CPU} and loaded
-     * CUDA anyway on the dual-backend jar — 2026-07-05.)
+     * it remains CPU-pinned through normal backend preference flags emitted by the base launcher.
+     * Additional backend toggles are not hardcoded here; they are inherited from parent/runtime config.
      */
     @Override
     protected BackendPreference getBackendPreference() {
@@ -176,14 +173,6 @@ public class GraphMatrixSubprocessLauncher extends ManagedSubprocessLauncher {
     @Override
     protected List<String> getExtraJvmArgs() {
         List<String> args = new ArrayList<>();
-        // Keep multi-backend probing off so no code path re-initialises a second (CUDA) backend after
-        // the CPU one is selected. Backend SELECTION itself is handled by getBackendPreference().
-        if (System.getProperty("nd4j.multibackend.enabled") == null) {
-            args.add("-Dnd4j.multibackend.enabled=false");
-        }
-        if (System.getProperty("org.nd4j.backend.multi.auto") == null) {
-            args.add("-Dorg.nd4j.backend.multi.auto=false");
-        }
         // Forward the data dir / index path so the subprocess reads the SAME persisted graph index as
         // the main app (the Spring --kompile.data.dir arg is not a -D, so it isn't auto-propagated).
         if (dataDir != null && !dataDir.isBlank()) {

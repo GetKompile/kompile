@@ -523,6 +523,29 @@
 /* WEBSOCKET STATUS BAR                                                            */
 /* ═══════════════════════════════════════════════════════════════════════════════ */
 
+.dependency-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--status-info-border);
+  border-radius: 6px;
+  background: var(--status-info-bg);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.dependency-status-bar mat-icon {
+  flex: 0 0 auto;
+  color: var(--status-info-icon);
+}
+
+.dependency-status-bar strong {
+  margin: 0 2px;
+}
+
 .ws-status-bar {
   display: flex;
   align-items: center;

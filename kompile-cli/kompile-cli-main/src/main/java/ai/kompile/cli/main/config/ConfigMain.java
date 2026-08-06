@@ -26,6 +26,7 @@ import picocli.CommandLine.Command;
                 ConfigImportCommand.class,
                 ConfigListArchivesCommand.class,
                 AppConfigCommand.class,
+                ServiceEndpointsConfigCommand.class,
                 ToolGatewayConfigCommand.class
         },
         mixinStandardHelpOptions = true,
@@ -35,6 +36,7 @@ import picocli.CommandLine.Command;
                 "  import         Import configuration from archive%n" +
                 "  archives       List available config archives%n" +
                 "  app            Application-level configuration%n" +
+                "  endpoints      Configure component dependency endpoints%n" +
                 "  tool-gateway   Configure tool gateway rules%n")
 public class ConfigMain implements Runnable {
 

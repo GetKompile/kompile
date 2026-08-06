@@ -168,6 +168,8 @@ class GraphExtractionCheckpointStore {
             Map<String, Object> stable = new TreeMap<>();
             if (config != null) {
                 stable.put("schemaPresetId", config.getSchemaPresetId());
+                stable.put("standardizedSchema", config.getStandardizedSchema());
+                stable.put("validationPolicy", config.getValidationPolicy());
                 stable.put("entityTypes", config.getEntityTypes());
                 stable.put("relationshipTypes", config.getRelationshipTypes());
                 stable.put("llmProvider", config.getLlmProvider());
@@ -177,6 +179,7 @@ class GraphExtractionCheckpointStore {
                 stable.put("customPromptHash", DocumentHashStore.sha256Hex(config.getCustomPrompt()));
                 stable.put("schemaMode", config.getSchemaMode() != null ? config.getSchemaMode().name() : null);
                 stable.put("minConfidence", config.getMinConfidence());
+                stable.put("resolvedGraphAdditionCalibration", config.getResolvedGraphAdditionCalibration());
             }
             return DocumentHashStore.sha256Hex(mapper.writeValueAsString(stable));
         } catch (Exception e) {

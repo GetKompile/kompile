@@ -1,6 +1,13 @@
 package ai.kompile.cli.main.install.registry;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,6 +70,51 @@ public class ComponentRegistryTest {
         }
         // Without the property, falls back to env or ~/.kompile — never null.
         assertNotNull(ComponentRegistry.resolveInstallBaseDir());
+    }
+
+    @Test
+    public void testResolveInstallBaseDirHonorsSideLoadedDistribution(@TempDir Path tempDir) {
+        Path installDir = tempDir.resolve("explicit-install");
+        Path distDir = tempDir.resolve("side-loaded-dist");
+        Properties properties = new Properties();
+        properties.setProperty("kompile.dist.home", distDir.toString());
+
+        assertEquals(distDir.toFile(), ComponentRegistry.resolveInstallBaseDir(
+                properties, Map.of(), null, tempDir.resolve("home").toFile()));
+
+        properties.setProperty("kompile.install.dir", installDir.toString());
+        assertEquals(installDir.toFile(), ComponentRegistry.resolveInstallBaseDir(
+                properties, Map.of("KOMPILE_INSTALL_DIR", tempDir.resolve("env-install").toString(),
+                                "KOMPILE_DIST_HOME", tempDir.resolve("env-dist").toString()),
+                null, tempDir.resolve("home").toFile()));
+    }
+
+    @Test
+    public void testResolveInstallBaseDirInfersNativeDistribution(@TempDir Path tempDir) throws Exception {
+        Path binDir = Files.createDirectories(tempDir.resolve("dist/bin"));
+        Files.createDirectories(tempDir.resolve("dist/lib"));
+        Path cli = Files.createFile(binDir.resolve("kompile"));
+
+        assertEquals(tempDir.resolve("dist").toFile(), ComponentRegistry.resolveInstallBaseDir(
+                new Properties(), Map.of(), cli, tempDir.resolve("home").toFile()));
+        assertNull(ComponentRegistry.inferDistributionHome(tempDir.resolve("not-bin/kompile")));
+    }
+
+    @Test
+    public void testDistributionAliasesResolveAllProjectPersonas(@TempDir Path tempDir) throws Exception {
+        Path binDir = Files.createDirectories(tempDir.resolve("bin"));
+        Files.createDirectories(tempDir.resolve("lib"));
+        for (String binary : new String[]{"kompile-server", "kompile-chat", "kompile-crawl-manager"}) {
+            File executable = Files.createFile(binDir.resolve(binary)).toFile();
+            assertTrue(executable.setExecutable(true), "Could not mark test binary executable: " + executable);
+        }
+
+        ComponentRegistry registry = new ComponentRegistry();
+        registry.setInstallBaseDir(tempDir.toFile());
+        assertEquals("kompile-server", registry.findInstalledJar(ComponentRegistry.KOMPILE_APP_MAIN).getName());
+        assertEquals("kompile-chat", registry.findInstalledJar(ComponentRegistry.KOMPILE_APP_CHAT).getName());
+        assertEquals("kompile-crawl-manager",
+                registry.findInstalledJar(ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER).getName());
     }
 
     @Test

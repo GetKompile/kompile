@@ -34,7 +34,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -154,6 +157,71 @@ public class KompileProjectStore {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read " + manifestPath + ": " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Bring generated project lifecycle files forward after application personas are split into
+     * separate processes. Only generator-owned manifest entries and byte-for-byte legacy generated
+     * scripts are changed; custom workflows and edited scripts remain untouched.
+     */
+    public KompileProjectManifest ensureStandardServiceLifecycle(Path root) {
+        Path normalizedRoot = normalizeRoot(root);
+        KompileProjectManifest manifest = load(normalizedRoot);
+        boolean hasGeneratedLifecycle = manifest.getScripts().stream()
+                .anyMatch(script -> script.isGenerated() && isStandardServiceScript(script.getId()))
+                || findWorkflow(manifest, "start-services")
+                .map(KompileProjectWorkflow::isGenerated)
+                .orElse(false);
+        if (!hasGeneratedLifecycle) {
+            return manifest;
+        }
+
+        try {
+            writeStandardLifecycleScriptFiles(normalizedRoot);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to upgrade service lifecycle scripts under "
+                    + normalizedRoot + ": " + e.getMessage(), e);
+        }
+
+        boolean changed = false;
+        KompileProjectManifest standards = new KompileProjectManifest();
+        upsertStandardScripts(standards);
+        for (KompileProjectScript standard : standards.getScripts()) {
+            if (findScript(manifest, standard.getId()).isEmpty()) {
+                upsertScript(manifest, standard);
+                changed = true;
+            }
+        }
+
+        KompileProjectWorkflow standardStart = standardStartWorkflow();
+        Optional<KompileProjectWorkflow> existingStart = findWorkflow(manifest, "start-services");
+        if (existingStart.isEmpty()) {
+            upsertWorkflow(manifest, standardStart);
+            changed = true;
+        } else if (existingStart.get().isGenerated()
+                && !isCurrentStandardStartWorkflow(existingStart.get())) {
+            upsertWorkflow(manifest, standardStart);
+            changed = true;
+        }
+
+        if (changed) {
+            save(normalizedRoot, manifest);
+        }
+        return manifest;
+    }
+
+    private boolean isStandardServiceScript(String id) {
+        return Set.of("start-all", "stop-all", "start-staging", "start-serving", "start-app",
+                "start-chat", "start-crawl-manager").contains(id);
+    }
+
+    private boolean isCurrentStandardStartWorkflow(KompileProjectWorkflow workflow) {
+        List<String> refs = workflow.getSteps().stream()
+                .filter(step -> "SCRIPT".equalsIgnoreCase(step.getType()))
+                .map(KompileProjectWorkflowStep::getRef)
+                .toList();
+        return refs.equals(List.of("start-staging", "start-serving", "start-app", "start-chat",
+                "start-crawl-manager"));
     }
 
     public void save(Path root, KompileProjectManifest manifest) {
@@ -1369,7 +1437,7 @@ public class KompileProjectStore {
     }
 
     private void writeStandardLifecycleScriptFiles(Path root) throws IOException {
-        writeExecutableIfMissing(root.resolve("scripts/start-all.sh"), """
+        String startAll = """
                 #!/usr/bin/env bash
                 set -euo pipefail
                 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1378,8 +1446,19 @@ public class KompileProjectStore {
                 "$ROOT/scripts/start-app.sh"
                 "$ROOT/scripts/start-chat.sh"
                 "$ROOT/scripts/start-crawl-manager.sh"
-                """);
-        writeExecutableIfMissing(root.resolve("scripts/stop-all.sh"), """
+                """;
+        Path startAllPath = root.resolve("scripts/start-all.sh");
+        writeExecutableIfMissing(startAllPath, startAll);
+        upgradeExecutableIfContentMatches(startAllPath, """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+                "$ROOT/scripts/start-staging.sh"
+                "$ROOT/scripts/start-serving.sh"
+                "$ROOT/scripts/start-app.sh"
+                """, startAll);
+
+        String stopAll = """
                 #!/usr/bin/env bash
                 set -euo pipefail
                 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1394,30 +1473,56 @@ public class KompileProjectStore {
                     rm -f "$pid_file"
                   fi
                 done
-                """);
-        writeExecutableIfMissing(root.resolve("scripts/start-staging.sh"), serviceScript("staging",
-                "KOMPILE_STAGING_COMMAND",
+                """;
+        Path stopAllPath = root.resolve("scripts/stop-all.sh");
+        writeExecutableIfMissing(stopAllPath, stopAll);
+        upgradeExecutableIfContentMatches(stopAllPath, """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+                PID_DIR="$ROOT/.kompile/state/pids"
+                for service in app serving staging; do
+                  pid_file="$PID_DIR/$service.pid"
+                  if [ -f "$pid_file" ]; then
+                    pid="$(cat "$pid_file")"
+                    if kill -0 "$pid" >/dev/null 2>&1; then
+                      kill "$pid"
+                    fi
+                    rm -f "$pid_file"
+                  fi
+                done
+                """, stopAll);
+
+        writeServiceScript(root, "staging", "KOMPILE_STAGING_COMMAND",
                 "Set KOMPILE_STAGING_COMMAND to start model staging for this project.",
-                "kompile manage start staging"));
-        writeExecutableIfMissing(root.resolve("scripts/start-serving.sh"), serviceScript("serving",
-                "KOMPILE_SERVING_COMMAND",
+                "kompile project serve --staging-only", "kompile manage start staging");
+        writeServiceScript(root, "serving", "KOMPILE_SERVING_COMMAND",
                 "Set KOMPILE_SERVING_COMMAND to start model serving for this project.",
-                "kompile manage start serving"));
-        writeExecutableIfMissing(root.resolve("scripts/start-app.sh"), serviceScript("app",
-                "KOMPILE_APP_COMMAND",
+                "kompile project serve --serving-only", "kompile manage start serving");
+        writeServiceScript(root, "app", "KOMPILE_APP_COMMAND",
                 "Set KOMPILE_APP_COMMAND to start the Kompile app for this project.",
-                "kompile project service start"));
+                "kompile project serve --app-only", "kompile project service start");
         // The end-user personas are separate processes: the admin console does not mount
         // /api/agents/chat or /api/unified-crawl, so a project that starts only start-app.sh can
         // serve its admin API but cannot chat or ingest.
-        writeExecutableIfMissing(root.resolve("scripts/start-chat.sh"), serviceScript("chat",
-                "KOMPILE_CHAT_COMMAND",
+        writeServiceScript(root, "chat", "KOMPILE_CHAT_COMMAND",
                 "Set KOMPILE_CHAT_COMMAND to start the Kompile chat app for this project.",
-                "kompile project serve --chat-only"));
-        writeExecutableIfMissing(root.resolve("scripts/start-crawl-manager.sh"), serviceScript("crawl-manager",
-                "KOMPILE_CRAWL_MANAGER_COMMAND",
+                "kompile project serve --chat-only", null);
+        writeServiceScript(root, "crawl-manager", "KOMPILE_CRAWL_MANAGER_COMMAND",
                 "Set KOMPILE_CRAWL_MANAGER_COMMAND to start the Kompile crawl manager for this project.",
-                "kompile project serve --crawl-manager-only"));
+                "kompile project serve --crawl-manager-only", null);
+    }
+
+    private void writeServiceScript(Path root, String service, String commandVariable,
+                                    String missingMessage, String cliFallback,
+                                    String legacyCliFallback) throws IOException {
+        Path path = root.resolve("scripts/start-" + service + ".sh");
+        String content = serviceScript(service, commandVariable, missingMessage, cliFallback);
+        writeExecutableIfMissing(path, content);
+        if (legacyCliFallback != null) {
+            upgradeExecutableIfContentMatches(path,
+                    serviceScript(service, commandVariable, missingMessage, legacyCliFallback), content);
+        }
     }
 
     /**
@@ -1462,9 +1567,20 @@ public class KompileProjectStore {
         script.toFile().setExecutable(true, false);
     }
 
+    private void upgradeExecutableIfContentMatches(Path script, String legacyContent,
+                                                   String currentContent) throws IOException {
+        if (!Files.isRegularFile(script)
+                || !Files.readString(script, StandardCharsets.UTF_8).equals(legacyContent)) {
+            return;
+        }
+        Files.writeString(script, currentContent, StandardCharsets.UTF_8);
+        script.toFile().setExecutable(true, false);
+    }
+
     private void upsertStandardScripts(KompileProjectManifest manifest) {
         upsertScript(manifest, script("start-all", "Start all services", "scripts/start-all.sh",
-                "./scripts/start-all.sh", ".", "start", "Start staging, serving, and the main application.",
+                "./scripts/start-all.sh", ".", "start",
+                "Start staging, serving, the admin console, chat, and the crawl manager.",
                 List.of("lifecycle", "start", "services")));
         upsertScript(manifest, script("stop-all", "Stop all services", "scripts/stop-all.sh",
                 "./scripts/stop-all.sh", ".", "stop", "Stop project services and clean service PIDs.",
@@ -1504,7 +1620,7 @@ public class KompileProjectStore {
         return script;
     }
 
-    private void upsertStandardWorkflows(KompileProjectManifest manifest) {
+    private KompileProjectWorkflow standardStartWorkflow() {
         KompileProjectWorkflow start = workflow("start-services", "Start services", "start",
                 "Start staging, serving, the admin console, chat, and the crawl manager.",
                 List.of("workflow", "lifecycle", "start"));
@@ -1518,7 +1634,11 @@ public class KompileProjectStore {
                 workflowStep("start-chat", "Start chat", "SCRIPT", "start-chat"),
                 workflowStep("start-crawl-manager", "Start crawl manager", "SCRIPT", "start-crawl-manager")
         ));
-        upsertWorkflow(manifest, start);
+        return start;
+    }
+
+    private void upsertStandardWorkflows(KompileProjectManifest manifest) {
+        upsertWorkflow(manifest, standardStartWorkflow());
 
         KompileProjectWorkflow stop = workflow("stop-services", "Stop services", "stop",
                 "Stop all project services.", List.of("workflow", "lifecycle", "stop"));
@@ -2025,7 +2145,7 @@ public class KompileProjectStore {
             modelSnapshot.put("stagingRegistryPath", "data/models/registry.json");
             modelSnapshot.put("models", manifest.getModels());
             mapper.writeValue(modelsRegistry.toFile(), modelSnapshot);
-            mapper.writeValue(stagingRegistry.toFile(), stagingRegistrySnapshot(manifest));
+            mapper.writeValue(stagingRegistry.toFile(), stagingRegistrySnapshot(root, manifest));
 
             Map<String, Object> pipelineSnapshot = new LinkedHashMap<>();
             pipelineSnapshot.put("schemaVersion", manifest.getSchemaVersion());
@@ -2038,7 +2158,7 @@ public class KompileProjectStore {
         }
     }
 
-    private Map<String, Object> stagingRegistrySnapshot(KompileProjectManifest manifest) {
+    private Map<String, Object> stagingRegistrySnapshot(Path root, KompileProjectManifest manifest) {
         Map<String, Object> registry = new LinkedHashMap<>();
         registry.put("version", "1.0");
         registry.put("updated_at", registryTimestamp(manifest));
@@ -2046,7 +2166,7 @@ public class KompileProjectStore {
         for (KompileProjectModel model : manifest.getModels()) {
             String modelId = firstNonBlank(model.getRegistryModelId(), model.getModelId(), model.getId());
             if (modelId != null) {
-                models.put(modelId, stagingRegistryEntry(manifest, model, modelId));
+                models.put(modelId, stagingRegistryEntry(root, manifest, model, modelId));
             }
         }
         registry.put("models", models);
@@ -2054,7 +2174,8 @@ public class KompileProjectStore {
         return registry;
     }
 
-    private Map<String, Object> stagingRegistryEntry(KompileProjectManifest manifest,
+    private Map<String, Object> stagingRegistryEntry(Path root,
+                                                    KompileProjectManifest manifest,
                                                     KompileProjectModel model,
                                                     String modelId) {
         Map<String, Object> entry = new LinkedHashMap<>();
@@ -2066,12 +2187,122 @@ public class KompileProjectStore {
         entry.put("vocab_file", firstNonBlank(metadataValue(model, "registry.vocabFile"),
                 metadataValue(model, "vocab.file"), "vocab.txt"));
         putIfNotBlank(entry, "checksum", metadataValue(model, "registry.checksum"));
-        entry.put("status", model.getLifecycle() == KompileProjectLifecycleState.ACTIVE ? "active" : "deprecated");
+        entry.put("status", stagingRegistryStatus(root, model, modelId, modelFile));
         entry.put("promoted_at", model.getUpdatedAt() == null
                 ? registryTimestamp(manifest)
                 : model.getUpdatedAt().toString());
         entry.put("metadata", stagingModelMetadata(model));
         return entry;
+    }
+
+    private String stagingRegistryStatus(Path root, KompileProjectModel model,
+                                         String modelId, String modelFile) {
+        boolean materialized = hasMaterializedModelArtifact(root, model, modelId, modelFile);
+        return stagingRegistryStatus(model.getLifecycle(), materialized);
+    }
+
+    /**
+     * Maps project lifecycle and local artifact state onto the staging registry's supported status
+     * vocabulary without advertising paused/draft models as usable.
+     */
+    public static String stagingRegistryStatus(KompileProjectLifecycleState lifecycle,
+                                               boolean materialized) {
+        KompileProjectLifecycleState effectiveLifecycle = lifecycle == null
+                ? KompileProjectLifecycleState.ACTIVE
+                : lifecycle;
+        return switch (effectiveLifecycle) {
+            case ACTIVE -> materialized ? "active" : "staged";
+            case DRAFT, PAUSED -> "staged";
+            case ARCHIVED, DEPRECATED -> "deprecated";
+        };
+    }
+
+    private boolean hasMaterializedModelArtifact(Path root, KompileProjectModel model,
+                                                 String modelId, String modelFile) {
+        Path modelsRoot = root.resolve("data/models").toAbsolutePath().normalize();
+        Path modelDir = modelsRoot.resolve(stagingModelPath(model, modelId, modelFile)).normalize();
+        if (!modelDir.startsWith(modelsRoot)) {
+            return false;
+        }
+        return hasCompleteModelArtifact(modelDir, modelFile);
+    }
+
+    /**
+     * Returns whether the configured model file, or its complete zero-based SDNB shard set, has
+     * materialized beneath the supplied model directory. Shards must share the configured file's
+     * basename; unrelated or stale shard groups never activate a registry entry.
+     */
+    public static boolean hasCompleteModelArtifact(Path modelDirectory, String modelFile) {
+        if (modelDirectory == null || modelFile == null || modelFile.isBlank()) {
+            return false;
+        }
+        Path modelDir = modelDirectory.toAbsolutePath().normalize();
+        Path artifact = modelDir.resolve(modelFile).normalize();
+        if (!artifact.startsWith(modelDir)) {
+            return false;
+        }
+        if (isNonEmptyRegularFile(artifact)) {
+            return true;
+        }
+        Path shardDirectory = artifact.getParent();
+        if (shardDirectory == null || !Files.isDirectory(shardDirectory)) {
+            return false;
+        }
+        String artifactName = artifact.getFileName().toString();
+        int extensionIndex = artifactName.lastIndexOf('.');
+        String expectedBase = extensionIndex > 0
+                ? artifactName.substring(0, extensionIndex)
+                : artifactName;
+        Pattern shardPattern = Pattern.compile(Pattern.quote(expectedBase)
+                + "\\.shard([0-9]+)-of-([0-9]+)\\.sdnb");
+        Set<Integer> indices = new LinkedHashSet<>();
+        Integer expectedTotal = null;
+        try (Stream<Path> files = Files.list(shardDirectory)) {
+            for (Path file : files.toList()) {
+                if (!isNonEmptyRegularFile(file)) {
+                    continue;
+                }
+                Matcher matcher = shardPattern.matcher(file.getFileName().toString());
+                if (!matcher.matches()) {
+                    continue;
+                }
+                int index;
+                int total;
+                try {
+                    index = Integer.parseInt(matcher.group(1));
+                    total = Integer.parseInt(matcher.group(2));
+                } catch (NumberFormatException ignored) {
+                    return false;
+                }
+                if (total <= 0 || index < 0 || index >= total) {
+                    return false;
+                }
+                if (expectedTotal != null && expectedTotal != total) {
+                    return false;
+                }
+                expectedTotal = total;
+                indices.add(index);
+            }
+        } catch (IOException ignored) {
+            return false;
+        }
+        if (expectedTotal == null || indices.size() != expectedTotal) {
+            return false;
+        }
+        for (int index = 0; index < expectedTotal; index++) {
+            if (!indices.contains(index)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isNonEmptyRegularFile(Path path) {
+        try {
+            return Files.isRegularFile(path) && Files.size(path) > 0;
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     private Map<String, Object> stagingModelMetadata(KompileProjectModel model) {

@@ -53,7 +53,9 @@ PYTHON_LIB_DIR="${SCRIPT_DIR}/../kompile-python/lib"
 
 # ── GraalVM for native-image build ────────────────────────────────────────────
 GRAALVM_JAVA_HOME="${GRAALVM_JAVA_HOME:-${HOME}/.sdkman/candidates/java/21.0.10-graal}"
-MVN="/home/agibsonccc/dev-apps/mvn/bin/mvn"
+if [ -z "${MVN:-}" ]; then
+  MVN="$(command -v mvn 2>/dev/null || echo /home/agibsonccc/dev-apps/mvn/bin/mvn)"
+fi
 
 # ── Platform SO extension ──────────────────────────────────────────────────────
 case "$(uname -s)" in
@@ -71,10 +73,11 @@ echo ""
 
 # ── STEP 1: Build native shared library ───────────────────────────────────────
 echo "--- [1/8] Building libkompile_pipelines (native-library profile) ---"
-JAVA_HOME="${GRAALVM_JAVA_HOME}" "${MVN}" \
+JAVA_HOME="${GRAALVM_JAVA_HOME}" \
+MAVEN_OPTS="${MAVEN_OPTS:+${MAVEN_OPTS} }-Xmx18g" \
+"${MVN}" \
   -f "${PIPELINES_MODULE}/pom.xml" \
-  clean package -Pnative-library -DskipTests \
-  -J-Xmx18g
+  clean package -Pnative-library -DskipTests
 echo "    Build complete."
 
 # ── STEP 2: Copy generated artifacts ──────────────────────────────────────────

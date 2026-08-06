@@ -1,5 +1,6 @@
 package ai.kompile.chat.local.sdx;
 
+import com.sun.jna.Callback;
 import com.sun.jna.Library;
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
@@ -18,6 +19,9 @@ public interface SdxLlmAbi extends Library {
 
     /** Native library name (without the {@code lib} prefix or file extension). */
     String LIB_NAME = "sdx_llm";
+
+    /** Stable ABI expected by every shared binding in this project. */
+    int ABI_VERSION = 2;
 
     // ── Runtime lifecycle ─────────────────────────────────────────────────────
 
@@ -43,6 +47,14 @@ public interface SdxLlmAbi extends Library {
      * @return integer ABI version (2 for canonical SDZ resolution + chat-template rendering)
      */
     int sdxLlmAbiVersion(Pointer runtime);
+
+    /**
+     * Convert a verified GGUF into the canonical SDZ cache and resolve its
+     * target-specific runtime bundle.
+     */
+    int sdxLlmPrepareGguf(Pointer runtime, String sourceGguf, String tokenizerPath,
+                          String targetProfile, String cacheDirectory, String optionsJson,
+                          PointerByReference outJson);
 
     /**
      * Resolve and validate a canonical compiled SDZ for one target. The output JSON owns
@@ -99,6 +111,25 @@ public interface SdxLlmAbi extends Library {
      */
     int sdxLlmGenerate(Pointer runtime, Pointer model, String prompt, String optionsJson,
                        PointerByReference outText);
+
+    /** Receives complete UTF-8 chunks while generation is in progress. */
+    interface ChunkCallback extends Callback {
+        void invoke(String utf8Chunk);
+    }
+
+    /** Return non-zero to cooperatively cancel generation. */
+    interface CancelCallback extends Callback {
+        int invoke();
+    }
+
+    /**
+     * Stream generation through the same compiled-model session used by the
+     * blocking ABI. The final complete text is returned in {@code outText}.
+     */
+    int sdxLlmGenerateStreaming(Pointer runtime, Pointer model, String prompt,
+                                String optionsJson, ChunkCallback onChunk,
+                                CancelCallback shouldCancel,
+                                PointerByReference outText);
 
     /**
      * Apply the tokenizer-owned chat template to an ordered JSON message array.

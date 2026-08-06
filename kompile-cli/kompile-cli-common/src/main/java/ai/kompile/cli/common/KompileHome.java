@@ -40,8 +40,8 @@ public final class KompileHome {
 
     /**
      * The effective Kompile data-dir root, honoring the {@code kompile.data.dir}
-     * system property when set (e.g. an app launched with
-     * {@code -Dkompile.data.dir=<projectDir>}), and falling back to {@code ~/.kompile}.
+     * system property first and the project launcher's {@code KOMPILE_PROJECT_ROOT}
+     * environment variable second, then falling back to {@code ~/.kompile}.
      *
      * <p>This is what lets static callers (which cannot see Spring's
      * {@code --kompile.data.dir} command-line argument) resolve per-project
@@ -51,9 +51,18 @@ public final class KompileHome {
      * {@link #dataDir()}.</p>
      */
     public static File resolvedHomeDirectory() {
-        String dataDir = System.getProperty("kompile.data.dir");
-        if (dataDir != null && !dataDir.isBlank()) {
-            return new File(dataDir);
+        return resolveHomeDirectory(
+                System.getProperty("kompile.data.dir"),
+                System.getenv("KOMPILE_PROJECT_ROOT"));
+    }
+
+    /** Package-private seam for deterministic launch-context tests. */
+    static File resolveHomeDirectory(String dataDirProperty, String projectRootEnvironment) {
+        if (dataDirProperty != null && !dataDirProperty.isBlank()) {
+            return new File(dataDirProperty);
+        }
+        if (projectRootEnvironment != null && !projectRootEnvironment.isBlank()) {
+            return new File(projectRootEnvironment);
         }
         return homeDirectory();
     }
@@ -161,6 +170,25 @@ public final class KompileHome {
      */
     public static File modelsDirectory() {
         return new File(homeDirectory(), "models");
+    }
+
+    /**
+     * Returns the LLM serving cache directory.
+     *
+     * <p>An explicit {@code -Dkompile.llm.cache.dir} wins. Project launches use
+     * {@code <kompile.data.dir>/data/llm-cache}; non-project launches retain the
+     * legacy {@code ~/.kompile/llm-cache} location.</p>
+     */
+    public static File llmCacheDirectory() {
+        String explicit = System.getProperty("kompile.llm.cache.dir");
+        if (explicit != null && !explicit.isBlank()) {
+            return new File(explicit);
+        }
+        String projectRoot = System.getProperty("kompile.data.dir");
+        if (projectRoot != null && !projectRoot.isBlank()) {
+            return new File(new File(projectRoot, "data"), "llm-cache");
+        }
+        return new File(homeDirectory(), "llm-cache");
     }
 
     /**

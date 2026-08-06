@@ -199,10 +199,18 @@ public class KClawAutoConfiguration implements WebSocketConfigurer {
     }
 
     @Bean("kclawChannelManager")
-    @ConditionalOnBean(KClawAgentService.class)
-    public ChannelManager channelManager(KClawAgentService agentService,
-                                         org.springframework.context.ApplicationEventPublisher eventPublisher) {
+    @ConditionalOnMissingBean(ChannelManager.class)
+    public ChannelManager channelManager(
+            org.springframework.beans.factory.ObjectProvider<KClawAgentService> agentServiceProvider,
+            org.springframework.context.ApplicationEventPublisher eventPublisher) {
         ChannelManager manager = new ChannelManager();
+        KClawAgentService agentService = agentServiceProvider.getIfAvailable();
+        if (agentService == null) {
+            // The UI always exposes channel configuration. Keep its REST contract present and
+            // report an empty channel set until the optional ReAct engine is available.
+            log.info("KClaw channel API available without ReAct engine; no channel adapters registered");
+            return manager;
+        }
 
         // Wire each adapter with the event publisher so inbound messages drive graph-update
         // pipelines (GraphUpdateChannelBridge listens in the same context), then register it.

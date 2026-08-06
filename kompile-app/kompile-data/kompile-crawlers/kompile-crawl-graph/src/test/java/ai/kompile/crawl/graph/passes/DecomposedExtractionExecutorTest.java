@@ -18,7 +18,10 @@ package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.core.crawl.graph.ExtractionMode;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig.DecomposedPromptTier;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.crawl.graph.PropositionAtomizationConfig;
+import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
 import ai.kompile.core.graphrag.format.GraphExtractionValidator;
@@ -31,6 +34,7 @@ import ai.kompile.core.graphrag.passes.DecomposedExtractionPipeline.LlmCaller;
 import ai.kompile.core.graphrag.passes.DecomposedExtractionPipeline.Options;
 import ai.kompile.core.graphrag.passes.ExtractionPassPrompts;
 import ai.kompile.core.graphrag.passes.ExtractionProjection.Props;
+import ai.kompile.core.llm.ModelCapability;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
@@ -76,15 +80,34 @@ class DecomposedExtractionExecutorTest {
                "evidence":{"quote":"Initech"}}]}
             """;
 
+    private static final String SUBJECT_MENTION_RESOLVED = """
+            {"mention":{"decision":"REUSE","candidateOrdinal":1,"confidence":0.93,
+              "reason":"name matches"}}
+            """;
+
+    private static final String OBJECT_MENTION_RESOLVED = """
+            {"mention":{"decision":"REUSE","candidateOrdinal":1,"confidence":0.88,
+              "reason":"exact name"}}
+            """;
+
     private static final String ASSERTION = """
             {"classification":{"speechAct":"ASSERTION","certainty":0.95,
               "reason":"stated directly by the document"}}
             """;
 
-    private static final String ACQUIRED_RELATION = """
-            {"relation":{"operation":"CREATE_CLAIM","type":"ACQUIRED","confidence":0.9,
-              "occurredAt":"2019","reason":"explicit acquisition verb",
-              "evidence":{"quote":"acquired Initech"}}}
+    private static final String RELATION_ASSERTED = """
+            {"decision":{"assertsRelation":true,"confidence":0.95,
+              "reason":"the acquisition is stated directly"}}
+            """;
+
+    private static final String ACQUIRED_TYPE_ORDINAL = """
+            {"selection":{"candidateOrdinal":1,"schemaGap":false,"confidence":0.9,
+              "qualifiers":{},"reason":"the acquisition relation matches"}}
+            """;
+
+    private static final String RELATION_DONE = """
+            {"selection":{"decision":"DONE","candidateOrdinal":null,"schemaGap":false,
+              "confidence":0.9,"qualifiers":{},"reason":"no additional distinct relation is asserted"}}
             """;
 
     // ── fixtures ──────────────────────────────────────────────────────────
@@ -138,9 +161,11 @@ class DecomposedExtractionExecutorTest {
     private static ScriptedCaller happyPath() {
         return new ScriptedCaller()
                 .on(ExtractionPassPrompts.PASS_PROPOSITIONS, ONE_PROPOSITION)
-                .on(ExtractionPassPrompts.PASS_MENTIONS, BOTH_MENTIONS_RESOLVED)
+                .on(ExtractionPassPrompts.PASS_MENTIONS,
+                        SUBJECT_MENTION_RESOLVED, OBJECT_MENTION_RESOLVED)
                 .on(ExtractionPassPrompts.PASS_EPISTEMIC, ASSERTION)
-                .on(ExtractionPassPrompts.PASS_RELATIONS, ACQUIRED_RELATION);
+                .on(ExtractionPassPrompts.PASS_RELATIONS,
+                        RELATION_ASSERTED, ACQUIRED_TYPE_ORDINAL, RELATION_DONE);
     }
 
     private static DecomposedExtractionExecutor.Result run(GraphExtractionConfig config,
@@ -175,37 +200,202 @@ class DecomposedExtractionExecutorTest {
                 .extractionMode(ExtractionMode.DECOMPOSED)
                 .decomposedMaxPropositions(3)
                 .decomposedEntityCandidateLimit(4)
+                .decomposedSplitMentionsByEndpoint(true)
                 .decomposedRelationCandidateLimit(5)
                 .decomposedClaimCandidateLimit(6)
                 .decomposedRequireEvidenceSpans(false)
                 .decomposedClaimMatching(false)
+                .decomposedAtomization(PropositionAtomizationConfig.builder()
+                        .mode(PropositionAtomizationConfig.Mode.SOURCE_SPANS)
+                        .maxEventChars(333)
+                        .referenceContextChars(44)
+                        .build())
                 .build();
 
         Options options = DecomposedExtractionExecutor.optionsFrom(config);
 
         assertEquals(3, options.maxPropositions());
         assertEquals(4, options.entityCandidateLimit());
+        assertTrue(options.splitMentionsByEndpoint());
+        assertTrue(options.inferFocusedMentionOperation(),
+                "production focused mentions use the non-redundant derived-operation contract");
         assertEquals(5, options.relationCandidateLimit());
         assertEquals(6, options.claimCandidateLimit());
         assertFalse(options.requireEvidenceSpans());
         assertFalse(options.claimMatchingEnabled());
+        assertTrue(options.splitRelationDecision());
+        assertTrue(options.splitClaimsByCandidate());
+        assertEquals(PropositionAtomizationConfig.Mode.SOURCE_SPANS,
+                options.propositionAtomizationMode());
+        assertEquals(333, options.propositionMaxEventChars());
+        assertEquals(44, options.propositionReferenceContextChars());
     }
 
     @Test
-    void missingOrNonsensicalLimitsFallBackToTheDefaults() {
-        assertEquals(Options.defaults(), DecomposedExtractionExecutor.optionsFrom(null));
+    void defaultDecomposedCrawlLetsTheModelSurfaceEverySemanticProposition() {
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .build();
+
+        assertTrue(config.isDecomposedSplitMentionsByEndpoint());
+        Options options = DecomposedExtractionExecutor.optionsFrom(config);
+        assertTrue(options.splitMentionsByEndpoint(),
+                "the measured small-model-safe mention contract must be active without a hidden opt-in");
+        assertTrue(options.splitRelationDecision(),
+                "relation existence must be decided before the type ballot is exposed");
+        assertTrue(options.splitClaimsByCandidate(),
+                "claim comparison must receive exactly one engine-owned candidate at a time");
+        assertFalse(options.splitPropositionsBySourceEvent(),
+                "the proposition model must own semantic atomization by default");
+        assertEquals(0, options.maxPropositions(),
+                "zero is the explicit unbounded sentinel; prompt tiers must not invent a cap");
+        assertEquals(PropositionAtomizationConfig.Mode.WHOLE_CHUNK,
+                options.propositionAtomizationMode());
+        assertEquals(PropositionAtomizationConfig.DEFAULT_MAX_EVENT_CHARS,
+                options.propositionMaxEventChars());
+        assertEquals(PropositionAtomizationConfig.DEFAULT_REFERENCE_CONTEXT_CHARS,
+                options.propositionReferenceContextChars());
+    }
+
+    @Test
+    void deterministicAtomizationRemainsAnExplicitProductionOverride() {
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .decomposedAtomization(PropositionAtomizationConfig.builder()
+                        .mode(PropositionAtomizationConfig.Mode.AUTO)
+                        .build())
+                .build();
+
+        Options options = DecomposedExtractionExecutor.optionsFrom(config);
+
+        assertTrue(options.splitPropositionsBySourceEvent());
+        assertEquals(PropositionAtomizationConfig.Mode.AUTO,
+                options.propositionAtomizationMode());
+    }
+
+    @Test
+    void nonPositivePropositionLimitsMeanUnboundedWhileBallotLimitsUseDefaults() {
+        Options previewOptions = DecomposedExtractionExecutor.optionsFrom(null);
+        assertEquals(Options.defaults().maxPropositions(), previewOptions.maxPropositions());
+        assertEquals(Options.defaults().entityCandidateLimit(), previewOptions.entityCandidateLimit());
+        assertEquals(Options.defaults().relationCandidateLimit(), previewOptions.relationCandidateLimit());
+        assertEquals(Options.defaults().claimCandidateLimit(), previewOptions.claimCandidateLimit());
+        assertTrue(previewOptions.splitMentionsByEndpoint());
+        assertTrue(previewOptions.splitRelationDecision());
+        assertTrue(previewOptions.splitClaimsByCandidate());
+        assertFalse(previewOptions.splitPropositionsBySourceEvent());
 
         Options options = DecomposedExtractionExecutor.optionsFrom(GraphExtractionConfig.builder()
                 .decomposedMaxPropositions(0)
                 .decomposedEntityCandidateLimit(-1)
                 .decomposedRelationCandidateLimit(0)
                 .decomposedClaimCandidateLimit(-4)
+                .decomposedAtomization(PropositionAtomizationConfig.builder()
+                        .maxEventChars(1)
+                        .referenceContextChars(-5)
+                        .build())
                 .build());
 
-        assertEquals(Options.defaults().maxPropositions(), options.maxPropositions());
+        assertEquals(0, options.maxPropositions());
         assertEquals(Options.defaults().entityCandidateLimit(), options.entityCandidateLimit());
         assertEquals(Options.defaults().relationCandidateLimit(), options.relationCandidateLimit());
         assertEquals(Options.defaults().claimCandidateLimit(), options.claimCandidateLimit());
+        assertEquals(128, options.propositionMaxEventChars());
+        assertEquals(0, options.propositionReferenceContextChars());
+    }
+
+    @Test
+    void automaticPromptTierFollowsCommonExecutableContextWindows() {
+        GraphExtractionConfig config = config();
+
+        assertEquals(DecomposedPromptTier.COMPACT,
+                DecomposedExtractionExecutor.promptProfileFrom(config,
+                        new ModelCapability("2k", 2_048, 512, true)).tier());
+        assertEquals(DecomposedPromptTier.STANDARD,
+                DecomposedExtractionExecutor.promptProfileFrom(config,
+                        new ModelCapability("4k", 4_096, 1_024, true)).tier());
+        assertEquals(DecomposedPromptTier.RICH,
+                DecomposedExtractionExecutor.promptProfileFrom(config,
+                        new ModelCapability("8k", 8_192, 1_024, true)).tier());
+        assertEquals(DecomposedPromptTier.EXPANDED,
+                DecomposedExtractionExecutor.promptProfileFrom(config,
+                        new ModelCapability("32k", 32_768, 1_024, true)).tier());
+    }
+
+    @Test
+    void projectBudgetAndTierOverridesAreExplicitAndValidated() {
+        GraphExtractionConfig budgeted = config();
+        budgeted.setDecomposedPromptBudgetTokens(1_536);
+        DecomposedExtractionExecutor.PromptProfile budgetProfile =
+                DecomposedExtractionExecutor.promptProfileFrom(budgeted,
+                        new ModelCapability("8k", 8_192, 1_024, true));
+        assertEquals(DecomposedPromptTier.STANDARD, budgetProfile.tier());
+        assertEquals(1_536, budgetProfile.budgetTokens());
+        assertEquals("PROJECT_BUDGET", budgetProfile.source());
+
+        GraphExtractionConfig compact = config();
+        compact.setDecomposedPromptTier(DecomposedPromptTier.COMPACT);
+        compact.setDecomposedPromptBudgetTokens(1_536);
+        DecomposedExtractionExecutor.PromptProfile compactProfile =
+                DecomposedExtractionExecutor.promptProfileFrom(compact,
+                        new ModelCapability("8k", 8_192, 1_024, true));
+        assertEquals(DecomposedPromptTier.COMPACT, compactProfile.tier());
+        assertEquals("PROJECT_TIER_AND_BUDGET", compactProfile.source());
+
+        GraphExtractionConfig tooRich = config();
+        tooRich.setDecomposedPromptTier(DecomposedPromptTier.EXPANDED);
+        assertThrows(IllegalArgumentException.class,
+                () -> DecomposedExtractionExecutor.promptProfileFrom(tooRich,
+                        new ModelCapability("4k", 4_096, 1_024, true)));
+
+        GraphExtractionConfig tooLarge = config();
+        tooLarge.setDecomposedPromptBudgetTokens(3_000);
+        assertThrows(IllegalArgumentException.class,
+                () -> DecomposedExtractionExecutor.promptProfileFrom(tooLarge,
+                        new ModelCapability("4k", 4_096, 1_024, true)));
+    }
+
+    @Test
+    void tiersBoundBallotsAndContextWithoutSuppressingExplicitProposalRecall() {
+        GraphExtractionConfig wide = GraphExtractionConfig.builder()
+                .decomposedMaxPropositions(40)
+                .decomposedEntityCandidateLimit(40)
+                .decomposedRelationCandidateLimit(40)
+                .decomposedClaimCandidateLimit(40)
+                .decomposedAtomization(PropositionAtomizationConfig.builder()
+                        .maxEventChars(5_000)
+                        .referenceContextChars(5_000)
+                        .build())
+                .build();
+        DecomposedExtractionExecutor.PromptProfile compact =
+                DecomposedExtractionExecutor.promptProfileFrom(wide,
+                        new ModelCapability("2k", 2_048, 512, true));
+        Options options = DecomposedExtractionExecutor.optionsFrom(wide, compact);
+
+        assertEquals(40, options.maxPropositions(),
+                "prompt tiers must not silently replace the project's proposition policy");
+        assertEquals(4, options.entityCandidateLimit());
+        assertEquals(6, options.relationCandidateLimit());
+        assertEquals(2, options.claimCandidateLimit());
+        assertEquals(480, options.propositionMaxEventChars());
+        assertEquals(320, options.propositionReferenceContextChars());
+        assertTrue(options.requireEvidenceSpans(),
+                "context tiers must never weaken source-grounding validation");
+    }
+
+    @Test
+    void resolvedPromptProfileIsPinnedIntoEveryDecisionPass() {
+        ScriptedCaller caller = happyPath();
+        new DecomposedExtractionExecutor().extract(
+                SOURCE, "chunk-1", "doc-1", config(), schema(),
+                GraphExtractionValidationPolicy.defaults(), graph(), caller, null,
+                new ModelCapability("lfm", 4_096, 1_024, true));
+
+        String prompt = caller.prompt(ExtractionPassPrompts.PASS_MENTIONS);
+        assertTrue(prompt.contains("- promptTier: STANDARD"));
+        assertTrue(prompt.contains("- promptBudgetTokens: 2560"));
+        assertTrue(prompt.contains("- promptBudgetSource: MODEL_CAPABILITY"));
+        assertTrue(prompt.contains("- executableContextTokens: 4096"));
     }
 
     // ── the seam contract ─────────────────────────────────────────────────
@@ -234,14 +424,47 @@ class DecomposedExtractionExecutorTest {
     }
 
     @Test
-    void theIdentityBallotComesFromTheInRunGraph() {
+    void theIdentityBallotComesFromTheInRunGraphWithoutExposingOpaqueIds() {
         ScriptedCaller caller = happyPath();
         run(config(), graph(), caller);
 
         String prompt = caller.prompt(ExtractionPassPrompts.PASS_MENTIONS);
-        assertTrue(prompt.contains("ent-acme"), "the graph's own ids must be offered verbatim");
-        assertTrue(prompt.contains("Acme Corporation"));
+        assertFalse(prompt.contains("ent-acme"),
+                "production ballots keep opaque graph ids engine-owned");
+        assertTrue(prompt.contains("[1] name=Acme Corporation"));
         assertTrue(prompt.contains("graph-7"), "the graph revision is pinned into the prompt");
+    }
+
+    @Test
+    void schemaPatternEndpointTypesPopulateTheBoundedProvisionalTypeBallot() {
+        ScriptedCaller caller = happyPath();
+        run(config(), graph(), caller);
+
+        String prompt = caller.prompt(ExtractionPassPrompts.PASS_MENTIONS);
+
+        assertTrue(prompt.contains("PROVISIONAL ENTITY TYPE BALLOT"));
+        assertTrue(prompt.contains("- [1] ORGANIZATION"));
+        assertTrue(prompt.contains("- [2] PERSON"),
+                "pattern-only endpoint labels are active schema type declarations");
+    }
+
+    @Test
+    void incrementalTaskGraphRevisionOverridesTheStableGraphIdInDecisionPrompts() {
+        ScriptedCaller caller = happyPath();
+        ExtractionTaskContext task = new ExtractionTaskContext(
+                "task-1", "partition-acme", "corpus-v1", List.of("Acme Corporation", "Initech"),
+                "chunk-1", "SOURCE_EVENT", "bounded source event", 1.0,
+                "graph-7:2:1", "bounded graph state");
+
+        new DecomposedExtractionExecutor().extract(
+                SOURCE, "chunk-1", "doc-1", config(), schema(),
+                GraphExtractionValidationPolicy.defaults(), graph(), caller, task);
+
+        String prompt = caller.prompt(ExtractionPassPrompts.PASS_MENTIONS);
+        assertTrue(prompt.contains("- graph: graph-7:2:1"),
+                "prompt identity must advance with the candidate snapshot");
+        assertFalse(prompt.contains("- graph: graph-7\n"),
+                "the stable graph id must not replace the incremental revision");
     }
 
     @Test
@@ -261,7 +484,10 @@ class DecomposedExtractionExecutorTest {
         ScriptedCaller caller = happyPath();
         run(config(), graph(), caller);
 
-        String prompt = caller.prompt(ExtractionPassPrompts.PASS_RELATIONS);
+        String existencePrompt = caller.prompt(ExtractionPassPrompts.PASS_RELATIONS, 0);
+        String prompt = caller.prompt(ExtractionPassPrompts.PASS_RELATIONS, 1);
+        assertFalse(existencePrompt.contains("ACQUIRED"),
+                "the existence gate must not be biased by a relation-type ballot");
         assertTrue(prompt.contains("ACQUIRED"));
         assertTrue(prompt.contains("PARTNERED_WITH"), "config types widen the vocabulary");
         assertFalse(prompt.contains("WORKS_AT"),
@@ -271,13 +497,25 @@ class DecomposedExtractionExecutorTest {
 
     @Test
     void aTypeThatWasNeverOfferedIsRecordedAsASchemaGapNotAsAFact() {
-        ScriptedCaller caller = happyPath().on(ExtractionPassPrompts.PASS_RELATIONS, """
-                {"relation":{"operation":"CREATE_CLAIM","type":"MERGED_WITH","confidence":0.95,
-                  "reason":"looks like a merger to me",
-                  "evidence":{"quote":"acquired Initech"}}}
-                """);
+        ScriptedCaller caller = happyPath().on(ExtractionPassPrompts.PASS_RELATIONS,
+                RELATION_ASSERTED, """
+                        {"selection":{"candidateOrdinal":null,"schemaGap":true,"confidence":0.95,
+                          "qualifiers":{},"reason":"none of the offered types matches"}}
+                        """);
+        GraphExtractionConfig partneredOnly = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .relationshipTypes(new ArrayList<>(List.of("PARTNERED_WITH")))
+                .modelName("test-model")
+                .build();
+        GraphSchema partneredOnlySchema = new GraphSchema();
+        partneredOnlySchema.setRelationshipTypes(new ArrayList<>(List.of(
+                new RelationshipType("PARTNERED_WITH", "two organizations formed a partnership", null))));
+        partneredOnlySchema.setPatterns(new ArrayList<>(List.of(
+                "(ORGANIZATION)-[:PARTNERED_WITH]->(ORGANIZATION)")));
 
-        DecomposedExtractionExecutor.Result result = run(config(), graph(), caller);
+        DecomposedExtractionExecutor.Result result = new DecomposedExtractionExecutor().extract(
+                SOURCE, "chunk-1", "doc-1", partneredOnly, partneredOnlySchema,
+                GraphExtractionValidationPolicy.defaults(), graph(), caller);
         ExtractionResult parsed = parse(result);
 
         ExtractedRelation relation = parsed.relations().get(0);
@@ -292,41 +530,34 @@ class DecomposedExtractionExecutorTest {
     @Test
     void anExistingClaimOverTheSameEndpointsIsPutOnTheBallotAndTheDecisionIsCarried() {
         ScriptedCaller caller = happyPath().on(ExtractionPassPrompts.PASS_CLAIMS, """
-                {"decision":{"operation":"ADD_EVIDENCE",
-                  "matchedAtomKey":"ACQUIRED(ent-acme,ent-initech)","confidence":0.75,
-                  "reason":"same acquisition, restated",
-                  "evidence":{"quote":"acquired Initech"}}}
+                {"comparison":{"relationship":"SAME","confidence":0.75,
+                  "reason":"same acquisition, restated"}}
                 """);
 
         ExtractionResult result = parse(run(config(), graph(acquisitionEdge()), caller));
 
         assertEquals(1, caller.calls(ExtractionPassPrompts.PASS_CLAIMS));
-        assertTrue(caller.prompt(ExtractionPassPrompts.PASS_CLAIMS)
+        assertFalse(caller.prompt(ExtractionPassPrompts.PASS_CLAIMS)
                         .contains("ACQUIRED(ent-acme,ent-initech)"),
-                "the atom key must be offered verbatim for the model to echo it back");
+                "engine-owned atom keys must never be exposed for the model to copy or invent");
         Map<String, String> properties = result.relations().get(0).properties();
         assertEquals("ADD_EVIDENCE", properties.get(Props.CLAIM_OPERATION));
         assertEquals("ACQUIRED(ent-acme,ent-initech)", properties.get(Props.CLAIM_ATOM_KEY));
     }
 
     @Test
-    void aClaimDecisionNamingAnAtomThatWasNeverOfferedIsRefused() {
+    void anUncertainClaimComparisonWithholdsTheRelationWithoutLosingEntities() {
         ScriptedCaller caller = happyPath().on(ExtractionPassPrompts.PASS_CLAIMS, """
-                {"decision":{"operation":"ADD_EVIDENCE","matchedAtomKey":"ACQUIRED(ent-x,ent-y)",
-                  "confidence":0.99,"reason":"invented",
-                  "evidence":{"quote":"acquired Initech"}}}
+                {"comparison":{"relationship":"UNCERTAIN","confidence":0.51,
+                  "reason":"not enough detail to decide whether this is the same acquisition"}}
                 """);
 
         DecomposedExtractionExecutor.Result result = run(config(), graph(acquisitionEdge()), caller);
         ExtractionResult parsed = parse(result);
 
-        // The decision is downgraded to an abstention, and an abstained claim withholds the
-        // relation rather than writing it against a claim that does not exist.
         assertTrue(parsed.relations().isEmpty(), parsed.relations().toString());
         assertEquals(2, parsed.entities().size(), "the resolved entities are still real");
-        assertTrue(result.outcome().notes().stream()
-                        .anyMatch(note -> note.contains("ACQUIRED(ent-x,ent-y)")),
-                result.outcome().notes().toString());
+        assertTrue(result.summary().contains("abstain:"), result.summary());
     }
 
     @Test
@@ -389,6 +620,8 @@ class DecomposedExtractionExecutorTest {
 
         assertFalse(result.usable());
         assertNull(result.json());
+        assertEquals(1, caller.calls(ExtractionPassPrompts.PASS_PROPOSITIONS),
+                "default semantic atomization dispatches the production chunk once");
         assertTrue(result.summary().contains("fail:1"), result.summary());
     }
 
@@ -412,7 +645,8 @@ class DecomposedExtractionExecutorTest {
 
         ExtractionResult parsed = parse(result);
         assertEquals("ACQUIRED", parsed.relations().get(0).type());
-        assertTrue(caller.prompt(ExtractionPassPrompts.PASS_RELATIONS).contains("PARTNERED_WITH"));
+        assertTrue(caller.prompt(ExtractionPassPrompts.PASS_RELATIONS, 1)
+                .contains("PARTNERED_WITH"));
     }
 
     @Test
@@ -423,10 +657,13 @@ class DecomposedExtractionExecutorTest {
                 SOURCE, "chunk-1", "doc-1", config(), schema(),
                 GraphExtractionValidationPolicy.defaults(), null, caller);
 
-        // Nothing to reuse, so the model's REUSE_ENTITY answers are out of vocabulary and the
-        // propositions are withheld rather than written against invented ids.
-        assertTrue(result.outcome().notes().stream()
-                        .anyMatch(note -> note.contains("ent-acme")),
+        // Nothing to reuse, so the model's REUSE answers are rejected and no entity or relation is
+        // written from an unavailable ballot ordinal.
+        ExtractionResult parsed = parse(result);
+        assertTrue(parsed.entities().isEmpty(), result.outcome().notes().toString());
+        assertTrue(parsed.relations().isEmpty(), result.outcome().notes().toString());
+        assertTrue(result.outcome().stats().stream()
+                        .anyMatch(stats -> stats.outOfVocabulary() > 0),
                 result.outcome().notes().toString());
     }
 
@@ -483,9 +720,14 @@ class DecomposedExtractionExecutorTest {
         }
 
         String prompt(String passId) {
+            return prompt(passId, 0);
+        }
+
+        String prompt(String passId, int index) {
             List<String> seen = prompts.getOrDefault(passId, List.of());
-            assertFalse(seen.isEmpty(), "pass " + passId + " was never called");
-            return seen.get(0);
+            assertTrue(index >= 0 && index < seen.size(),
+                    "pass " + passId + " was not called at index " + index);
+            return seen.get(index);
         }
     }
 }

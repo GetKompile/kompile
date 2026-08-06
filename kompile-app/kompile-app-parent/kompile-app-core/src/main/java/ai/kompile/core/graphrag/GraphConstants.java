@@ -862,6 +862,15 @@ public final class GraphConstants {
     public static final String META_FORMULA_GRAPH = "formulaGraph";
     public static final String META_CONTENT_TYPE = "content_type";
     public static final String META_SOURCE_PATH = "source_path";
+    /** Complete ordered, chunk-relative source event plan: [{start,end,kind}, ...]. */
+    public static final String META_SOURCE_EVENT_SPANS = "source_event_spans";
+    /** Original-document character range for a chunk whose source spans were rebased. */
+    public static final String META_CHUNK_SOURCE_START = "_kompile_chunk_source_start";
+    public static final String META_CHUNK_SOURCE_END = "_kompile_chunk_source_end";
+    public static final String META_CHUNKER_NAME = "_kompile_chunker_name";
+    public static final String META_CHUNK_SIZE_OVERRIDE = "_kompile_chunk_size";
+    public static final String META_CHUNK_OVERLAP_OVERRIDE = "_kompile_chunk_overlap";
+    public static final String META_CHUNKER_OPTIONS = "_kompile_chunker_options";
 
     // SQL crawler metadata
     public static final String META_SQL_TABLE_NAME = "sql.tableName";

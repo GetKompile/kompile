@@ -21,6 +21,7 @@ import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
+import ai.kompile.core.graphrag.query.GraphRagContextMode;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
@@ -70,21 +71,34 @@ public class MatrixGraphRagService implements GraphRagService {
     private LLMChat llmChat;
     @Autowired(required = false)
     private CommunitySummaryService communitySummaryService;
+    @Autowired(required = false)
+    private CompactGraphContextService compactGraphContextService;
 
     public MatrixGraphRagService() {}
 
     /** Test constructor. */
     public MatrixGraphRagService(MatrixGraphStore graphStore, EmbeddingModel embeddingModel, LLMChat llmChat) {
-        this(graphStore, embeddingModel, llmChat, null);
+        this(graphStore, embeddingModel, llmChat, null, null);
     }
 
     /** Test constructor with community summarization for GLOBAL search. */
     public MatrixGraphRagService(MatrixGraphStore graphStore, EmbeddingModel embeddingModel, LLMChat llmChat,
                                  CommunitySummaryService communitySummaryService) {
+        this(graphStore, embeddingModel, llmChat, communitySummaryService, null);
+    }
+
+    /** Test constructor with the explicit production compact-context seam. */
+    public MatrixGraphRagService(
+            MatrixGraphStore graphStore,
+            EmbeddingModel embeddingModel,
+            LLMChat llmChat,
+            CommunitySummaryService communitySummaryService,
+            CompactGraphContextService compactGraphContextService) {
         this.graphStore = graphStore;
         this.embeddingModel = embeddingModel;
         this.llmChat = llmChat;
         this.communitySummaryService = communitySummaryService;
+        this.compactGraphContextService = compactGraphContextService;
     }
 
     // Per-conversation entity tracking for resolving ambiguous references
@@ -135,6 +149,9 @@ public class MatrixGraphRagService implements GraphRagService {
 
     @Override
     public GraphRagResult answerQuery(GraphRagQuery query) {
+        if (query != null && query.getContextMode() == GraphRagContextMode.COMPACT_GRAPH) {
+            return answerCompactQuery(query);
+        }
         log.debug("Processing GraphRAG query: {}", query.getQuery());
         turnCounter++;
 
@@ -167,6 +184,8 @@ public class MatrixGraphRagService implements GraphRagService {
                 .conversationId(conversationId)
                 .vectorWeight(query.getVectorWeight())
                 .entityType(query.getEntityType())
+                .factSheetId(query.getFactSheetId())
+                .contextMode(query.getContextMode())
                 .build();
 
         // Retrieve relevant context based on search type
@@ -214,6 +233,136 @@ public class MatrixGraphRagService implements GraphRagService {
                 .sourceChunkRefs(sourceChunkRefs)
                 .searchType(query.getSearchType())
                 .build();
+    }
+
+    @Override
+    public boolean supportsContextMode(GraphRagContextMode contextMode) {
+        return contextMode == null
+                || contextMode == GraphRagContextMode.LEGACY_TEXT
+                || (contextMode == GraphRagContextMode.COMPACT_GRAPH
+                && compactGraphContextService != null);
+    }
+
+    /**
+     * Stateless production compact path. Retrieval may use embeddings and graph algorithms, but it
+     * never resolves conversation references, mutates session state, or builds LLM community reports.
+     * The configured answer model receives one prompt whose sole factual payload is compact JSON.
+     */
+    private GraphRagResult answerCompactQuery(GraphRagQuery query) {
+        if (compactGraphContextService == null) {
+            throw new IllegalStateException("COMPACT_GRAPH requires CompactGraphContextService");
+        }
+
+        String graphId = MatrixKnowledgeGraphService.graphIdForFactSheet(query.getFactSheetId());
+        Optional<AdjacencyMatrixGraph> graphOpt = graphStore.loadGraph(graphId);
+        if (graphOpt.isEmpty()) {
+            return GraphRagResult.builder()
+                    .answer("I don't have any knowledge graph data to answer your question.")
+                    .formattedContext("")
+                    .searchType(query.getSearchType())
+                    .build();
+        }
+
+        int boundedK = query.getK() > 0 ? Math.min(query.getK(), 32) : 5;
+        GraphRagQuery retrievalQuery = GraphRagQuery.builder()
+                .query(query.getQuery())
+                .searchType(query.getSearchType())
+                .k(boundedK)
+                .vectorWeight(query.getVectorWeight())
+                .entityType(query.getEntityType())
+                .factSheetId(query.getFactSheetId())
+                .contextMode(GraphRagContextMode.COMPACT_GRAPH)
+                .queryEmbeddingFlat(query.getQueryEmbeddingFlat())
+                .build();
+
+        AdjacencyMatrixGraph matrixGraph = graphOpt.get();
+        RetrievalResult retrieval;
+        if (query.getSearchType() == SearchType.GLOBAL) {
+            retrieval = retrieveGlobalCompactNodes(matrixGraph, boundedK);
+        } else if (query.getSearchType() == SearchType.HYBRID) {
+            retrieval = retrieveHybridContext(matrixGraph, retrievalQuery);
+        } else {
+            retrieval = retrieveLocalContext(matrixGraph, retrievalQuery);
+        }
+        if (retrieval.nodes().isEmpty()) {
+            return GraphRagResult.builder()
+                    .answer("I couldn't find relevant information in the knowledge graph to answer your question.")
+                    .formattedContext("")
+                    .searchType(query.getSearchType())
+                    .build();
+        }
+
+        List<String> retrievedIds = retrieval.nodes().stream()
+                .map(MatrixGraphNode::getNodeId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        CompactGraphContextService.CompactContext compact =
+                compactGraphContextService.build(query.getFactSheetId(), retrievedIds);
+        String answer = synthesizeCompactAnswer(query.getQuery(), compact.json());
+
+        List<Entity> entities = retrieval.nodes().stream()
+                .map(this::nodeToEntity)
+                .collect(Collectors.toList());
+        List<CitationDto> citations = retrieval.nodes().stream()
+                .map(node -> CitationSupport.from(
+                        node.getMetadata() != null ? node.getMetadata() : Map.of(),
+                        null,
+                        null,
+                        node.getTitle(),
+                        node.getNodeId()))
+                .collect(Collectors.toList());
+
+        return GraphRagResult.builder()
+                .answer(answer)
+                .formattedContext(compact.json())
+                .entities(entities)
+                .sourceChunkRefs(citations)
+                .searchType(query.getSearchType())
+                .build();
+    }
+
+    /** PageRank-only GLOBAL selection for compact mode; intentionally bypasses summary-model calls. */
+    private RetrievalResult retrieveGlobalCompactNodes(AdjacencyMatrixGraph graph, int k) {
+        Map<String, Double> pageRankScores = MatrixGraphAlgorithms.pageRank(graph);
+        List<MatrixGraphNode> nodes = pageRankScores.entrySet().stream()
+                .sorted(Comparator.<Map.Entry<String, Double>>comparingDouble(entry ->
+                                entry.getValue() + groundedConfidenceWeight
+                                        * graph.getNode(entry.getKey())
+                                        .map(this::nodeGroundedConfidence).orElse(0.0))
+                        .reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .limit(Math.max(1, Math.min(k, 32)))
+                .map(entry -> graph.getNode(entry.getKey()))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .collect(Collectors.toList());
+        return new RetrievalResult("", nodes);
+    }
+
+    private String synthesizeCompactAnswer(String query, String compactJson) {
+        if (llmChat == null) {
+            return "[No LLM configured - showing compact graph context]\n\n" + compactJson;
+        }
+        String prompt = String.format("""
+                Answer the question using COMPACT_GRAPH_JSON as the only factual evidence.
+                Do not use outside knowledge, prior conversation, or unstated assumptions.
+                Cite node IDs and source IDs for factual claims. Cite reasoning trace and step IDs
+                when explaining an inference. If the JSON is insufficient, say exactly what is missing.
+
+                Question: %s
+
+                COMPACT_GRAPH_JSON:
+                %s
+
+                Answer:
+                """, query, compactJson);
+        try {
+            return llmChat.prompt().user(prompt).call().content();
+        } catch (Exception e) {
+            log.error("Failed to synthesize compact graph answer with LLM", e);
+            return "I encountered an error while generating an answer. Please try again.";
+        }
     }
 
     /**

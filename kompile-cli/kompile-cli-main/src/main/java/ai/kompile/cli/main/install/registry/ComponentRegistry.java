@@ -18,8 +18,11 @@ package ai.kompile.cli.main.install.registry;
 
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.util.OSResolver;
+import ai.kompile.utils.NativeImageInfo;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 
 /**
@@ -162,24 +165,69 @@ public class ComponentRegistry {
     /**
      * Installation base directory holding {@code bin/} native binaries and
      * {@code lib/} distribution jars. Custom install locations
-     * ({@code install.sh --dir}, {@code KOMPILE_INSTALL_DIR}) must be honored
+     * ({@code install.sh --dir}, {@code KOMPILE_INSTALL_DIR}) and side-loaded
+     * distributions ({@code kompile.dist.home}, {@code KOMPILE_DIST_HOME}) must
+     * be honored
      * here — otherwise every component lookup silently falls back to
      * {@code ~/.kompile} and {@code project start} cannot find the installed
      * binaries. User/project STATE remains under {@link Info#homeDirectory()}
      * regardless of where the binaries are installed.
      * Resolution: {@code -Dkompile.install.dir} &gt; {@code $KOMPILE_INSTALL_DIR}
-     * &gt; {@code ~/.kompile}.
+     * &gt; {@code -Dkompile.dist.home} &gt; {@code $KOMPILE_DIST_HOME} &gt; the
+     * running native image's distribution root &gt; {@code ~/.kompile}.
      */
     static File resolveInstallBaseDir() {
-        String prop = System.getProperty("kompile.install.dir");
+        return resolveInstallBaseDir(System.getProperties(), System.getenv(),
+                NativeImageInfo.getExecutablePathAsPath(), Info.homeDirectory());
+    }
+
+    static File resolveInstallBaseDir(Properties properties, Map<String, String> environment,
+                                      Path executablePath, File homeDirectory) {
+        String prop = properties.getProperty("kompile.install.dir");
         if (prop != null && !prop.isBlank()) {
             return new File(prop);
         }
-        String env = System.getenv("KOMPILE_INSTALL_DIR");
+        String env = environment.get("KOMPILE_INSTALL_DIR");
         if (env != null && !env.isBlank()) {
             return new File(env);
         }
-        return Info.homeDirectory();
+        String distProp = properties.getProperty("kompile.dist.home");
+        if (distProp != null && !distProp.isBlank()) {
+            return new File(distProp);
+        }
+        String distEnv = environment.get("KOMPILE_DIST_HOME");
+        if (distEnv != null && !distEnv.isBlank()) {
+            return new File(distEnv);
+        }
+        File inferredDist = inferDistributionHome(executablePath);
+        return inferredDist != null ? inferredDist : homeDirectory;
+    }
+
+    /**
+     * An artifact in {@code <dist>/bin} or {@code <dist>/lib} belongs to that
+     * distribution root. Use the shared runtime executable detector for the CLI
+     * call site so this remains a runtime decision and is never frozen to the
+     * native-image builder's executable path.
+     */
+    public static File inferDistributionHome(Path artifactPath) {
+        if (artifactPath == null) {
+            return null;
+        }
+        Path artifact = artifactPath.toAbsolutePath().normalize();
+        Path artifactDir = artifact.getParent();
+        if (artifactDir == null || artifactDir.getFileName() == null) {
+            return null;
+        }
+        String directoryName = artifactDir.getFileName().toString();
+        if (!"bin".equals(directoryName) && !"lib".equals(directoryName)) {
+            return null;
+        }
+        Path distHome = artifactDir.getParent();
+        if (distHome == null || !Files.isDirectory(distHome.resolve("bin"))
+                || !Files.isDirectory(distHome.resolve("lib"))) {
+            return null;
+        }
+        return distHome.toFile();
     }
 
     /**

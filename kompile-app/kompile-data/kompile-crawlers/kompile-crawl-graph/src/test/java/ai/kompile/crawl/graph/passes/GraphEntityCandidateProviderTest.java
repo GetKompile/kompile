@@ -18,12 +18,14 @@ package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
+import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.passes.ExtractionCandidates.EntityCandidate;
 import ai.kompile.core.graphrag.passes.PassContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -54,7 +56,16 @@ class GraphEntityCandidateProviderTest {
         Graph graph = new Graph();
         graph.setId("graph-7");
         graph.setEntities(new ArrayList<>(List.of(entities)));
+        graph.setRelationships(new ArrayList<>());
         return graph;
+    }
+
+    private static Relationship relationship(String source, String type, String target) {
+        Relationship relationship = new Relationship();
+        relationship.setSource(source);
+        relationship.setType(type);
+        relationship.setTarget(target);
+        return relationship;
     }
 
     private static GraphEntityCandidateProvider provider(Graph graph) {
@@ -78,6 +89,22 @@ class GraphEntityCandidateProviderTest {
         assertEquals("Acme Corporation", candidates.get(0).name());
         assertEquals("ORGANIZATION", candidates.get(0).type());
         assertEquals("crawl-graph:graph-7", candidates.get(0).provenance());
+        assertTrue(candidates.get(0).identitySignals().canonicalNameExact());
+        assertTrue(candidates.get(0).identitySignals().typeCompatible());
+    }
+
+    @Test
+    void nfkcEquivalentMultilingualNamesAreExactIdentityMatches() {
+        Graph graph = graphOf(entity("forecast-apac", "ＡＰＡＣ予測", "REGIONAL_FORECAST"));
+
+        List<EntityCandidate> candidates = provider(graph)
+                .candidatesFor("APAC予測", "REGIONAL_FORECAST", CONTEXT, 8);
+
+        assertEquals(1, candidates.size());
+        assertEquals("forecast-apac", candidates.get(0).id());
+        assertEquals(1.0, candidates.get(0).score(), 1e-9);
+        assertTrue(candidates.get(0).identitySignals().canonicalNameExact());
+        assertTrue(candidates.get(0).identitySignals().typeCompatible());
     }
 
     @Test
@@ -90,6 +117,67 @@ class GraphEntityCandidateProviderTest {
         assertEquals(1, candidates.size());
         assertEquals("ent-ibm", candidates.get(0).id());
         assertTrue(candidates.get(0).aliases().contains("IBM"));
+        assertTrue(candidates.get(0).identitySignals().aliasExact());
+    }
+
+    @Test
+    void candidateCarriesOnlyItsBoundedGraphNeighborhoodForIdentityReasoning() {
+        Graph graph = graphOf(
+                entity("ent-acme", "Acme Corporation", "ORGANIZATION"),
+                entity("ent-division", "North Division", "BUSINESS_UNIT"),
+                entity("ent-zeta", "Zeta Logistics", "ORGANIZATION"),
+                entity("ent-harbor", "Harbor Project", "PROJECT"));
+        graph.getRelationships().add(relationship(
+                "ent-acme", "OPERATES_DIVISION", "ent-division"));
+        graph.getRelationships().add(relationship(
+                "ent-zeta", "RUNS_PROJECT", "ent-harbor"));
+
+        EntityCandidate candidate = provider(graph)
+                .candidatesFor("Acme", "ORGANIZATION", CONTEXT, 8).get(0);
+
+        assertEquals("OUT OPERATES_DIVISION -> North Division", candidate.identityContext());
+        assertFalse(candidate.identityContext().contains("Harbor Project"),
+                "unrelated graph state must not leak into a candidate's small-model context");
+        assertTrue(candidate.identityContext().length()
+                <= GraphEntityCandidateProvider.MAX_NEIGHBORHOOD_CHARS);
+    }
+
+    @Test
+    void candidateNeighborhoodCarriesBoundedLogicAndEmbeddingFacetsWithoutRawProgramsOrVectors() {
+        Graph graph = graphOf(
+                entity("ent-acme", "Acme Corporation", "ORGANIZATION"),
+                entity("ent-parent", "Global Holdings", "ORGANIZATION"),
+                entity("ent-peer", "North Division", "BUSINESS_UNIT"));
+        Relationship inferred = relationship("ent-acme", "OWNED_BY", "ent-parent");
+        inferred.setConfidence(0.93);
+        inferred.setMetadata(Map.of(
+                "provenanceType", "INFERRED",
+                "supportingRuleIds", List.of("rule:ownership", "rule:transitive"),
+                "inferenceVersion", "fol-v3",
+                "inferenceRunId", "run-17",
+                "strengthBand", "STRONG",
+                "ruleProgram", "ownedBy(X,Y) :- subsidiaryOf(X,Y)"));
+        Relationship embedded = relationship("ent-acme", "OPERATES_DIVISION", "ent-peer");
+        embedded.setMetadata(Map.of(
+                "kgEmbeddingAlgorithm", "TRANSE",
+                "kgEmbeddingVersion", 9L,
+                "similarityScore", 0.82,
+                "kgRelationEmbedding", List.of(0.1, 0.2, 0.3)));
+        graph.getRelationships().add(inferred);
+        graph.getRelationships().add(embedded);
+
+        String context = provider(graph)
+                .candidatesFor("Acme", "ORGANIZATION", CONTEXT, 8).get(0).identityContext();
+
+        assertTrue(context.contains("logic=INFERRED"));
+        assertTrue(context.contains("rules=rule:ownership|rule:transitive"));
+        assertTrue(context.contains("logicVersion=fol-v3"));
+        assertTrue(context.contains("embedding=TRANSE@9(soft)"));
+        assertTrue(context.contains("similarity=0.820(soft)"));
+        assertFalse(context.contains("ruleProgram"));
+        assertFalse(context.contains("ownedBy(X,Y)"));
+        assertFalse(context.contains("0.1"), "raw vectors must stay engine-side");
+        assertTrue(context.length() <= GraphEntityCandidateProvider.MAX_NEIGHBORHOOD_CHARS);
     }
 
     @Test
@@ -115,6 +203,49 @@ class GraphEntityCandidateProviderTest {
         assertEquals(2, candidates.size(), "the wrong-typed entity is still offered");
         assertEquals("ent-org", candidates.get(0).id());
         assertTrue(candidates.get(1).score() < candidates.get(0).score());
+        assertTrue(candidates.get(0).identitySignals().typeCompatible());
+        assertFalse(candidates.get(1).identitySignals().typeCompatible());
+    }
+
+    @Test
+    void stableIdentifierAnchorHardFiltersAnExplicitMustNotMergePeer() {
+        Entity sarahOne = entity("person-sarah-1", "Sarah Chen", "PERSON");
+        sarahOne.setMetadata(Map.of("email", "sarah.one@example.com"));
+        Entity sarahTwo = entity("person-sarah-2", "Sarah Chen", "PERSON");
+        sarahTwo.setMetadata(Map.of("email", "sarah.two@example.com"));
+        Graph graph = graphOf(sarahOne, sarahTwo);
+        graph.getRelationships().add(relationship(
+                "person-sarah-1", "MUST_NOT_MERGE", "person-sarah-2"));
+
+        List<EntityCandidate> candidates = provider(graph).candidatesFor(
+                "Sarah Chen <sarah.one@example.com>", "PERSON", CONTEXT, 8);
+
+        assertEquals(1, candidates.size(),
+                "a graph-distinct peer of the unique identifier anchor is not a legal ballot choice");
+        EntityCandidate candidate = candidates.get(0);
+        assertEquals("person-sarah-1", candidate.id());
+        assertTrue(candidate.identitySignals().stableIdentifierExact());
+        assertEquals("sarah.one@example.com", candidate.identitySignals().matchedIdentifier());
+        assertTrue(candidate.identityContext().contains("stableIdentifiers=sarah.one@example.com"));
+        assertTrue(candidate.identityContext().contains("distinct from Sarah Chen"));
+    }
+
+    @Test
+    void sameNameDistinctPeersRemainVisibleWhenNoSourceSignalSelectsAnAnchor() {
+        Entity sarahOne = entity("person-sarah-1", "Sarah Chen", "PERSON");
+        Entity sarahTwo = entity("person-sarah-2", "Sarah Chen", "PERSON");
+        Graph graph = graphOf(sarahOne, sarahTwo);
+        graph.getRelationships().add(relationship(
+                "person-sarah-1", "DISTINCT_FROM", "person-sarah-2"));
+
+        List<EntityCandidate> candidates = provider(graph)
+                .candidatesFor("Sarah Chen", "PERSON", CONTEXT, 8);
+
+        assertEquals(2, candidates.size(),
+                "without an identifier anchor the model must see the ambiguity and may abstain");
+        assertTrue(candidates.stream().noneMatch(c -> c.identitySignals().forbiddenMerge()));
+        assertTrue(candidates.stream().allMatch(c -> c.identitySignals().constraintReason()
+                .contains("graph marks this identity distinct")));
     }
 
     @Test

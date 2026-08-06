@@ -23,6 +23,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -105,6 +106,15 @@ class KompileProjectStoreTest {
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/start-crawl-manager.sh")));
         assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-chat.sh")));
         assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-crawl-manager.sh")));
+        String stagingScript = Files.readString(tempDir.resolve("scripts/start-staging.sh"));
+        String servingScript = Files.readString(tempDir.resolve("scripts/start-serving.sh"));
+        String appScript = Files.readString(tempDir.resolve("scripts/start-app.sh"));
+        assertTrue(stagingScript.contains("kompile project serve --staging-only"));
+        assertFalse(stagingScript.contains("kompile manage start staging"));
+        assertTrue(servingScript.contains("kompile project serve --serving-only"));
+        assertFalse(servingScript.contains("kompile manage start serving"));
+        assertTrue(appScript.contains("kompile project serve --app-only"));
+        assertFalse(appScript.contains("kompile project service start"));
         assertTrue(Files.isRegularFile(tempDir.resolve("scripts/stop-all.sh")));
         assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-all.sh")));
         assertTrue(Files.isDirectory(tempDir.resolve(".kompile/project")));
@@ -146,6 +156,37 @@ class KompileProjectStoreTest {
         assertTrue(stagingRegistry.contains("\"model_id\" : \"ttrpg-vlm\""));
         assertTrue(stagingRegistry.contains("\"type\" : \"vlm_pipeline\""));
         assertTrue(stagingRegistry.contains("\"vision_encoder\""));
+        assertTrue(stagingRegistry.contains("\"status\" : \"staged\""),
+                "A desired project model must not be advertised as active before its artifact exists");
+        assertFalse(stagingRegistry.contains("\"status\" : \"active\""));
+        Path materializedModelDir = tempDir.resolve("data/models/ttrpg-vlm");
+        Files.createDirectories(materializedModelDir);
+        Files.writeString(materializedModelDir.resolve("unrelated.shard0-of-2.sdnb"), "wrong-0");
+        Files.writeString(materializedModelDir.resolve("unrelated.shard1-of-2.sdnb"), "wrong-1");
+        store.save(tempDir, manifest);
+        assertTrue(Files.readString(tempDir.resolve("data/models/registry.json"))
+                        .contains("\"status\" : \"staged\""),
+                "An unrelated complete shard set must not activate the configured model");
+
+        Files.writeString(materializedModelDir.resolve("model.shard0-of-2.sdnb"), "expected-0");
+        store.save(tempDir, manifest);
+        assertTrue(Files.readString(tempDir.resolve("data/models/registry.json"))
+                        .contains("\"status\" : \"staged\""),
+                "An incomplete configured shard set must remain staged");
+
+        Files.writeString(materializedModelDir.resolve("model.shard1-of-2.sdnb"), "expected-1");
+        store.save(tempDir, manifest);
+        assertTrue(Files.readString(tempDir.resolve("data/models/registry.json"))
+                        .contains("\"status\" : \"active\""),
+                "A complete configured shard set should make the staging registry entry active");
+
+        Files.delete(materializedModelDir.resolve("model.shard0-of-2.sdnb"));
+        Files.delete(materializedModelDir.resolve("model.shard1-of-2.sdnb"));
+        Files.writeString(materializedModelDir.resolve("model.sdz"), "materialized");
+        store.save(tempDir, manifest);
+        String materializedRegistry = Files.readString(tempDir.resolve("data/models/registry.json"));
+        assertTrue(materializedRegistry.contains("\"status\" : \"active\""),
+                "A non-empty configured model artifact should make the staging registry entry active");
         KompileProjectStatus status = store.status(tempDir);
         assertTrue(status.isMetadataPresent());
         assertTrue(status.isOpen());
@@ -176,6 +217,91 @@ class KompileProjectStoreTest {
                 .filter(s -> "HEALTH_CHECK".equals(s.getType())).findFirst().orElseThrow();
         assertEquals("${appUrl}/api/unified-crawl/jobs/active", health.getUrl());
         assertEquals(200, health.getExpectedStatus());
+    }
+
+    @Test
+    void ensureStandardServiceLifecycleUpgradesGeneratedLegacyBundle() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("legacy-project");
+        store.init(tempDir, request);
+
+        KompileProjectManifest manifest = store.load(tempDir);
+        manifest.setScripts(manifest.getScripts().stream()
+                .filter(script -> !List.of("start-chat", "start-crawl-manager").contains(script.getId()))
+                .toList());
+        KompileProjectWorkflow startServices = manifest.getWorkflows().stream()
+                .filter(workflow -> "start-services".equals(workflow.getId()))
+                .findFirst().orElseThrow();
+        startServices.setSteps(startServices.getSteps().stream().limit(3).toList());
+        store.save(tempDir, manifest);
+
+        Path startAll = tempDir.resolve("scripts/start-all.sh");
+        Path stopAll = tempDir.resolve("scripts/stop-all.sh");
+        Path startStaging = tempDir.resolve("scripts/start-staging.sh");
+        Path startServing = tempDir.resolve("scripts/start-serving.sh");
+        Path startApp = tempDir.resolve("scripts/start-app.sh");
+        Files.writeString(startAll, Files.readString(startAll)
+                .replace("\"$ROOT/scripts/start-chat.sh\"\n", "")
+                .replace("\"$ROOT/scripts/start-crawl-manager.sh\"\n", ""));
+        Files.writeString(stopAll, Files.readString(stopAll)
+                .replace("chat crawl-manager app serving staging", "app serving staging"));
+        Files.writeString(startStaging, Files.readString(startStaging)
+                .replace("kompile project serve --staging-only", "kompile manage start staging"));
+        Files.writeString(startServing, Files.readString(startServing)
+                .replace("kompile project serve --serving-only", "kompile manage start serving"));
+        Files.writeString(startApp, Files.readString(startApp)
+                .replace("kompile project serve --app-only", "kompile project service start"));
+        Files.delete(tempDir.resolve("scripts/start-chat.sh"));
+        Files.delete(tempDir.resolve("scripts/start-crawl-manager.sh"));
+
+        KompileProjectManifest upgraded = store.ensureStandardServiceLifecycle(tempDir);
+
+        assertTrue(upgraded.getScripts().stream().anyMatch(script -> "start-chat".equals(script.getId())));
+        assertTrue(upgraded.getScripts().stream().anyMatch(script -> "start-crawl-manager".equals(script.getId())));
+        KompileProjectWorkflow upgradedStart = upgraded.getWorkflows().stream()
+                .filter(workflow -> "start-services".equals(workflow.getId()))
+                .findFirst().orElseThrow();
+        assertEquals(List.of("start-staging", "start-serving", "start-app", "start-chat",
+                        "start-crawl-manager"),
+                upgradedStart.getSteps().stream().map(KompileProjectWorkflowStep::getRef).toList());
+        assertTrue(Files.readString(startAll).contains("$ROOT/scripts/start-chat.sh"));
+        assertTrue(Files.readString(startAll).contains("$ROOT/scripts/start-crawl-manager.sh"));
+        assertTrue(Files.readString(stopAll).contains("chat crawl-manager app serving staging"));
+        assertTrue(Files.readString(startStaging).contains("kompile project serve --staging-only"));
+        assertTrue(Files.readString(startServing).contains("kompile project serve --serving-only"));
+        assertTrue(Files.readString(startApp).contains("kompile project serve --app-only"));
+        assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-chat.sh")));
+        assertTrue(Files.isExecutable(tempDir.resolve("scripts/start-crawl-manager.sh")));
+    }
+
+    @Test
+    void ensureStandardServiceLifecyclePreservesCustomizedLifecycle() throws Exception {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("custom-project");
+        store.init(tempDir, request);
+
+        Path startAll = tempDir.resolve("scripts/start-all.sh");
+        String customStart = "#!/usr/bin/env bash\necho custom-start\n";
+        Files.writeString(startAll, customStart);
+        KompileProjectManifest manifest = store.load(tempDir);
+        KompileProjectWorkflow startServices = manifest.getWorkflows().stream()
+                .filter(workflow -> "start-services".equals(workflow.getId()))
+                .findFirst().orElseThrow();
+        startServices.setGenerated(false);
+        startServices.setSteps(startServices.getSteps().stream().limit(3).toList());
+        store.save(tempDir, manifest);
+
+        KompileProjectManifest preserved = store.ensureStandardServiceLifecycle(tempDir);
+
+        assertEquals(customStart, Files.readString(startAll));
+        KompileProjectWorkflow preservedStart = preserved.getWorkflows().stream()
+                .filter(workflow -> "start-services".equals(workflow.getId()))
+                .findFirst().orElseThrow();
+        assertFalse(preservedStart.isGenerated());
+        assertEquals(List.of("start-staging", "start-serving", "start-app"),
+                preservedStart.getSteps().stream().map(KompileProjectWorkflowStep::getRef).toList());
     }
 
     @Test

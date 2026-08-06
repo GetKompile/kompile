@@ -72,9 +72,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Prepend dist lib dir so the JVM/native image can locate libkompile_pipelines
-# and friends at runtime.
-export LD_LIBRARY_PATH="${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# Prepend dist bin/ and lib/ so the JVM/native image can locate libkompile_pipelines and
+# friends at runtime. bin/ matters for the native path specifically: the GraalVM-emitted JDK
+# shims (libawt.so, libjava.so, ...) ship beside the binary, and without bin/ on the path the
+# image starts and then dies on the first shim it cannot dlopen. Same pairing as
+# kompile-server.sh — the two launchers have to agree or the personas fail where admin works.
+export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
 # Heap default (only used in the JVM fallback path). Larger than chat's because this is
 # the process that runs extraction and bulk indexing. Accepts either a bare size ("8g",
@@ -89,6 +93,8 @@ esac
 
 if [ -x "${NATIVE_BIN}" ]; then
     exec "${NATIVE_BIN}" \
+        -Dkompile.dist.home="${DIST_HOME}" \
+        -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
         "--server.port=${PORT}" \
         "${PASSTHROUGH_ARGS[@]}"
 fi
@@ -116,7 +122,9 @@ fi
 
 exec "${JAVA_BIN}" \
     ${KOMPILE_CRAWL_HEAP} \
-    -Djava.library.path="${DIST_HOME}/lib" \
+    -Djava.library.path="${DIST_HOME}/bin:${DIST_HOME}/lib" \
+    -Dkompile.dist.home="${DIST_HOME}" \
+    -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
     -jar "${JAR}" \
     "--server.port=${PORT}" \
     "${PASSTHROUGH_ARGS[@]}"

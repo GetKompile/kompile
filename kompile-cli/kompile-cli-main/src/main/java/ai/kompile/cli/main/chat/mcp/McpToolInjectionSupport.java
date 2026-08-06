@@ -120,7 +120,8 @@ public final class McpToolInjectionSupport {
             return new CliLauncher(resolveJavaCommand(), List.of("-jar", Path.of(jarOverride).toAbsolutePath().toString()));
         }
 
-        String currentCommand = ProcessHandle.current().info().command().orElse(null);
+        String currentCommand = normalizeCurrentCommand(
+                ProcessHandle.current().info().command().orElse(null));
         if (currentCommand != null && !currentCommand.toLowerCase(Locale.ROOT).contains("java")) {
             String scriptLauncher = resolveShellWrappedLauncher();
             if (scriptLauncher != null) {
@@ -140,6 +141,25 @@ public final class McpToolInjectionSupport {
         }
 
         return null;
+    }
+
+    /**
+     * Normalizes the executable reported by {@link ProcessHandle}. Linux appends
+     * {@code " (deleted)"} when a running native executable has been replaced on disk. Passing
+     * that diagnostic suffix to a child as its command makes an otherwise healthy stdio MCP
+     * server impossible to launch. Reuse the replacement path only when it is executable; all
+     * other stale or malformed values fall through to the jar/classpath launchers.
+     */
+    static String normalizeCurrentCommand(String command) {
+        if (command == null || command.isBlank()) {
+            return null;
+        }
+        String candidate = command.strip();
+        String deletedSuffix = " (deleted)";
+        if (candidate.endsWith(deletedSuffix)) {
+            candidate = candidate.substring(0, candidate.length() - deletedSuffix.length()).strip();
+        }
+        return isRunnableCommand(candidate) ? candidate : null;
     }
 
     private static Path resolveCodeSource() {

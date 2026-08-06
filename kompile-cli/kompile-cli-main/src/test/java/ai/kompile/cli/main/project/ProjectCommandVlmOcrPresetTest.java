@@ -16,6 +16,8 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.main.MainCommand;
+import ai.kompile.project.KompileProjectLifecycleState;
+import ai.kompile.project.KompileProjectModel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -25,6 +27,7 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -83,6 +86,47 @@ class ProjectCommandVlmOcrPresetTest {
         assertTrue(script.contains("KOMPILE_BIN=\"${KOMPILE_BIN:-kompile}\""));
         assertTrue(openState.contains("\"promptTemplateCount\" : 1"));
         assertTrue(Files.isDirectory(projectRoot.resolve("data/ocr/vlm-ocr-docs")));
+    }
+
+    @Test
+    void registryEntryUsesSharedArtifactCompletenessAndLifecycleRules() throws Exception {
+        Path projectRoot = tempDir.resolve("registry-project");
+        Path modelDirectory = projectRoot.resolve("data/models/encoders/test-model");
+        Files.createDirectories(modelDirectory);
+        KompileProjectModel model = new KompileProjectModel();
+        model.setId("test-model");
+        model.setModelId("test-model");
+        model.setRegistryModelId("test-model");
+        model.setPath("encoders/test-model");
+        model.setLifecycle(KompileProjectLifecycleState.ACTIVE);
+        model.setMetadata(Map.of("registry.modelFile", "model.sdnb"));
+
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"staged\""));
+        Files.writeString(modelDirectory.resolve("other.shard0-of-2.sdnb"), "wrong-0");
+        Files.writeString(modelDirectory.resolve("other.shard1-of-2.sdnb"), "wrong-1");
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"staged\""));
+
+        Files.writeString(modelDirectory.resolve("model.shard0-of-2.sdnb"), "expected-0");
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"staged\""));
+        Files.writeString(modelDirectory.resolve("model.shard1-of-2.sdnb"), "expected-1");
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"active\""));
+
+        model.setLifecycle(KompileProjectLifecycleState.DRAFT);
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"staged\""));
+        model.setLifecycle(KompileProjectLifecycleState.PAUSED);
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"staged\""));
+        model.setLifecycle(KompileProjectLifecycleState.ARCHIVED);
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"deprecated\""));
+        model.setLifecycle(KompileProjectLifecycleState.DEPRECATED);
+        assertTrue(ProjectModelCommand.stagingModelEntryJson(projectRoot, model)
+                .contains("\"status\":\"deprecated\""));
     }
 
     @Test

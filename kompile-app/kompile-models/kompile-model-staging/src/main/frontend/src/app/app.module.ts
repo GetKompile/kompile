@@ -83,6 +83,7 @@ import { EvalDatasetManagerComponent } from './components/eval-dataset-manager/e
 import { ModelEvalHistoryComponent } from './components/model-eval-history/model-eval-history.component';
 import { OptimizeDialogComponent } from './components/optimize-dialog/optimize-dialog.component';
 import { ModelGraphDialogComponent } from './components/model-graph-visualizer/model-graph-visualizer.component';
+import { ServiceConnectionsComponent } from './components/service-connections/service-connections.component';
 import { StagingSecurityInterceptor } from './services/staging-security.interceptor';
 
 // Routes
@@ -96,6 +97,7 @@ const routes: Routes = [
   { path: 'registry', component: RegistryBrowserComponent },
   { path: 'export-import', component: ExportImportComponent },
   { path: 'archives', component: ArchiveManagerComponent },
+  { path: 'connections', component: ServiceConnectionsComponent },
   { path: 'config', component: ArchiveConfigComponent },
   { path: 'alignment', component: AlignmentConfigComponent },
   { path: 'datasets', component: DatasetManagerComponent },
@@ -188,7 +190,8 @@ const routes: Routes = [
     MatSlideToggleModule,
     MatStepperModule,
     // Standalone components
-    VlmModelsComponent
+    VlmModelsComponent,
+    ServiceConnectionsComponent
   ],
   providers: [
     {

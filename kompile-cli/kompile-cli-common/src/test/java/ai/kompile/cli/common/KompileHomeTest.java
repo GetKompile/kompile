@@ -27,6 +27,7 @@ class KompileHomeTest {
     @AfterEach
     void clearDataDirProperty() {
         System.clearProperty("kompile.data.dir");
+        System.clearProperty("kompile.llm.cache.dir");
     }
 
     @Test
@@ -45,8 +46,34 @@ class KompileHomeTest {
     }
 
     @Test
-    void blankPropertyFallsBackToHome() {
-        System.setProperty("kompile.data.dir", "   ");
-        assertEquals(KompileHome.homeDirectory(), KompileHome.resolvedHomeDirectory());
+    void blankLaunchContextFallsBackToHome() {
+        assertEquals(KompileHome.homeDirectory(),
+                KompileHome.resolveHomeDirectory("   ", "   "));
+    }
+
+    @Test
+    void projectLauncherEnvironmentSelectsTheManagedProjectRoot() {
+        assertEquals(new File("/tmp/kompile-env-project"),
+                KompileHome.resolveHomeDirectory(null, "/tmp/kompile-env-project"));
+    }
+
+    @Test
+    void explicitDataDirectoryWinsOverProjectLauncherEnvironment() {
+        assertEquals(new File("/tmp/kompile-explicit-project"),
+                KompileHome.resolveHomeDirectory(
+                        "/tmp/kompile-explicit-project", "/tmp/kompile-env-project"));
+    }
+
+    @Test
+    void llmCacheUsesProjectDataDirectory() {
+        System.setProperty("kompile.data.dir", "/tmp/kompile-proj");
+        assertEquals(new File("/tmp/kompile-proj/data/llm-cache"), KompileHome.llmCacheDirectory());
+    }
+
+    @Test
+    void explicitLlmCacheOverrideWins() {
+        System.setProperty("kompile.data.dir", "/tmp/kompile-proj");
+        System.setProperty("kompile.llm.cache.dir", "/tmp/custom-llm-cache");
+        assertEquals(new File("/tmp/custom-llm-cache"), KompileHome.llmCacheDirectory());
     }
 }

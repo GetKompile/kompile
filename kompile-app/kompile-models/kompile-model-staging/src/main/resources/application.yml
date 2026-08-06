@@ -18,7 +18,6 @@ kompile:
     artifact-transfer-token: ${KOMPILE_STAGING_ARTIFACT_TOKEN:}
     settings-dir: ${user.home}/.kompile
     project-dir: ""
-    callback-url: ""
     limits:
       model-bytes: ${KOMPILE_STAGING_MODEL_BYTES:8589934592}
       tokenizer-bytes: ${KOMPILE_STAGING_TOKENIZER_BYTES:67108864}

@@ -82,4 +82,14 @@ public class UnifiedCrawlSource {
      * (null = use pipeline or global default).
      */
     private String chunkerName;
+
+    /** Optional source-local size override, in the selected chunker's units. */
+    private Integer chunkSize;
+
+    /** Optional source-local overlap override, in the selected chunker's units. */
+    private Integer chunkOverlap;
+
+    /** Additional source-local chunker options; highest-precedence production overrides. */
+    @Builder.Default
+    private Map<String, Object> chunkerOptions = new HashMap<>();
 }

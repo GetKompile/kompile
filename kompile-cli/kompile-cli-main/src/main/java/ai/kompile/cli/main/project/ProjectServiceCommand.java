@@ -19,6 +19,7 @@ import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.main.GlobalBootstrap;
 import ai.kompile.cli.main.app.CrawlCommand;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
@@ -192,6 +193,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
                     System.out.println("    Could not read subprocess logs: " + e.getMessage());
                 }
             }
+
             if (!anySubprocessLog) {
                 System.out.println("    " + subprocessLogsDir.getAbsolutePath()
                         + " (empty — subprocesses not yet started)");
@@ -240,14 +242,12 @@ public class ProjectServiceCommand implements Callable<Integer> {
         private boolean noServe;
 
         @Option(names = {"--port", "-p"},
-                description = "Port for the main web application. Default: 8080",
-                defaultValue = "8080")
-        private int appPort;
+                description = "Port for the main web application. Default: Service Endpoints admin URL (initially 8080).")
+        private Integer appPort;
 
         @Option(names = {"--staging-port"},
-                description = "Port for the model staging server. Default: 8090",
-                defaultValue = "8090")
-        private int stagingPort;
+                description = "Port for model staging. Default: Service Endpoints staging URL (initially 8090).")
+        private Integer stagingPort;
 
         @Option(names = {"--no-staging"},
                 description = "Skip starting the model staging server.",
@@ -299,9 +299,9 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 1. Open the project (write metadata)
             KompileProjectStore store = new KompileProjectStore();
             Path resolved = requireExistingProjectRoot(store, root);
+            KompileProjectManifest manifest = store.ensureStandardServiceLifecycle(resolved);
             KompileProjectOpenState state = store.openProject(resolved);
             KompileProjectStatus status = store.status(resolved);
-            KompileProjectManifest manifest = store.load(resolved);
             System.out.println("Opened Kompile project: " + state.getName());
             System.out.println("  ID: " + state.getProjectId());
             System.out.println("  Root: " + resolved);
@@ -315,6 +315,13 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 2. Ensure global bootstrap
             GlobalBootstrap.ensureHomeDirectory();
             GlobalBootstrap.ensureConfigs();
+            ServiceEndpointsConfigManager endpointConfigManager =
+                    ServiceEndpointsConfigManager.forProjectDirectory(resolved);
+            ServiceEndpointsConfigManager.ServiceEndpointsConfig configuredEndpoints =
+                    endpointConfigManager.current();
+            appPort = appPort != null ? appPort : configuredEndpoints.port(KompileService.ADMIN);
+            stagingPort = stagingPort != null ? stagingPort
+                    : configuredEndpoints.stagingPort();
 
             // GC stale instance-registry entries before touching ports
             try {
@@ -341,18 +348,16 @@ public class ProjectServiceCommand implements Callable<Integer> {
             ServiceManager serviceManager = new ServiceManager();
             File projectDir = resolved.toFile();
 
-            // 4. Check if already running on the target port
-            if (serviceManager.checkHealth(appPort)) {
+            // 4. Reconcile the whole project bundle even when the admin persona is already up.
+            // A prior partial start can leave :8080 healthy while chat or crawl is absent.
+            boolean appAlreadyRunning = serviceManager.checkHealth(appPort);
+            if (appAlreadyRunning) {
                 String url = "http://localhost:" + appPort;
                 System.out.println("\n  kompile-app-main is already running at " + url);
-                if (!noOpenBrowser) {
-                    openBrowserUrl(url);
-                }
-                return 0;
+            } else {
+                System.out.println("  App JAR: " + appJar.getAbsolutePath());
+                System.out.println("  App port: " + appPort);
             }
-
-            System.out.println("  App JAR: " + appJar.getAbsolutePath());
-            System.out.println("  App port: " + appPort);
 
             String projectName = manifest.getName() != null ? manifest.getName() : projectDir.getName();
             String webInstanceName = projectName + "-web";
@@ -391,6 +396,13 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 }
             }
 
+            if (!noStaging && !serviceManager.checkHealth(stagingPort)) {
+                System.err.println("  Project start failed: model staging is required but is not healthy on port "
+                        + stagingPort + ". Use --no-staging only when that dependency is intentionally external.");
+                stopOwnedComponent(stagingProcess, stagingInstanceName);
+                return 1;
+            }
+
             // 5b. Auto-register project models with staging
             boolean stagingAvailableForModels = !noStaging && serviceManager.checkHealth(stagingPort);
             if (stagingAvailableForModels && !manifest.getModels().isEmpty()) {
@@ -402,16 +414,58 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 autoIndexCodingProjects(manifest.getCodingProjects());
             }
 
-            // 6. Build app arguments — point at project's config and data
-            List<String> appArgs = buildProjectAppArgs(projectDir, appPort, stagingPort, stagingProcess != null || serviceManager.checkHealth(stagingPort));
-
-            // 6b. Start the end-user persona apps. app-main is admin-only, so without these the
-            //     project has no chat and no crawl manager — see the crawl trigger in step 10b,
-            //     which posts to the crawl manager rather than to appPort.
+            // 6. Persist the topology before any consumer starts, then bring up app-main first.
+            //    It owns the demand-driven serving child that chat/crawl call through servingUrl.
             Map<KompileService, Integer> personaPorts =
-                    personaPorts(chatPort, crawlManagerPort, noChat, noCrawlManager);
+                    personaPorts(chatPort, crawlManagerPort, noChat, noCrawlManager,
+                            endpointConfigManager);
+            persistEndpointTopology(endpointConfigManager, appPort, stagingPort,
+                    !noStaging, personaPorts);
+
+            // Build shared application arguments — point every persona at the same project config.
+            List<String> appArgs = buildProjectAppArgs(projectDir, appPort, stagingPort,
+                    stagingProcess != null || serviceManager.checkHealth(stagingPort));
+
+            Process appProcess = null;
+            if (!appAlreadyRunning) {
+                System.out.println("\nStarting kompile-app-main on port " + appPort + "...");
+                try {
+                    appProcess = serviceManager.startProjectComponent(
+                            webInstanceName, "kompile-app-main", appJar, appPort,
+                            projectDir, projectRuntimeJvmArgs(projectDir, "appHeap", jvmArgs),
+                            appArgs, null, true);
+                    System.out.println("  PID: " + appProcess.pid());
+                    if (!serviceManager.waitForHealth(appPort, 180)) {
+                        System.err.println("  Project start failed: kompile-app-main did not become healthy on port "
+                                + appPort);
+                        stopOwnedComponent(appProcess, webInstanceName);
+                        stopOwnedComponent(stagingProcess, stagingInstanceName);
+                        return 1;
+                    }
+                } catch (Exception e) {
+                    stopOwnedComponent(appProcess, webInstanceName);
+                    stopOwnedComponent(stagingProcess, stagingInstanceName);
+                    System.err.println("  Project start failed: could not launch kompile-app-main — "
+                            + e.getMessage());
+                    return 1;
+                }
+            }
+
+            // 6b. Start the end-user persona apps after their admin/serving coordinator is healthy.
             List<PersonaSidecar> personas = startPersonaApps(
                     serviceManager, projectName, projectDir, logDir, appArgs, personaPorts);
+            List<KompileService> unavailablePersonas = personaPorts.entrySet().stream()
+                    .filter(entry -> !serviceManager.checkHealth(entry.getValue()))
+                    .map(Map.Entry::getKey)
+                    .toList();
+            if (!unavailablePersonas.isEmpty()) {
+                System.err.println("  Project start failed: required persona services are unavailable: "
+                        + unavailablePersonas.stream().map(KompileService::componentId).toList());
+                stopPersonaApps(personas);
+                stopOwnedComponent(appProcess, webInstanceName);
+                stopOwnedComponent(stagingProcess, stagingInstanceName);
+                return 1;
+            }
 
             // 7. Write .mcp.json so CLI MCP tools and external agents point at this project's backend.
             //    - "kompile" entry: stdio CLI MCP server with --url pointing at this backend
@@ -456,45 +510,54 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 System.err.println("  Warning: could not update open state: " + e.getMessage());
             }
 
-            // 9. Register shutdown hook
-            final Process stagingRef = stagingProcess;
-            final List<PersonaSidecar> personaRef = personas;
-            final Path mcpJsonCleanup = mcpJsonFile;
-            final KompileProjectStore storeRef = store;
-            final Path resolvedRef = resolved;
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                System.out.println("\nShutting down...");
-                // Restore or remove .mcp.json
-                try {
-                    McpToolInjection.removeTools(mcpJsonCleanup);
-                } catch (Exception e) {
-                    System.err.println("  Warning: could not clean up .mcp.json: " + e.getMessage());
-                }
-                // Clear runtime metadata from open state
-                clearRuntimeMetadata(storeRef, resolvedRef);
-                if (stagingRef != null && stagingRef.isAlive()) {
-                    stagingRef.destroy();
-                    try { stagingRef.waitFor(); } catch (InterruptedException ignored) {}
-                    System.out.println("  Staging server stopped.");
-                }
-                stopPersonaApps(personaRef);
-                try {
-                    InstanceRegistry.unregister(webInstanceName);
-                    InstanceRegistry.unregister(stagingInstanceName);
-                } catch (Exception ignored) {}
-            }));
+            // 9. Register shutdown ownership only when this invocation owns the foreground admin.
+            // If admin was already running, newly reconciled sidecars must remain alive after this
+            // short command returns; `project stop` owns their registry-based cleanup.
+            if (!appAlreadyRunning) {
+                final Process stagingRef = stagingProcess;
+                final List<PersonaSidecar> personaRef = personas;
+                final Path mcpJsonCleanup = mcpJsonFile;
+                final KompileProjectStore storeRef = store;
+                final Path resolvedRef = resolved;
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                    System.out.println("\nShutting down...");
+                    // Restore or remove .mcp.json
+                    try {
+                        McpToolInjection.removeTools(mcpJsonCleanup);
+                    } catch (Exception e) {
+                        System.err.println("  Warning: could not clean up .mcp.json: " + e.getMessage());
+                    }
+                    // Clear runtime metadata from open state
+                    clearRuntimeMetadata(storeRef, resolvedRef);
+                    if (stagingRef != null && stagingRef.isAlive()) {
+                        stagingRef.destroy();
+                        try { stagingRef.waitFor(); } catch (InterruptedException ignored) {}
+                        System.out.println("  Staging server stopped.");
+                    }
+                    stopPersonaApps(personaRef);
+                    try {
+                        InstanceRegistry.unregister(webInstanceName);
+                        InstanceRegistry.unregister(stagingInstanceName);
+                    } catch (Exception ignored) {}
+                }));
+            }
 
             // 10. Open browser after app starts
             if (!noOpenBrowser) {
                 String url = "http://localhost:" + appPort;
-                Thread browserThread = new Thread(() -> {
-                    if (waitForAppReady(appPort, 120)) {
-                        System.out.println("  Opening browser: " + url);
-                        openBrowserUrl(url);
-                    }
-                });
-                browserThread.setDaemon(true);
-                browserThread.start();
+                if (appAlreadyRunning) {
+                    System.out.println("  Opening browser: " + url);
+                    openBrowserUrl(url);
+                } else {
+                    Thread browserThread = new Thread(() -> {
+                        if (waitForAppReady(appPort, 120)) {
+                            System.out.println("  Opening browser: " + url);
+                            openBrowserUrl(url);
+                        }
+                    });
+                    browserThread.setDaemon(true);
+                    browserThread.start();
+                }
             }
 
             // 10b. Crawl prompt — once the crawl manager is healthy, ask about document ingestion.
@@ -505,7 +568,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
             if (!noCrawl && crawlManagerRuntimePort != null && !manifest.getCrawlProfiles().isEmpty()) {
                 final int crawlAppPort = crawlManagerRuntimePort;
                 final KompileProjectManifest crawlManifest = manifest;
-                Thread crawlThread = new Thread(() -> {
+                Runnable crawlAction = () -> {
                     if (!waitForAppReady(crawlAppPort, 120)) return;
                     if (crawl) {
                         // --crawl flag: run immediately without prompting
@@ -529,25 +592,32 @@ public class ProjectServiceCommand implements Callable<Integer> {
                         // Non-interactive: print manual command
                         System.out.println("\n  Documents detected. To index them: kompile project workflow-run --id auto-ingest");
                     }
-                });
-                crawlThread.setDaemon(true);
-                crawlThread.start();
+                };
+                if (appAlreadyRunning) {
+                    crawlAction.run();
+                } else {
+                    Thread crawlThread = new Thread(crawlAction);
+                    crawlThread.setDaemon(true);
+                    crawlThread.start();
+                }
             } else if (!noCrawl && crawlManagerRuntimePort == null && !manifest.getCrawlProfiles().isEmpty()) {
                 System.out.println("  Crawl profiles present but the crawl manager was skipped"
                         + " (--no-crawl-manager) — auto-ingest will not run.");
             }
 
-            // 11. Start main app (foreground, blocks until Ctrl+C)
-            System.out.println("\nStarting kompile-app-main on port " + appPort + "...");
+            if (appAlreadyRunning) {
+                System.out.println("  All requested project services have been reconciled.");
+                return 0;
+            }
+
+            // 11. Keep ownership in the foreground until app-main exits or Ctrl+C stops the bundle.
             System.out.println("  Press Ctrl+C to stop.\n");
-
-            Process appProcess = serviceManager.startProjectComponent(
-                    webInstanceName, "kompile-app-main", appJar, appPort,
-                    projectDir, projectRuntimeJvmArgs(projectDir, "appHeap", jvmArgs),
-                    appArgs, null, true);
-
-            System.out.println("  PID: " + appProcess.pid());
-
+            if (appProcess == null) {
+                System.err.println("  Project start lost ownership of kompile-app-main.");
+                stopPersonaApps(personas);
+                stopOwnedComponent(stagingProcess, stagingInstanceName);
+                return 1;
+            }
             int exitCode = appProcess.waitFor();
 
             // 12. Clean up
@@ -563,6 +633,29 @@ public class ProjectServiceCommand implements Callable<Integer> {
             }
 
             return exitCode;
+        }
+
+        private static void stopOwnedComponent(Process process, String instanceName) {
+            if (process == null) {
+                return;
+            }
+            try {
+                InstanceRegistry.unregister(instanceName);
+            } catch (Exception ignored) {
+            }
+            if (!process.isAlive()) {
+                return;
+            }
+            process.destroy();
+            try {
+                if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    process.waitFor(10, TimeUnit.SECONDS);
+                }
+            } catch (InterruptedException e) {
+                process.destroyForcibly();
+                Thread.currentThread().interrupt();
+            }
         }
 
         /**
@@ -582,7 +675,6 @@ public class ProjectServiceCommand implements Callable<Integer> {
             stagingArgs.add("--kompile.staging.settings-dir=" +
                     new File(projectDir, "data").getAbsolutePath());
             stagingArgs.add("--kompile.staging.project-dir=" + projectDir.getAbsolutePath());
-            stagingArgs.add("--kompile.staging.callback-url=http://localhost:" + appPort);
             return stagingArgs;
         }
 
@@ -615,12 +707,13 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 ObjectMapper om = JsonUtils.standardMapper();
                 ObjectNode settings =
                         (ObjectNode) om.readTree(getResp.body());
-                settings.put("callbackUrl", "http://localhost:" + appPort);
-                settings.put("autoReloadEnabled", true);
+                settings.put("callback_url", "http://localhost:" + appPort);
+                settings.put("auto_reload_enabled", true);
 
                 HttpRequest putReq = HttpRequest.newBuilder()
                         .uri(URI.create(settingsUrl))
                         .header("Content-Type", "application/json")
+                        .header("X-Kompile-Staging-Request", "1")
                         .PUT(HttpRequest.BodyPublishers.ofString(om.writeValueAsString(settings)))
                         .build();
                 HttpResponse<String> putResp = client.send(putReq, HttpResponse.BodyHandlers.ofString());
@@ -682,7 +775,6 @@ public class ProjectServiceCommand implements Callable<Integer> {
 
             // Staging server connection
             if (stagingAvailable) {
-                args.add("--kompile.staging.url=http://localhost:" + stagingPort);
                 args.add("--kompile.staging.port=" + stagingPort);
             }
 
@@ -793,13 +885,65 @@ public class ProjectServiceCommand implements Callable<Integer> {
         /**
          * Resolved port for a persona app: an explicit flag wins, otherwise the routing ladder.
          *
-         * <p>Going through {@link KompileServiceEndpoints} rather than a literal is what keeps the
-         * port this command <em>starts</em> chat on identical to the port the rest of the CLI later
-         * <em>looks</em> for chat on, including installs that move it in
-         * {@code service-endpoints.json}.</p>
+         * <p>The supplied manager is rooted in the project directory, which is the same managed
+         * configuration every launched component receives through {@code kompile.data.dir}.</p>
          */
+        static int personaPort(KompileService service, Integer override,
+                               ServiceEndpointsConfigManager endpointConfigManager) {
+            return override != null ? override : endpointConfigManager.current().port(service);
+        }
+
         static int personaPort(KompileService service, Integer override) {
-            return override != null ? override : KompileServiceEndpoints.resolve(service).port();
+            return personaPort(service, override, ServiceEndpointsConfigManager.shared());
+        }
+
+        /**
+         * Apply a launch port without discarding the explicitly configured endpoint host.
+         *
+         * <p>Project UIs use these managed URLs directly. Replacing {@code 127.0.0.1} with
+         * {@code localhost} (or vice versa) makes an otherwise local browser request cross-origin,
+         * so startup must mutate only the port. A malformed hand-edited URL retains the historical
+         * localhost fallback rather than preventing project startup.</p>
+         */
+        static String endpointWithPort(String baseUrl, int port) {
+            if (port < 1 || port > 65_535) {
+                throw new IllegalArgumentException("Endpoint port must be between 1 and 65535");
+            }
+            try {
+                URI uri = URI.create(baseUrl);
+                String scheme = uri.getScheme();
+                String host = uri.getHost();
+                if (("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                        && host != null && !host.isBlank()) {
+                    String authorityHost = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+                    String rawPath = uri.getRawPath();
+                    return scheme + "://" + authorityHost + ":" + port
+                            + (rawPath != null ? rawPath : "");
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Preserve startup resilience for a hand-edited malformed managed config.
+            }
+            return "http://localhost:" + port;
+        }
+
+        /** Persist the exact local topology this launch is about to own. */
+        static void persistEndpointTopology(ServiceEndpointsConfigManager manager,
+                                            int appPort,
+                                            int stagingPort,
+                                            boolean includeStaging,
+                                            Map<KompileService, Integer> personaPorts) throws IOException {
+            ServiceEndpointsConfigManager.ServiceEndpointsConfig configured = manager.current();
+            Map<String, Object> updates = new LinkedHashMap<>();
+            updates.put(KompileService.ADMIN.configKey(),
+                    endpointWithPort(configured.effectiveUrl(KompileService.ADMIN), appPort));
+            if (includeStaging) {
+                updates.put(ServiceEndpointsConfigManager.STAGING_URL_KEY,
+                        endpointWithPort(configured.effectiveStagingUrl(), stagingPort));
+            }
+            personaPorts.forEach((service, port) ->
+                    updates.put(service.configKey(),
+                            endpointWithPort(configured.effectiveUrl(service), port)));
+            manager.update(updates);
         }
 
         /**
@@ -812,12 +956,21 @@ public class ProjectServiceCommand implements Callable<Integer> {
          */
         static Map<KompileService, Integer> personaPorts(Integer chatPort, Integer crawlManagerPort,
                                                          boolean noChat, boolean noCrawlManager) {
+            return personaPorts(chatPort, crawlManagerPort, noChat, noCrawlManager,
+                    ServiceEndpointsConfigManager.shared());
+        }
+
+        static Map<KompileService, Integer> personaPorts(Integer chatPort, Integer crawlManagerPort,
+                                                         boolean noChat, boolean noCrawlManager,
+                                                         ServiceEndpointsConfigManager endpointConfigManager) {
             Map<KompileService, Integer> ports = new LinkedHashMap<>();
             if (!noChat) {
-                ports.put(KompileService.CHAT, personaPort(KompileService.CHAT, chatPort));
+                ports.put(KompileService.CHAT,
+                        personaPort(KompileService.CHAT, chatPort, endpointConfigManager));
             }
             if (!noCrawlManager) {
-                ports.put(KompileService.CRAWL, personaPort(KompileService.CRAWL, crawlManagerPort));
+                ports.put(KompileService.CRAWL,
+                        personaPort(KompileService.CRAWL, crawlManagerPort, endpointConfigManager));
             }
             return ports;
         }
@@ -990,7 +1143,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
             long plannedMb = 0;
 
             for (KompileProjectModel model : models) {
-                String modelId = model.getModelId();
+                String modelId = firstNonBlank(model.getModelId(), model.getRegistryModelId(), model.getId());
                 if (modelId == null || modelId.isBlank()) continue;
 
                 long diskMb = requirementMb(model, "requirement.diskMb");
@@ -1175,7 +1328,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
 
     @Command(name = "start", aliases = "launch", mixinStandardHelpOptions = true,
             description = "Start a Kompile project — find the installed app JAR, point it at this " +
-                    "project's config/data, start staging and the main app.%n%n" +
+                    "project's config/data, and start staging plus the admin, chat, and crawl-manager apps.%n%n" +
                     "This is the simple way to launch a project. For the full interactive experience%n" +
                     "(browser open, crawl prompts, MCP injection), use 'kompile project open'.%n%n" +
                     "Examples:%n" +
@@ -1189,14 +1342,12 @@ public class ProjectServiceCommand implements Callable<Integer> {
         private File root;
 
         @Option(names = {"--port", "-p"},
-                description = "Port for the main web application. Default: 8080",
-                defaultValue = "8080")
-        private int appPort;
+                description = "Port for the main web application. Default: Service Endpoints admin URL (initially 8080).")
+        private Integer appPort;
 
         @Option(names = {"--staging-port"},
-                description = "Port for the model staging server. Default: 8090",
-                defaultValue = "8090")
-        private int stagingPort;
+                description = "Port for model staging. Default: Service Endpoints staging URL (initially 8090).")
+        private Integer stagingPort;
 
         @Option(names = {"--no-staging"},
                 description = "Skip starting the model staging server.",
@@ -1237,7 +1388,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 1. Resolve project and load manifest
             KompileProjectStore store = new KompileProjectStore();
             Path resolved = requireExistingProjectRoot(store, root);
-            KompileProjectManifest manifest = store.load(resolved);
+            KompileProjectManifest manifest = store.ensureStandardServiceLifecycle(resolved);
             File projectDir = resolved.toFile();
             String projectName = manifest.getName() != null ? manifest.getName() : projectDir.getName();
 
@@ -1247,6 +1398,12 @@ public class ProjectServiceCommand implements Callable<Integer> {
             // 2. Ensure global bootstrap
             GlobalBootstrap.ensureHomeDirectory();
             GlobalBootstrap.ensureConfigs();
+            ServiceEndpointsConfigManager endpointConfigManager =
+                    ServiceEndpointsConfigManager.forProjectDirectory(resolved);
+            ServiceEndpointsConfigManager.ServiceEndpointsConfig configuredEndpoints =
+                    endpointConfigManager.current();
+            appPort = appPort != null ? appPort : configuredEndpoints.port(KompileService.ADMIN);
+            stagingPort = stagingPort != null ? stagingPort : configuredEndpoints.stagingPort();
 
             // GC stale instance-registry entries before touching ports
             try {
@@ -1277,10 +1434,10 @@ public class ProjectServiceCommand implements Callable<Integer> {
 
             ServiceManager serviceManager = new ServiceManager();
 
-            // 4. Check if already running
-            if (serviceManager.checkHealth(appPort)) {
+            // 4. Reconcile all requested services even when the admin persona is already running.
+            boolean appAlreadyRunning = serviceManager.checkHealth(appPort);
+            if (appAlreadyRunning) {
                 System.out.println("  Already running at http://localhost:" + appPort);
-                return 0;
             }
 
             System.out.println("  " + (appIsNative ? "Executable" : "JAR") + ": " + appJar.getName());
@@ -1328,34 +1485,40 @@ public class ProjectServiceCommand implements Callable<Integer> {
                 Open.autoIndexCodingProjects(manifest.getCodingProjects());
             }
 
+            // 8b. Start the end-user persona apps beside the admin console.
+            Map<KompileService, Integer> personaPorts =
+                    Open.personaPorts(chatPort, crawlManagerPort, noChat, noCrawlManager,
+                            endpointConfigManager);
+            Open.persistEndpointTopology(endpointConfigManager, appPort, stagingPort,
+                    !noStaging, personaPorts);
+
             // 8. Build app arguments
             List<String> appArgs = Open.buildProjectAppArgs(projectDir, appPort, stagingPort,
                     stagingProcess != null || serviceManager.checkHealth(stagingPort));
-
-            // 8b. Start the end-user persona apps beside the admin console.
-            Map<KompileService, Integer> personaPorts =
-                    Open.personaPorts(chatPort, crawlManagerPort, noChat, noCrawlManager);
             List<Open.PersonaSidecar> personas = Open.startPersonaApps(
                     serviceManager, projectName, projectDir, logDir, appArgs, personaPorts);
 
-            // 9. Shutdown hook
-            final Process stagingRef = stagingProcess;
-            final List<Open.PersonaSidecar> personaRef = personas;
+            // 9. Shutdown hook. When admin pre-existed, this invocation is a short reconciliation
+            // command and the registry-backed `project stop` command owns the new sidecars.
             String webInstanceName = projectName + "-web";
             String stagingInstanceName = projectName + "-staging";
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                System.out.println("\nShutting down...");
-                if (stagingRef != null && stagingRef.isAlive()) {
-                    stagingRef.destroy();
-                    try { stagingRef.waitFor(); } catch (InterruptedException ignored) {}
-                    System.out.println("  Staging stopped.");
-                }
-                Open.stopPersonaApps(personaRef);
-                try {
-                    InstanceRegistry.unregister(webInstanceName);
-                    InstanceRegistry.unregister(stagingInstanceName);
-                } catch (Exception ignored) {}
-            }));
+            if (!appAlreadyRunning) {
+                final Process stagingRef = stagingProcess;
+                final List<Open.PersonaSidecar> personaRef = personas;
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                    System.out.println("\nShutting down...");
+                    if (stagingRef != null && stagingRef.isAlive()) {
+                        stagingRef.destroy();
+                        try { stagingRef.waitFor(); } catch (InterruptedException ignored) {}
+                        System.out.println("  Staging stopped.");
+                    }
+                    Open.stopPersonaApps(personaRef);
+                    try {
+                        InstanceRegistry.unregister(webInstanceName);
+                        InstanceRegistry.unregister(stagingInstanceName);
+                    } catch (Exception ignored) {}
+                }));
+            }
 
             // 10. Crawl trigger (after the crawl manager is up, in background). Crawls go to the
             //     crawl manager — the admin console does not mount /api/unified-crawl.
@@ -1363,15 +1526,25 @@ public class ProjectServiceCommand implements Callable<Integer> {
             if (crawl && crawlManagerRuntimePort != null && !manifest.getCrawlProfiles().isEmpty()) {
                 final int crawlPort = crawlManagerRuntimePort;
                 final KompileProjectManifest crawlManifest = manifest;
-                Thread crawlThread = new Thread(() -> {
+                Runnable crawlAction = () -> {
                     if (!Open.waitForAppReady(crawlPort, 120)) return;
                     Open.triggerAutoCrawl(crawlPort, crawlManifest);
-                });
-                crawlThread.setDaemon(true);
-                crawlThread.start();
+                };
+                if (appAlreadyRunning) {
+                    crawlAction.run();
+                } else {
+                    Thread crawlThread = new Thread(crawlAction);
+                    crawlThread.setDaemon(true);
+                    crawlThread.start();
+                }
             } else if (crawl && crawlManagerRuntimePort == null && !manifest.getCrawlProfiles().isEmpty()) {
                 System.out.println("  --crawl requested but the crawl manager was skipped"
                         + " (--no-crawl-manager) — no crawl will run.");
+            }
+
+            if (appAlreadyRunning) {
+                System.out.println("  All requested project services have been reconciled.");
+                return 0;
             }
 
             // 11. Start app (foreground — blocks until Ctrl+C)
@@ -1401,7 +1574,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
     }
 
     @Command(name = "stop", aliases = "shutdown", mixinStandardHelpOptions = true,
-            description = "Stop a running Kompile project — kills the app and staging processes.%n%n" +
+            description = "Stop a running Kompile project — stops staging and all app personas.%n%n" +
                     "Finds running instances by project directory (from the instance registry at%n" +
                     "~/.kompile/instances/) and gracefully shuts them down. Also cleans up MCP%n" +
                     "config and open-state metadata.%n%n" +
@@ -1596,7 +1769,7 @@ public class ProjectServiceCommand implements Callable<Integer> {
                                     boolean doCrawl, boolean doPush, boolean keepRunning,
                                     String commitMessage, List<String> jvmArgs) {
         KompileProjectStore store = new KompileProjectStore();
-        KompileProjectManifest manifest = store.load(resolved);
+        KompileProjectManifest manifest = store.ensureStandardServiceLifecycle(resolved);
         File projectDir = resolved.toFile();
         String projectName = manifest.getName() != null ? manifest.getName() : projectDir.getName();
 
@@ -1624,9 +1797,12 @@ public class ProjectServiceCommand implements Callable<Integer> {
         String stagingInstanceName = projectName + "-staging";
 
         // Quickstart takes no persona flags — `kompile project init --serve` drives it — so both
-        // personas come up on their resolved ports. Declared out here because the finally block
-        // (and the early-return paths) have to stop them.
-        Map<KompileService, Integer> personaPorts = Open.personaPorts(null, null, false, false);
+        // personas come up on this project's managed ports. Declared out here because the finally
+        // block (and the early-return paths) have to stop them.
+        ServiceEndpointsConfigManager endpointConfigManager =
+                ServiceEndpointsConfigManager.forProjectDirectory(resolved);
+        Map<KompileService, Integer> personaPorts = Open.personaPorts(
+                null, null, false, false, endpointConfigManager);
         List<Open.PersonaSidecar> personas = new ArrayList<>();
 
         Process stagingProcess = null;
@@ -1667,6 +1843,8 @@ public class ProjectServiceCommand implements Callable<Integer> {
             }
 
             // 3. Main app (background — we keep control to crawl/push/stop)
+            Open.persistEndpointTopology(endpointConfigManager, appPort, stagingPort,
+                    !noStaging, personaPorts);
             List<String> appArgs = Open.buildProjectAppArgs(projectDir, appPort, stagingPort, stagingUp);
             System.out.println("  Starting kompile-app-main on port " + appPort + " (background)...");
             appProcess = serviceManager.startProjectComponent(

@@ -41,8 +41,18 @@ class GraphQueryEngineTest {
                         "VERIFY", "WHY", "WHY_NOT", "RANK", "ASSETS", "ARTIFACT",
                         "MODELS", "CALCULATE", "SCENARIO", "SOLVE_TARGET"),
                 result.capabilities().stream().map(GraphQueryEngine.Capability::intent).toList());
-        assertEquals(List.of("entityId or phrase", "targetId or phrase"),
+        assertEquals(GraphQueryEngine.capabilityContract(), result.capabilities());
+        assertEquals(List.of("entityId", "targetId"),
                 result.capabilities().get(7).requiredFields());
+        assertTrue(result.capabilities().stream()
+                .filter(capability -> "FACTS".equals(capability.intent()))
+                .findFirst().orElseThrow().purpose().contains("first-order"));
+        assertTrue(result.capabilities().stream()
+                .filter(capability -> "SIMILAR".equals(capability.intent()))
+                .findFirst().orElseThrow().purpose().contains("stored embeddings"));
+        assertTrue(result.capabilities().stream()
+                .filter(capability -> "RANK".equals(capability.intent()))
+                .findFirst().orElseThrow().purpose().contains("PSL/Bayesian"));
         assertNotNull(result.trace());
     }
 

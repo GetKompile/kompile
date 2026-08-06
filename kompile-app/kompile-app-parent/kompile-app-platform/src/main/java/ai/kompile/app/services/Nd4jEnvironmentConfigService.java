@@ -1076,7 +1076,7 @@ public class Nd4jEnvironmentConfigService implements Nd4jEnvironmentConfigProvid
                     .optimizerEnabled(true)
                     .optimizerFp16(true)
                     .dspNoFreeze(false)      // freeze enabled
-                    .dspNoNativeDecode(false) // native decode enabled
+                    .dspNoNativeDecode(true)  // portable Java decode keeps the preset production-safe
                     .dspNoAttnOverride(false) // attention override enabled
                     .dspNoDirect(false)       // direct mode enabled
                     .tritonSkipKernels(false) // Triton kernels enabled
@@ -1100,7 +1100,7 @@ public class Nd4jEnvironmentConfigService implements Nd4jEnvironmentConfigProvid
                     .optimizerEnabled(true)
                     .optimizerFp16(false)     // FP32 for debugging
                     .dspNoFreeze(true)        // freeze disabled for inspection
-                    .dspNoNativeDecode(false)
+                    .dspNoNativeDecode(true)  // keep generation functional while debugging
                     .dspNoAttnOverride(false)
                     .dspNoDirect(false)
                     .tritonSkipKernels(true)  // skip Triton for easier debugging
@@ -1138,7 +1138,7 @@ public class Nd4jEnvironmentConfigService implements Nd4jEnvironmentConfigProvid
                     .optimizerEnabled(true)
                     .optimizerFp16(true)
                     .dspNoFreeze(false)
-                    .dspNoNativeDecode(false)
+                    .dspNoNativeDecode(true)  // keep generation functional while debugging
                     .dspNoAttnOverride(false)
                     .dspNoDirect(false)
                     .tritonSkipKernels(false)

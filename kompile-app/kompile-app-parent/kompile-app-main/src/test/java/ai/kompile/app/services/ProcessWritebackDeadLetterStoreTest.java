@@ -16,7 +16,10 @@
 
 package ai.kompile.app.services;
 
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -224,6 +228,79 @@ class ProcessWritebackDeadLetterStoreTest {
         assertEquals(2, e.graphNodeIds.size());
         assertEquals("KG exploded", e.failureSummary);
         assertEquals(3, e.attemptNumber);
+    }
+
+    @Test
+    void explicitTreeCodec_roundTripsAllFieldsWithBeanDiscoveryDisabled() throws Exception {
+        ObjectMapper nativeLikeMapper = JsonMapper.builder()
+                .disable(MapperFeature.AUTO_DETECT_CREATORS)
+                .disable(MapperFeature.AUTO_DETECT_FIELDS)
+                .disable(MapperFeature.AUTO_DETECT_GETTERS)
+                .disable(MapperFeature.AUTO_DETECT_IS_GETTERS)
+                .disable(MapperFeature.AUTO_DETECT_SETTERS)
+                .build();
+        ProcessWritebackDeadLetterStore nativeStore =
+                new ProcessWritebackDeadLetterStore(tempDir, nativeLikeMapper);
+
+        ProcessWritebackDeadLetterStore.DeadLetterEntry expected =
+                ProcessWritebackDeadLetterStore.DeadLetterEntry.forStep(
+                        "run-native", "step-native", "proc-native",
+                        "Native Step", "COMPLETED", List.of("node-1", "node-2"),
+                        "tool:python", "result,count", "out-hash", "in-hash",
+                        "step-error", "output summary", "temporary failure", 4);
+        expected.runStatus = "COMPLETED";
+        expected.startedAt = "2026-07-30T01:00:00Z";
+        expected.completedAt = "2026-07-30T01:01:00Z";
+        expected.extra = Map.of(
+                "retryable", true,
+                "attempts", List.of(1, 2),
+                "nested", Map.of("source", "native"));
+
+        nativeStore.append(expected);
+
+        Path file = tempDir.resolve(ProcessWritebackDeadLetterStore.DEAD_LETTER_SUBPATH);
+        String persisted = Files.readString(file).trim();
+        assertNotEquals("{}", persisted);
+        assertTrue(persisted.contains("\"callbackType\":\"STEP_COMPLETED\""));
+        assertTrue(persisted.contains("\"outputSummary\":\"output summary\""));
+
+        ObjectNode persistedJson = (ObjectNode) nativeLikeMapper.readTree(persisted);
+        persistedJson.put("futureField", "ignored for forward compatibility");
+        Files.writeString(file, nativeLikeMapper.writeValueAsString(persistedJson) + "\n");
+
+        ProcessWritebackDeadLetterStore reloaded =
+                new ProcessWritebackDeadLetterStore(tempDir, nativeLikeMapper);
+        ProcessWritebackDeadLetterStore.DeadLetterEntry actual = reloaded.readAll().get(0);
+        assertEquals(expected.id, actual.id);
+        assertEquals(expected.callbackType, actual.callbackType);
+        assertEquals(expected.runId, actual.runId);
+        assertEquals(expected.stepId, actual.stepId);
+        assertEquals(expected.processDefinitionId, actual.processDefinitionId);
+        assertEquals(expected.ts, actual.ts);
+        assertEquals(expected.stepName, actual.stepName);
+        assertEquals(expected.stepStatus, actual.stepStatus);
+        assertEquals(expected.graphNodeIds, actual.graphNodeIds);
+        assertEquals(expected.executedBy, actual.executedBy);
+        assertEquals(expected.outputKeys, actual.outputKeys);
+        assertEquals(expected.outputHash, actual.outputHash);
+        assertEquals(expected.inputHash, actual.inputHash);
+        assertEquals(expected.error, actual.error);
+        assertEquals(expected.runStatus, actual.runStatus);
+        assertEquals(expected.startedAt, actual.startedAt);
+        assertEquals(expected.completedAt, actual.completedAt);
+        assertEquals(expected.failureSummary, actual.failureSummary);
+        assertEquals(expected.attemptNumber, actual.attemptNumber);
+        assertEquals(expected.outputSummary, actual.outputSummary);
+        assertEquals(expected.extra, actual.extra);
+    }
+
+    @Test
+    void readAll_skipsLegacyEmptyObjectInsteadOfLoadingPoisonEntry() throws Exception {
+        Path file = tempDir.resolve(ProcessWritebackDeadLetterStore.DEAD_LETTER_SUBPATH);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "{}\n");
+
+        assertTrue(store.readAll().isEmpty());
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────────

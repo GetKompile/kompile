@@ -16,16 +16,29 @@
 
 package ai.kompile.core.graphrag.model.schema;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.List;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class RelationshipType {
     private String type;
     private String description;
     private List<PropertyType> properties;
+    /** Audited source-language predicates and synonyms; routing context, never claim evidence. */
+    private List<String> aliases;
+
+    /** Preserves the established schema API for projects that do not declare aliases. */
+    public RelationshipType(String type, String description, List<PropertyType> properties) {
+        this(type, description, properties, List.of());
+    }
+
+    public RelationshipType(String type, String description, List<PropertyType> properties,
+                            List<String> aliases) {
+        this.type = type;
+        this.description = description;
+        this.properties = properties;
+        this.aliases = aliases == null ? List.of() : List.copyOf(aliases);
+    }
 }

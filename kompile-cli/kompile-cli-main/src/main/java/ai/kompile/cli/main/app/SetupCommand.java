@@ -678,10 +678,13 @@ public class SetupCommand implements Callable<Integer> {
                 // ── Step 2: Configure staging if needed and URL provided ──
                 boolean modelSourceComplete = status.path("modelSource").path("complete").asBoolean(false);
 
-                if (!modelSourceComplete && stagingUrl != null && !stagingUrl.isBlank()) {
+                if (stagingUrl != null && !stagingUrl.isBlank()) {
                     System.out.println("Step 2: Configuring staging service at " + stagingUrl + " ...");
 
-                    // Check existing
+                    client.postString("/api/service-endpoints", Map.of("stagingUrl", stagingUrl));
+                    System.out.println("  " + CHECK + "  Saved managed model-staging endpoint.");
+
+                    // Preserve the richer legacy record for credentials and retry policy.
                     JsonNode existingConfig = null;
                     try {
                         String existingJson = client.getString("/api/staging-config/configs/active");
@@ -735,7 +738,7 @@ public class SetupCommand implements Callable<Integer> {
                 } else if (!modelSourceComplete) {
                     System.out.println("Step 2: No model source configured.");
                     System.out.println("  " + ARROW + " Re-run with --staging-url=<url> to configure a staging service.");
-                    System.out.println("  " + ARROW + " Or configure one via the web UI at Developer > Model Staging.");
+                    System.out.println("  " + ARROW + " Or configure one in the component's Connections/Settings UI.");
                 } else {
                     System.out.println("Step 2: Model source already configured. " + CHECK);
                 }

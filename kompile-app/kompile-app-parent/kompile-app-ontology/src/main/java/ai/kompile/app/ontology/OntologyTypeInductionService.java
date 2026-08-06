@@ -67,30 +67,32 @@ public class OntologyTypeInductionService {
     private static final double MIN_LLM_TYPE_CONFIDENCE = 0.45d;
 
     private static final String SYSTEM_PROMPT = """
-            You enrich an existing ontology schema after OWL-RL classification has already run.
-            Return ONLY valid JSON with this shape:
-            {
-              "entityTypes": [
-                {
-                  "name": "CanonicalTypeName",
-                  "parentType": "ExistingOrNewParentType or null",
-                  "description": "short definition grounded in evidence",
-                  "aliases": ["source labels, abbreviations, translations"],
-                  "localizedLabels": {"language tag": "native label"},
-                  "confidence": 0.0,
-                  "evidenceEntityIds": ["entity-id"]
-                }
-              ]
-            }
+            Enrich an existing ontology schema after OWL-RL classification has already run.
+            Return exactly one raw JSON object with one top-level key, "entityTypes", whose value is
+            an array. If no supported addition exists, return exactly {"entityTypes":[]}.
+
+            Each emitted entity-type object requires:
+            - "name": a concise canonical name grounded in an observed signal;
+            - "parentType": an existing or separately emitted canonical type name, or null;
+            - "description": a short definition grounded in the supplied examples;
+            - "aliases": an array containing only supplied source labels;
+            - "localizedLabels": an object mapping language tags to supplied native labels;
+            - "confidence": a number from 0.45 through 1.0;
+            - "evidenceEntityIds": an array containing only supplied example entity IDs.
 
             Rules:
             - Add only types or aliases supported by the supplied crawled entities.
-            - Prefer attaching aliases to an existing canonical type when possible.
-            - Create a new type only when the current schema lacks a suitable type or parent/child is-a node.
-            - Preserve non-English labels as aliases/localizedLabels; do not force English.
+            - Prefer aliases on an existing canonical type when it already represents the signal.
+            - Create a type only when the current schema lacks a suitable type or supported is-a node.
+            - Preserve non-English labels; do not translate away source evidence.
             - Do not remove or rename existing types.
-            - Use concise PascalCase names for Latin-script canonical names.
+            - Never emit schema placeholders, field-description prose, or confidence below 0.45.
+            - Output only valid JSON, without markdown, commentary, or a second root object.
             """;
+
+    static String systemPromptContract() {
+        return SYSTEM_PROMPT;
+    }
 
     private final GraphOntologyBindingService bindingService;
     private final ProcessEngineService processEngineService;

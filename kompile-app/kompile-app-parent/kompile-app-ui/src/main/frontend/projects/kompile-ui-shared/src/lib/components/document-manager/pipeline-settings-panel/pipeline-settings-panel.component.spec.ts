@@ -232,6 +232,23 @@ describe('PipelineSettingsPanelComponent', () => {
       expect(spies.graphExtractionServiceSpy.getModelProviders).toHaveBeenCalled();
     });
 
+    it('should not contact optional Admin or Crawl APIs when their managed services are offline', () => {
+      component.processingServiceAvailable = false;
+      component.graphServiceAvailable = false;
+
+      fixture.detectChanges();
+
+      expect(spies.processingSettingsServiceSpy.getPipelineConfig).not.toHaveBeenCalled();
+      expect(spies.processingSettingsServiceSpy.getPipelinePresets).not.toHaveBeenCalled();
+      expect(spies.graphExtractionServiceSpy.getConfig).not.toHaveBeenCalled();
+      expect(spies.graphExtractionServiceSpy.getSchemaModes).not.toHaveBeenCalled();
+      expect(spies.graphExtractionServiceSpy.getSuggestedEntityTypes).not.toHaveBeenCalled();
+      expect(spies.graphExtractionServiceSpy.getSuggestedRelationshipTypes).not.toHaveBeenCalled();
+      expect(spies.graphExtractionServiceSpy.getModelProviders).not.toHaveBeenCalled();
+      expect(component.isLoading).toBeFalse();
+      expect(component.errorMessage).toContain('Admin service is offline');
+    });
+
     it('should populate config from service', () => {
       fixture.detectChanges();
       expect(component.config).not.toBeNull();

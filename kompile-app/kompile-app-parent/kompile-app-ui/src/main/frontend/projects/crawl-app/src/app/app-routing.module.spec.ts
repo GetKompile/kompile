@@ -18,7 +18,7 @@ import { describeRouteTable } from '@shared/testing/route-table-harness';
 import { routes } from './app-routing.module';
 
 describeRouteTable('crawl-app', routes, {
-  declared: ['/crawl', '/fact-sheets', '/data', '/graph'],
+  declared: ['/crawl', '/fact-sheets', '/data', '/graph', '/settings'],
   redirects: {
     '/knowledge': '/fact-sheets',
     '/tools': '/data',
@@ -26,6 +26,6 @@ describeRouteTable('crawl-app', routes, {
   },
   fallback: '/crawl',
   // Chat and admin surfaces. The crawl manager is an end-user app: none of these may resolve here.
-  foreign: ['/chat', '/project', '/developer', '/agents', '/enforcer', '/settings',
+  foreign: ['/chat', '/project', '/developer', '/agents', '/enforcer',
             '/knowledge-graph', '/grounding', '/graph-simulator']
 });

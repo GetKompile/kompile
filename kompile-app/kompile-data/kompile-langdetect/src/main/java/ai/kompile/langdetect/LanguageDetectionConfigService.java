@@ -17,8 +17,10 @@
 package ai.kompile.langdetect;
 
 import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,9 +44,12 @@ public class LanguageDetectionConfigService {
     private volatile LanguageDetectionConfig currentConfig;
 
     public LanguageDetectionConfigService() {
+        this(Paths.get(System.getProperty("user.home"), ".kompile", "config", CONFIG_FILENAME));
+    }
+
+    LanguageDetectionConfigService(Path configFilePath) {
         this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
-        String dataDir = System.getProperty("user.home") + "/.kompile";
-        this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
+        this.configFilePath = configFilePath;
         this.currentConfig = LanguageDetectionConfig.defaults();
     }
 
@@ -55,7 +60,7 @@ public class LanguageDetectionConfigService {
             if (Files.exists(configFilePath)) {
                 String json = Files.readString(configFilePath);
                 if (json != null && !json.isBlank()) {
-                    currentConfig = objectMapper.readValue(json, LanguageDetectionConfig.class);
+                    currentConfig = decodeConfig(json);
                     log.info("Loaded language detection config: enabled={}, detectOnCrawl={}, detectOnIngest={}, " +
                                     "fallbackLanguage={}, multilingualModel={}",
                             currentConfig.isEnabled(), currentConfig.isDetectOnCrawl(),
@@ -108,12 +113,64 @@ public class LanguageDetectionConfigService {
             if (parentDir != null && !Files.exists(parentDir)) {
                 Files.createDirectories(parentDir);
             }
-            String json = objectMapper.writeValueAsString(currentConfig);
+            String json = encodeConfig(currentConfig);
             Files.writeString(configFilePath, json);
             log.debug("Persisted language detection config to {}", configFilePath);
         } catch (Exception e) {
             log.error("Failed to persist language detection config to {}: {}",
                     configFilePath, e.getMessage());
         }
+    }
+
+    /**
+     * Decode explicitly so persisted configuration does not depend on runtime
+     * DTO reflection in a native image. Missing fields retain project defaults.
+     */
+    private LanguageDetectionConfig decodeConfig(String json) throws Exception {
+        JsonNode root = objectMapper.readTree(json);
+        LanguageDetectionConfig config = LanguageDetectionConfig.defaults();
+        if (root.has("enabled")) config.setEnabled(root.path("enabled").asBoolean(config.isEnabled()));
+        if (root.has("minConfidenceThreshold")) {
+            config.setMinConfidenceThreshold(root.path("minConfidenceThreshold")
+                    .asDouble(config.getMinConfidenceThreshold()));
+        }
+        if (root.has("detectOnCrawl")) {
+            config.setDetectOnCrawl(root.path("detectOnCrawl").asBoolean(config.isDetectOnCrawl()));
+        }
+        if (root.has("detectOnIngest")) {
+            config.setDetectOnIngest(root.path("detectOnIngest").asBoolean(config.isDetectOnIngest()));
+        }
+        if (root.has("maxCharsForDetection")) {
+            config.setMaxCharsForDetection(root.path("maxCharsForDetection")
+                    .asInt(config.getMaxCharsForDetection()));
+        }
+        if (root.path("fallbackLanguage").isTextual()) {
+            config.setFallbackLanguage(root.path("fallbackLanguage").asText());
+        }
+        if (root.path("multilingualEmbeddingModel").isTextual()) {
+            config.setMultilingualEmbeddingModel(root.path("multilingualEmbeddingModel").asText());
+        }
+        if (root.path("englishEmbeddingModel").isTextual()) {
+            config.setEnglishEmbeddingModel(root.path("englishEmbeddingModel").asText());
+        }
+        if (root.has("autoSwitchEmbeddingModel")) {
+            config.setAutoSwitchEmbeddingModel(root.path("autoSwitchEmbeddingModel")
+                    .asBoolean(config.isAutoSwitchEmbeddingModel()));
+        }
+        return config;
+    }
+
+    private String encodeConfig(LanguageDetectionConfig config) throws Exception {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("enabled", config.isEnabled());
+        root.put("minConfidenceThreshold", config.getMinConfidenceThreshold());
+        root.put("detectOnCrawl", config.isDetectOnCrawl());
+        root.put("detectOnIngest", config.isDetectOnIngest());
+        root.put("maxCharsForDetection", config.getMaxCharsForDetection());
+        root.put("fallbackLanguage", config.getFallbackLanguage());
+        root.put("multilingualEmbeddingModel", config.getMultilingualEmbeddingModel());
+        root.put("englishEmbeddingModel", config.getEnglishEmbeddingModel());
+        root.put("autoSwitchEmbeddingModel", config.isAutoSwitchEmbeddingModel());
+        return objectMapper.writeValueAsString(root);
     }
 }

@@ -22,7 +22,6 @@ import ai.kompile.kclaw.gateway.channel.DefaultWhatsAppApiClient;
 import ai.kompile.kclaw.gateway.channel.WhatsAppChannelAdapter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -43,7 +42,6 @@ import java.util.Map;
 @RestController("kclawChannelController")
 @RequestMapping("/api/kclaw/channels")
 @RequiredArgsConstructor
-@ConditionalOnBean(ChannelManager.class)
 public class ChannelController {
 
     private final ChannelManager channelManager;

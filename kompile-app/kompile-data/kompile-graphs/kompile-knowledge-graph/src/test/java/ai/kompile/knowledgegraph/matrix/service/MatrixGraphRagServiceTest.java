@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.graphrag.query.GraphRagContextMode;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -542,6 +544,51 @@ class MatrixGraphRagServiceTest {
         assertTrue(result.getFormattedContext().contains("Alice works at Acme Corp"),
                 "GLOBAL search should surface community report summaries. Context:\n" + result.getFormattedContext());
         verify(communityService).getOrBuildReports(any());
+    }
+
+    @Test
+    void compactGraphModeIsStatelessUsesExactJsonAndCallsOnlyFinalLlmOnce() {
+        CompactGraphContextService compactContextService = mock(CompactGraphContextService.class);
+        CommunitySummaryService communityService = mock(CommunitySummaryService.class);
+        service = new MatrixGraphRagService(
+                graphStore, embeddingModel, llmChat, communityService, compactContextService);
+        service.getSessionEntityState("compact-conversation").trackEntity(
+                "n2", "Acme Corp", "ORGANIZATION", List.of("Acme"), 1, "n2");
+
+        when(graphStore.loadGraph(any())).thenReturn(Optional.of(realGraph));
+        String compactJson = "{\"contract\":\"kompile.compact-graph.v1\","
+                + "\"sources\":[{\"id\":\"doc-22\"}],"
+                + "\"reasoningTraces\":[{\"id\":\"trace:1\"}]}";
+        when(compactContextService.build(eq(7L), anyCollection()))
+                .thenReturn(new CompactGraphContextService.CompactContext(
+                        compactJson, List.of("n1", "n2"), 1, 1));
+        configureLlmMock("Acme answer [n2] [doc-22] [trace:1].");
+
+        GraphRagQuery query = GraphRagQuery.builder()
+                .query("What does that company do?")
+                .searchType(SearchType.GLOBAL)
+                .k(5)
+                .conversationId("compact-conversation")
+                .factSheetId(7L)
+                .contextMode(GraphRagContextMode.COMPACT_GRAPH)
+                .build();
+        GraphRagResult result = service.answerQuery(query);
+
+        assertEquals(compactJson, result.getFormattedContext());
+        assertEquals(1, service.getSessionEntityState("compact-conversation").size(),
+                "compact mode must not mutate conversation entity state");
+        assertTrue(service.supportsContextMode(GraphRagContextMode.COMPACT_GRAPH));
+        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+        verify(promptSpec, times(1)).user(prompt.capture());
+        verify(llmChat, times(1)).prompt();
+        verify(promptSpec, times(1)).call();
+        verify(communityService, never()).getOrBuildReports(any());
+        verify(compactContextService).build(eq(7L), anyCollection());
+
+        assertTrue(prompt.getValue().contains("Question: What does that company do?"));
+        assertTrue(prompt.getValue().contains(compactJson));
+        assertTrue(prompt.getValue().contains("only factual evidence"));
+        assertFalse(prompt.getValue().contains("Recently discussed entities"));
     }
 
     // ─── Helper ───────────────────────────────────────────────────────────────

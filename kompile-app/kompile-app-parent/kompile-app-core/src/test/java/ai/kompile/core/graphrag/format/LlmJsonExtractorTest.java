@@ -93,6 +93,31 @@ class LlmJsonExtractorTest {
     }
 
     @Test
+    void completesOnlyMissingFinalContainerClosures() {
+        String missingOuterBrace = """
+                {"selection":{"decision":"SELECT","candidateOrdinal":1,"schemaGap":false,
+                 "confidence":0.5,"qualifiers":{},"reason":"source-grounded match"}
+                """.strip();
+        String missingArrayAndRoot = """
+                {"propositions":[{"text":"Acme acquired Initech","subject":"Acme",
+                 "predicate":"acquired","object":"Initech"}
+                """.strip();
+
+        assertEquals(missingOuterBrace + "}", LlmJsonExtractor.extractJsonObject(missingOuterBrace));
+        assertEquals(missingArrayAndRoot + "]}",
+                LlmJsonExtractor.extractJsonObject(missingArrayAndRoot));
+    }
+
+    @Test
+    void neverInventsTruncatedJsonContent() {
+        String truncatedString = "{\"selection\":{\"reason\":\"source-grounded";
+        String missingValue = "{\"selection\":{\"candidateOrdinal\":";
+
+        assertEquals(truncatedString, LlmJsonExtractor.extractJsonObject(truncatedString));
+        assertEquals(missingValue, LlmJsonExtractor.extractJsonObject(missingValue));
+    }
+
+    @Test
     void fallsBackToFirstBraceWhenEntitiesNotFirstKey() {
         // No literal {"entities" adjacency (relationships come first) -> line-walk fallback
         // must still grab the root object's opening brace, not fail.

@@ -39,6 +39,8 @@ public class CatalogModel {
     private String repo;
     private String format;
     private Map<String, String> files;
+    @JsonProperty("asset_urls")
+    private Map<String, String> assetUrls;
     private CatalogModelMetadata metadata;
     private String modelType;
     @JsonProperty("audio_synthesis")

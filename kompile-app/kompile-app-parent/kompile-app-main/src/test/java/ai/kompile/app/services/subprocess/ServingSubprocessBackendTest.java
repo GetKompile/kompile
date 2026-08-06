@@ -23,6 +23,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -77,6 +78,23 @@ class ServingSubprocessBackendTest {
                 backend.generateForModel("lfm2.5-1.2b-instruct", "prompt", 1536));
         verify(launcher).generateForModel("lfm2.5-1.2b-instruct", "prompt", 1536);
         verify(launcher, never()).generateForModel("lfm2.5-1.2b-instruct", "prompt");
+    }
+
+    @Test
+    void unexpectedChildExitClearsPublishedServingStateAndCanBeCleanedUp() {
+        ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
+        Process exited = mock(Process.class);
+        when(exited.exitValue()).thenReturn(137);
+        ReflectionTestUtils.setField(launcher, "process", exited);
+        ReflectionTestUtils.setField(launcher, "activeModelId", "lfm2.5-1.2b-instruct");
+        ((java.util.concurrent.atomic.AtomicBoolean) ReflectionTestUtils.getField(launcher, "running")).set(true);
+
+        launcher.handleProcessExit(exited);
+
+        assertFalse(launcher.isRunning());
+        assertNull(launcher.getActiveModelId());
+        launcher.stop();
+        assertNull(ReflectionTestUtils.getField(launcher, "process"));
     }
 
     @Test

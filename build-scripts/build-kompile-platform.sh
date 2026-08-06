@@ -10,7 +10,10 @@
 #   ./build-kompile-platform.sh linux-x86_64-cuda-12.9
 #   ./build-kompile-platform.sh linux-x86_64 --native-targets cli,app,staging
 #   ./build-kompile-platform.sh macosx-arm64 --skip-dl4j --skip-java
-#   DEPLOY=1 ./build-kompile-platform.sh linux-x86_64
+#   ./build-kompile-platform.sh linux-x86_64 \
+#       --dl4j-repository file:///srv/maven --nd4j-version 1.0.0-SNAPSHOT
+#   ./build-kompile-platform.sh linux-x86_64 --publish \
+#       --deploy-repository https://repo.example/snapshots
 #
 # Options:
 #   --native-targets T   Comma-separated native image targets (default: cli)
@@ -20,7 +23,15 @@
 #   --dl4j-branch B      DL4J branch to clone/checkout (default: master)
 #   --kompile-branch B   Kompile branch to checkout (default: main)
 #   --dl4j-root DIR      Path to DL4J checkout (default: ../deeplearning4j, cloned if missing)
-#   --skip-dl4j          Skip DL4J backend build (use pre-installed nd4j JARs)
+#   --dl4j-repository U  Resolve DL4J from Maven repository U; never build it
+#   --dl4j-sdk-assets D  Extracted DL4J sdk-assets shard required with repository backends
+#   --repository-id ID   Maven settings.xml server id for DL4J (default: dl4j-release)
+#   --nd4j-version V     Published DL4J/ND4J version (default: 1.0.0-SNAPSHOT)
+#   --maven-repo-local D Isolated Maven local repository
+#   --publish            Deploy Kompile reactor artifacts after building
+#   --deploy-repository U  Publish target (defaults to --dl4j-repository)
+#   --deploy-repository-id ID  Maven settings.xml server id for publication
+#   --skip-dl4j          Skip DL4J source build (use Maven local repository)
 #   --skip-java          Skip kompile Java module build
 #   --skip-native        Skip native image builds
 #   --skip-dist          Skip distribution assembly
@@ -34,6 +45,7 @@
 #   GRAALVM_HOME       - GraalVM installation path
 #   MVN                - path to mvn binary
 #   BUILD_THREADS      - parallel compilation threads
+#   DL4J_SDX_ASSETS_DIR - extracted DL4J SDK shard (runtime packages plus jars/)
 ###############################################################################
 set -euo pipefail
 
@@ -54,6 +66,14 @@ while [[ $# -gt 0 ]]; do
     --dl4j-branch)      DL4J_BRANCH="$2"; shift 2 ;;
     --kompile-branch)   KOMPILE_BRANCH="$2"; shift 2 ;;
     --dl4j-root)        DL4J_PROJECT_ROOT="$2"; shift 2 ;;
+    --dl4j-repository)  DL4J_MAVEN_REPOSITORY_URL="$2"; SKIP_DL4J=1; shift 2 ;;
+    --dl4j-sdk-assets)  DL4J_SDX_ASSETS_DIR="$2"; shift 2 ;;
+    --repository-id)    DL4J_MAVEN_REPOSITORY_ID="$2"; shift 2 ;;
+    --nd4j-version)     ND4J_VERSION="$2"; shift 2 ;;
+    --maven-repo-local) MAVEN_REPO_LOCAL="$2"; shift 2 ;;
+    --publish)          KOMPILE_PUBLISH=1; shift ;;
+    --deploy-repository) KOMPILE_DEPLOY_REPOSITORY_URL="$2"; shift 2 ;;
+    --deploy-repository-id) KOMPILE_DEPLOY_REPOSITORY_ID="$2"; shift 2 ;;
     --skip-dl4j)        SKIP_DL4J=1; shift ;;
     --skip-java)        SKIP_JAVA=1; shift ;;
     --skip-native)      SKIP_NATIVE=1; shift ;;
@@ -82,12 +102,13 @@ fi
 
 # Source shared build library
 source "${SCRIPT_DIR}/build-common.sh"
+kompile_validate_platform "${PLATFORM}" || exit 1
 
 # Auto-detect variant from platform if not specified
 if [ -z "${VARIANT:-}" ]; then
   case "${PLATFORM}" in
+    *zluda*) VARIANT="amd-zluda" ;;
     *cuda*)  VARIANT="cuda" ;;
-    *rocm*)  VARIANT="amd-zluda" ;;
     *arm64*) VARIANT="cpu-arm" ;;
     *)       VARIANT="cpu-intel" ;;
   esac
@@ -102,8 +123,13 @@ log "Kompile platform build"
 log "  Platform:        ${PLATFORM}"
 log "  Variant:         ${VARIANT}"
 log "  Native targets:  ${NATIVE_TARGETS}"
-log "  DL4J root:       ${DL4J_PROJECT_ROOT:-<not set — will clone>}"
+log "  DL4J source:     ${DL4J_MAVEN_REPOSITORY_URL:-source checkout}"
+log "  DL4J version:    ${ND4J_VERSION}"
+log "  DL4J SDK assets: ${DL4J_SDX_ASSETS_DIR:-source build}"
+log "  DL4J root:       ${DL4J_PROJECT_ROOT:-<not set — will clone in source mode>}"
 log "  DL4J branch:     ${DL4J_BRANCH}"
+log "  Publish Maven:   ${KOMPILE_PUBLISH}"
+log "  Publish target:  ${KOMPILE_DEPLOY_REPOSITORY_URL:-${DL4J_MAVEN_REPOSITORY_URL:-<not configured>}}"
 log "  Kompile branch:  ${KOMPILE_BRANCH}"
 log "  GraalVM:         ${GRAALVM_HOME:-<not found>}"
 log "  Skip DL4J:       ${SKIP_DL4J}"

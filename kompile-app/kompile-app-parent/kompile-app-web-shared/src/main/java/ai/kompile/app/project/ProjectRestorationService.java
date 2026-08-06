@@ -16,6 +16,7 @@ import ai.kompile.project.KompileProjectManifest;
 import ai.kompile.project.KompileProjectModel;
 import ai.kompile.project.KompileProjectNoteSyncConnection;
 import ai.kompile.project.KompileProjectStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,6 +54,14 @@ public class ProjectRestorationService {
     private final NoteSyncConnectionRepository connections;
     private final KompileProjectStore store;
 
+    /**
+     * Injection constructor. The {@code @Autowired} marker is load-bearing for AOT: this class has
+     * a second, package-private constructor as a test seam, and while the runtime resolver happily
+     * prefers the public one, Spring's build-time resolver refuses to choose between two
+     * unannotated candidates and looks for a no-arg constructor instead — which fails the native
+     * image build, not the JVM run. Any bean here that grows a second constructor needs this too.
+     */
+    @Autowired
     public ProjectRestorationService(
             ProjectBackendService backend,
             FactSheetService factSheets,
@@ -60,6 +69,7 @@ public class ProjectRestorationService {
         this(backend, factSheets, connections, new KompileProjectStore());
     }
 
+    /** Test seam — lets a test supply a store rooted somewhere other than the real project home. */
     ProjectRestorationService(
             ProjectBackendService backend,
             FactSheetService factSheets,

@@ -3,6 +3,9 @@
 
     <!-- Public Hugging Face discovery and app-owned model transfer only. Inference remains local. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".KompileChatApplication"
@@ -13,6 +16,24 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KompileChatLocal"
         android:usesCleartextTraffic="false">
+
+        <!--
+            GGUF/GGML import initializes a Graal VM and CPU JavaCPP JNI libraries. The important
+            service binding keeps long native/driver work out of cached-process state, keeps that
+            JavaVM/class-cache state out of ART's accelerator process, and terminates the private
+            process after its immutable SDZ/cache result is returned.
+        -->
+        <service
+            android:name=".model.SdxModelPreparationService"
+            android:exported="false"
+            android:process=":sdx_model_import" />
+
+        <!-- Keeps a user-started import foreground while the activity is backgrounded. -->
+        <service
+            android:name=".HuggingFaceImportForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <activity
             android:name=".MainActivity"

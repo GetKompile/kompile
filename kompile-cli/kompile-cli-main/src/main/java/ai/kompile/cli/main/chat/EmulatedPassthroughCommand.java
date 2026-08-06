@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.mcp.stdio.TaskRecord;
 import ai.kompile.cli.mcp.stdio.TaskRegistry;
@@ -133,6 +134,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--model", "-m"}, description = "Model passed to the agent CLI (e.g. haiku, gpt-5.2-codex, anthropic/claude-haiku-4-5)")
     String model;
+
+    @CommandLine.Option(names = {"--thinking", "--effort"}, description =
+            "Thinking/effort override (Codex reasoning effort, Claude effort; OpenCode variants apply to managed run tasks)")
+    String thinking;
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final PassthroughStreamParser parser = new PassthroughStreamParser();
@@ -4996,7 +5001,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         AgentFlagOverrides.addInteractivePermissionBypassFlags(
                 cmd, agent, skipPermissions,
                 workingDir == null ? null : java.nio.file.Path.of(workingDir));
-        AgentFlagOverrides.addModelFlag(cmd, agent, model);
+        java.nio.file.Path resolvedWorkingDir = workingDir == null
+                ? null : java.nio.file.Path.of(workingDir);
+        AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
+                agent, resolvedWorkingDir, model, thinking);
+        cmd.addAll(AgentLaunchDefaults.commandArguments(
+                agent, selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.INTERACTIVE));
         return cmd;
     }
 

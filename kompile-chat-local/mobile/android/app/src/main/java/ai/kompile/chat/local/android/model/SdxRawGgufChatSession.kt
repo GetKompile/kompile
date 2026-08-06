@@ -2,340 +2,392 @@ package ai.kompile.chat.local.android.model
 
 import android.content.Context
 import android.system.Os
-import android.util.Log
 import ai.kompile.chat.local.ChatException
-import ai.kompile.chat.local.GenOptions
-import ai.kompile.chat.local.Message
-import com.sun.jna.Library
-import com.sun.jna.Native
-import com.sun.jna.Pointer
-import com.sun.jna.ptr.PointerByReference
-import org.json.JSONArray
+import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
+import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
+import org.bytedeco.javacpp.BytePointer
+import org.bytedeco.javacpp.Pointer
 import org.json.JSONObject
+import org.nd4j.dsp.model.SdxTargetProfile
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
-import java.util.function.Consumer
 
-/**
- * Direct GGUF/GGML chat session backed by DL4J's libsdx_llm Graal native image.
- *
- * The C ABI binds a runtime/model pair to the OS thread that creates it, so every
- * create/load/render/generate/free/destroy operation is serialized on one dedicated
- * thread. A downloaded file is not considered usable merely because it exists: opening
- * this session loads it through SDX, and activation additionally performs a real decode.
- */
-internal class SdxRawGgufChatSession private constructor(
-    private val modelFile: File,
-    private val executor: ExecutorService,
-    private val runtimeThread: AtomicReference<Thread>
-) : PlatformLocalChatSession {
+private const val SDX_ERROR_INITIAL_CAPACITY = 2048
+private const val SDX_LLM_LIBRARY_FILE_NAME = "libsdx_llm.so"
 
-    /** Minimal Android binding for the canonical sdx_llm_c.h ABI. */
-    internal interface SdxLlmBinding : Library {
-        fun sdxLlmCreateRuntime(): Pointer?
-        fun sdxLlmDestroyRuntime(runtime: Pointer): Int
-        fun sdxLlmAbiVersion(runtime: Pointer): Int
-        fun sdxLlmLoadModel(
-            runtime: Pointer,
-            modelPath: String,
-            tokenizerPath: String?,
-            optionsJson: String?
-        ): Pointer?
-        fun sdxLlmUnloadModel(runtime: Pointer, model: Pointer): Int
-        fun sdxLlmRenderChatPrompt(
-            runtime: Pointer,
-            model: Pointer,
-            messagesJson: String,
-            addGenerationPrompt: Int,
-            outPrompt: PointerByReference
-        ): Int
-        fun sdxLlmGenerate(
-            runtime: Pointer,
-            model: Pointer,
-            prompt: String,
-            optionsJson: String?,
-            outText: PointerByReference
-        ): Int
-        fun sdxLlmFree(runtime: Pointer, pointer: Pointer)
-        fun sdxLlmGetLastError(runtime: Pointer, buffer: ByteArray, capacity: Int): Int
-    }
+/** One Android loader for both GGUF ingestion and canonical SDZ execution workers. */
+internal object SdxAndroidLlmLibrary {
 
-    private var binding: SdxLlmBinding? = null
-    private var runtime: Pointer? = null
-    private var model: Pointer? = null
-    private val closed = AtomicBoolean(false)
-
-    override val routeName: String = "SDX_GGUF_AOT"
-    override val modelId: String = "sdx-gguf:${modelFile.name}"
-
-    override fun generate(
-        messages: List<Message>,
-        opts: GenOptions,
-        onChunk: Consumer<String>?
-    ): String = onRuntimeThread("generate") {
-        val native = requireNotNull(binding) { "SDX binding is not initialized" }
-        val rt = requireNotNull(runtime) { "SDX runtime is not initialized" }
-        val loadedModel = requireNotNull(model) { "SDX model is not initialized" }
-
-        val promptRef = PointerByReference()
-        val renderStatus = native.sdxLlmRenderChatPrompt(
-            rt,
-            loadedModel,
-            messagesJson(messages),
-            1,
-            promptRef
-        )
-        if (renderStatus != STATUS_OK) {
-            throw ChatException(
-                "SDX chat-template rendering failed (status=$renderStatus): ${lastError(native, rt)}"
-            )
-        }
-        val prompt = readAndFree(native, rt, promptRef.value, "chat prompt")
-
-        val outputRef = PointerByReference()
-        val generateStatus = native.sdxLlmGenerate(
-            rt,
-            loadedModel,
-            prompt,
-            opts.toOptionsJson(),
-            outputRef
-        )
-        if (generateStatus != STATUS_OK) {
-            throw ChatException(
-                "SDX generation failed (status=$generateStatus): ${lastError(native, rt)}"
-            )
-        }
-        readAndFree(native, rt, outputRef.value, "generated text").trim().also { text ->
-            if (text.isNotEmpty()) onChunk?.accept(text)
-        }
-    }
-
-    override fun cancel() {
-        // ABI v2 generation is blocking and has no cancellation entry point. The dedicated
-        // runtime thread still prevents concurrent lifecycle calls or cross-thread isolate use.
-    }
-
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        var cleanupFailure: ChatException? = null
-        try {
-            if (Thread.currentThread() === runtimeThread.get()) {
-                releaseNativeState()
-            } else {
-                val closeTask = executor.submit { releaseNativeState() }
-                try {
-                    closeTask.get(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                } catch (timeout: TimeoutException) {
-                    closeTask.cancel(true)
-                    cleanupFailure = ChatException(
-                        "Timed out waiting for the SDX runtime thread to release ${modelFile.name}",
-                        timeout
-                    )
-                }
-            }
-        } catch (interrupted: InterruptedException) {
-            Thread.currentThread().interrupt()
-            cleanupFailure = ChatException("Interrupted while closing the SDX model session", interrupted)
-        } catch (failed: ExecutionException) {
-            cleanupFailure = ChatException(
-                "SDX model cleanup failed",
-                failed.cause ?: failed
-            )
-        } catch (failure: ChatException) {
-            cleanupFailure = failure
-        } finally {
-            executor.shutdownNow()
-            if (!executor.awaitTermination(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS) && cleanupFailure == null) {
-                cleanupFailure = ChatException(
-                    "SDX runtime thread did not terminate for ${modelFile.name}"
-                )
-            }
-        }
-        cleanupFailure?.let {
-            Log.e(TAG, it.message, it)
-            throw it
-        }
-    }
-
-    private fun initialize(context: Context, temperature: Float, maxTokens: Int) {
-        val nativeDir = File(context.applicationInfo.nativeLibraryDir)
-        val library = File(nativeDir, LIB_FILE_NAME)
+    fun configure(context: Context): File {
+        val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
+        val library = File(nativeDirectory, SDX_LLM_LIBRARY_FILE_NAME)
         if (!library.isFile) {
             throw ChatException(
-                "$LIB_FILE_NAME is missing from this APK (${nativeDir.absolutePath}); " +
-                    "build it with the DL4J sdx-aot android-aot profile"
+                "$SDX_LLM_LIBRARY_FILE_NAME is missing from this APK " +
+                    "(${nativeDirectory.absolutePath}); build it with the DL4J sdx-aot android-aot profile"
             )
         }
 
-        // Graal's isolate snapshots process environment during creation. Set the side-library
-        // directory before Native.load and before sdxLlmCreateRuntime.
-        Os.setenv("SDX_NATIVE_LIB_DIR", nativeDir.absolutePath, true)
-        System.setProperty("jna.library.path", nativeDir.absolutePath)
-
-        val native = Native.load(library.absolutePath, SdxLlmBinding::class.java)
-        binding = native
-        val rt = native.sdxLlmCreateRuntime()
-            ?: throw ChatException("SDX failed to create its Android runtime")
-        runtime = rt
-
-        val actualAbi = native.sdxLlmAbiVersion(rt)
-        if (actualAbi != EXPECTED_ABI_VERSION) {
-            throw ChatException(
-                "libsdx_llm ABI mismatch: app=$EXPECTED_ABI_VERSION library=$actualAbi"
-            )
-        }
-
-        val loadOptions = JSONObject()
-            .put("maxNewTokens", maxTokens.coerceAtLeast(1))
-            .put("sampling", JSONObject().put("temperature", temperature.toDouble()))
-            .toString()
-        model = native.sdxLlmLoadModel(rt, modelFile.absolutePath, null, loadOptions)
-            ?: throw ChatException(
-                "SDX could not load ${modelFile.name}: ${lastError(native, rt)}"
-            )
+        // Graal snapshots this process-local environment when it creates the isolate.
+        Os.setenv("SDX_NATIVE_LIB_DIR", nativeDirectory.absolutePath, true)
+        check(library.isFile) { "SDX Android runtime is missing: ${library.absolutePath}" }
+        return library
     }
 
-    private fun releaseNativeState() {
-        val native = binding
-        val rt = runtime
-        val loadedModel = model
-        model = null
-        runtime = null
-        binding = null
-        if (native == null || rt == null) return
+    fun bind(library: File): SdxAndroidLlmAbi {
+        check(library.isFile) { "SDX Android runtime is missing: ${library.absolutePath}" }
+        return SdxAndroidLlmAbi
+    }
+}
 
-        var failure: ChatException? = null
-        if (loadedModel != null) {
-            val unloadStatus = native.sdxLlmUnloadModel(rt, loadedModel)
-            if (unloadStatus != STATUS_OK) {
-                failure = ChatException(
-                    "SDX model unload failed (status=$unloadStatus): ${lastError(native, rt)}"
-                )
-            }
-        }
-        val destroyStatus = native.sdxLlmDestroyRuntime(rt)
-        if (destroyStatus != STATUS_OK) {
-            // The isolate may already be invalid after destroy returns, so do not call
-            // sdxLlmGetLastError with this runtime pointer.
-            val destroyFailure = ChatException(
-                "SDX runtime destroy failed (status=$destroyStatus)"
-            )
-            if (failure == null) failure = destroyFailure else failure.addSuppressed(destroyFailure)
-        }
-        failure?.let { throw it }
+internal enum class PreparationStage {
+    CONVERT_AND_CACHE_SDZ,
+    TARGET_CACHE_READY,
+    LOAD_ACCELERATOR
+}
+
+internal data class PreparedModelInfo(
+    val cacheHit: Boolean,
+    val sourceSha256: String,
+    val canonicalSdzPath: String,
+    val canonicalSdzBytes: Long,
+    val modelPath: String,
+    val tokenizerPath: String,
+    val compileKey: String,
+    val targetProfile: String,
+    val targetSoc: String,
+    val contextLength: Int,
+    val maxPrefillLength: Int
+)
+
+internal fun readCompleteSdxLastError(readInto: (ByteArray) -> Int): String {
+    val initial = ByteArray(SDX_ERROR_INITIAL_CAPACITY)
+    val requiredLength = readInto(initial)
+    if (requiredLength == 0) return "no native error detail"
+    if (requiredLength < 0) {
+        throw ChatException("SDX returned an invalid last-error length: $requiredLength")
+    }
+    if (requiredLength < initial.size) {
+        return String(initial, 0, requiredLength, StandardCharsets.UTF_8)
+    }
+    if (requiredLength == Int.MAX_VALUE) {
+        throw ChatException("SDX last-error detail is too large to allocate: $requiredLength bytes")
     }
 
-    private fun <T> onRuntimeThread(action: String, block: () -> T): T {
-        if (closed.get()) throw ChatException("SDX model session is closed")
-        if (Thread.currentThread() === runtimeThread.get()) return block()
-        return try {
-            executor.submit(Callable { block() }).get()
-        } catch (failure: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw ChatException("Interrupted while waiting for SDX to $action")
-        } catch (failure: ExecutionException) {
-            val cause = failure.cause ?: failure
-            if (cause is ChatException) throw cause
-            throw ChatException(
-                "SDX $action failed: ${cause.message ?: cause.javaClass.simpleName}"
-            )
-        }
+    val complete = ByteArray(requiredLength + 1)
+    val confirmedLength = readInto(complete)
+    if (confirmedLength < 0 || confirmedLength >= complete.size) {
+        throw ChatException(
+            "SDX last-error length changed while reading it: " +
+                "required=$requiredLength confirmed=$confirmedLength capacity=${complete.size}"
+        )
+    }
+    return String(complete, 0, confirmedLength, StandardCharsets.UTF_8)
+}
+
+/**
+ * Ingestion-only GGUF/GGML adapter.
+ *
+ * The Graal C ABI imports the container directly to canonical SDZ and populates the normal
+ * immutable target cache. It never owns a chat session. Import runs in an app-private process
+ * because the native image side-loads CPU JavaCPP JNI libraries whose JavaVM/class caches must
+ * not coexist with ART's accelerator JavaCPP runtime. Once that process exits, callers open the
+ * returned canonical SDZ through the same [PlatformLocalChatModelFactory] used for every model.
+ */
+internal object SdxGgufModelImporter {
+
+    private const val STATUS_OK = 0
+    private const val MIN_MODEL_BYTES = 16L
+
+    fun prepare(
+        context: Context,
+        modelPath: String,
+        verifiedSourceSha256: String? = null,
+        verifiedSourceBytes: Long? = null,
+        onPreparationStage: (PreparationStage) -> Unit = {}
+    ): PreparedModelInfo {
+        val model = File(modelPath).canonicalFile
+        validateModelFile(model)
+        val prepared = SdxModelPreparationClient.prepare(
+            context.applicationContext,
+            model,
+            verifiedSourceSha256,
+            verifiedSourceBytes,
+            onPreparationStage
+        )
+        onPreparationStage(PreparationStage.TARGET_CACHE_READY)
+        return prepared
     }
 
-    private fun messagesJson(messages: List<Message>): String {
-        if (messages.isEmpty()) throw ChatException("Conversation has no messages")
-        val array = JSONArray()
-        messages.forEach { message ->
-            val role = when (message.role()) {
-                "system", "user", "assistant" -> message.role()
-                "tool_result" -> "user"
-                else -> "user"
-            }
-            array.put(
-                JSONObject()
-                    .put("role", role)
-                    .put("content", message.content())
-            )
-        }
-        return array.toString()
-    }
-
-    private fun readAndFree(
-        native: SdxLlmBinding,
-        rt: Pointer,
-        pointer: Pointer?,
-        description: String
-    ): String {
-        val value = pointer
-            ?: throw ChatException("SDX returned a null $description pointer")
-        return try {
-            value.getString(0, StandardCharsets.UTF_8.name()) ?: ""
-        } finally {
-            native.sdxLlmFree(rt, value)
-        }
-    }
-
-    private fun lastError(native: SdxLlmBinding, rt: Pointer): String {
-        val buffer = ByteArray(ERROR_BUFFER_BYTES)
-        val fullLength = native.sdxLlmGetLastError(rt, buffer, buffer.size)
-        if (fullLength <= 0) return "no native error detail"
-        val length = minOf(fullLength, buffer.size - 1)
-        return String(buffer, 0, length, StandardCharsets.UTF_8)
-    }
-
-    companion object {
-        private const val TAG = "SdxRawGgufSession"
-        private const val LIB_FILE_NAME = "libsdx_llm.so"
-        private const val EXPECTED_ABI_VERSION = 2
-        private const val STATUS_OK = 0
-        private const val ERROR_BUFFER_BYTES = 2048
-        private const val CLOSE_TIMEOUT_SECONDS = 10L
-        private const val MIN_MODEL_BYTES = 16L
-
-        fun open(
+        /** Runs only in [SdxModelPreparationService]'s private process. */
+        internal fun prepareInImporterProcess(
             context: Context,
             modelPath: String,
-            temperature: Float,
-            maxTokens: Int
-        ): SdxRawGgufChatSession {
+            verifiedSourceSha256: String?,
+            verifiedSourceBytes: Long?,
+            operation: NativeOperationTransaction,
+            onPreparationStage: (PreparationStage) -> Unit
+        ): PreparedModelInfo {
+            check(
+                android.app.Application.getProcessName() ==
+                    sdxImporterProcessName(context.packageName)
+            ) {
+                "GGUF preparation attempted outside the app-private SDX importer process."
+            }
             val model = File(modelPath).canonicalFile
             validateModelFile(model)
+            val library = SdxAndroidLlmLibrary.configure(context)
 
-            val runtimeThread = AtomicReference<Thread>()
-            val executor = Executors.newSingleThreadExecutor { runnable ->
-                Thread(runnable, "sdx-gguf-runtime").apply {
-                    isDaemon = true
-                    runtimeThread.set(this)
+            // This is the same cache root used by MobileModelArtifactResolver. The generated
+            // SDZ is moved into its immutable source store; target compilation references that
+            // canonical file instead of copying the full model again.
+            val modelCache = File(context.noBackupFilesDir, "sdx-model-cache")
+            require(modelCache.mkdirs() || modelCache.isDirectory) {
+                "Android could not create the app-owned SDX model cache: ${modelCache.absolutePath}"
+            }
+            return prepareInIsolate(
+                library,
+                model,
+                modelCache,
+                verifiedSourceSha256,
+                verifiedSourceBytes,
+                operation,
+                onPreparationStage
+            )
+        }
+
+        private fun prepareInIsolate(
+            library: File,
+            model: File,
+            modelCache: File,
+            verifiedSourceSha256: String?,
+            verifiedSourceBytes: Long?,
+            operation: NativeOperationTransaction,
+            onPreparationStage: (PreparationStage) -> Unit
+        ): PreparedModelInfo {
+            operation.checkpoint(NativeOperationCheckpoint.LOAD_IMPORTER_TRANSPORT)
+            val native = SdxAndroidLlmLibrary.bind(library)
+            operation.checkpoint(NativeOperationCheckpoint.CREATE_IMPORTER_RUNTIME)
+            val runtime = native.sdxLlmCreateRuntime()
+                ?: throw ChatException("SDX failed to create its Android import runtime")
+            var primaryFailure: Throwable? = null
+            try {
+                operation.checkpoint(NativeOperationCheckpoint.QUERY_IMPORTER_ABI)
+                val actualAbi = native.sdxLlmAbiVersion(runtime)
+                if (actualAbi != SdxAndroidLlmAbi.ABI_VERSION) {
+                    throw ChatException(
+                        "libsdx_llm ABI mismatch: app=${SdxAndroidLlmAbi.ABI_VERSION} library=$actualAbi"
+                    )
+                }
+
+                operation.checkpoint(NativeOperationCheckpoint.CONVERT_OPTIMIZE_SDZ)
+                onPreparationStage(PreparationStage.CONVERT_AND_CACHE_SDZ)
+                val preparationRef = SdxPointerByReference()
+                val status = native.sdxLlmPrepareGguf(
+                    runtime,
+                    model.absolutePath,
+                    null,
+                    BuildConfig.SDX_TARGET_PROFILE,
+                    modelCache.absolutePath,
+                    SdxRawGgufContract.preparationOptionsJson(
+                        verifiedSourceSha256,
+                        verifiedSourceBytes
+                    ),
+                    preparationRef
+                )
+                if (status != STATUS_OK) {
+                    throw ChatException(
+                        "SDX could not prepare ${model.name} for " +
+                            "${BuildConfig.SDX_TARGET_PROFILE} (status=$status): " +
+                            lastError(operation, native, runtime)
+                    )
+                }
+                operation.checkpoint(NativeOperationCheckpoint.READ_PREPARED_MODEL)
+                return parsePreparedModel(
+                    JSONObject(
+                        readAndFree(
+                            operation,
+                            native,
+                            runtime,
+                            preparationRef.value,
+                            "prepared model"
+                        )
+                    ),
+                    modelCache,
+                    verifiedSourceSha256
+                )
+            } catch (failure: Throwable) {
+                primaryFailure = failure
+                throw failure
+            } finally {
+                var destroyIsJournaled = false
+                try {
+                    operation.checkpoint(NativeOperationCheckpoint.DESTROY_IMPORTER_RUNTIME)
+                    destroyIsJournaled = true
+                } catch (checkpointFailure: Throwable) {
+                    if (primaryFailure == null) {
+                        throw checkpointFailure
+                    }
+                    primaryFailure.addSuppressed(checkpointFailure)
+                }
+                if (destroyIsJournaled) {
+                    val destroyStatus = native.sdxLlmDestroyRuntime(runtime)
+                    if (destroyStatus != STATUS_OK) {
+                        val cleanupFailure = ChatException(
+                            "SDX import runtime destroy failed (status=$destroyStatus)"
+                        )
+                        if (primaryFailure == null) {
+                            throw cleanupFailure
+                        }
+                        primaryFailure.addSuppressed(cleanupFailure)
+                    }
                 }
             }
-            val session = SdxRawGgufChatSession(model, executor, runtimeThread)
-            try {
-                session.onRuntimeThread("load ${model.name}") {
-                    session.initialize(context.applicationContext, temperature, maxTokens)
-                }
-                return session
-            } catch (failure: Throwable) {
-                runCatching {
-                    executor.submit { session.releaseNativeState() }.get()
-                }
-                executor.shutdownNow()
-                if (failure is ChatException) throw failure
+        }
+
+        private fun parsePreparedModel(
+            json: JSONObject,
+            modelCache: File,
+            expectedSourceSha256: String?
+        ): PreparedModelInfo {
+            val schema = json.optString(SdxRawGgufContract.PREPARED_SCHEMA_FIELD, "")
+            val target = json.optString(SdxRawGgufContract.TARGET_PROFILE_FIELD, "")
+            val executionProvider = json.optString(
+                SdxRawGgufContract.EXECUTION_PROVIDER_FIELD,
+                ""
+            )
+            val expectedProvider = SdxTargetProfile
+                .fromId(BuildConfig.SDX_TARGET_PROFILE)
+                .platformProvider()
+                .providerId()
+            val importResourcesReleased = json.optBoolean(
+                SdxRawGgufContract.IMPORT_RESOURCES_RELEASED_FIELD,
+                false
+            )
+            if (schema != SdxRawGgufContract.PREPARED_SCHEMA ||
+                target != BuildConfig.SDX_TARGET_PROFILE ||
+                executionProvider != expectedProvider ||
+                !importResourcesReleased
+            ) {
                 throw ChatException(
-                    "SDX could not open ${model.name}: " +
-                        (failure.message ?: failure.javaClass.simpleName)
+                    "SDX preparation proof is invalid: schema='$schema', target='$target', " +
+                        "executionProvider='$executionProvider', expectedProvider='$expectedProvider', " +
+                        "importResourcesReleased=$importResourcesReleased"
                 )
             }
+
+            val sourceSha256 = json.getString(SdxRawGgufContract.SOURCE_SHA256_FIELD)
+            if (expectedSourceSha256 != null &&
+                !sourceSha256.equals(expectedSourceSha256, ignoreCase = true)
+            ) {
+                throw ChatException(
+                    "SDX prepared source SHA-256 does not match the verified download: " +
+                        "expected=$expectedSourceSha256 actual=$sourceSha256"
+                )
+            }
+
+            val cacheRoot = File(modelCache, "v1").canonicalFile
+            val canonicalSdz = requireCacheFile(
+                cacheRoot,
+                json.getString(SdxRawGgufContract.CANONICAL_SDZ_PATH_FIELD),
+                "canonical SDZ"
+            )
+            val tokenizer = requireCacheFile(
+                cacheRoot,
+                json.getString(SdxRawGgufContract.TOKENIZER_PATH_FIELD),
+                "tokenizer"
+            )
+            val runtimeModel = requireCacheRuntimeModel(
+                cacheRoot,
+                json.getString(SdxRawGgufContract.MODEL_PATH_FIELD)
+            )
+            val declaredCanonicalBytes = json.getLong(
+                SdxRawGgufContract.CANONICAL_SDZ_BYTES_FIELD
+            )
+            if (declaredCanonicalBytes != canonicalSdz.length()) {
+                throw ChatException(
+                    "SDX canonical SDZ size changed after preparation: declared=" +
+                        "$declaredCanonicalBytes actual=${canonicalSdz.length()}"
+                )
+            }
+            return PreparedModelInfo(
+                cacheHit = json.getBoolean(SdxRawGgufContract.CACHE_HIT_FIELD),
+                sourceSha256 = sourceSha256,
+                canonicalSdzPath = canonicalSdz.absolutePath,
+                canonicalSdzBytes = declaredCanonicalBytes,
+                modelPath = runtimeModel.absolutePath,
+                tokenizerPath = tokenizer.absolutePath,
+                compileKey = json.getString(SdxRawGgufContract.COMPILE_KEY_FIELD),
+                targetProfile = target,
+                targetSoc = json.getString(SdxRawGgufContract.TARGET_SOC_FIELD),
+                contextLength = json.getInt(SdxRawGgufContract.CONTEXT_LENGTH_FIELD),
+                maxPrefillLength = json.getInt(SdxRawGgufContract.MAX_PREFILL_LENGTH_FIELD)
+            )
+        }
+
+        private fun requireCacheFile(root: File, path: String, description: String): File {
+            val candidate = File(path).canonicalFile
+            requireInsideCache(root, candidate, description)
+            if (!candidate.isFile || !candidate.canRead()) {
+                throw ChatException(
+                    "Prepared $description is not a readable file: ${candidate.absolutePath}"
+                )
+            }
+            return candidate
+        }
+
+        private fun requireCacheRuntimeModel(root: File, path: String): File {
+            val candidate = File(path).canonicalFile
+            requireInsideCache(root, candidate, "runtime model")
+            if ((!candidate.isFile && !candidate.isDirectory) || !candidate.canRead()) {
+                throw ChatException(
+                    "Prepared runtime model is not a readable file or directory: " +
+                        candidate.absolutePath
+                )
+            }
+            return candidate
+        }
+
+        private fun requireInsideCache(root: File, candidate: File, description: String) {
+            val rootPath = root.absolutePath
+            val candidatePath = candidate.absolutePath
+            if (candidatePath != rootPath &&
+                !candidatePath.startsWith(rootPath + File.separator)
+            ) {
+                throw ChatException(
+                    "Prepared $description escaped the app-owned SDX cache: $candidatePath"
+                )
+            }
+        }
+
+        private fun readAndFree(
+            operation: NativeOperationTransaction,
+            native: SdxAndroidLlmAbi,
+            runtime: Pointer,
+            pointer: Pointer?,
+            description: String
+        ): String {
+            val value = pointer
+                ?: throw ChatException("SDX returned a null $description pointer")
+            return try {
+                BytePointer(value).string ?: ""
+            } finally {
+                operation.checkpoint(NativeOperationCheckpoint.FREE_IMPORTER_RESULT)
+                native.sdxLlmFree(runtime, value)
+            }
+        }
+
+        private fun lastError(
+            operation: NativeOperationTransaction,
+            native: SdxAndroidLlmAbi,
+            runtime: Pointer
+        ): String = readCompleteSdxLastError { buffer ->
+            operation.checkpoint(NativeOperationCheckpoint.QUERY_IMPORTER_LAST_ERROR)
+            native.sdxLlmGetLastError(runtime, buffer, buffer.size)
         }
 
         fun supports(modelPath: String): Boolean {
@@ -380,5 +432,4 @@ internal class SdxRawGgufChatSession private constructor(
         private const val GGML_MAGIC = 0x67676D6C
         private const val GGMF_MAGIC = 0x67676D66
         private const val GGJT_MAGIC = 0x67676A74
-    }
 }

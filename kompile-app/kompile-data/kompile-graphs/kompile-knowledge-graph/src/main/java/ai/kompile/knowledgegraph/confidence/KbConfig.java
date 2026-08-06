@@ -113,10 +113,22 @@ public class KbConfig {
     private int gnnMaxEdges = 100_000;
     /** Number of score metadata updates written in one store call. */
     private int gnnScoreBatchSize = 500;
-    /** Contribution of a node's own features during one-hop aggregation. */
+    /** Initial trainable scale for a node's own features. */
     private double gnnSelfWeight = 0.7;
-    /** Contribution of the weighted neighbor mean during one-hop aggregation. */
+    /** Initial trainable scale for the neighbor mean. */
     private double gnnNeighborWeight = 0.3;
+    /** Maximum training epochs for the bounded per-crawl link predictor. */
+    private int gnnTrainingEpochs = 30;
+    /** Initial SGD learning rate for the per-crawl link predictor. */
+    private double gnnLearningRate = 0.03;
+    /** Deterministic absent-pair negatives requested per retained positive edge. */
+    private int gnnNegativeSamplesPerPositive = 1;
+    /** Maximum retained positive edges used for training; all resolvable edges are still scored. */
+    private int gnnMaxPositiveTrainingEdges = 20_000;
+    /** RNG seed for reproducible train/validation splits and negative sampling. */
+    private long gnnTrainingSeed = 1_729L;
+    /** L2 regularization applied during bounded model training. */
+    private double gnnL2 = 1.0e-4;
 
     // ── Staging → serving auto-load bridge ─────────────────────────────────────────
     /** Poll staging for the active model and auto-load it into the serving subprocess. */
@@ -320,6 +332,12 @@ public class KbConfig {
         m.put("kbGnnScoreBatchSize", gnnScoreBatchSize);
         m.put("kbGnnSelfWeight", gnnSelfWeight);
         m.put("kbGnnNeighborWeight", gnnNeighborWeight);
+        m.put("kbGnnTrainingEpochs", gnnTrainingEpochs);
+        m.put("kbGnnLearningRate", gnnLearningRate);
+        m.put("kbGnnNegativeSamplesPerPositive", gnnNegativeSamplesPerPositive);
+        m.put("kbGnnMaxPositiveTrainingEdges", gnnMaxPositiveTrainingEdges);
+        m.put("kbGnnTrainingSeed", gnnTrainingSeed);
+        m.put("kbGnnL2", gnnL2);
         m.put("kbSimMaxNodesPerRun", simMaxNodesPerRun);
         m.put("kbSimMaxEdgesPerRun", simMaxEdgesPerRun);
         m.put("kbPrunePolicyMinBelief", prunePolicyMinBelief);
@@ -390,6 +408,15 @@ public class KbConfig {
         c.gnnScoreBatchSize = intf(root, "kbGnnScoreBatchSize", c.gnnScoreBatchSize, 1, 100_000);
         c.gnnSelfWeight = dbl(root, "kbGnnSelfWeight", c.gnnSelfWeight, 0.0, 1.0);
         c.gnnNeighborWeight = dbl(root, "kbGnnNeighborWeight", c.gnnNeighborWeight, 0.0, 1.0);
+        c.gnnTrainingEpochs = intf(root, "kbGnnTrainingEpochs", c.gnnTrainingEpochs, 1, 10_000);
+        c.gnnLearningRate = dbl(root, "kbGnnLearningRate", c.gnnLearningRate, 1.0e-6, 1.0);
+        c.gnnNegativeSamplesPerPositive = intf(root, "kbGnnNegativeSamplesPerPositive",
+                c.gnnNegativeSamplesPerPositive, 1, 16);
+        c.gnnMaxPositiveTrainingEdges = intf(root, "kbGnnMaxPositiveTrainingEdges",
+                c.gnnMaxPositiveTrainingEdges, 1, 1_000_000);
+        c.gnnTrainingSeed = lng(root, "kbGnnTrainingSeed", c.gnnTrainingSeed,
+                Long.MIN_VALUE, Long.MAX_VALUE);
+        c.gnnL2 = dbl(root, "kbGnnL2", c.gnnL2, 0.0, 10.0);
         c.simMaxNodesPerRun = intf(root, "kbSimMaxNodesPerRun", c.simMaxNodesPerRun, 1, 10_000_000);
         c.simMaxEdgesPerRun = intf(root, "kbSimMaxEdgesPerRun", c.simMaxEdgesPerRun, 1, 100_000_000);
         c.prunePolicyMinBelief = dbl(root, "kbPrunePolicyMinBelief", c.prunePolicyMinBelief, 0.0, 1.0);

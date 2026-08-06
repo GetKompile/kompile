@@ -49,7 +49,13 @@ import java.util.function.Function;
 public final class PartitionChunkExtractor implements StagedExtractor {
 
     private final Map<String, Document> chunks;
-    private final Function<Document, Graph> extractOne;
+    private final ContextualExtraction extractOne;
+
+    /** Extraction that can see why the shard was scheduled and the partition state so far. */
+    @FunctionalInterface
+    public interface ContextualExtraction {
+        Graph extract(Document document, PartitionMember member, EntityPartition partition);
+    }
 
     /**
      * @param chunks     chunk id to text, from {@link PartitionChunkTexts#index}
@@ -59,11 +65,19 @@ public final class PartitionChunkExtractor implements StagedExtractor {
      */
     public static PartitionChunkExtractor over(Map<String, Document> chunks,
                                                Function<Document, Graph> extractOne) {
+        Objects.requireNonNull(extractOne, "an extraction to run per chunk");
+        return new PartitionChunkExtractor(chunks,
+                (document, member, partition) -> extractOne.apply(document));
+    }
+
+    /** Context-aware form used by production partition extraction. */
+    public static PartitionChunkExtractor contextual(Map<String, Document> chunks,
+                                                      ContextualExtraction extractOne) {
         return new PartitionChunkExtractor(chunks, extractOne);
     }
 
     private PartitionChunkExtractor(Map<String, Document> chunks,
-                                    Function<Document, Graph> extractOne) {
+                                    ContextualExtraction extractOne) {
         this.chunks = chunks == null ? Map.of() : Map.copyOf(chunks);
         this.extractOne = Objects.requireNonNull(extractOne, "an extraction to run per chunk");
     }
@@ -82,7 +96,7 @@ public final class PartitionChunkExtractor implements StagedExtractor {
         if (text == null || text.isBlank()) {
             return null;
         }
-        return extractOne.apply(chunk);
+        return extractOne.extract(chunk, member, partition);
     }
 
     /** How many chunk ids this run can answer for. */

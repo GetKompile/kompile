@@ -19,13 +19,13 @@ package ai.kompile.app.services;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessArgs;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessLauncher;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
+import io.anserini.encoder.samediff.SameDiffEncoder;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -159,7 +159,7 @@ public class EncoderGraphPreWarmService {
             return;
         }
 
-        if (isOptCacheValid(modelPath)) {
+        if (SameDiffEncoder.hasValidOptimizationCache(modelPath)) {
             log.info("EncoderGraphPreWarmService: opt cache already valid for '{}' at {} — skipping",
                     modelId, modelPath);
             return;
@@ -189,32 +189,50 @@ public class EncoderGraphPreWarmService {
     // ── Path resolution ───────────────────────────────────────────────────────
 
     /**
-     * Resolve the absolute filesystem path to the {@code .sdz} model file, or
-     * {@code null} if it cannot be determined or does not exist on disk.
+     * Resolve the absolute filesystem path to a loadable model bundle, or
+     * {@code null} when either the model or its vocabulary/tokenizer is absent.
      *
-     * <p>Tries the registry entry's {@code path} directory first, then falls back to
-     * {@code <REGISTRY_BASE>/<modelId>/<modelFile>} — mirroring the two-candidate
-     * lookup in {@code RegistryBasedModelManager.loadBundleFromLocalCache}.
+     * <p>The directory and vocabulary fallback order exactly mirrors
+     * {@code RegistryBasedModelManager.loadBundleFromLocalCache}: model-id directory
+     * first; registry path only when that directory does not exist; configured vocab,
+     * then {@code vocab.txt}, then {@code tokenizer.json}.
      */
     Path resolveModelPath(String modelId) {
         try {
             Map<String, Object> info = modelInfoSource.apply(modelId);
             if (info == null) return null;
 
-            String modelFile = (String) info.get("modelFile");
-            if (modelFile == null || modelFile.isBlank()) return null;
+            String modelFile = stringValue(info.get("modelFile"), "model.sdz");
+            String vocabFile = stringValue(info.get("vocabFile"), "vocab.txt");
 
-            // Primary: registry entry's relative 'path' directory
+            // Primary: modelId as directory name, matching the actual loader.
+            Path modelDir = REGISTRY_BASE.resolve(modelId);
             Object relPathObj = info.get("path");
             String relPath = relPathObj instanceof String s ? s : null;
-            if (relPath != null && !relPath.isBlank()) {
-                Path candidate = REGISTRY_BASE.resolve(relPath).resolve(modelFile);
-                if (Files.exists(candidate)) return candidate;
+            if (!Files.exists(modelDir) && relPath != null && !relPath.isBlank()) {
+                Path alternate = REGISTRY_BASE.resolve(relPath);
+                if (Files.exists(alternate)) {
+                    modelDir = alternate;
+                }
             }
 
-            // Fallback: modelId as directory name
-            Path fallback = REGISTRY_BASE.resolve(modelId).resolve(modelFile);
-            if (Files.exists(fallback)) return fallback;
+            if (!Files.exists(modelDir)) return null;
+            Path modelPath = modelDir.resolve(modelFile);
+            if (!Files.isRegularFile(modelPath)) return null;
+
+            Path vocabularyPath = modelDir.resolve(vocabFile);
+            if (!Files.isRegularFile(vocabularyPath)) {
+                vocabularyPath = modelDir.resolve("vocab.txt");
+            }
+            if (!Files.isRegularFile(vocabularyPath)) {
+                vocabularyPath = modelDir.resolve("tokenizer.json");
+            }
+            if (!Files.isRegularFile(vocabularyPath)) {
+                log.debug("EncoderGraphPreWarmService: bundle for '{}' has model {} but no vocabulary/tokenizer",
+                        modelId, modelPath);
+                return null;
+            }
+            return modelPath;
 
         } catch (Exception e) {
             log.debug("EncoderGraphPreWarmService: error resolving model path for '{}': {}",
@@ -223,37 +241,10 @@ public class EncoderGraphPreWarmService {
         return null;
     }
 
-    // ── Cache-validity check ──────────────────────────────────────────────────
-
-    /**
-     * Returns {@code true} when a valid graph-optimization cache already exists for
-     * {@code modelPath} — i.e. both the {@code model.opt.sdz} file and a matching
-     * {@code model.opt.sdz.fp} fingerprint ({@code "<sizeBytes>,<lastModifiedMillis>"})
-     * are present and the fingerprint matches the current size+mtime of {@code modelPath}.
-     *
-     * <p><b>Filesystem check only.</b>  This mirrors the guard in
-     * {@code SameDiffEncoder.isOptCacheValid()} without duplicating any optimization
-     * logic.  The optimization itself always runs inside the {@link ModelInitSubprocessLauncher}
-     * subprocess via {@code SameDiffEncoder.loadSameDiffModel()} when the cache is absent.
-     */
-    static boolean isOptCacheValid(Path modelPath) {
-        try {
-            String fileName = modelPath.getFileName().toString();
-            int dot = fileName.lastIndexOf('.');
-            String optFileName = dot > 0
-                    ? fileName.substring(0, dot) + ".opt" + fileName.substring(dot)
-                    : fileName + ".opt";
-            Path optPath = modelPath.resolveSibling(optFileName);
-            Path fpPath  = optPath.resolveSibling(optPath.getFileName() + ".fp");
-
-            if (!Files.exists(optPath) || !Files.isRegularFile(optPath)) return false;
-            if (!Files.exists(fpPath)) return false;
-
-            String expected = Files.size(modelPath) + "," + Files.getLastModifiedTime(modelPath).toMillis();
-            String stored   = Files.readString(fpPath).trim();
-            return expected.equals(stored);
-        } catch (Exception e) {
-            return false;
+    private static String stringValue(Object value, String fallback) {
+        if (value instanceof String text && !text.isBlank()) {
+            return text;
         }
+        return fallback;
     }
 }

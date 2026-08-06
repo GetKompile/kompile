@@ -315,6 +315,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
     @Autowired(required = false)
     private EntityPartitionCrawlStep entityPartitionCrawlStep;
 
+    /** Read side used to hydrate deterministic/source-native graph facts before LLM extraction. */
+    @Autowired(required = false)
+    private EntityPartitionCrawlService entityPartitionCrawlService;
+
     // Extracted helper components
 
     @Autowired
@@ -1688,6 +1692,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 .factSheetName(originalRequest.getFactSheetName())
                 .sources(originalRequest.getSources())
                 .graphExtraction(originalRequest.getGraphExtraction())
+                .chunking(originalRequest.getChunking())
                 .vectorIndex(originalRequest.getVectorIndex())
                 .processingRoute(originalRequest.getProcessingRoute())
                 .runtimeConfig(originalRequest.getRuntimeConfig())
@@ -2026,7 +2031,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
             List<Future<?>> backgroundGraphFutures = new ArrayList<>();
 
             final List<Document> emailDocs = textConversionService.copyDocumentsForBackgroundGraph(allDocuments);
-            backgroundGraphFutures.add(backgroundGraphPool.submit(() -> {
+            Future<?> emailGraphFuture = backgroundGraphPool.submit(() -> {
                 try {
                     if (isCancelled(job)) return;
                     log.info("[Job {}] [BG] Email graph extraction starting", job.getJobId());
@@ -2050,9 +2055,10 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     }
                     trimNativeMemory(job, "GRAPH_PREP", "after releasing email graph documents");
                 }
-            }));
+            });
+            backgroundGraphFutures.add(emailGraphFuture);
 
-            backgroundGraphFutures.add(backgroundGraphPool.submit(() -> {
+            Future<?> documentGraphFuture = backgroundGraphPool.submit(() -> {
                 try {
                     if (isCancelled(job)) return;
                     log.info("[Job {}] [BG] Document graph extraction for {} documents",
@@ -2077,11 +2083,16 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                     }
                     trimNativeMemory(job, "GRAPH_PREP", "after releasing document graph inputs");
                 }
-            }));
+            });
+            backgroundGraphFutures.add(documentGraphFuture);
 
             if (crossDocumentRelationCallback != null && knowledgeGraphService != null) {
                 backgroundGraphFutures.add(backgroundGraphPool.submit(() -> {
                     try {
+                        // Cross-document rules consume nodes created by the source-native email and
+                        // document passes. Make that dependency explicit instead of racing all three.
+                        emailGraphFuture.get();
+                        documentGraphFuture.get();
                         if (isCancelled(job)) return;
                         Long factSheetId = jobFactSheetId(job);
                         log.info("[Job {}] [BG] Cross-document relation extraction starting (factSheetId={})",
@@ -2093,6 +2104,12 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                 "Cross-document relation extraction complete");
                         log.info("[Job {}] [BG] Cross-document relations: {} edges created (factSheetId={})",
                                 job.getJobId(), edgesCreated, factSheetId);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        if (!isCancelled(job)) {
+                            failPipelineStep(job, "GRAPH_PREP",
+                                    "Cross-document relation extraction interrupted while waiting for source-native graph preparation");
+                        }
                     } catch (Exception e) {
                         String errorDetail = e.getMessage() != null ? e.getMessage()
                                 : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
@@ -2179,12 +2196,26 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 vectorIndexFuture = startVectorIndexingFuture(job, chunksForIndex, indexConfig);
             }
 
+            // BARRIER: source-native identities and relations are candidate context for the LLM,
+            // not merely post-processing. Graph preparation still overlaps chunking and vector
+            // startup, but every deterministic producer must finish before model extraction begins.
+            for (int i = 0; i < backgroundGraphFutures.size(); i++) {
+                waitForBackgroundGraphFuture(job, backgroundGraphFutures.get(i),
+                        i + 1, backgroundGraphFutures.size());
+            }
+            emailDocs.clear();
+            docGraphDocs.clear();
+            UnifiedCrawlJob.PipelineStepProgress graphPrepStep = ensurePipelineStep(job, "GRAPH_PREP");
+            if (graphPrepStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.RUNNING
+                    || graphPrepStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.BACKPRESSURE) {
+                completePipelineStep(job, "GRAPH_PREP",
+                        Math.max(graphPrepStep.getCompletedItems().get(), graphPrepStep.getTotalItems().get()),
+                        "Rule-based graph preparation complete; deterministic graph state is ready for LLM extraction");
+            }
+            trimNativeMemory(job, "GRAPH_PREP", "before deterministic graph hydration");
+
             // Phase 6: LLM graph extraction
-            Graph unifiedGraph = new Graph();
-            unifiedGraph.setId(job.getJobId());
-            unifiedGraph.setEntities(new ArrayList<>());
-            unifiedGraph.setRelationships(new ArrayList<>());
-            unifiedGraph.setCommunities(new ArrayList<>());
+            Graph unifiedGraph = seedUnifiedGraph(job);
             // Set to true when extraction hits the wholesale-failure threshold (0 entities + too many
             // failed chunks). When true, downstream semantic steps are skipped — they are meaningless
             // without a semantic graph. Failed chunks are archived for a resumable re-run.
@@ -2346,22 +2377,6 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             if (isCancelled(job)) return;
 
-            // JOIN: wait for background graph work to finish
-            for (int i = 0; i < backgroundGraphFutures.size(); i++) {
-                waitForBackgroundGraphFuture(job, backgroundGraphFutures.get(i),
-                        i + 1, backgroundGraphFutures.size());
-            }
-            emailDocs.clear();
-            docGraphDocs.clear();
-            UnifiedCrawlJob.PipelineStepProgress graphPrepStep = ensurePipelineStep(job, "GRAPH_PREP");
-            if (graphPrepStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.RUNNING
-                    || graphPrepStep.getStatus().get() == UnifiedCrawlJob.PipelineStepStatus.BACKPRESSURE) {
-                completePipelineStep(job, "GRAPH_PREP",
-                        Math.max(graphPrepStep.getCompletedItems().get(), graphPrepStep.getTotalItems().get()),
-                        "Rule-based graph preparation complete");
-            }
-            trimNativeMemory(job, "GRAPH_PREP", "before entity resolution");
-
             if (isCancelled(job)) return;
 
             // Phase 6.5: Entity resolution
@@ -2380,8 +2395,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             0, 1, 0, 0, 0, 0, null, "Running entity resolution");
                     Long factSheetId = jobFactSheetId(job);
                     boolean useEmbeddingResolution = graphConfigForResolution.isEntityResolutionUseEmbeddings();
-                    double embeddingResolutionThreshold = graphConfigForResolution.getEntityResolutionEmbeddingThreshold() > 0
-                            ? graphConfigForResolution.getEntityResolutionEmbeddingThreshold() : 0.88;
+                    double embeddingResolutionThreshold =
+                            graphConfigForResolution.getEffectiveEmbeddingIdentitySimilarity();
                     if (useEmbeddingResolution) {
                         if (!memoryReady || hasNativeMemoryPressure(job, nativeMemoryWaitThresholdPercent)) {
                             String reason = memoryPressureDetail(job);
@@ -2640,7 +2655,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 // an entity with no coverage claim is one an answer drawn from this graph will be
                 // confidently wrong about, and that has to be visible next to the graph itself.
                 recordPartitionCoverage(job,
-                        entityPartitionCrawlStep.run(job, stepPlan, chunkedDocuments, graphConfig));
+                        entityPartitionCrawlStep.run(job, stepPlan, chunkedDocuments, graphConfig,
+                                unifiedGraph));
             }
 
             if (isCancelled(job)) return;
@@ -3000,6 +3016,49 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                 vectorIndexingHelper.setActiveCrawlJobId(null);
             }
         }
+    }
+
+    private Graph seedUnifiedGraph(UnifiedCrawlJob job) {
+        Long factSheetId = jobFactSheetId(job);
+        Graph persisted = entityPartitionCrawlService != null && factSheetId != null
+                ? entityPartitionCrawlService.currentGraph(factSheetId) : null;
+        Graph seeded = initializeUnifiedGraph(job, persisted);
+        int entities = seeded.getEntities() == null ? 0 : seeded.getEntities().size();
+        int relationships = seeded.getRelationships() == null ? 0
+                : seeded.getRelationships().size();
+        log.info("[Job {}] Seeded LLM extraction context with {} deterministic/persisted entities and {} relationships",
+                job == null ? "?" : job.getJobId(), entities, relationships);
+        if (job != null) {
+            recordEvent(job, "GRAPH_PREP", "INFO",
+                    "Deterministic graph state seeded before LLM extraction",
+                    "entities=" + entities + ", relationships=" + relationships
+                            + ", factSheetId=" + factSheetId);
+        }
+        return seeded;
+    }
+
+    static Graph initializeUnifiedGraph(UnifiedCrawlJob job, Graph persisted) {
+        Graph graph = persisted == null ? new Graph() : persisted;
+        String persistedRevision = graph.getId();
+        if (job != null && job.getJobId() != null) {
+            graph.setId(job.getJobId());
+        }
+        if (persistedRevision != null && !persistedRevision.equals(graph.getId())) {
+            graph.setParentGraphId(persistedRevision);
+        }
+        if (graph.getFactSheetId() == null && job != null && job.getRequest() != null) {
+            graph.setFactSheetId(job.getRequest().getFactSheetId());
+        }
+        if (graph.getEntities() == null) {
+            graph.setEntities(new ArrayList<>());
+        }
+        if (graph.getRelationships() == null) {
+            graph.setRelationships(new ArrayList<>());
+        }
+        if (graph.getCommunities() == null) {
+            graph.setCommunities(new ArrayList<>());
+        }
+        return graph;
     }
 
     private void waitForBackgroundGraphFuture(UnifiedCrawlJob job, Future<?> future, int index, int total) {

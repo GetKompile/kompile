@@ -17,6 +17,8 @@
 package ai.kompile.app.subprocess;
 
 import org.bytedeco.javacpp.Pointer;
+import org.nd4j.linalg.api.device.DeviceMemoryManager;
+import org.nd4j.linalg.api.device.DeviceDescriptor;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
@@ -473,14 +475,15 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     snapshot.gpuUsedMB, snapshot.gpuTotalMB,
                     String.format("%.1f", snapshot.gpuUsagePercent));
         } else if (gpuDeviceCount > 1) {
-            logger.error("  GPU(agg): {}MB / {}MB ({}%) across {} devices",
+            logger.error("  GPU(owned agg): {}MB / {}MB ({}%) across {} devices",
                     snapshot.gpuUsedMB, snapshot.gpuTotalMB,
                     String.format("%.1f", snapshot.gpuUsagePercent), gpuDeviceCount);
-            // Log per-device breakdown
+            // Log process-owned per-device breakdown.
             try {
                 NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
+                DeviceMemoryManager deviceMemory = DeviceMemoryManager.getInstance();
                 for (int d = 0; d < gpuDeviceCount; d++) {
-                    GpuProbe probe = queryGpu(ops, d);
+                    GpuProbe probe = queryGpu(ops, deviceMemory, d);
                     if (probe != null) {
                         logger.error("    GPU{}:   {}MB / {}MB ({}%)", d,
                                 probe.usedBytes() / (1024 * 1024), probe.totalBytes() / (1024 * 1024),
@@ -660,27 +663,28 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                 }
             }
 
-            // GPU VRAM check - multi-GPU aggregate for kill, primary device for stop/critical
-            // CudaMemoryPool failover routes allocations to other devices when one fills up.
-            // A single device at 99% is expected during failover — only kill when the aggregate
-            // across ALL devices has no remaining headroom.
+            // GPU VRAM check. A subprocess must act only on memory owned by this JVM. Driver-wide
+            // free-memory counters include parent and sibling model processes; treating that
+            // occupancy as this subprocess's usage kills a healthy BGE worker while an LLM runs.
+            // Native CUDA-pool and DeviceMemoryManager counters are process-local.
             if (gpuMonitoringEnabled && gpuDeviceCount > 0) {
                 try {
                     NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
+                    DeviceMemoryManager deviceMemory = DeviceMemoryManager.getInstance();
                     int primaryDevId = Math.max(0, Math.min(gpuDeviceId, gpuDeviceCount - 1));
 
-                    // Query primary device
-                    GpuProbe primaryProbe = queryGpu(ops, primaryDevId);
+                    // Query process-owned usage on the primary device.
+                    GpuProbe primaryProbe = queryGpu(ops, deviceMemory, primaryDevId);
                     double primaryGpuUsage = primaryProbe != null ? primaryProbe.usagePercent() : 0.0;
 
-                    // For kill decisions: use aggregate across all GPUs
+                    // For kill decisions: aggregate this process's ownership across all GPUs.
                     double killCheckUsage;
                     long snapshotUsed, snapshotTotal;
                     int snapshotDeviceId;
                     if (gpuDeviceCount > 1) {
                         long aggUsed = 0, aggTotal = 0;
                         for (int d = 0; d < gpuDeviceCount; d++) {
-                            GpuProbe probe = queryGpu(ops, d);
+                            GpuProbe probe = queryGpu(ops, deviceMemory, d);
                             if (probe != null) {
                                 aggUsed += probe.usedBytes();
                                 aggTotal += probe.totalBytes();
@@ -730,7 +734,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     );
                     this.lastSnapshot = snapshot;
 
-                    // Kill threshold: uses AGGREGATE usage (multi-GPU) or primary (single)
+                    // Kill threshold: process-owned aggregate (multi-GPU) or primary (single).
                     if (gpuMemoryKillThresholdPercent > 0 && killCheckUsage >= gpuMemoryKillThresholdPercent) {
                         int count = consecutiveGpuKillChecks.incrementAndGet();
                         if (count >= KILL_DEBOUNCE_COUNT && !shouldKill.get()) {
@@ -745,16 +749,17 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                         consecutiveGpuKillChecks.set(0);
                     }
 
-                    // Stop/critical thresholds: fire on PRIMARY device (informational)
+                    // Stop/critical thresholds: process-owned usage on the primary device.
                     if (primaryGpuUsage >= gpuMemoryCriticalPercent) {
                         if (!criticalMemory.get()) {
                             criticalMemory.set(true);
                             if (gpuDeviceCount > 1) {
-                                logger.warn("CRITICAL GPU MEMORY: {}% used on device {} (aggregate: {}% across {} devices)",
+                                logger.warn("CRITICAL PROCESS-OWNED GPU MEMORY: {}% on device {} "
+                                                + "(owned aggregate: {}% across {} devices)",
                                         String.format("%.1f", primaryGpuUsage), primaryDevId,
                                         String.format("%.1f", killCheckUsage), gpuDeviceCount);
                             } else {
-                                logger.warn("CRITICAL GPU MEMORY: {}% used ({}MB/{}MB) on device {}",
+                                logger.warn("CRITICAL PROCESS-OWNED GPU MEMORY: {}% ({}MB/{}MB) on device {}",
                                         String.format("%.1f", primaryGpuUsage),
                                         snapshot.gpuUsedMB, snapshot.gpuTotalMB, primaryDevId);
                             }
@@ -762,7 +767,8 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     } else {
                         if (criticalMemory.get()) {
                             criticalMemory.set(false);
-                            logger.info("GPU memory recovered from critical: {}%", String.format("%.1f", primaryGpuUsage));
+                            logger.info("Process-owned GPU memory recovered from critical: {}%",
+                                    String.format("%.1f", primaryGpuUsage));
                         }
                     }
 
@@ -778,7 +784,8 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                         // Allow GPU recovery
                         if (shouldStop.get() && !shouldKill.get() && primaryGpuUsage < gpuMemoryThresholdPercent - 10) {
                             shouldStop.set(false);
-                            logger.info("GPU memory recovered below threshold ({}%), resuming", String.format("%.1f", primaryGpuUsage));
+                            logger.info("Process-owned GPU memory recovered below threshold ({}%), resuming",
+                                    String.format("%.1f", primaryGpuUsage));
                         }
                     }
 
@@ -938,7 +945,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     private void logMemoryStop(MemorySnapshot snapshot, String memoryType) {
         String msg = switch (memoryType) {
             case "GPU" -> String.format(
-                    "GPU MEMORY THRESHOLD EXCEEDED: %.1f%% used (%dMB/%dMB) %s - signaling graceful stop",
+                    "PROCESS-OWNED GPU MEMORY THRESHOLD EXCEEDED: %.1f%% used (%dMB/%dMB) %s - signaling graceful stop",
                     snapshot.gpuUsagePercent, snapshot.gpuUsedMB, snapshot.gpuTotalMB,
                     snapshot.gpuDeviceId >= 0 ? "on device " + snapshot.gpuDeviceId : "aggregate across " + gpuDeviceCount + " GPUs");
             case "OFF-HEAP" -> String.format(
@@ -954,7 +961,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     private void logMemoryKill(MemorySnapshot snapshot, String memoryType) {
         String msg = switch (memoryType) {
             case "GPU" -> String.format(
-                    "GPU MEMORY KILL THRESHOLD EXCEEDED: %.1f%% used (%dMB/%dMB) %s - signaling immediate termination",
+                    "PROCESS-OWNED GPU MEMORY KILL THRESHOLD EXCEEDED: %.1f%% used (%dMB/%dMB) %s - signaling immediate termination",
                     snapshot.gpuUsagePercent, snapshot.gpuUsedMB, snapshot.gpuTotalMB,
                     snapshot.gpuDeviceId >= 0 ? "on device " + snapshot.gpuDeviceId : "aggregate across " + gpuDeviceCount + " GPUs");
             case "OFF-HEAP" -> String.format(
@@ -975,7 +982,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         long usedMemory = totalMemory - freeMemory;
         double usagePercent = (usedMemory * 100.0) / maxMemory;
 
-        // GPU snapshot (if enabled) — aggregate for multi-GPU, single-device otherwise
+        // Process-owned GPU snapshot — aggregate for multi-GPU, single-device otherwise.
         long gpuUsedMB = 0;
         long gpuTotalMB = 0;
         double gpuUsagePercent = 0.0;
@@ -984,11 +991,12 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         if (gpuMonitoringEnabled && gpuDeviceCount > 0) {
             try {
                 NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
+                DeviceMemoryManager deviceMemory = DeviceMemoryManager.getInstance();
                 if (gpuDeviceCount > 1) {
-                    // Multi-GPU: report aggregate usage for consistency with kill checks
+                    // Multi-GPU: report process-owned aggregate for consistency with kill checks.
                     long aggUsed = 0, aggTotal = 0;
                     for (int d = 0; d < gpuDeviceCount; d++) {
-                        GpuProbe probe = queryGpu(ops, d);
+                        GpuProbe probe = queryGpu(ops, deviceMemory, d);
                         if (probe != null) {
                             aggUsed += probe.usedBytes();
                             aggTotal += probe.totalBytes();
@@ -999,7 +1007,8 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     gpuUsagePercent = aggTotal > 0 ? (aggUsed * 100.0) / aggTotal : 0.0;
                     gpuDevId = -1; // aggregate
                 } else {
-                    GpuProbe gpu = queryGpu(ops, Math.max(0, Math.min(gpuDeviceId, gpuDeviceCount - 1)));
+                    GpuProbe gpu = queryGpu(ops, deviceMemory,
+                            Math.max(0, Math.min(gpuDeviceId, gpuDeviceCount - 1)));
                     if (gpu != null) {
                         gpuUsedMB = gpu.usedBytes() / (1024 * 1024);
                         gpuTotalMB = gpu.totalBytes() / (1024 * 1024);
@@ -1056,19 +1065,44 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         );
     }
 
-    /** Per-device GPU memory probe result. */
-    private record GpuProbe(int deviceId, long usedBytes, long totalBytes, double usagePercent) {}
+    /** Per-device GPU memory probe. {@code driverUsedBytes} is diagnostic only. */
+    record GpuProbe(int deviceId, long usedBytes, long totalBytes, double usagePercent,
+                    long driverUsedBytes) {}
 
-    /** Query a single GPU device for memory usage. Returns null on failure. */
-    private static GpuProbe queryGpu(NativeOps ops, int deviceId) {
+    /**
+     * Build an ownership-aware probe. Driver-wide free memory is retained for diagnostics, but
+     * thresholds use only this JVM's tracked allocations and native CUDA-pool occupancy.
+     */
+    static GpuProbe processOwnedGpuProbe(int deviceId, long totalBytes, long driverFreeBytes,
+                                         long trackedBytes, long nativePoolUsedBytes) {
+        if (totalBytes <= 0 || (nativePoolUsedBytes < 0 && trackedBytes <= 0)) {
+            return null;
+        }
+        long ownedBytes = Math.max(Math.max(0, trackedBytes), Math.max(0, nativePoolUsedBytes));
+        ownedBytes = Math.min(totalBytes, ownedBytes);
+        long driverUsedBytes = Math.max(0, Math.min(totalBytes, totalBytes - driverFreeBytes));
+        double usage = (ownedBytes * 100.0) / totalBytes;
+        return new GpuProbe(deviceId, ownedBytes, totalBytes, usage, driverUsedBytes);
+    }
+
+    /** Query one GPU for process-owned memory usage. Returns null when ownership is unavailable. */
+    private static GpuProbe queryGpu(NativeOps ops, DeviceMemoryManager deviceMemory, int deviceId) {
         try {
             long total = ops.getDeviceTotalMemory(deviceId);
             long free = ops.getDeviceFreeMemory(deviceId);
-            long used = total - free;
-            double usage = total > 0 ? (used * 100.0) / total : 0.0;
-            return new GpuProbe(deviceId, used, total, usage);
+            DeviceDescriptor registered = deviceMemory.getRegisteredDevice(deviceId);
+            long tracked = registered == null ? 0 : deviceMemory.getAllocatedMemory(registered);
+            long nativePoolUsed = deviceMemory.getNativePoolUsedMemory(deviceId);
+            GpuProbe probe = processOwnedGpuProbe(
+                    deviceId, total, free, tracked, nativePoolUsed);
+            if (probe != null && probe.driverUsedBytes() > probe.usedBytes()) {
+                logger.trace("GPU{} driver-wide usage={}MB, process-owned={}MB",
+                        deviceId, probe.driverUsedBytes() / (1024 * 1024),
+                        probe.usedBytes() / (1024 * 1024));
+            }
+            return probe;
         } catch (Exception e) {
-            logger.debug("Failed to probe GPU device {}", deviceId, e);
+            logger.debug("Failed to probe process-owned GPU memory on device {}", deviceId, e);
             return null;
         }
     }

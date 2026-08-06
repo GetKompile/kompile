@@ -52,6 +52,10 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
 
         <!-- Model manager (registry) for model listing -->
         <dependency>

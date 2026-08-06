@@ -56,6 +56,9 @@ public class UnifiedCrawlRequest {
     @Builder.Default
     private GraphExtractionConfig graphExtraction = GraphExtractionConfig.builder().build();
 
+    /** Shared production document chunking policy (null = project/chunker defaults). */
+    private CrawlChunkingConfig chunking;
+
     /** Vector indexing configuration (null or disabled = skip vector indexing) */
     private VectorIndexConfig vectorIndex;
 

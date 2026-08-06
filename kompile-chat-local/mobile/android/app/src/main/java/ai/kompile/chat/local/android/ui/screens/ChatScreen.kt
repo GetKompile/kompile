@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddComment
@@ -50,8 +51,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -65,8 +64,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -74,14 +75,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.R
+import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
+import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
 import ai.kompile.chat.local.android.viewmodel.EngineNotice
 import ai.kompile.chat.local.android.viewmodel.GraphUiState
+import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportUiState
+import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
 import ai.kompile.chat.local.android.viewmodel.ToolRoundUi
 import ai.kompile.chat.local.android.viewmodel.UiMessage
 import ai.kompile.chat.local.android.viewmodel.engineNotice
+import ai.kompile.chat.local.android.viewmodel.routeBadgeUi
+import ai.kompile.chat.local.android.viewmodel.routeCanCancelGeneration
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,17 +100,19 @@ fun ChatScreen(
     val messages by vm.messages.collectAsState()
     val thinking  by vm.thinking.collectAsState()
     val error      by vm.error.collectAsState()
+    val errorStackTrace by vm.errorStackTrace.collectAsState()
     val route      by vm.activeRoute.collectAsState()
     val modelState by vm.modelState.collectAsState()
     val graphState by vm.graphState.collectAsState()
+    val diagnostics by vm.importDiagnostics.collectAsState()
 
     val listState = rememberLazyListState()
-    val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    // Import progress lives in the ViewModel so an import started on any screen is
-    // visible here and can never run twice concurrently.
-    val importingProject by vm.importBusy.collectAsState()
+    val importOperation by vm.importOperation.collectAsState()
+    val huggingFaceImportState by vm.huggingFaceImportState.collectAsState()
+    val importing = importOperation != ImportOperationKind.NONE
     var importError by remember { mutableStateOf<String?>(null) }
+    var importErrorStackTrace by remember { mutableStateOf<String?>(null) }
 
     val projectPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -111,9 +120,13 @@ fun ChatScreen(
         uri?.let {
             scope.launch {
                 importError = null
+                importErrorStackTrace = null
                 when (val outcome = vm.importProjectAndActivate(it)) {
                     is ProjectImportOutcome.Active -> Unit
-                    is ProjectImportOutcome.Failed -> importError = outcome.displayMessage
+                    is ProjectImportOutcome.Failed -> {
+                        importError = outcome.displayMessage
+                        importErrorStackTrace = outcome.stackTrace
+                    }
                 }
             }
         }
@@ -127,10 +140,12 @@ fun ChatScreen(
         uri?.let {
             scope.launch {
                 importError = null
+                importErrorStackTrace = null
                 val result = vm.importModelAndActivate(it)
                 if (result.isFailure) {
-                    importError = result.exceptionOrNull()?.message
-                        ?: "Complete model import failed."
+                    val failure = result.exceptionOrNull()
+                    importError = failure?.message ?: "Complete model import failed."
+                    importErrorStackTrace = failure?.stackTraceToString()
                 }
             }
         }
@@ -144,16 +159,7 @@ fun ChatScreen(
         if (target > 0) listState.animateScrollToItem(target - 1)
     }
 
-    // Show error in a snackbar.
-    LaunchedEffect(error) {
-        error?.let {
-            snackbarHostState.showSnackbar(it)
-            vm.clearError()
-        }
-    }
-
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
@@ -182,7 +188,7 @@ fun ChatScreen(
                     // first-class action, not a hidden side effect of Settings changes.
                     IconButton(
                         onClick = { vm.clearHistory() },
-                        enabled = messages.isNotEmpty() && !thinking && !importingProject
+                        enabled = messages.isNotEmpty() && !thinking && !importing
                     ) {
                         Icon(Icons.Default.AddComment, contentDescription = "New chat")
                     }
@@ -210,13 +216,49 @@ fun ChatScreen(
                 )
             }
 
+            if (huggingFaceImportState !is HuggingFaceImportUiState.Idle) {
+                HuggingFaceImportProgressPanel(
+                    state = huggingFaceImportState,
+                    onCancelStep = vm::cancelHuggingFaceStep,
+                    onRetryStep = vm::retryHuggingFaceStep,
+                    onOpenAppStorageSettings = { vm.openAppStorageSettings() },
+                    diagnostics = diagnostics,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
+            error?.let { message ->
+                val diagnostic = ImportDiagnosticPolicy.errorForMessage(
+                    diagnostics,
+                    message,
+                    operationPrefix = "local chat"
+                )
+                val exactStackTrace = errorStackTrace?.takeIf(String::isNotBlank)
+                CopyableRuntimeError(
+                    message = message,
+                    technicalDetails = exactStackTrace
+                        ?: diagnostic?.technicalDetails.orEmpty(),
+                    clipboardText = exactStackTrace?.let {
+                        "$message\n\nFull stack trace:\n$it"
+                    } ?: ImportDiagnosticPolicy.copyTextForError(
+                        message,
+                        diagnostics,
+                        operationPrefix = "local chat"
+                    ),
+                    exactStackTrace = exactStackTrace != null,
+                    onDismiss = vm::clearError,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+
             // Message list.
             if (messages.isEmpty() && !thinking) {
                 StartupStatePanel(
                     modelState = modelState,
                     graphState = graphState,
-                    importingProject = importingProject,
                     importError = importError,
+                    importErrorStackTrace = importErrorStackTrace,
+                    diagnostics = diagnostics,
                     onImportModel = { modelPicker.launch("*/*") },
                     onImportProject = { projectPicker.launch("*/*") },
                     onPrepareProject = onOpenSettings,
@@ -252,8 +294,9 @@ fun ChatScreen(
             // Input bar. Imports swap the engine and reset the conversation mid-flight,
             // so sending stays disabled until the activation transaction settles.
             ChatInputBar(
-                enabled = !thinking && engineReady && !importingProject,
+                enabled = !thinking && engineReady && !importing,
                 generating = thinking,
+                canCancelGeneration = routeCanCancelGeneration(route),
                 onSend = { text -> vm.sendMessage(text) },
                 onCancel = { vm.cancelGeneration() }
             )
@@ -265,12 +308,11 @@ fun ChatScreen(
 
 @Composable
 private fun RouteBadge(route: String) {
-    val (label, color) = when (route) {
-        "LOCAL_VULKAN"    -> "VULKAN" to MaterialTheme.colorScheme.tertiary
-        "LOCAL_HEXAGON"          -> "HEXAGON" to MaterialTheme.colorScheme.tertiary
-        "LOCAL_TENSOR_G3_NNAPI"  -> "TENSOR G3" to MaterialTheme.colorScheme.tertiary
-        "LOCAL_TENSOR_G5"        -> "TENSOR G5" to MaterialTheme.colorScheme.tertiary
-        else              -> "NO MODEL" to MaterialTheme.colorScheme.error
+    val badge = routeBadgeUi(route)
+    val color = if (badge.active) {
+        MaterialTheme.colorScheme.tertiary
+    } else {
+        MaterialTheme.colorScheme.error
     }
     Surface(
         shape = RoundedCornerShape(4.dp),
@@ -278,7 +320,7 @@ private fun RouteBadge(route: String) {
         modifier = Modifier.padding(top = 2.dp)
     ) {
         Text(
-            text = label,
+            text = badge.label,
             style = MaterialTheme.typography.labelSmall,
             color = color,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
@@ -287,11 +329,159 @@ private fun RouteBadge(route: String) {
 }
 
 @Composable
+private fun CopyableRuntimeError(
+    message: String,
+    technicalDetails: String,
+    clipboardText: String,
+    exactStackTrace: Boolean,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val clipboard = LocalClipboardManager.current
+    var expanded by remember(technicalDetails) { mutableStateOf(false) }
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                "Execution error",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            if (technicalDetails.isNotBlank()) {
+                OutlinedButton(
+                    onClick = { expanded = !expanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (expanded) "Hide full stack trace" else "Show full stack trace")
+                }
+                if (expanded) {
+                    SelectionContainer {
+                        Text(
+                            technicalDetails,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { clipboard.setText(AnnotatedString(clipboardText)) },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Copy full error")
+                }
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("Dismiss")
+                }
+            }
+            Text(
+                if (exactStackTrace) {
+                    "The complete untruncated stack trace is available above and through Copy full error."
+                } else {
+                    "Sanitized retained diagnostics are available above and through Copy full error."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+        }
+    }
+}
+
+@Composable
+internal fun CopyableStartupError(
+    message: String,
+    diagnostics: List<ImportDiagnostic>,
+    exactStackTrace: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val clipboard = LocalClipboardManager.current
+    val diagnostic = ImportDiagnosticPolicy.errorForMessage(diagnostics, message)
+    val technicalDetails = exactStackTrace?.takeIf(String::isNotBlank)
+        ?: diagnostic?.technicalDetails?.takeIf(String::isNotBlank)
+    var expanded by remember(technicalDetails, exactStackTrace) {
+        mutableStateOf(exactStackTrace == null && technicalDetails != null)
+    }
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (technicalDetails != null) {
+            Text(
+                "Technical log",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            OutlinedButton(
+                onClick = { expanded = !expanded },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (expanded) "Hide full stack trace" else "Show full stack trace")
+            }
+            if (expanded) {
+                SelectionContainer {
+                    Text(
+                        technicalDetails,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else {
+            Text(
+                "No additional stack trace was captured for this error.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        OutlinedButton(
+            onClick = {
+                clipboard.setText(
+                    AnnotatedString(
+                        exactStackTrace?.let {
+                            "$message\n\nFull stack trace:\n$it"
+                        } ?: ImportDiagnosticPolicy.copyTextForError(message, diagnostics)
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Copy error details")
+        }
+        Text(
+            if (exactStackTrace != null) {
+                "The complete untruncated stack trace is available above and through Copy error details."
+            } else {
+                "Sanitized technical details are retained in Settings → App Diagnostics."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
 internal fun StartupStatePanel(
     modelState: ModelUiState,
     graphState: GraphUiState,
-    importingProject: Boolean,
     importError: String?,
+    importErrorStackTrace: String?,
+    diagnostics: List<ImportDiagnostic>,
     onImportModel: () -> Unit,
     onImportProject: () -> Unit,
     onPrepareProject: () -> Unit,
@@ -316,19 +506,6 @@ internal fun StartupStatePanel(
             )
 
             when {
-                importingProject -> {
-                    Text("Installing offline project…", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text(
-                        "Verifying the target model, graph, sources, and native runtimes. Large projects may take a while.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
-                }
-
                 modelState is ModelUiState.Missing -> {
                     Text("Import a local model", style = MaterialTheme.typography.titleMedium)
                     Text(
@@ -345,6 +522,13 @@ internal fun StartupStatePanel(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 6.dp)
                     )
+                    if (importError != null) {
+                        CopyableStartupError(
+                            importError,
+                            diagnostics,
+                            exactStackTrace = importErrorStackTrace
+                        )
+                    }
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onImportModel) {
                         Icon(Icons.Default.FolderOpen, contentDescription = null)
@@ -379,6 +563,11 @@ internal fun StartupStatePanel(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 6.dp)
                     )
+                    CopyableStartupError(
+                        modelState.message,
+                        diagnostics,
+                        exactStackTrace = modelState.stackTrace
+                    )
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onImportModel) { Text("Choose another model (.sdz)") }
                     Spacer(Modifier.height(8.dp))
@@ -399,6 +588,11 @@ internal fun StartupStatePanel(
                         color = MaterialTheme.colorScheme.error,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 6.dp)
+                    )
+                    CopyableStartupError(
+                        graphState.message,
+                        diagnostics,
+                        exactStackTrace = graphState.stackTrace
                     )
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onOpenSettings) { Text("Open settings") }
@@ -440,6 +634,7 @@ private fun EngineStatusBanner(
     notice: EngineNotice,
     onOpenSettings: () -> Unit
 ) {
+    val clipboard = LocalClipboardManager.current
     Surface(
         color = if (notice.actionable)
             MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
@@ -469,6 +664,12 @@ private fun EngineStatusBanner(
                 modifier = Modifier.weight(1f)
             )
             if (notice.actionable) {
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = { clipboard.setText(AnnotatedString(notice.message)) }
+                ) {
+                    Text("Copy")
+                }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = onOpenSettings) {
                     Text("Settings")
@@ -651,6 +852,7 @@ private fun MonoBlock(text: String) {
 private fun ChatInputBar(
     enabled: Boolean,
     generating: Boolean,
+    canCancelGeneration: Boolean,
     onSend: (String) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -697,12 +899,24 @@ private fun ChatInputBar(
             )
             Spacer(Modifier.width(8.dp))
             if (generating) {
-                IconButton(onClick = onCancel) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Cancel generation",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+                if (canCancelGeneration) {
+                    IconButton(onClick = onCancel) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cancel generation",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier.size(48.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
                 }
             } else {
                 IconButton(

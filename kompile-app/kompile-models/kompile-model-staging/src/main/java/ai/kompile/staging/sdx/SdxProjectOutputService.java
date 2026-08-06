@@ -356,18 +356,13 @@ public class SdxProjectOutputService {
         if (compilerOverride != null) {
             return compilerOverride;
         }
-        if (target == SdxTargetProfile.IOS_ARM64_METAL
-                && QUANTIZATION_NONE.equals(quantizationIntent)) {
-            return SdxModelCompiler.metalDeviceCompilationPolicy(targetSoc);
-        }
-        if (target == SdxTargetProfile.ANDROID_ARM64_NNAPI_ACCELERATOR) {
-            if (QUANTIZATION_NONE.equals(quantizationIntent)) {
-                return SdxModelCompiler.nnapiDeviceCompilationPolicy(targetSoc);
-            }
-            if ("Tensor_G3".equals(targetSoc)
-                    && QUANTIZATION_INT8.equals(quantizationIntent)) {
-                return new SdxTensorG3NnapiCompiler();
-            }
+        java.util.Optional<SdxModelCompiler.TargetCompiler> builtIn =
+                SdxModelCompiler.builtInTargetCompiler(
+                        target,
+                        targetSoc,
+                        QUANTIZATION_INT8.equals(quantizationIntent));
+        if (builtIn.isPresent()) {
+            return builtIn.get();
         }
         List<String> command = properties.getCompilerCommand();
         if (command.isEmpty() || command.stream().anyMatch(value -> value == null || value.isBlank())) {

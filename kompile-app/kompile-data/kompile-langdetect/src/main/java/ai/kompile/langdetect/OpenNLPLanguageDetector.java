@@ -21,23 +21,34 @@ import ai.kompile.modelmanager.ModelDescriptor;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import opennlp.tools.langdetect.Language;
-import opennlp.tools.langdetect.LanguageDetectorModel;
-import opennlp.tools.langdetect.ThreadSafeLanguageDetectorME;
+import opennlp.tools.langdetect.LanguageDetectorContextGenerator;
+import opennlp.tools.langdetect.LanguageDetectorFactory;
+import opennlp.tools.ml.model.MaxentModel;
+import opennlp.tools.util.model.GenericModelSerializer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Language detector using the OpenNLP 183-language model.
  *
- * <p>Thread-safe via {@link ThreadSafeLanguageDetectorME}. The model is
- * downloaded on first use via {@link KompileModelManager} and cached
+ * <p>Thread-safe via a per-thread OpenNLP context generator over an immutable
+ * Maxent model. The model is downloaded on first use via {@link KompileModelManager} and cached
  * at {@code ~/.kompile/models/opennlp/langdetect/langdetect-183.bin}.</p>
  *
      * <p>When disabled or when detection fails, language detection returns the
@@ -48,11 +59,13 @@ import java.util.Locale;
 public class OpenNLPLanguageDetector {
 
     private static final String UNDETERMINED_LANGUAGE = "und";
+    private static final long MODEL_LOAD_RETRY_DELAY_MS = 30_000L;
+    private static final int MAX_MODEL_ENTRY_BYTES = 128 * 1024 * 1024;
 
     private final KompileModelManager modelManager;
     private final LanguageDetectionConfigService configService;
-    private volatile ThreadSafeLanguageDetectorME detector;
-    private volatile boolean modelLoadFailed = false;
+    private volatile NativeSafeLanguageDetector detector;
+    private volatile long modelLoadFailedAt;
 
     @Autowired
     public OpenNLPLanguageDetector(@Autowired(required = false) LanguageDetectionConfigService configService) {
@@ -76,7 +89,10 @@ public class OpenNLPLanguageDetector {
 
     private synchronized void loadModel() {
         if (detector != null) return;
-        if (modelLoadFailed) return;
+        if (modelLoadFailedAt > 0
+                && System.currentTimeMillis() - modelLoadFailedAt < MODEL_LOAD_RETRY_DELAY_MS) {
+            return;
+        }
 
         ModelDescriptor descriptor = LangDetectModelConstants.createLangDetectModelDescriptor();
         try {
@@ -87,13 +103,102 @@ public class OpenNLPLanguageDetector {
 
             log.info("Loading OpenNLP language detection model from: {}", modelPath);
             try (InputStream is = Files.newInputStream(modelPath)) {
-                LanguageDetectorModel model = new LanguageDetectorModel(is);
-                detector = new ThreadSafeLanguageDetectorME(model);
+                detector = loadModelArchive(is);
             }
+            modelLoadFailedAt = 0L;
             log.info("OpenNLP language detection model loaded successfully (183 languages)");
         } catch (Exception e) {
-            modelLoadFailed = true;
-            log.error("Failed to load OpenNLP language detection model: {}", e.getMessage());
+            modelLoadFailedAt = System.currentTimeMillis();
+            log.error("Failed to load OpenNLP language detection model", e);
+        }
+    }
+
+    /**
+     * Loads the standard OpenNLP model ZIP without constructing a BaseModel.
+     * BaseModel always recreates its tool factory through ExtensionLoader, even
+     * when callers pass an already-created factory. Keeping the Maxent model and
+     * context generator explicit avoids that reflective path in native images.
+     */
+    static NativeSafeLanguageDetector loadModelArchive(InputStream inputStream) throws IOException {
+        boolean manifestPresent = false;
+        byte[] modelBytes = null;
+
+        try (ZipInputStream zip = new ZipInputStream(inputStream)) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                String name = entry.getName();
+                if ("manifest.properties".equals(name)) {
+                    manifestPresent = true;
+                } else if ("langdetect.model".equals(name)) {
+                    modelBytes = readBoundedEntry(zip, name);
+                }
+                zip.closeEntry();
+            }
+        }
+
+        if (!manifestPresent) {
+            throw new IOException("OpenNLP language model is missing manifest.properties");
+        }
+        if (modelBytes == null) {
+            throw new IOException("OpenNLP language model is missing langdetect.model");
+        }
+
+        MaxentModel maxentModel = new GenericModelSerializer()
+                .create(new ByteArrayInputStream(modelBytes));
+        return new NativeSafeLanguageDetector(maxentModel);
+    }
+
+    private static byte[] readBoundedEntry(ZipInputStream zip, String entryName) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        int read;
+        while ((read = zip.read(buffer)) != -1) {
+            total += read;
+            if (total > MAX_MODEL_ENTRY_BYTES) {
+                throw new IOException("OpenNLP model entry exceeds "
+                        + MAX_MODEL_ENTRY_BYTES + " bytes: " + entryName);
+            }
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
+    }
+
+    static final class NativeSafeLanguageDetector {
+        private final MaxentModel model;
+        private final ThreadLocal<LanguageDetectorContextGenerator> contextGenerator =
+                ThreadLocal.withInitial(() -> new LanguageDetectorFactory().getContextGenerator());
+
+        NativeSafeLanguageDetector(MaxentModel model) {
+            this.model = Objects.requireNonNull(model, "model");
+        }
+
+        Language predictLanguage(CharSequence text) {
+            Language[] languages = predictLanguages(text);
+            return languages.length == 0
+                    ? new Language(UNDETERMINED_LANGUAGE, 0.0)
+                    : languages[0];
+        }
+
+        Language[] predictLanguages(CharSequence text) {
+            CharSequence[] contexts = contextGenerator.get().getContext(text);
+            Set<String> uniqueFeatures = new HashSet<>(contexts.length);
+            for (CharSequence context : contexts) {
+                uniqueFeatures.add(context.toString());
+            }
+
+            String[] features = uniqueFeatures.toArray(String[]::new);
+            float[] weights = new float[features.length];
+            Arrays.fill(weights, 1.0f);
+            double[] probabilities = model.eval(features, weights);
+
+            Language[] languages = new Language[probabilities.length];
+            for (int i = 0; i < probabilities.length; i++) {
+                languages[i] = new Language(model.getOutcome(i), probabilities[i]);
+            }
+            Arrays.sort(languages, (left, right) ->
+                    Double.compare(right.getConfidence(), left.getConfidence()));
+            return languages;
         }
     }
 
@@ -195,7 +300,7 @@ public class OpenNLPLanguageDetector {
     }
 
     private void ensureModel() {
-        if (detector == null && !modelLoadFailed) {
+        if (detector == null) {
             loadModel();
         }
     }

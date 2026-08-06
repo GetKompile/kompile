@@ -12,6 +12,7 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -21,6 +22,15 @@ import java.util.Locale;
  */
 @Service
 public class GraphReasoningQueryService {
+
+    private static final List<GraphQueryEngine.Capability> QUERY_REQUEST_CAPABILITIES =
+            GraphQueryEngine.capabilityContract().stream()
+                    .filter(GraphReasoningQueryService::supportedByQueryRequest)
+                    .toList();
+    private static final List<String> QUERY_REQUEST_OPERATIONS =
+            QUERY_REQUEST_CAPABILITIES.stream()
+                    .map(GraphQueryEngine.Capability::intent)
+                    .toList();
 
     private final UnifiedGraphBridge bridge;
     private final GraphQueryEngine engine;
@@ -68,8 +78,49 @@ public class GraphReasoningQueryService {
         }
     }
 
+    /** Capabilities executable through {@link QueryRequest}; quantitative intents use their own API. */
+    public static List<GraphQueryEngine.Capability> queryRequestCapabilities() {
+        return QUERY_REQUEST_CAPABILITIES;
+    }
+
+    /** Exact operation enum for model and transport schemas backed by {@link QueryRequest}. */
+    public static List<String> queryRequestOperations() {
+        return QUERY_REQUEST_OPERATIONS;
+    }
+
+    /** Compact operation/required-field guide derived from the engine capability contract. */
+    public static String queryRequestOperationGuide() {
+        List<String> operations = QUERY_REQUEST_CAPABILITIES.stream()
+                .map(capability -> capability.requiredFields().isEmpty()
+                        ? capability.intent()
+                        : capability.intent() + "("
+                                + String.join(",", capability.requiredFields()) + ")")
+                .toList();
+        return "Read-only graph operation and required fields: "
+                + String.join("; ", operations)
+                + ". entityId and targetId also accept names or phrases. "
+                + "CAPABILITIES returns purposes and defaults.";
+    }
+
     /** Normalize, validate, load the selected graph, and execute the reasoning query. */
     public GraphQueryEngine.Result execute(QueryRequest request) {
+        return execute(null, request, false);
+    }
+
+    /**
+     * Normalize, validate, and execute against a caller-supplied graph.
+     *
+     * <p>This keeps the REST/MCP query contract and all FOL, hybrid-ranking, schema, provenance,
+     * and embedding behavior available to in-flight pipelines before their graph has been
+     * persisted. A null graph is treated as a fresh empty graph.</p>
+     */
+    public GraphQueryEngine.Result execute(UnifiedGraph graph, QueryRequest request) {
+        return execute(graph, request, true);
+    }
+
+    private GraphQueryEngine.Result execute(UnifiedGraph suppliedGraph,
+                                            QueryRequest request,
+                                            boolean useSuppliedGraph) {
         if (request == null) {
             return invalid("operation is required. Use operation=CAPABILITIES.");
         }
@@ -79,6 +130,17 @@ public class GraphReasoningQueryService {
             intent = parseIntent(request.operation());
         } catch (IllegalArgumentException e) {
             return invalid(e.getMessage());
+        }
+
+        if (!QUERY_REQUEST_OPERATIONS.contains(intent.name())) {
+            return invalid("operation " + intent
+                    + " is not supported by this graph query request contract. "
+                    + "Use operation=CAPABILITIES.");
+        }
+        List<String> missing = missingRequiredFields(request, intent);
+        if (!missing.isEmpty()) {
+            return invalid(intent + " requires " + String.join(", ", missing)
+                    + ". Use operation=CAPABILITIES for the exact contract.");
         }
 
         GraphQueryEngine.Direction direction;
@@ -110,8 +172,65 @@ public class GraphReasoningQueryService {
         // CAPABILITIES is deliberately graph-free, keeping discovery available before a project is open.
         UnifiedGraph graph = intent == GraphQueryEngine.Intent.CAPABILITIES
                 ? new UnifiedGraph()
-                : bridge.export(request.factSheetId());
-        return engine.query(graph, query);
+                : useSuppliedGraph
+                        ? (suppliedGraph == null ? new UnifiedGraph() : suppliedGraph)
+                        : bridge.export(request.factSheetId());
+        GraphQueryEngine.Result result = engine.query(graph, query);
+        return intent == GraphQueryEngine.Intent.CAPABILITIES
+                ? queryRequestCapabilitiesResult(result)
+                : result;
+    }
+
+    private static boolean supportedByQueryRequest(GraphQueryEngine.Capability capability) {
+        GraphQueryEngine.Intent intent = GraphQueryEngine.Intent.valueOf(capability.intent());
+        return switch (intent) {
+            case MODELS, CALCULATE, SCENARIO, SOLVE_TARGET -> false;
+            default -> true;
+        };
+    }
+
+    private static List<String> missingRequiredFields(
+            QueryRequest request, GraphQueryEngine.Intent intent) {
+        GraphQueryEngine.Capability capability = QUERY_REQUEST_CAPABILITIES.stream()
+                .filter(candidate -> candidate.intent().equals(intent.name()))
+                .findFirst()
+                .orElse(null);
+        if (capability == null || capability.requiredFields().isEmpty()) {
+            return List.of();
+        }
+        List<String> missing = new ArrayList<>();
+        for (String field : capability.requiredFields()) {
+            boolean present = switch (field) {
+                case "entityId" -> blankToNull(request.entityId()) != null;
+                case "targetId" -> blankToNull(request.targetId()) != null;
+                case "queryText" ->
+                        firstNonBlank(request.queryText(), request.question()) != null;
+                case "relationTypes[0]" -> request.relationTypes() != null
+                        && !request.relationTypes().isEmpty()
+                        && blankToNull(request.relationTypes().get(0)) != null;
+                default -> false;
+            };
+            if (!present) {
+                missing.add(field);
+            }
+        }
+        return List.copyOf(missing);
+    }
+
+    private static GraphQueryEngine.Result queryRequestCapabilitiesResult(
+            GraphQueryEngine.Result result) {
+        return new GraphQueryEngine.Result(
+                result.status(),
+                result.intent(),
+                "Supports the transport-neutral read-only graph query contract.",
+                result.entities(),
+                result.relations(),
+                result.path(),
+                QUERY_REQUEST_CAPABILITIES,
+                result.guidance(),
+                result.data(),
+                result.resolutions(),
+                result.trace());
     }
 
     /** Stable invalid response helper used by both REST and in-process tool validation. */

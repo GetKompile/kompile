@@ -27,6 +27,8 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.BufferedWriter;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -47,6 +49,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -150,6 +154,11 @@ public class CodexAdapter implements ChatSourceAdapter {
     }
 
     private List<ChatSessionSummary> listInternal(Path workingDirectory) throws IOException {
+        Optional<List<ChatSessionSummary>> nativeThreads = listAppServerThreads(workingDirectory);
+        if (nativeThreads.isPresent()) {
+            return nativeThreads.get();
+        }
+
         Optional<List<ChatSessionSummary>> indexed = listIndexedThreads(workingDirectory);
         if (indexed.isPresent()) {
             return indexed.get();
@@ -236,8 +245,6 @@ public class CodexAdapter implements ChatSourceAdapter {
                 + "NULLIF(t.created_at_ms, 0), t.created_at * 1000, 0) AS modified "
                 + "FROM threads t "
                 + "WHERE COALESCE(t.archived, 0) = 0 "
-                + "AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e "
-                + "WHERE e.child_thread_id = t.id) "
                 + "AND (? IS NULL OR t.cwd = ?) "
                 + "ORDER BY modified DESC, t.id DESC";
         try (Connection connection = openStateDatabase(database.get());
@@ -299,6 +306,10 @@ public class CodexAdapter implements ChatSourceAdapter {
 
     @Override
     public List<ChatTurn> readTurns(String sessionId) throws IOException {
+        Optional<List<ChatTurn>> nativeTurns = readAppServerTurns(sessionId);
+        if (nativeTurns.isPresent()) {
+            return nativeTurns.get();
+        }
         Optional<Path> rollout = findRollout(sessionId);
         if (rollout.isPresent()) {
             return parseRollout(rollout.get());
@@ -419,7 +430,8 @@ public class CodexAdapter implements ChatSourceAdapter {
                     JsonNode payload = node.path("payload");
                     String role = ChatAdapterSupport.extractRole(payload);
                     String content = ChatAdapterSupport.extractContent(payload);
-                    if (role != null && content != null && !content.isBlank()) {
+                    if (("user".equalsIgnoreCase(role) || "assistant".equalsIgnoreCase(role))
+                            && content != null && !content.isBlank()) {
                         out.add(new ChatTurn(role, content));
                     }
                 } catch (Exception ignore) {
@@ -728,6 +740,179 @@ public class CodexAdapter implements ChatSourceAdapter {
             }
         }
         return "";
+    }
+
+    /**
+     * Uses Codex's own app-server projection so UUIDs, titles, filtering, ordering, and rollout
+     * repair are identical to the native resume picker. Direct SQLite/JSONL parsing remains a
+     * compatibility fallback for Codex releases that do not expose app-server.
+     */
+    protected Optional<List<ChatSessionSummary>> listAppServerThreads(Path workingDirectory) {
+        try (CodexAppServerSession session = CodexAppServerSession.open()) {
+            List<ChatSessionSummary> summaries = new ArrayList<>();
+            String cursor = null;
+            do {
+                JsonNode result = session.request("thread/list", threadListParams(cursor, workingDirectory));
+                for (JsonNode thread : result.path("data")) {
+                    String id = thread.path("id").asText(null);
+                    if (!isUuid(id)) {
+                        continue;
+                    }
+                    String title = firstNonBlank(
+                            thread.path("name").asText(null),
+                            thread.path("preview").asText(null),
+                            "(no message yet)");
+                    long modified = thread.path("updatedAt").asLong(
+                            thread.path("createdAt").asLong(0L)) * 1000L;
+                    summaries.add(new ChatSessionSummary(
+                            id, id(), compactPickerText(title), id(), -1, modified,
+                            thread.path("cwd").asText(null)));
+                }
+                cursor = result.path("nextCursor").isTextual()
+                        ? result.path("nextCursor").asText()
+                        : null;
+            } while (cursor != null && !cursor.isBlank());
+            return Optional.of(summaries);
+        } catch (Exception ignore) {
+            return Optional.empty();
+        }
+    }
+
+    protected Optional<List<ChatTurn>> readAppServerTurns(String sessionId) {
+        if (!isUuid(sessionId)) {
+            return Optional.empty();
+        }
+        try (CodexAppServerSession session = CodexAppServerSession.open()) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("threadId", sessionId);
+            params.put("includeTurns", true);
+            JsonNode thread = session.request("thread/read", params).path("thread");
+            List<ChatTurn> turns = new ArrayList<>();
+            for (JsonNode turn : thread.path("turns")) {
+                for (JsonNode item : turn.path("items")) {
+                    String type = item.path("type").asText("");
+                    if ("userMessage".equals(type)) {
+                        StringBuilder text = new StringBuilder();
+                        for (JsonNode input : item.path("content")) {
+                            if ("text".equals(input.path("type").asText())
+                                    && !input.path("text").asText("").isBlank()) {
+                                if (!text.isEmpty()) text.append(' ');
+                                text.append(input.path("text").asText());
+                            }
+                        }
+                        if (!text.isEmpty()) turns.add(new ChatTurn("user", text.toString()));
+                    } else if ("agentMessage".equals(type)) {
+                        String text = item.path("text").asText("");
+                        if (!text.isBlank()) turns.add(new ChatTurn("assistant", text));
+                    }
+                }
+            }
+            return Optional.of(turns);
+        } catch (Exception ignore) {
+            return Optional.empty();
+        }
+    }
+
+    private static Map<String, Object> threadListParams(String cursor, Path workingDirectory) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("cursor", cursor);
+        params.put("limit", 100);
+        params.put("sortKey", "updated_at");
+        params.put("sourceKinds", List.of("cli", "vscode"));
+        params.put("archived", false);
+        params.put("useStateDbOnly", false);
+        if (workingDirectory != null) {
+            params.put("cwd", List.of(workingDirectory.toString()));
+        }
+        return params;
+    }
+
+    private static boolean isUuid(String value) {
+        if (value == null || value.isBlank()) return false;
+        try {
+            UUID.fromString(value);
+            return true;
+        } catch (IllegalArgumentException ignore) {
+            return false;
+        }
+    }
+
+    private static final class CodexAppServerSession implements AutoCloseable {
+        private final Process process;
+        private final BufferedWriter writer;
+        private final BufferedReader reader;
+        private long requestId;
+
+        private CodexAppServerSession(Process process) throws IOException {
+            this.process = process;
+            this.writer = new BufferedWriter(new OutputStreamWriter(
+                    process.getOutputStream(), StandardCharsets.UTF_8));
+            this.reader = new BufferedReader(new InputStreamReader(
+                    process.getInputStream(), StandardCharsets.UTF_8));
+        }
+
+        static CodexAppServerSession open() throws IOException {
+            String executable = System.getenv("CODEX_EXECUTABLE");
+            if (executable == null || executable.isBlank()) executable = "codex";
+            Process process = new ProcessBuilder(executable, "app-server", "--stdio")
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            CodexAppServerSession session = new CodexAppServerSession(process);
+            Map<String, Object> clientInfo = Map.of(
+                    "name", "kompile_cli",
+                    "title", "Kompile CLI",
+                    "version", "0.1.0");
+            session.request("initialize", Map.of("clientInfo", clientInfo));
+            session.notify("initialized", Map.of());
+            return session;
+        }
+
+        JsonNode request(String method, Map<String, Object> params) throws IOException {
+            long id = ++requestId;
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("method", method);
+            message.put("id", id);
+            message.put("params", params);
+            send(message);
+            String line;
+            while ((line = reader.readLine()) != null) {
+                JsonNode response = ChatAdapterSupport.MAPPER.readTree(line);
+                if (!response.path("id").canConvertToLong()
+                        || response.path("id").asLong() != id) {
+                    continue;
+                }
+                if (response.hasNonNull("error")) {
+                    throw new IOException("Codex app-server error: " + response.path("error"));
+                }
+                return response.path("result");
+            }
+            throw new IOException("Codex app-server closed before responding to " + method);
+        }
+
+        void notify(String method, Map<String, Object> params) throws IOException {
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("method", method);
+            message.put("params", params);
+            send(message);
+        }
+
+        private void send(Map<String, Object> message) throws IOException {
+            writer.write(ChatAdapterSupport.MAPPER.writeValueAsString(message));
+            writer.newLine();
+            writer.flush();
+        }
+
+        @Override
+        public void close() {
+            try { writer.close(); } catch (IOException ignore) {}
+            process.destroy();
+            try {
+                if (!process.waitFor(250, TimeUnit.MILLISECONDS)) process.destroyForcibly();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                process.destroyForcibly();
+            }
+        }
     }
 
     private record HistorySummary(String title, int turnCount) {

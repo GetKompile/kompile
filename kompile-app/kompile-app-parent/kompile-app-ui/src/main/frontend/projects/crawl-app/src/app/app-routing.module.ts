@@ -20,6 +20,7 @@ import { RouterModule, Routes } from '@angular/router';
 import { UnifiedCrawlComponent } from './components/unified-crawl/unified-crawl.component';
 import { ToolsHubComponent } from './components/tools-hub/tools-hub.component';
 import { GraphPageComponent } from './components/graph-page/graph-page.component';
+import { CrawlSettingsComponent } from './components/settings/crawl-settings.component';
 import { FactSheetPageComponent } from '@shared/components/fact-sheet-page/fact-sheet-page.component';
 
 /**
@@ -30,7 +31,7 @@ import { FactSheetPageComponent } from '@shared/components/fact-sheet-page/fact-
  * standalone crawl UI but was never referenced by a route or module in the monolith, so it
  * shipped in the bundle and was unreachable. It is this app's landing page.
  *
- * Deliberately absent: /chat, /developer, /agents, /enforcer, /settings and the graph
+ * Deliberately absent: /chat, /developer, /agents, /enforcer and the graph
  * build / reason / audit / ontology surfaces.
  */
 // Exported so app-routing.module.spec.ts asserts the real table rather than a copy of it.
@@ -43,6 +44,7 @@ export const routes: Routes = [
   { path: 'fact-sheets', component: FactSheetPageComponent, title: 'Kompile Crawl — Fact Sheets' },
   { path: 'data',        component: ToolsHubComponent,     title: 'Kompile Crawl — Data' },
   { path: 'graph',       component: GraphPageComponent,    title: 'Kompile Crawl — Graph' },
+  { path: 'settings',    component: CrawlSettingsComponent, title: 'Kompile Crawl — Connections' },
 
   // ── Legacy path redirects ────────────────────────────────────────────────
   { path: 'knowledge',     redirectTo: 'fact-sheets', pathMatch: 'full' },

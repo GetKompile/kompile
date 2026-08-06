@@ -20,6 +20,9 @@ import ai.kompile.app.services.GraphExtractionConfigService;
 import ai.kompile.app.services.GraphExtractionConfigService.GraphExtractionConfig;
 import ai.kompile.app.services.GraphSchemaPresetService;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
+import ai.kompile.core.graphrag.model.schema.GraphSchema;
+import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.orchestrator.api.LlmIntegrationService;
 import ai.kompile.orchestrator.api.LlmProvider;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
@@ -282,20 +285,21 @@ public class GraphExtractionController {
         if (schemaPresetService == null) {
             return ResponseEntity.badRequest().body(Map.of("error", "Schema preset service is not available"));
         }
-        return schemaPresetService.getPresetTypeNames(presetId)
-                .<ResponseEntity<?>>map(typeNames -> {
+        return schemaPresetService.getSchema(presetId)
+                .<ResponseEntity<?>>map(schema -> {
                     GraphExtractionConfig update = new GraphExtractionConfig();
-                    update.entityTypes = typeNames.get("entityTypes");
-                    update.relationshipTypes = typeNames.get("relationshipTypes");
+                    update.standardizedSchema = schema;
+                    update.entityTypes = canonicalEntityTypes(schema);
+                    update.relationshipTypes = canonicalRelationshipTypes(schema);
                     update.activeSchemaPresetId = presetId;
                     GraphExtractionConfig existing = configService.getConfig();
                     update.validationPolicy = existing.validationPolicy == null
                             ? GraphExtractionValidationPolicy.defaults()
                             : existing.validationPolicy.copy();
                     update.validationPolicy.setRelationPatterns(
-                            typeNames.get("patterns") == null
+                            schema.getPatterns() == null
                                     ? List.of()
-                                    : List.copyOf(typeNames.get("patterns")));
+                                    : List.copyOf(schema.getPatterns()));
                     GraphExtractionConfig updated = configService.updateConfig(update);
                     return ResponseEntity.ok(Map.of(
                             "presetId", presetId,
@@ -303,5 +307,19 @@ public class GraphExtractionController {
                     ));
                 })
                 .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    private static List<String> canonicalEntityTypes(GraphSchema schema) {
+        return schema.getNodeTypes() == null ? List.of() : schema.getNodeTypes().stream()
+                .filter(type -> type != null && type.getLabel() != null && !type.getLabel().isBlank())
+                .map(NodeType::getLabel)
+                .toList();
+    }
+
+    private static List<String> canonicalRelationshipTypes(GraphSchema schema) {
+        return schema.getRelationshipTypes() == null ? List.of() : schema.getRelationshipTypes().stream()
+                .filter(type -> type != null && type.getType() != null && !type.getType().isBlank())
+                .map(RelationshipType::getType)
+                .toList();
     }
 }

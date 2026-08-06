@@ -17,6 +17,7 @@
 package ai.kompile.app.services.crawl;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob.LlmCallRecord;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob.PipelineStepSnapshot;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob.ProgressSnapshot;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob.TuningDecision;
@@ -116,6 +117,42 @@ class DistributedCrawlAggregatorTest {
         // Phase F: stages are worker-tagged so the monitor attributes them per worker.
         assertEquals("w0:GRAPH_EXTRACTION", agg.getRecentTuningDecisions().get(0).getStage());
         assertEquals("w1:GRAPH_EXTRACTION", agg.getRecentTuningDecisions().get(1).getStage());
+    }
+
+    @Test
+    void aggregateTagsDecomposedLlmCallsAndPreservesTheirScope() {
+        DistributedCrawlSession s = sessionWith(DistributedCrawlSession.Status.RUNNING, 1);
+        s.addWorker("s1-worker-3", List.of());
+        LlmCallRecord call = LlmCallRecord.builder()
+                .timestamp(Instant.parse("2026-06-21T10:00:00Z"))
+                .backendId("local-serving")
+                .taskType("llm")
+                .phase("ENTITY_PARTITIONS")
+                .passId("mentions")
+                .passInvocation(4)
+                .taskId("task-4")
+                .partitionId("partition-acme")
+                .chunkId("chunk-7")
+                .corpusSnapshotId("corpus-v1:abc")
+                .graphRevision("graph-12")
+                .graphEntities(14)
+                .graphRelationships(9)
+                .success(true)
+                .build();
+        s.updateWorkerSnapshot("s1-worker-3", ProgressSnapshot.builder()
+                .recentLlmCalls(List.of(call)).build());
+
+        LlmCallRecord aggregated = aggregator.aggregate(s).getRecentLlmCalls().get(0);
+
+        assertEquals("w3:ENTITY_PARTITIONS", aggregated.getPhase());
+        assertEquals("mentions", aggregated.getPassId());
+        assertEquals(4, aggregated.getPassInvocation());
+        assertEquals("partition-acme", aggregated.getPartitionId());
+        assertEquals("chunk-7", aggregated.getChunkId());
+        assertEquals("corpus-v1:abc", aggregated.getCorpusSnapshotId());
+        assertEquals("graph-12", aggregated.getGraphRevision());
+        assertEquals(14, aggregated.getGraphEntities());
+        assertEquals(9, aggregated.getGraphRelationships());
     }
 
     @Test

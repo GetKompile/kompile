@@ -19,6 +19,7 @@ package ai.kompile.app.mcp;
 import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.services.mcp.McpActionLogService;
 import ai.kompile.app.services.mcp.McpToolBeanDiscovery;
+import ai.kompile.app.services.mcp.McpToolCallbackCatalog;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
 import ai.kompile.app.services.mcp.ToolPermissionService;
 import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
@@ -37,11 +38,14 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
+import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.event.EventListener;
@@ -114,6 +118,9 @@ public class McpToolRegistry {
     @Autowired(required = false)
     private ToolGatewayService toolGatewayService;
 
+    @Autowired(required = false)
+    private McpToolCallbackCatalog toolCallbackCatalog;
+
     @Autowired
     public McpToolRegistry(ObjectMapper objectMapper,
                            McpActionLogService actionLogService,
@@ -127,15 +134,19 @@ public class McpToolRegistry {
      * Register all tools with the MCP server.
      */
     public void registerTools(McpSyncServer server) {
-        // Collect all tool beans
-        collectToolBeans();
-
-        // Scan each bean for @Tool annotated methods
         List<McpServerFeatures.SyncToolSpecification> allTools = new ArrayList<>();
 
-        for (Object bean : toolBeans) {
-            List<McpServerFeatures.SyncToolSpecification> specs = scanBeanForTools(bean);
-            allTools.addAll(specs);
+        if (toolCallbackCatalog != null) {
+            for (ToolCallback callback : toolCallbackCatalog.getToolCallbacks()) {
+                allTools.add(createToolSpec(callback));
+            }
+        } else {
+            // Constructor-only unit tests do not have a Spring context. Retain the
+            // legacy reflection path solely as their compatibility fallback.
+            collectToolBeans();
+            for (Object bean : toolBeans) {
+                allTools.addAll(scanBeanForTools(bean));
+            }
         }
 
         // Apply meta-tool mode filter (DIRECT/DYNAMIC/HYBRID).
@@ -354,6 +365,127 @@ public class McpToolRegistry {
         }
 
         return specs;
+    }
+
+    /**
+     * Adapt Spring AI's native-safe callback to the MCP SDK while preserving
+     * Kompile permission, gateway, action-log, and compression behavior.
+     */
+    private McpServerFeatures.SyncToolSpecification createToolSpec(ToolCallback callback) {
+        ToolDefinition definition = callback.getToolDefinition();
+        String toolName = definition.name();
+        Tool tool = new Tool(toolName, definition.description(), toMcpJsonSchema(definition.inputSchema()));
+
+        return new McpServerFeatures.SyncToolSpecification(
+                tool,
+                (exchange, args) -> {
+                    McpActionLogService.McpAction logEntry = actionLogService.logActionStart(toolName, args);
+
+                    if (toolPermissionService != null) {
+                        String category = toolDiscoveryService != null
+                                ? toolDiscoveryService.inferCategoryForTool(toolName)
+                                : "system";
+                        if (!toolPermissionService.isToolAllowed(toolName, category)) {
+                            String msg = "Tool '" + toolName + "' is denied by permission policy";
+                            actionLogService.logActionFailure(logEntry.getId(), msg);
+                            return errorResult(msg);
+                        }
+                    }
+
+                    Map<String, Object> effectiveArgs = args;
+                    if (toolGatewayService != null) {
+                        try {
+                            GatewayDecision decision = toolGatewayService.evaluate(toolName, args);
+                            if (decision.action() == GatewayAction.BLOCK) {
+                                String msg = "Tool '" + toolName + "' blocked by gateway: " + decision.reason();
+                                actionLogService.logActionFailure(logEntry.getId(), msg);
+                                return errorResult(msg);
+                            }
+                            if (decision.action() == GatewayAction.REWRITE && decision.rewrittenArgs() != null) {
+                                effectiveArgs = decision.rewrittenArgs();
+                                log.info("Tool gateway rewrote args for '{}': rule={}",
+                                        toolName, decision.matchedRuleId());
+                            }
+                        } catch (Exception gatewayError) {
+                            log.error("Tool gateway evaluation error for '{}'", toolName, gatewayError);
+                        }
+                    }
+
+                    try {
+                        String input = objectMapper.writeValueAsString(effectiveArgs);
+                        String rawResult = callback.call(input);
+                        actionLogService.logActionSuccess(logEntry.getId(), truncate(rawResult), null);
+                        return textResult(compressCallbackResult(toolName, rawResult));
+                    } catch (Throwable error) {
+                        String message = error.getMessage() != null
+                                ? error.getMessage()
+                                : error.getClass().getSimpleName();
+                        actionLogService.logActionFailure(logEntry.getId(), message);
+                        log.error("Tool {} failed: {}", toolName, message, error);
+                        return errorResult(message);
+                    }
+                });
+    }
+
+    private JsonSchema toMcpJsonSchema(String schemaJson) {
+        try {
+            JsonNode root = objectMapper.readTree(schemaJson);
+            String type = root.path("type").asText("object");
+            Map<String, Object> properties = jsonObjectMap(root.get("properties"));
+            List<String> required = new ArrayList<>();
+            JsonNode requiredNode = root.get("required");
+            if (requiredNode != null && requiredNode.isArray()) {
+                requiredNode.forEach(node -> required.add(node.asText()));
+            }
+            Boolean additionalProperties = root.path("additionalProperties").isBoolean()
+                    ? root.path("additionalProperties").booleanValue()
+                    : null;
+            return new JsonSchema(
+                    type,
+                    properties,
+                    required,
+                    additionalProperties,
+                    jsonObjectMap(root.get("$defs")),
+                    jsonObjectMap(root.get("definitions")));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid Spring AI schema: " + schemaJson, e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> jsonObjectMap(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return Collections.emptyMap();
+        }
+        return objectMapper.convertValue(node, Map.class);
+    }
+
+    private String compressCallbackResult(String toolName, String rawResult) {
+        if (compressorRegistry == null || rawResult == null || rawResult.isEmpty()) {
+            return rawResult;
+        }
+        try {
+            Object parsed = objectMapper.readValue(rawResult, Object.class);
+            Object compressed = compressorRegistry.compress(toolName, parsed);
+            return compressed == parsed ? rawResult : objectMapper.writeValueAsString(compressed);
+        } catch (JsonProcessingException e) {
+            log.debug("Tool '{}' returned non-JSON output; skipping compression", toolName);
+            return rawResult;
+        } catch (Exception e) {
+            log.warn("Compression failed for tool '{}': {} - returning original", toolName, e.getMessage());
+            return rawResult;
+        }
+    }
+
+    private static String truncate(String value) {
+        if (value == null || value.length() <= 500) {
+            return value;
+        }
+        return value.substring(0, 497) + "...";
+    }
+
+    private static CallToolResult textResult(String value) {
+        return new CallToolResult(List.of(new TextContent(value != null ? value : "null")), false);
     }
 
     /**

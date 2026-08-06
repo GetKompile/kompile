@@ -57,6 +57,8 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
   @Input() isJobRunning: boolean = false;  // Whether to use real-time streaming
   @Input() logSource: 'ingest' | 'vector-population' = 'ingest';  // Type of log source (which WS topic to tail)
   @Input() source?: LogSource;  // Optional server-side source filter, e.g. 'LLM_TRANSCRIPT' for transcripts only
+  /** Permanent server/live/archive substring filter owned by the embedding parent (separate from user search). */
+  @Input() fixedSearchText: string = '';
   @Input() maxTailLogs: number = 200;  // Max logs to keep in tail mode (circular buffer)
   @Input() maxArchiveLogs: number = 5000;  // Max logs to load from archive (prevent memory issues)
   @ViewChild('logContainer') logContainer!: ElementRef;
@@ -192,6 +194,16 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
       }
     }
 
+    if (changes['fixedSearchText'] && !changes['fixedSearchText'].firstChange
+        && !(changes['taskId'] && !changes['taskId'].firstChange) && this.taskId) {
+      this.currentPage = 0;
+      this.lastSequenceNumber = 0;
+      this.initialLoadComplete = false;
+      this.stopStreaming();
+      this.tailMode = false;
+      this.loadLogs(true);
+    }
+
     // Handle isJobRunning changes
     if (changes['isJobRunning'] && !changes['isJobRunning'].firstChange) {
       if (this.isJobRunning && !this.source && !this.streamingActive) {
@@ -258,6 +270,21 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
     }
   }
 
+  private matchesSearch(message: string | null | undefined): boolean {
+    const normalized = (message || '').toLowerCase();
+    const fixed = (this.fixedSearchText || '').trim().toLowerCase();
+    const user = (this.searchText || '').trim().toLowerCase();
+    return (!fixed || normalized.includes(fixed)) && (!user || normalized.includes(user));
+  }
+
+  /** Server search accepts one substring. The permanent scope wins; user search is then applied client-side. */
+  private serverSearchText(): string | undefined {
+    const fixed = (this.fixedSearchText || '').trim();
+    if (fixed) return fixed;
+    const user = (this.searchText || '').trim();
+    return user || undefined;
+  }
+
   /**
    * Process a batch of log entries at once (tail -f style with circular buffer).
    */
@@ -286,8 +313,8 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
         continue;
       }
 
-      // Apply search filter
-      if (this.searchText && !jobLogEntry.message.toLowerCase().includes(this.searchText.toLowerCase())) {
+      // Apply both the parent-owned scope and the user's search.
+      if (!this.matchesSearch(jobLogEntry.message)) {
         continue;
       }
 
@@ -337,7 +364,7 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
         // Add existing logs
         if (response.logs && response.logs.length > 0) {
           for (const log of response.logs) {
-            if (this.selectedLevels.has(log.level)) {
+            if (this.selectedLevels.has(log.level) && this.matchesSearch(log.message)) {
               this.logs.push(log);
               this.levelCounts[log.level] = (this.levelCounts[log.level] || 0) + 1;
               if (log.sequenceNumber > this.lastSequenceNumber) {
@@ -460,6 +487,9 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
             message: entry.message,
             sequenceNumber: entry.sequenceNumber
           };
+          if (!this.selectedLevels.has(jobLogEntry.level) || !this.matchesSearch(jobLogEntry.message)) {
+            return;
+          }
           this.logs = [...this.logs, jobLogEntry];
           this.totalCount = this.logs.length;
           if (this.autoScroll) {
@@ -502,8 +532,13 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
 
     const selectedLevelsArray = Array.from(this.selectedLevels);
 
-    // If we need to start from last page and don't know total count yet, first get the count
-    if (startFromLastPage && !this.initialLoadComplete) {
+    // The generic count endpoint is not filter-aware. For a fixed phase filter, probe the filtered
+    // logs endpoint first and use its totalCount to seek to the last matching page.
+    if (startFromLastPage && !this.initialLoadComplete && this.fixedSearchText.trim()) {
+      this.currentPage = 0;
+      this.initialLoadComplete = true;
+      this.fetchLogsPage(selectedLevelsArray, true);
+    } else if (startFromLastPage && !this.initialLoadComplete) {
       this.jobLogService.getLogCount(this.taskId).pipe(takeUntil(this.destroy$)).subscribe({
         next: (countResponse) => {
           const totalPages = Math.ceil(countResponse.count / this.pageSize);
@@ -523,27 +558,36 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
     }
   }
 
-  private fetchLogsPage(selectedLevelsArray: LogLevel[]): void {
+  private fetchLogsPage(selectedLevelsArray: LogLevel[], seekLastFilteredPage = false): void {
     this.loadedFromArchive = false;
 
     this.jobLogService.getLogsForJob(this.taskId, {
       levels: selectedLevelsArray.length > 0 && selectedLevelsArray.length < this.allLevels.length
         ? selectedLevelsArray
         : undefined,
-      search: this.searchText || undefined,
+      search: this.serverSearchText(),
       source: this.source,
       page: this.currentPage,
       size: this.pageSize
     }).pipe(takeUntil(this.destroy$)).subscribe({
       next: (response: JobLogsResponse) => {
+        if (seekLastFilteredPage) {
+          const lastPage = Math.max(0, Math.ceil(response.totalCount / this.pageSize) - 1);
+          if (lastPage !== this.currentPage) {
+            this.currentPage = lastPage;
+            this.pageInput = lastPage + 1;
+            this.fetchLogsPage(selectedLevelsArray);
+            return;
+          }
+        }
         this.enabled = response.enabled;
-        this.logs = response.logs || [];
+        this.logs = (response.logs || []).filter(log => this.matchesSearch(log.message));
         this.totalCount = response.totalCount;
         this.levelCounts = response.levelCounts || {};
         this.pageInput = this.currentPage + 1;
 
         // If no logs from DB and job is not running, try archive
-        if (this.logs.length === 0 && !this.isJobRunning) {
+        if ((response.logs || []).length === 0 && response.totalCount === 0 && !this.isJobRunning) {
           this.tryLoadFromArchive(selectedLevelsArray);
           return;
         }
@@ -617,11 +661,8 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
             this.logs = this.logs.filter(log => selectedLevelsArray.includes(log.level));
           }
 
-          // Apply search filter on archived logs
-          if (this.searchText) {
-            const searchLower = this.searchText.toLowerCase();
-            this.logs = this.logs.filter(log => log.message.toLowerCase().includes(searchLower));
-          }
+          // Apply both the permanent phase scope and the user's search to archive fallback too.
+          this.logs = this.logs.filter(log => this.matchesSearch(log.message));
 
           this.totalCount = wasTruncated
             ? response.logs.length  // Show actual total even if truncated
@@ -753,7 +794,8 @@ export class JobLogViewerComponent implements OnInit, OnDestroy, OnChanges, Afte
     this.loading = true;
     this.jobLogService.tailLogs(this.taskId, this.maxTailLogs).pipe(takeUntil(this.destroy$)).subscribe({
       next: (response) => {
-        this.logs = response.logs || [];
+        this.logs = (response.logs || []).filter(log =>
+          this.selectedLevels.has(log.level) && this.matchesSearch(log.message));
         this.totalCount = this.logs.length;
         this.loading = false;
         if (this.autoScroll) {

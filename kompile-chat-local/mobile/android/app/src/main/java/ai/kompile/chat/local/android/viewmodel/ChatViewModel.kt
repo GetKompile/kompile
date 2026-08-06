@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,36 +15,60 @@ import ai.kompile.chat.local.GraphToolBackend
 import ai.kompile.chat.local.InferenceRouter
 import ai.kompile.chat.local.ProjectArchiveInstaller
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.HuggingFaceImportForegroundService
+import ai.kompile.chat.local.android.KompileChatApplication
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticSeverity
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticStore
+import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
+import ai.kompile.chat.local.android.diagnostics.NativeOperationDiagnosticPolicy
+import ai.kompile.chat.local.android.diagnostics.NativeOperationKind
+import ai.kompile.chat.local.android.diagnostics.NativeOperationRecoveryTarget
+import ai.kompile.chat.local.android.diagnostics.RecoveredNativeOperation
 import ai.kompile.chat.local.android.graph.AndroidNativeGraphBackend
 import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.graph.KgraphArtifactValidator
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.model.AcceleratedChatModelAndroid
 import ai.kompile.chat.local.android.model.MobileModelArtifactResolver
-import ai.kompile.chat.local.android.model.SdxRawGgufChatSession
+import ai.kompile.chat.local.android.model.PreparedModelInfo
+import ai.kompile.chat.local.android.model.PreparationStage
+import ai.kompile.chat.local.android.model.SdxGgufModelImporter
 import ai.kompile.chat.local.android.prefs.ActiveProjectSelection
 import ai.kompile.chat.local.android.prefs.AppPreferences
+import ai.kompile.chat.local.android.prefs.HuggingFaceImportCheckpoint
+import ai.kompile.chat.local.android.prefs.HuggingFaceImportCheckpointStage
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.nd4j.dsp.model.HuggingFaceGgmlResolver
+import org.nd4j.dsp.model.ResumableModelDownloader
 import java.io.File
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import org.json.JSONObject
@@ -73,12 +98,158 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private data class StandaloneActivation(
         val modelPath: String,
         val route: String,
-        val modelId: String
+        val modelId: String,
+        val preparedModel: PreparedModelInfo?
     )
 
-    private val context: Context get() = getApplication<Application>().applicationContext
+    private data class HuggingFaceImportPreflight(
+        val sourceName: String,
+        val finalFile: File,
+        val reusableDownload: HuggingFaceGgmlAcquisition.DownloadMetadata?,
+        val obsoleteCacheFilesAfterActivation: List<File>,
+        val storage: HuggingFaceStoragePreflight
+    )
+
+    /** Stable in-memory retry boundary for one selected candidate and its app-owned bytes. */
+    private data class HuggingFacePreparedImport(
+        val candidate: HuggingFaceGgmlResolver.Candidate,
+        val preflight: HuggingFaceImportPreflight,
+        val verifiedDownload: HuggingFaceGgmlAcquisition.DownloadMetadata?
+    )
+
+    private data class HuggingFaceCheckpointLoad(
+        val checkpoint: HuggingFaceImportCheckpoint?,
+        val failure: Throwable?
+    )
+
+    private val kompileApplication = getApplication<Application>() as KompileChatApplication
+    private val context: Context get() = kompileApplication.applicationContext
     val prefs = AppPreferences(context)
     private val importDiagnosticStore = ImportDiagnosticStore(context)
+    private val recoveredNativeOperations = kompileApplication.recoveredNativeOperations
+        .sortedByDescending { it.attempt.checkpointEpochMillis }
+    private val huggingFaceCheckpointLoad = loadHuggingFaceCheckpoint()
+    private var huggingFaceCheckpoint = huggingFaceCheckpointLoad.checkpoint
+    private val recoveredImportOperation = recoveredNativeOperations.firstOrNull {
+        it.attempt.operation.recoveryTarget == NativeOperationRecoveryTarget.HUGGING_FACE_IMPORT ||
+            (
+                huggingFaceCheckpoint != null &&
+                    it.attempt.operation in setOf(
+                        NativeOperationKind.SDX_MODEL_LOAD,
+                        NativeOperationKind.SDX_MODEL_EXECUTION
+                    )
+                )
+    }
+    private val recoveredActiveModelOperation = recoveredNativeOperations.firstOrNull {
+        it.attempt.attemptId != recoveredImportOperation?.attempt?.attemptId &&
+            it.attempt.operation.recoveryTarget == NativeOperationRecoveryTarget.ACTIVE_MODEL
+    }
+    private val recoveredNativeOperationDiagnostic =
+        recoveredNativeOperations.firstOrNull()?.diagnostic ?: kompileApplication.startupDiagnosticFallback
+    private val initialHuggingFaceImportState = huggingFaceCheckpointLoad.failure
+        ?.let(::huggingFaceCheckpointFailureState)
+        ?: recoveredImportOperation?.let(::recoveredNativeOperationFailureState)
+        ?: kompileApplication.startupDiagnosticFallback
+            ?.takeIf { huggingFaceCheckpoint != null }
+            ?.let { recoveredNativeOperationFailureState(null, it) }
+        ?: huggingFaceCheckpoint?.let(::interruptedHuggingFaceImportState)
+        ?: HuggingFaceImportUiState.Idle
+
+    private fun loadHuggingFaceCheckpoint(): HuggingFaceCheckpointLoad = try {
+        HuggingFaceCheckpointLoad(prefs.loadHuggingFaceImportCheckpoint(), null)
+    } catch (failure: Throwable) {
+        HuggingFaceCheckpointLoad(null, failure)
+    }
+
+    private fun recoveredNativeOperationFailureState(
+        recovered: RecoveredNativeOperation
+    ): HuggingFaceImportUiState.Failed =
+        recoveredNativeOperationFailureState(recovered, recovered.diagnostic)
+
+    private fun recoveredNativeOperationFailureState(
+        recovered: RecoveredNativeOperation?,
+        diagnostic: ImportDiagnostic
+    ): HuggingFaceImportUiState.Failed {
+        val failure = ChatException(
+            buildString {
+                append(diagnostic.summary)
+                if (diagnostic.technicalDetails.isNotBlank()) {
+                    append("\n").append(diagnostic.technicalDetails)
+                }
+            }
+        )
+        return HuggingFaceImportUiState.Failed(
+            progress = HuggingFaceImportProgress(
+                step = recoveredHuggingFaceStep(recovered),
+                message = diagnostic.summary,
+                attempt = 1,
+                maxAttempts = 1,
+                resumedBytes = 0L,
+                completedBytes = 0L,
+                totalBytes = null,
+                smoothedBytesPerSecond = null,
+                etaSeconds = null,
+                retryWillResumeOrReuse = true
+            ),
+            diagnostic = diagnostic,
+            failure = failure
+        )
+    }
+
+    private fun recoveredHuggingFaceStep(
+        recovered: RecoveredNativeOperation?
+    ): HuggingFaceImportStep = when (recovered?.attempt?.checkpoint) {
+        NativeOperationCheckpoint.START_IMPORTER_PROCESS,
+        NativeOperationCheckpoint.LOAD_IMPORTER_TRANSPORT,
+        NativeOperationCheckpoint.CREATE_IMPORTER_RUNTIME,
+        NativeOperationCheckpoint.QUERY_IMPORTER_ABI,
+        NativeOperationCheckpoint.CONVERT_OPTIMIZE_SDZ,
+        NativeOperationCheckpoint.READ_PREPARED_MODEL,
+        NativeOperationCheckpoint.DESTROY_IMPORTER_RUNTIME,
+        NativeOperationCheckpoint.STOP_IMPORTER_PROCESS -> HuggingFaceImportStep.CONVERT_SDZ
+
+        NativeOperationCheckpoint.RENDER_CHAT_TEMPLATE,
+        NativeOperationCheckpoint.ENCODE_PROMPT,
+        NativeOperationCheckpoint.RESET_TEXT_SESSION,
+        NativeOperationCheckpoint.GENERATE_TOKENS,
+        NativeOperationCheckpoint.DECODE_TOKENS,
+        NativeOperationCheckpoint.EXECUTE_LITERT_GENERATION -> HuggingFaceImportStep.SMOKE_DECODE
+
+        else -> HuggingFaceImportStep.SDX_LOAD
+    }
+
+    private fun huggingFaceCheckpointFailureState(
+        failure: Throwable
+    ): HuggingFaceImportUiState.Failed {
+        val summary = "Saved Hugging Face import checkpoint could not be loaded: " +
+            (failure.message ?: failure.javaClass.name)
+        val progress = HuggingFaceImportProgress(
+            step = HuggingFaceImportStep.PREFLIGHT,
+            message = summary,
+            attempt = 1,
+            maxAttempts = 1,
+            resumedBytes = 0L,
+            completedBytes = 0L,
+            totalBytes = null,
+            smoothedBytesPerSecond = null,
+            etaSeconds = null,
+            retryWillResumeOrReuse = false
+        )
+        val diagnostic = ImportDiagnosticPolicy.create(
+            timestampEpochMillis = System.currentTimeMillis(),
+            operation = "hugging face model",
+            phase = "restore import checkpoint",
+            severity = ImportDiagnosticSeverity.ERROR,
+            summary = summary,
+            remediation = "Expand and copy the full stack trace, then start a new import to replace the malformed checkpoint.",
+            technicalDetails = ImportDiagnosticPolicy.failureDetails(failure)
+        )
+        return HuggingFaceImportUiState.Failed(
+            progress = progress,
+            diagnostic = diagnostic,
+            failure = failure
+        )
+    }
 
     // --- Observable state ---
 
@@ -90,9 +261,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _thinking = MutableStateFlow(false)
     val thinking: StateFlow<Boolean> = _thinking.asStateFlow()
 
-    /** Non-null when the last turn produced an error banner. */
+    /** Non-null when the last operation produced an error banner. */
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    /** Complete untruncated stack for [error] when it represents an actual caught failure. */
+    private val _errorStackTrace = MutableStateFlow<String?>(null)
+    val errorStackTrace: StateFlow<String?> = _errorStackTrace.asStateFlow()
 
     /** Exact SDX route, including SDX_GGUF_AOT for directly imported GGUF/GGML models. */
     private val _activeRoute = MutableStateFlow("NONE")
@@ -111,24 +286,61 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val graphState: StateFlow<GraphUiState> = _graphState.asStateFlow()
 
     /**
-     * True while any SAF import (project, model, or graph) is running. This is the
-     * single source of truth for every screen, so an import started on one screen
-     * disables import controls everywhere and imports can never overlap.
+     * Exact owner of the single import gate. The UI consumes this type so Hugging Face can never
+     * fall through to an unrelated archive/project progress indicator again.
      */
-    private val _importBusy = MutableStateFlow(false)
-    val importBusy: StateFlow<Boolean> = _importBusy.asStateFlow()
+    private val _importOperation = MutableStateFlow(ImportOperationKind.NONE)
+    val importOperation: StateFlow<ImportOperationKind> = _importOperation.asStateFlow()
+    val importBusy: StateFlow<Boolean> = importOperation
+        .map { it.isBusy }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /** Public Hugging Face acquisition is complete only after a real SDX decode activates. */
-    private val _huggingFaceImportState =
-        MutableStateFlow<HuggingFaceImportUiState>(HuggingFaceImportUiState.Idle)
+    private val _huggingFaceImportState = MutableStateFlow<HuggingFaceImportUiState>(
+        initialHuggingFaceImportState
+    )
     val huggingFaceImportState: StateFlow<HuggingFaceImportUiState> =
         _huggingFaceImportState.asStateFlow()
 
-    /** Durable, bounded, sanitized import/handoff history shown in Settings. */
-    private val _importDiagnostics = MutableStateFlow(importDiagnosticStore.load())
+    private val _huggingFaceReference = MutableStateFlow(
+        huggingFaceCheckpoint?.rawReference ?: prefs.huggingFaceReference
+    )
+    val huggingFaceReference: StateFlow<String> = _huggingFaceReference.asStateFlow()
+
+    private val _huggingFaceDiscovery =
+        MutableStateFlow<HuggingFaceGgmlResolver.Discovery?>(null)
+    val huggingFaceDiscovery: StateFlow<HuggingFaceGgmlResolver.Discovery?> =
+        _huggingFaceDiscovery.asStateFlow()
+
+    private val _huggingFaceSelection =
+        MutableStateFlow<HuggingFaceGgmlResolver.Candidate?>(null)
+    val huggingFaceSelection: StateFlow<HuggingFaceGgmlResolver.Candidate?> =
+        _huggingFaceSelection.asStateFlow()
+
+    /** Durable, bounded, sanitized import/activation/execution history shown in the app. */
+    private val _importDiagnostics = MutableStateFlow(
+        importDiagnosticStore.load()
+            .let { retained ->
+                recoveredNativeOperations.fold(retained) { entries, recovered ->
+                    prependDiagnosticIfAbsent(entries, recovered.diagnostic)
+                }
+            }
+            .let { retained -> prependDiagnosticIfAbsent(retained, recoveredNativeOperationDiagnostic) }
+            .let { retained ->
+                prependDiagnosticIfAbsent(
+                    retained,
+                    (initialHuggingFaceImportState as? HuggingFaceImportUiState.Failed)?.diagnostic
+                )
+            }
+    )
     val importDiagnostics: StateFlow<List<ImportDiagnostic>> = _importDiagnostics.asStateFlow()
 
     private val importGate = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val sendGate = AtomicSendGate()
+    private var huggingFaceJob: Job? = null
+    private var huggingFaceDownloadCancellation: ResumableModelDownloader.CancellationHandle? = null
+    private var huggingFacePreparedImport: HuggingFacePreparedImport? = null
+    private var lastHuggingFaceProgressDiagnosticKey: String? = null
 
     // --- Engine state (rebuilt on settings change) ---
 
@@ -144,12 +356,55 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val history: MutableList<Message> = mutableListOf()
 
+    private fun prependDiagnosticIfAbsent(
+        entries: List<ImportDiagnostic>,
+        diagnostic: ImportDiagnostic?
+    ): List<ImportDiagnostic> = when {
+        diagnostic == null || diagnostic in entries -> entries
+        else -> ImportDiagnosticPolicy.prependBounded(entries, diagnostic)
+    }
+
+    private fun recoveredRuntimeTargetsActiveModel(): Boolean {
+        val recovered = recoveredActiveModelOperation ?: return false
+        val activeModelPath = prefs.modelPath.takeIf(String::isNotBlank) ?: return false
+        return NativeOperationDiagnosticPolicy.modelPathFingerprint(activeModelPath) ==
+            recovered.attempt.modelPathFingerprint
+    }
+
+    private fun publishRecoveredRuntimeFailureForActiveModel() {
+        val diagnostic = recoveredActiveModelOperation?.diagnostic ?: return
+        _modelState.value = ModelUiState.Failed(
+            path = prefs.modelPath,
+            message = diagnostic.summary,
+            stackTrace = diagnostic.technicalDetails
+        )
+        _error.value = diagnostic.summary
+        _errorStackTrace.value = diagnostic.technicalDetails
+        _activeRoute.value = "NONE"
+        _graphState.value = GraphUiState.WaitingForModel
+    }
+
     // --- Init ---
 
     init {
-        viewModelScope.launch {
+        val startupFailureHandler = CoroutineExceptionHandler { _, failure ->
+            val modelPath = prefs.modelPath
+            publishModelStartupFailure(
+                modelPath,
+                failure.message ?: "Local model startup failed without an error message.",
+                failure
+            )
+            Log.e(TAG, "Local model startup failed", failure)
+        }
+        viewModelScope.launch(startupFailureHandler) {
             bootstrapAssets()
-            rebuildEngine()
+            if (recoveredRuntimeTargetsActiveModel()) {
+                // Do not auto-enter the exact native boundary that killed the preceding process.
+                // The full exit evidence is already visible and an explicit retry remains available.
+                publishRecoveredRuntimeFailureForActiveModel()
+            } else {
+                rebuildEngine()
+            }
         }
     }
 
@@ -165,17 +420,117 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         phase: String,
         severity: ImportDiagnosticSeverity,
         summary: String,
-        remediation: String
-    ) {
+        remediation: String,
+        failure: Throwable? = null,
+        technicalDetails: String = ""
+    ): ImportDiagnostic {
         val entry = ImportDiagnosticPolicy.create(
             timestampEpochMillis = System.currentTimeMillis(),
             operation = operation,
             phase = phase,
             severity = severity,
             summary = summary,
-            remediation = remediation
+            remediation = remediation,
+            technicalDetails = when {
+                technicalDetails.isNotBlank() -> technicalDetails
+                failure != null -> ImportDiagnosticPolicy.failureDetails(failure)
+                else -> ""
+            }
         )
-        _importDiagnostics.value = importDiagnosticStore.append(entry)
+        _importDiagnostics.value = ImportDiagnosticPolicy.prependBounded(_importDiagnostics.value, entry)
+        importDiagnosticStore.append(entry)
+        return entry
+    }
+
+    /** Publish the current failure and its exact diagnostic as one indivisible UI update. */
+    private fun publishHuggingFaceFailure(
+        progress: HuggingFaceImportProgress,
+        summary: String = progress.message,
+        remediation: String = huggingFaceStepResumeBehavior(progress.step),
+        failure: Throwable,
+        operation: String = "hugging face model",
+        phase: String = progress.step.label.lowercase()
+    ): HuggingFaceImportUiState.Failed {
+        var diagnostic = ImportDiagnosticPolicy.create(
+            timestampEpochMillis = System.currentTimeMillis(),
+            operation = operation,
+            phase = phase,
+            severity = ImportDiagnosticSeverity.ERROR,
+            summary = summary,
+            remediation = remediation,
+            technicalDetails = ImportDiagnosticPolicy.failureDetails(failure)
+        )
+        var state = HuggingFaceImportUiState.Failed(
+            progress.copy(message = summary),
+            diagnostic,
+            failure
+        )
+        _huggingFaceImportState.value = state
+        _importDiagnostics.value = ImportDiagnosticPolicy.prependBounded(_importDiagnostics.value, diagnostic)
+        try {
+            importDiagnosticStore.append(diagnostic)
+        } catch (persistenceFailure: RuntimeException) {
+            failure.addSuppressed(persistenceFailure)
+            diagnostic = ImportDiagnosticPolicy.create(
+                timestampEpochMillis = System.currentTimeMillis(),
+                operation = operation,
+                phase = phase,
+                severity = ImportDiagnosticSeverity.ERROR,
+                summary = "$summary (diagnostic persistence also failed)",
+                remediation = remediation,
+                technicalDetails = ImportDiagnosticPolicy.failureDetails(failure)
+            )
+            state = HuggingFaceImportUiState.Failed(
+                progress.copy(message = summary),
+                diagnostic,
+                failure
+            )
+            _huggingFaceImportState.value = state
+            _importDiagnostics.value = ImportDiagnosticPolicy.prependBounded(
+                _importDiagnostics.value,
+                diagnostic
+            )
+        }
+        return state
+    }
+
+    private fun publishModelStartupFailure(
+        modelPath: String,
+        summary: String,
+        failure: Throwable
+    ) {
+        var state = ModelUiState.Failed(modelPath, summary, failure.stackTraceToString())
+        _modelState.value = state
+        var diagnostic = ImportDiagnosticPolicy.create(
+            timestampEpochMillis = System.currentTimeMillis(),
+            operation = "local model",
+            phase = "activation",
+            severity = ImportDiagnosticSeverity.ERROR,
+            summary = summary,
+            remediation = "Copy the full stack trace, verify the APK flavor and model assets, then import or retry the model.",
+            technicalDetails = ImportDiagnosticPolicy.failureDetails(failure)
+        )
+        _importDiagnostics.value = ImportDiagnosticPolicy.prependBounded(_importDiagnostics.value, diagnostic)
+        try {
+            importDiagnosticStore.append(diagnostic)
+        } catch (persistenceFailure: RuntimeException) {
+            failure.addSuppressed(persistenceFailure)
+            state = ModelUiState.Failed(modelPath, summary, failure.stackTraceToString())
+            _modelState.value = state
+            diagnostic = ImportDiagnosticPolicy.create(
+                timestampEpochMillis = System.currentTimeMillis(),
+                operation = "local model",
+                phase = "activation",
+                severity = ImportDiagnosticSeverity.ERROR,
+                summary = "$summary (diagnostic persistence also failed)",
+                remediation = "Copy the full stack trace and check this APK's private storage.",
+                technicalDetails = ImportDiagnosticPolicy.failureDetails(failure)
+            )
+            _importDiagnostics.value = ImportDiagnosticPolicy.prependBounded(
+                _importDiagnostics.value,
+                diagnostic
+            )
+        }
     }
 
     /**
@@ -183,72 +538,98 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun sendMessage(userText: String) {
         if (userText.isBlank()) return
+        if (!sendGate.tryAcquire()) return
         viewModelScope.launch {
-            appendUiMessage(UiMessage(role = "user", content = userText))
-            _thinking.value = true
-            _error.value = null
+            try {
+                appendUiMessage(UiMessage(role = "user", content = userText))
+                _thinking.value = true
+                _error.value = null
+                _errorStackTrace.value = null
 
-            withContext(Dispatchers.IO) {
-                engineMutex.withLock {
-                    try {
-                        val eng = engine ?: run {
-                            // Engine not ready yet -- attempt a serialized lazy rebuild.
-                            rebuildEngineLocked(resetConversation = false)
-                            engine
-                        }
-                        if (eng == null) {
-                            val startupMessage = when (val model = _modelState.value) {
-                                ModelUiState.Missing -> null
-                                is ModelUiState.Failed -> model.message
-                                else -> when (val graph = _graphState.value) {
-                                    is GraphUiState.Failed -> graph.message
-                                    else -> "The local accelerator is still starting."
-                                }
+                withContext(Dispatchers.IO) {
+                    engineMutex.withLock {
+                        try {
+                            val eng = engine ?: run {
+                                // Engine not ready yet -- attempt a serialized lazy rebuild.
+                                rebuildEngineLocked(resetConversation = false)
+                                engine
                             }
-                            startupMessage?.let { _error.value = it }
-                            return@withLock
-                        }
+                            if (eng == null) {
+                                val startupFailure = when (val model = _modelState.value) {
+                                    ModelUiState.Missing -> null
+                                    is ModelUiState.Failed -> model.message to model.stackTrace
+                                    else -> when (val graph = _graphState.value) {
+                                        is GraphUiState.Failed -> graph.message to graph.stackTrace
+                                        else -> "The local accelerator is still starting." to null
+                                    }
+                                }
+                                startupFailure?.let { (message, stackTrace) ->
+                                    _error.value = message
+                                    _errorStackTrace.value = stackTrace
+                                }
+                                return@withLock
+                            }
 
-                        val opts = currentGenOptions()
-                        val result = eng.chat(history, userText, opts)
+                            val opts = currentGenOptions()
+                            val result = eng.chat(history, userText, opts)
+                            val answer = result.answer().trim()
+                            if (answer.isEmpty()) {
+                                throw ChatException("The local model returned no assistant text.")
+                            }
 
-                        // Append user + assistant messages to our history for the next turn.
-                        history.add(Message.user(userText))
-                        history.add(Message.assistant(result.answer()))
+                            // Append only a proven visible assistant answer to history and UI.
+                            history.add(Message.user(userText))
+                            history.add(Message.assistant(answer))
 
-                        val toolRoundsList: List<ToolRoundUi> = result.rounds().map { round ->
-                            ToolRoundUi(round.tool(), round.argsJson(), round.resultJson())
-                        }
+                            val toolRoundsList: List<ToolRoundUi> = result.rounds().map { round ->
+                                ToolRoundUi(round.tool(), round.argsJson(), round.resultJson())
+                            }
 
-                        withContext(Dispatchers.Main.immediate) {
-                            appendUiMessage(
-                                UiMessage(
-                                    role = "assistant",
-                                    content = result.answer(),
-                                    toolRounds = toolRoundsList
+                            withContext(Dispatchers.Main.immediate) {
+                                appendUiMessage(
+                                    UiMessage(
+                                        role = "assistant",
+                                        content = answer,
+                                        toolRounds = toolRoundsList
+                                    )
                                 )
-                            )
-                        }
-                    } catch (e: ChatException) {
-                        Log.e(TAG, "Chat failed", e)
-                        withContext(Dispatchers.Main.immediate) {
-                            _error.value = e.message ?: "Unknown error"
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Unexpected error during chat", e)
-                        withContext(Dispatchers.Main.immediate) {
-                            _error.value = "Unexpected error: ${e.message}"
+                            }
+                        } catch (failure: Exception) {
+                            val summary = if (failure is ChatException) {
+                                failure.message ?: "Local chat generation failed."
+                            } else {
+                                "Unexpected error: ${failure.message ?: failure.javaClass.name}"
+                            }
+                            try {
+                                recordImportDiagnostic(
+                                    "local chat",
+                                    "generation",
+                                    ImportDiagnosticSeverity.ERROR,
+                                    summary,
+                                    "Expand and copy the full stack trace before retrying or running the local model decode test.",
+                                    failure = failure
+                                )
+                            } catch (persistenceFailure: RuntimeException) {
+                                failure.addSuppressed(persistenceFailure)
+                            }
+                            Log.e(TAG, "Chat failed", failure)
+                            withContext(Dispatchers.Main.immediate) {
+                                _error.value = summary
+                                _errorStackTrace.value = failure.stackTraceToString()
+                            }
                         }
                     }
                 }
+            } finally {
+                _thinking.value = false
+                sendGate.release()
             }
-
-            _thinking.value = false
         }
     }
 
     fun clearError() {
         _error.value = null
+        _errorStackTrace.value = null
     }
 
     fun clearHistory() {
@@ -263,8 +644,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Run a bounded real decode through the active SDX/provider session. */
     fun runModelSmokeTest() {
-        if (_thinking.value || _importBusy.value) {
+        if (_thinking.value || _importOperation.value.isBusy) {
             _error.value = "Wait for the current response or import to finish before testing the model."
+            _errorStackTrace.value = null
             return
         }
         viewModelScope.launch {
@@ -273,10 +655,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         val model = localModel
                             ?: throw IOException("Import and activate a local .sdz, .gguf, or .ggml model first.")
-                        smokeTestModelLocked(model)
-                    } catch (failure: Exception) {
+                        val smoke = smokeTestModelLocked(model)
+                        if (smoke is ModelSmokeUiState.Failed) {
+                            _error.value = smoke.message
+                            _errorStackTrace.value = smoke.failure.stackTraceToString()
+                        }
+                    } catch (failure: Throwable) {
                         Log.e(TAG, "Local model decode test failed", failure)
                         _error.value = failure.message ?: "Local model decode test failed"
+                        _errorStackTrace.value = failure.stackTraceToString()
                     }
                 }
             }
@@ -305,12 +692,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             val elapsedMs = (System.nanoTime() - startedAtNs) / 1_000_000
             if (answer.isBlank()) {
-                val failed = ModelSmokeUiState.Failed(
-                    route,
-                    "The SDX model decoded no tokens."
+                throw ChatException(
+                    "The SDX model decoded no tokens on $route after ${elapsedMs}ms."
                 )
-                _modelSmokeState.value = failed
-                return failed
             }
             val passed = ModelSmokeUiState.Passed(
                 route,
@@ -320,13 +704,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _modelSmokeState.value = passed
             Log.i(TAG, "Model smoke decode passed on $route in ${elapsedMs}ms")
             return passed
-        } catch (failure: Exception) {
+        } catch (failure: Throwable) {
             Log.e(TAG, "Model smoke decode failed on $route", failure)
             val failed = ModelSmokeUiState.Failed(
                 route,
-                failure.message ?: failure.javaClass.simpleName
+                failure.message ?: failure.javaClass.simpleName,
+                failure
             )
             _modelSmokeState.value = failed
+            try {
+                recordImportDiagnostic(
+                    "local model",
+                    "smoke decode",
+                    ImportDiagnosticSeverity.ERROR,
+                    failure.message ?: failure.javaClass.simpleName,
+                    "Copy the details, verify model compatibility, and retry the decode test.",
+                    failure = failure
+                )
+            } catch (persistenceFailure: Throwable) {
+                failure.addSuppressed(persistenceFailure)
+                Log.e(TAG, "Persisting the model smoke-decode failure also failed", persistenceFailure)
+            }
             return failed
         }
     }
@@ -335,7 +733,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Call after the user changes settings in SettingsScreen to pick up new values.
      */
     fun onSettingsChanged() {
-        viewModelScope.launch {
+        val startupFailureHandler = CoroutineExceptionHandler { _, failure ->
+            publishModelStartupFailure(
+                prefs.modelPath,
+                failure.message ?: "Local model restart failed without an error message.",
+                failure
+            )
+            Log.e(TAG, "Local model restart failed", failure)
+        }
+        viewModelScope.launch(startupFailureHandler) {
             rebuildEngine(resetConversation = true)
         }
     }
@@ -359,6 +765,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _graphState.value = GraphUiState.WaitingForModel
         _modelSmokeState.value = ModelSmokeUiState.NotRun
         _error.value = null
+        _errorStackTrace.value = null
 
         // Model selection is application state, not a native graph failure. Resolve it
         // before opening either runtime so a fresh install presents the import workflow.
@@ -379,19 +786,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
 
-        // Prepared SDZ uses the flavor's provider; raw GGUF/GGML uses libsdx_llm AOT.
-        val newLocal = AcceleratedChatModelAndroid(
-            context,
-            modelFilePath,
-            prefs.temperature,
-            prefs.maxTokens
-        )
-        if (!newLocal.isAvailable()) {
-            val message = newLocal.startupError
-                ?: "The selected model could not open on this accelerator."
-            _modelState.value = ModelUiState.Failed(modelFilePath, message)
-            runCatching { newLocal.close() }
-            Log.e(TAG, "Local accelerator model failed to start: $message")
+        // Every selected model reaches the same canonical-SDZ provider seam.
+        val newLocal = try {
+            AcceleratedChatModelAndroid(
+                context,
+                modelFilePath,
+                prefs.temperature,
+                prefs.maxTokens
+            )
+        } catch (failure: Throwable) {
+            val message = failure.message ?: "The selected model could not open on this accelerator."
+            publishModelStartupFailure(modelFilePath, message, failure)
+            Log.e(TAG, "Local accelerator model failed to start", failure)
             return
         }
 
@@ -407,10 +813,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } catch (failure: Exception) {
             val message = "Native graph runtime unavailable: " +
                 (failure.message ?: failure.javaClass.simpleName)
-            _graphState.value = GraphUiState.Failed(graphPath, message)
             localModel = null
-            runCatching { newLocal.close() }
-                .onFailure { failure.addSuppressed(it) }
+            try {
+                newLocal.close()
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
+            }
+            try {
+                recordImportDiagnostic(
+                    "knowledge graph",
+                    "activation",
+                    ImportDiagnosticSeverity.ERROR,
+                    message,
+                    "Expand and copy the full stack trace, then verify the graph runtime packaged for this APK.",
+                    failure = failure
+                )
+            } catch (persistenceFailure: RuntimeException) {
+                failure.addSuppressed(persistenceFailure)
+            }
+            _graphState.value = GraphUiState.Failed(
+                graphPath,
+                message,
+                failure.stackTraceToString()
+            )
             Log.e(TAG, "Native AOT graph runtime failed to start", failure)
             return
         }
@@ -425,9 +850,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             engine = null
             bridge = null
             localModel = null
-            _graphState.value = GraphUiState.Failed(graphPath, message)
-            runCatching { newBridge.close() }.onFailure { failure.addSuppressed(it) }
-            runCatching { newLocal.close() }.onFailure { failure.addSuppressed(it) }
+            try {
+                newBridge.close()
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
+            }
+            try {
+                newLocal.close()
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
+            }
+            try {
+                recordImportDiagnostic(
+                    "local chat",
+                    "engine initialization",
+                    ImportDiagnosticSeverity.ERROR,
+                    message,
+                    "Expand and copy the full stack trace, then reopen the selected model and graph.",
+                    failure = failure
+                )
+            } catch (persistenceFailure: RuntimeException) {
+                failure.addSuppressed(persistenceFailure)
+            }
+            _graphState.value = GraphUiState.Failed(
+                graphPath,
+                message,
+                failure.stackTraceToString()
+            )
             Log.e(TAG, message, failure)
             return
         }
@@ -488,6 +937,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(TAG, "Offline graph bootstrap failed", failure)
             withContext(Dispatchers.Main.immediate) {
                 _error.value = failure.message ?: "Offline graph bootstrap failed"
+                _errorStackTrace.value = failure.stackTraceToString()
             }
         }
     }
@@ -501,20 +951,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * engine lifecycle.
      */
     private suspend fun <T> runExclusiveImport(
+        operation: ImportOperationKind,
         blocked: (String) -> T,
         body: suspend () -> T
     ): T {
+        require(operation.isBusy) { "An exclusive import must identify its operation." }
         if (!importGate.compareAndSet(false, true)) {
             return blocked(importBlockedReason(importBusy = true, generating = false)!!)
         }
-        _importBusy.value = true
+        _importOperation.value = operation
         try {
             importBlockedReason(importBusy = false, generating = _thinking.value)?.let {
                 return blocked(it)
             }
             return body()
         } finally {
-            _importBusy.value = false
+            _importOperation.value = ImportOperationKind.NONE
             importGate.set(false)
         }
     }
@@ -523,31 +975,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Copy a file chosen via the SAF file picker into filesDir/graphs/ and
      * update the kgraph preference. Caller should then call [onSettingsChanged].
      */
-    suspend fun importKgraph(uri: Uri): String? = withContext(Dispatchers.IO) {
-        try {
-            val dir = File(context.filesDir, "graphs").apply { mkdirs() }
-            val name = File(resolveFileName(uri) ?: "imported.kgraph").name
-            require(name.lowercase().endsWith(".kgraph")) {
-                "Graph import requires a .kgraph file"
-            }
-            val dest = copyForActivation(
-                uri,
-                dir,
-                name,
-                maxBytes = KgraphArtifactValidator.MAX_ARCHIVE_BYTES
-            ) { candidate ->
-                KgraphArtifactValidator.validate(candidate.toPath())
-            }
-            prefs.kgraphPath = dest.absolutePath
-            dest.absolutePath
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to import kgraph from $uri", e)
-            null
+    suspend fun importKgraph(uri: Uri): String = withContext(Dispatchers.IO) {
+        val dir = File(context.filesDir, "graphs").apply { mkdirs() }
+        val name = File(resolveFileName(uri) ?: "imported.kgraph").name
+        require(name.lowercase().endsWith(".kgraph")) {
+            "Graph import requires a .kgraph file"
         }
+        val dest = copyForActivation(
+            uri,
+            dir,
+            name,
+            maxBytes = KgraphArtifactValidator.MAX_ARCHIVE_BYTES
+        ) { candidate ->
+            KgraphArtifactValidator.validate(candidate.toPath())
+        }
+        prefs.kgraphPath = dest.absolutePath
+        dest.absolutePath
     }
 
     /** Import and select a graph; activation is explicitly deferred without a model. */
     suspend fun importKgraphAndApply(uri: Uri): GraphImportOutcome = runExclusiveImport(
+        operation = ImportOperationKind.GRAPH,
         blocked = { reason ->
             recordImportDiagnostic(
                 "graph",
@@ -570,35 +1018,74 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // activate, the previous selection (including project provenance, which the
         // kgraph preference write clears) stays authoritative.
         val previousSelection = prefs.snapshotActiveSelection()
-        val imported = importKgraph(uri) ?: return@runExclusiveImport GraphImportOutcome.Failed(
-            "Graph import failed. Select a valid .kgraph file."
-        ).also {
-            recordImportDiagnostic(
-                "graph",
-                "copy and validation",
-                ImportDiagnosticSeverity.ERROR,
-                it.message,
-                "Select a valid exported .kgraph file and retry."
+        val imported = try {
+            importKgraph(uri)
+        } catch (failure: Exception) {
+            val message = failure.message ?: "Graph import failed. Select a valid .kgraph file."
+            try {
+                recordImportDiagnostic(
+                    "graph",
+                    "copy and validation",
+                    ImportDiagnosticSeverity.ERROR,
+                    message,
+                    "Expand and copy the full stack trace, then select a valid exported .kgraph file and retry.",
+                    failure = failure
+                )
+            } catch (persistenceFailure: RuntimeException) {
+                failure.addSuppressed(persistenceFailure)
+            }
+            Log.e(TAG, "Graph copy or validation failed", failure)
+            return@runExclusiveImport GraphImportOutcome.Failed(
+                message,
+                failure.stackTraceToString()
             )
         }
-        rebuildEngine(resetConversation = true)
-        val activationOutcome = graphImportOutcome(imported, _graphState.value)
+        val activationOutcome = try {
+            rebuildEngine(resetConversation = true)
+            graphImportOutcome(imported, _graphState.value)
+        } catch (failure: Exception) {
+            GraphImportOutcome.Failed(
+                failure.message ?: "Graph activation failed.",
+                failure.stackTraceToString()
+            )
+        }
         val finalOutcome = if (activationOutcome is GraphImportOutcome.Failed) {
-            if (imported != previousSelection.graphPath) {
-                runCatching { File(imported).delete() }
-                    .onFailure { Log.w(TAG, "Could not remove failed graph import", it) }
-            }
             var message = activationOutcome.message
-            if (!prefs.activateProject(previousSelection)) {
-                message += " Android could not restore the previous selection."
+            var stackTrace = activationOutcome.stackTrace
+            fun appendRollbackFailure(label: String, failure: Throwable) {
+                message += " $label: ${failure.message ?: failure.javaClass.name}."
+                stackTrace += "\n\n$label:\n${failure.stackTraceToString()}"
             }
-            rebuildEngine(resetConversation = false)
-            GraphImportOutcome.Failed("$message The previous selection remains active.")
+            if (imported != previousSelection.graphPath) {
+                try {
+                    val importedFile = File(imported)
+                    check(!importedFile.exists() || importedFile.delete()) {
+                        "Could not remove the rejected graph at ${importedFile.absolutePath}."
+                    }
+                } catch (cleanupFailure: RuntimeException) {
+                    appendRollbackFailure("Rejected graph cleanup failed", cleanupFailure)
+                }
+            }
+            if (!prefs.activateProject(previousSelection)) {
+                appendRollbackFailure(
+                    "Previous selection restore failed",
+                    IllegalStateException("Android could not restore the previous selection.")
+                )
+            }
+            try {
+                rebuildEngine(resetConversation = false)
+            } catch (restoreFailure: Exception) {
+                appendRollbackFailure("Previous runtime restore failed", restoreFailure)
+            }
+            GraphImportOutcome.Failed(
+                "$message The previous selection remains authoritative.",
+                stackTrace
+            )
         } else {
             activationOutcome
         }
-        finalOutcome.also { outcome ->
-            when (outcome) {
+        try {
+            when (finalOutcome) {
                 is GraphImportOutcome.Active -> recordImportDiagnostic(
                     "graph",
                     "activation",
@@ -610,17 +1097,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     "graph",
                     "activation",
                     ImportDiagnosticSeverity.INFO,
-                    outcome.message,
+                    finalOutcome.message,
                     "Import a complete .sdz model to activate graph reasoning."
                 )
                 is GraphImportOutcome.Failed -> recordImportDiagnostic(
                     "graph",
                     "activation",
                     ImportDiagnosticSeverity.ERROR,
-                    outcome.message,
-                    "Verify the graph export and native runtime, then retry."
+                    finalOutcome.message,
+                    "Expand and copy the full stack trace, then verify the graph export and native runtime before retrying.",
+                    technicalDetails = finalOutcome.stackTrace
                 )
             }
+            finalOutcome
+        } catch (persistenceFailure: RuntimeException) {
+            val precedingStack = (finalOutcome as? GraphImportOutcome.Failed)?.stackTrace
+            GraphImportOutcome.Failed(
+                "${(finalOutcome as? GraphImportOutcome.Failed)?.message ?: "Graph import completed"} " +
+                    "Diagnostic persistence failed: ${persistenceFailure.message ?: persistenceFailure.javaClass.name}.",
+                buildString {
+                    precedingStack?.let { append(it).append("\n\n") }
+                    append("Diagnostic persistence failure:\n")
+                    append(persistenceFailure.stackTraceToString())
+                }
+            )
         }
     }
 
@@ -643,10 +1143,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         try {
             // This installs the immutable target cache and requires tokenizer.json,
             // tokenizer_config.json, and the strict SDX text-generation contract.
-            MobileModelArtifactResolver.resolve(context, imported.absolutePath)
+            MobileModelArtifactResolver.resolveWithOwnJournal(
+                context,
+                imported.absolutePath
+            )
             return imported
         } catch (failure: Exception) {
-            imported.delete()
+            try {
+                check(!imported.exists() || imported.delete()) {
+                    "Could not remove the model that failed artifact validation at ${imported.absolutePath}."
+                }
+            } catch (cleanupFailure: RuntimeException) {
+                failure.addSuppressed(cleanupFailure)
+            }
             throw failure
         }
     }
@@ -657,6 +1166,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * tokenizer, graph, or decode check fails.
      */
     suspend fun importModelAndActivate(uri: Uri): Result<String> = runExclusiveImport(
+        operation = ImportOperationKind.MODEL_ARCHIVE,
         blocked = { reason ->
             recordImportDiagnostic(
                 "model",
@@ -698,15 +1208,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 Result.success(candidate.absolutePath)
             } catch (failure: Exception) {
-                imported?.delete()
+                imported?.let { candidate ->
+                    try {
+                        check(!candidate.exists() || candidate.delete()) {
+                            "Could not remove the rejected model import at ${candidate.absolutePath}."
+                        }
+                    } catch (cleanupFailure: RuntimeException) {
+                        failure.addSuppressed(cleanupFailure)
+                    }
+                }
+                try {
+                    recordImportDiagnostic(
+                        "model",
+                        phase,
+                        ImportDiagnosticSeverity.ERROR,
+                        failure.message ?: "Complete SDZ import failed.",
+                        "Expand and copy the full stack trace. Verify the SDZ contains tokenizer, chat template, text-generation contract, and this APK's target before retrying.",
+                        failure = failure
+                    )
+                } catch (persistenceFailure: RuntimeException) {
+                    failure.addSuppressed(persistenceFailure)
+                }
                 Log.e(TAG, "Complete SDZ import failed", failure)
-                recordImportDiagnostic(
-                    "model",
-                    phase,
-                    ImportDiagnosticSeverity.ERROR,
-                    failure.message ?: "Complete SDZ import failed.",
-                    "Use a staging-generated .sdz containing tokenizer, chat template, text-generation contract, and this APK's target."
-                )
                 Result.failure(failure)
             }
         }
@@ -717,6 +1240,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * graph AOT runtime, and chat engine all open successfully.
      */
     suspend fun importProjectAndActivate(uri: Uri): ProjectImportOutcome = runExclusiveImport(
+        operation = ImportOperationKind.PROJECT_ARCHIVE,
         blocked = { reason ->
             recordImportDiagnostic(
                 "project",
@@ -764,7 +1288,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                 phase = ProjectImportPhase.MODEL_TARGET
                 // Installs and validates only this flavor's immutable embedded target cache.
-                MobileModelArtifactResolver.resolve(
+                MobileModelArtifactResolver.resolveWithOwnJournal(
                     context,
                     candidateProject.modelPath().toString()
                 )
@@ -777,14 +1301,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     activateInstalledProjectLocked(candidateProject)
                 }
                 activated = true
-                recordImportDiagnostic(
-                    "project",
-                    phase.label,
-                    ImportDiagnosticSeverity.SUCCESS,
-                    "Project model, graph, Markdown sources, and accelerator decode are active.",
-                    "Return to Chat to use the synchronized knowledge project."
-                )
-                ProjectImportOutcome.Active(
+                val active = ProjectImportOutcome.Active(
                     projectId = candidateProject.projectId(),
                     projectName = candidateProject.projectName(),
                     revision = candidateProject.revision(),
@@ -793,26 +1310,518 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     sourcesPath = candidateProject.sourcesRoot().toString(),
                     sourceCount = candidateProject.sourcePaths().size
                 )
-            } catch (failure: Exception) {
-                Log.e(TAG, "Project import failed during $phase", failure)
+                phase = ProjectImportPhase.CLEANUP
+                importedArchive?.let { archive ->
+                    check(!archive.exists() || archive.delete()) {
+                        "Could not remove the temporary project archive at ${archive.absolutePath}."
+                    }
+                }
                 recordImportDiagnostic(
                     "project",
-                    phase.label,
-                    ImportDiagnosticSeverity.ERROR,
-                    failure.message ?: failure.javaClass.simpleName,
-                    "Review this phase, verify the prepared project and matching APK target, then retry."
+                    ProjectImportPhase.ACTIVATION.label,
+                    ImportDiagnosticSeverity.SUCCESS,
+                    "Project model, graph, Markdown sources, and accelerator decode are active.",
+                    "Return to Chat to use the synchronized knowledge project."
                 )
+                active
+            } catch (failure: Exception) {
+                importedArchive?.let { archive ->
+                    try {
+                        check(!archive.exists() || archive.delete()) {
+                            "Could not remove the rejected project archive at ${archive.absolutePath}."
+                        }
+                    } catch (cleanupFailure: RuntimeException) {
+                        failure.addSuppressed(cleanupFailure)
+                    }
+                }
+                if (!activated) {
+                    try {
+                        installed?.delete()
+                    } catch (cleanupFailure: Throwable) {
+                        failure.addSuppressed(cleanupFailure)
+                    }
+                }
+                try {
+                    recordImportDiagnostic(
+                        "project",
+                        phase.label,
+                        ImportDiagnosticSeverity.ERROR,
+                        failure.message ?: failure.javaClass.simpleName,
+                        "Expand and copy the full stack trace. Review this phase, verify the prepared project and matching APK target, then retry.",
+                        failure = failure
+                    )
+                } catch (persistenceFailure: RuntimeException) {
+                    failure.addSuppressed(persistenceFailure)
+                }
+                Log.e(TAG, "Project import failed during $phase", failure)
                 ProjectImportOutcome.Failed(
                     phase,
-                    failure.message ?: failure.javaClass.simpleName
+                    failure.message ?: failure.javaClass.simpleName,
+                    failure.stackTraceToString()
                 )
-            } finally {
-                importedArchive?.delete()
-                if (!activated) {
-                    runCatching { installed?.delete() }
-                        .onFailure { Log.w(TAG, "Could not remove failed project installation", it) }
+            }
+        }
+    }
+
+    private fun clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes: Boolean) {
+        val prepared = huggingFacePreparedImport ?: return
+        huggingFacePreparedImport = null
+        if (!deleteAbandonedUnpinnedBytes || prepared.candidate.isCommitPinned) return
+        val destination = prepared.preflight.finalFile.toPath().toAbsolutePath().normalize()
+        val active = prefs.modelPath.takeIf(String::isNotBlank)
+            ?.let { File(it).toPath().toAbsolutePath().normalize() }
+        val disposablePaths = buildList {
+            if (destination != active) add(destination)
+            add(destination.resolveSibling(destination.fileName.toString() + ".partial"))
+            add(destination.resolveSibling(destination.fileName.toString() + ".partial.metadata"))
+        }
+        disposablePaths.forEach { path ->
+            Files.deleteIfExists(path)
+        }
+    }
+
+    private fun clearHuggingFaceImportCheckpoint(): Boolean {
+        if (huggingFaceCheckpoint == null) return true
+        if (!prefs.clearHuggingFaceImportCheckpoint()) return false
+        huggingFaceCheckpoint = null
+        return true
+    }
+
+    private fun persistHuggingFaceImportCheckpoint(
+        candidate: HuggingFaceGgmlResolver.Candidate,
+        stage: HuggingFaceImportCheckpointStage
+    ) {
+        val discovery = _huggingFaceDiscovery.value ?: return
+        val created = HuggingFaceImportCheckpoint.createOrNull(
+            rawReference = _huggingFaceReference.value,
+            discovery = discovery,
+            candidate = candidate,
+            stage = stage
+        )
+        if (created == null) {
+            check(clearHuggingFaceImportCheckpoint()) {
+                "Android could not clear the obsolete Hugging Face import checkpoint."
+            }
+            return
+        }
+        val existing = huggingFaceCheckpoint
+        val target = if (
+            existing?.stage == HuggingFaceImportCheckpointStage.VERIFIED_DOWNLOAD &&
+            existing.matchingCandidate(discovery)?.let { resolved ->
+                resolved.path == candidate.path && resolved.downloadUri == candidate.downloadUri
+            } == true
+        ) {
+            existing
+        } else {
+            created
+        }
+        if (target != existing) {
+            check(prefs.saveHuggingFaceImportCheckpoint(target)) {
+                "Android could not save the Hugging Face import checkpoint."
+            }
+        }
+        huggingFaceCheckpoint = target
+    }
+
+    private fun persistHuggingFaceObservation(progress: HuggingFaceImportProgress) {
+        val checkpoint = huggingFaceCheckpoint ?: return
+        val observed = checkpoint.withObservation(
+            step = progress.step.name,
+            message = progress.message,
+            attempt = progress.attempt,
+            maxAttempts = progress.maxAttempts,
+            resumedBytes = progress.resumedBytes,
+            completedBytes = progress.completedBytes,
+            totalBytes = progress.totalBytes,
+            retryWillResumeOrReuse = progress.retryWillResumeOrReuse
+        )
+        if (observed == checkpoint) return
+        check(prefs.saveHuggingFaceImportCheckpoint(observed)) {
+            "Android could not save the current Hugging Face import stage."
+        }
+        huggingFaceCheckpoint = observed
+    }
+
+    private fun persistCurrentHuggingFaceObservation() {
+        val progress = (_huggingFaceImportState.value as? HuggingFaceImportUiState.Observable)
+            ?.progress ?: return
+        persistHuggingFaceObservation(progress)
+    }
+
+    fun updateHuggingFaceReference(rawReference: String) {
+        if (huggingFaceJob?.isActive == true) return
+        if (rawReference != _huggingFaceReference.value) {
+            try {
+                clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = true)
+            } catch (failure: Exception) {
+                publishHuggingFaceFailure(
+                    progress = huggingFaceProgress(
+                        HuggingFaceImportStep.PREFLIGHT,
+                        failure.message ?: failure.javaClass.name
+                    ),
+                    remediation = "Copy the full error, check this APK's private model storage, then retry changing the reference.",
+                    failure = failure,
+                    phase = "abandoned cache cleanup"
+                )
+                return
+            }
+            if (!clearHuggingFaceImportCheckpoint()) {
+                val detail = "Android could not clear the previous import checkpoint."
+                publishHuggingFaceFailure(
+                    progress = huggingFaceProgress(HuggingFaceImportStep.PREFLIGHT, detail),
+                    summary = detail,
+                    remediation = "Retry after checking this APK's app storage.",
+                    failure = IllegalStateException(detail)
+                )
+                return
+            }
+        }
+        _huggingFaceReference.value = rawReference
+        prefs.huggingFaceReference = rawReference
+        _huggingFaceDiscovery.value = null
+        _huggingFaceSelection.value = null
+        if (_huggingFaceImportState.value !is HuggingFaceImportUiState.Active) {
+            _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
+        }
+    }
+
+    fun selectHuggingFaceCandidate(candidate: HuggingFaceGgmlResolver.Candidate) {
+        if (huggingFaceJob?.isActive == true) return
+        val discovery = _huggingFaceDiscovery.value
+            ?: throw IllegalStateException("Resolve the Hugging Face repository first.")
+        require(discovery.candidates.any {
+            it.path == candidate.path && it.downloadUri == candidate.downloadUri
+        }) { "The selected model is not part of the current repository resolution." }
+        if (_huggingFaceSelection.value != candidate) {
+            try {
+                clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = true)
+            } catch (failure: Exception) {
+                publishHuggingFaceFailure(
+                    progress = huggingFaceProgress(
+                        HuggingFaceImportStep.PREFLIGHT,
+                        failure.message ?: failure.javaClass.name
+                    ),
+                    remediation = "Copy the full error, check this APK's private model storage, then select the model again.",
+                    failure = failure,
+                    phase = "abandoned cache cleanup"
+                )
+                return
+            }
+            check(clearHuggingFaceImportCheckpoint()) {
+                "Android could not clear the previous import checkpoint."
+            }
+        }
+        _huggingFaceSelection.value = candidate
+    }
+
+    /** Resolve the current public reference and automatically import only an unambiguous file. */
+    fun startHuggingFaceResolution(): Boolean = launchHuggingFaceOperation {
+        val rawReference = _huggingFaceReference.value.trim()
+        require(rawReference.isNotEmpty()) { "Enter a Hugging Face repository or GGUF/GGML URL." }
+        clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = true)
+        check(clearHuggingFaceImportCheckpoint()) {
+            "Android could not clear the previous import checkpoint."
+        }
+        prefs.huggingFaceReference = rawReference
+        _huggingFaceDiscovery.value = null
+        _huggingFaceSelection.value = null
+        val discovery = discoverHuggingFaceAcquisitionExclusively(rawReference)
+        _huggingFaceDiscovery.value = discovery
+        if (discovery.requiresSelection()) {
+            _huggingFaceImportState.value = HuggingFaceImportUiState.SelectionRequired(
+                discovery.reference.repository,
+                discovery.candidates.size
+            )
+        } else {
+            val candidate = discovery.selectedCandidate().orElseThrow()
+            _huggingFaceSelection.value = candidate
+            importHuggingFaceModelAndActivate(candidate)
+        }
+    }
+
+    fun startSelectedHuggingFaceImport(): Boolean {
+        if (huggingFaceJob?.isActive == true) return false
+        val candidate = _huggingFaceSelection.value ?: return false
+        return launchHuggingFaceOperation {
+            clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = true)
+            importHuggingFaceModelAndActivate(candidate, null)
+        }
+    }
+
+    private fun resumeHuggingFaceImport(
+        checkpoint: HuggingFaceImportCheckpoint
+    ): Boolean = launchHuggingFaceOperation {
+        clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = false)
+        _huggingFaceReference.value = checkpoint.rawReference
+        prefs.huggingFaceReference = checkpoint.rawReference
+        _huggingFaceDiscovery.value = null
+        _huggingFaceSelection.value = null
+
+        val discovery = discoverHuggingFaceAcquisitionExclusively(checkpoint.rawReference)
+        _huggingFaceDiscovery.value = discovery
+        val candidate = checkpoint.matchingCandidate(discovery)
+        if (candidate == null) {
+            check(clearHuggingFaceImportCheckpoint()) {
+                "Android could not discard an invalid Hugging Face import checkpoint."
+            }
+            val detail = "The saved immutable model no longer matches repository resolution. " +
+                "Resolve and select the model again."
+            publishHuggingFaceFailure(
+                progress = huggingFaceProgress(HuggingFaceImportStep.RESOLVE, detail),
+                summary = detail,
+                remediation = "Resolve the repository again and explicitly select the intended immutable model.",
+                failure = IllegalStateException(detail)
+            )
+            return@launchHuggingFaceOperation
+        }
+        _huggingFaceSelection.value = candidate
+        importHuggingFaceModelAndActivate(candidate, null)
+    }
+
+    /** A retry button belongs to one visible phase and cannot accidentally retry stale UI state. */
+    fun retryHuggingFaceStep(step: HuggingFaceImportStep): Boolean {
+        val state = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+            ?: return false
+        if (state.step != step || !isHuggingFaceTerminal(state)) return false
+        return retryHuggingFaceFailedStep()
+    }
+
+    fun retryHuggingFaceFailedStep(): Boolean {
+        val state = _huggingFaceImportState.value
+        if (state is HuggingFaceImportUiState.Interrupted) {
+            val checkpoint = huggingFaceCheckpoint ?: return false
+            return resumeHuggingFaceImport(checkpoint)
+        }
+        if (state !is HuggingFaceImportUiState.Failed &&
+            state !is HuggingFaceImportUiState.Cancelled) return false
+        val step = state.step
+        val selected = _huggingFaceSelection.value
+        val prepared = huggingFacePreparedImport?.takeIf { it.candidate == selected }
+        if (selected == null) {
+            huggingFaceCheckpoint?.let { checkpoint ->
+                return resumeHuggingFaceImport(checkpoint)
+            }
+        }
+        return when (huggingFaceRetryAction(step, selected != null, prepared != null)) {
+            HuggingFaceRetryAction.RESOLVE_REFERENCE -> startHuggingFaceResolution()
+            HuggingFaceRetryAction.IMPORT_SELECTED -> startSelectedHuggingFaceImport()
+            HuggingFaceRetryAction.RETRY_PREPARED_IMPORT -> {
+                prepared ?: return false
+                launchHuggingFaceOperation {
+                    importHuggingFaceModelAndActivate(prepared.candidate, prepared)
                 }
             }
+        }
+    }
+
+    /** A cancel button belongs to one visible phase and cannot cancel a later phase by mistake. */
+    fun cancelHuggingFaceStep(step: HuggingFaceImportStep): Boolean {
+        val state = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+            ?: return false
+        if (state.step != step) return false
+        return cancelHuggingFaceImport()
+    }
+
+    /** Network transfer is interruptible; blocking native load/decode remains transactional. */
+    fun cancelHuggingFaceImport(): Boolean {
+        val state = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+            ?: return false
+        if (state.step.ordinal > HuggingFaceImportStep.TOKENIZER_ASSETS.ordinal) return false
+        huggingFaceDownloadCancellation?.cancel()
+        huggingFaceJob?.cancel(CancellationException("Hugging Face import cancelled by user"))
+        return true
+    }
+
+    /** Open Android's exact per-package storage screen for the installed APK flavor. */
+    fun openAppStorageSettings() {
+        try {
+            val packageUri = Uri.fromParts("package", context.packageName, null)
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (failure: RuntimeException) {
+            val summary = "Android could not open this APK's storage settings: " +
+                (failure.message ?: failure.javaClass.name)
+            val previous = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+            val progress = previous?.progress?.copy(message = summary)
+                ?: huggingFaceProgress(HuggingFaceImportStep.PREFLIGHT, summary)
+            publishHuggingFaceFailure(
+                progress = progress,
+                summary = summary,
+                remediation = "Expand and copy the full stack trace, then open App info from Android Settings manually.",
+                failure = failure,
+                phase = "open app storage settings"
+            )
+        }
+    }
+
+    private fun launchHuggingFaceOperation(block: suspend () -> Unit): Boolean {
+        if (huggingFaceJob?.isActive == true) return false
+        lastHuggingFaceProgressDiagnosticKey = null
+        val failureHandler = CoroutineExceptionHandler { _, failure ->
+            val previous = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+            val summary = if (failure is SocketTimeoutException) {
+                "Transfer timed out: ${failure.message ?: "no network data arrived"}. " +
+                    HuggingFaceGgmlAcquisition.TRANSFER_POLICY_SUMMARY
+            } else {
+                failure.message?.takeIf(String::isNotBlank)
+                    ?: "${failure.javaClass.name} failed without an error message"
+            }
+            val progress = previous?.progress ?: huggingFaceProgress(
+                HuggingFaceImportStep.RESOLVE,
+                summary
+            )
+            publishHuggingFaceFailure(
+                progress = progress.copy(message = summary),
+                summary = summary,
+                remediation = huggingFaceStepResumeBehavior(progress.step) +
+                    " The complete exception, causes, suppressed cleanup failures, and verification evidence are available in this failed step.",
+                failure = failure
+            )
+            Log.e(TAG, "Hugging Face operation failed during ${progress.step}", failure)
+        }
+        val job = viewModelScope.launch(failureHandler, start = CoroutineStart.LAZY) {
+            var notificationStarted = false
+            var notificationProgressJob: Job? = null
+            try {
+                HuggingFaceImportForegroundService.start(context, null)
+                notificationStarted = true
+                notificationProgressJob = launch {
+                    _huggingFaceImportState.collect { state ->
+                        (state as? HuggingFaceImportUiState.Observable)?.progress?.let(
+                            HuggingFaceImportForegroundService::publish
+                        )
+                    }
+                }
+                block()
+            } finally {
+                notificationProgressJob?.cancel()
+                if (notificationStarted) {
+                    HuggingFaceImportForegroundService.stop(context)
+                }
+            }
+        }
+        huggingFaceJob = job
+        job.invokeOnCompletion { completion ->
+            if (completion is CancellationException) {
+                val previous = _huggingFaceImportState.value as? HuggingFaceImportUiState.Observable
+                val progress = previous?.progress ?: huggingFaceProgress(
+                    HuggingFaceImportStep.RESOLVE,
+                    "Hugging Face import cancelled"
+                )
+                _huggingFaceImportState.value = HuggingFaceImportUiState.Cancelled(
+                    progress.copy(message = "${progress.step.label} cancelled")
+                )
+                recordImportDiagnostic(
+                    "hugging face model",
+                    progress.step.label.lowercase(),
+                    ImportDiagnosticSeverity.INFO,
+                    "${progress.step.label} cancelled by the user.",
+                    "Resume this exact step; validator-backed saved bytes remain eligible for reuse."
+                )
+            }
+            huggingFaceDownloadCancellation = null
+            if (huggingFaceJob === job) huggingFaceJob = null
+        }
+        job.start()
+        return true
+    }
+
+    private fun huggingFaceProgress(
+        step: HuggingFaceImportStep,
+        message: String,
+        attempt: Int = 1,
+        maxAttempts: Int = HuggingFaceGgmlAcquisition.DEFAULT_MAX_ATTEMPTS,
+        resumedBytes: Long = 0L,
+        completedBytes: Long = 0L,
+        totalBytes: Long? = null,
+        bytesPerSecond: Double? = null,
+        etaSeconds: Long? = null,
+        retryWillResumeOrReuse: Boolean = false,
+        storagePreflight: HuggingFaceStoragePreflight? = huggingFacePreparedImport?.preflight?.storage
+    ) = HuggingFaceImportProgress(
+        step = step,
+        message = message,
+        attempt = attempt,
+        maxAttempts = maxAttempts,
+        resumedBytes = resumedBytes,
+        completedBytes = completedBytes,
+        totalBytes = totalBytes,
+        smoothedBytesPerSecond = bytesPerSecond,
+        etaSeconds = etaSeconds,
+        retryWillResumeOrReuse = retryWillResumeOrReuse,
+        storagePreflight = storagePreflight
+    )
+
+    private fun publishHuggingFaceDownloadProgress(
+        progress: HuggingFaceGgmlAcquisition.DownloadProgress,
+        forcedStep: HuggingFaceImportStep? = null
+    ) {
+        val step = forcedStep ?: huggingFaceDownloadStep(progress.event)
+        val retryDelay = progress.retryDelayMillis?.let { delay ->
+            " Retrying in ${kotlin.math.ceil(delay / 1000.0).toLong()}s."
+        }.orEmpty()
+        val message = if (forcedStep != null) {
+            progress.message
+        } else when (progress.event) {
+            HuggingFaceGgmlAcquisition.DownloadEvent.CONNECT ->
+                "Connecting to Hugging Face for ${progress.safeFilename} " +
+                    "(${HuggingFaceGgmlAcquisition.CONNECT_TIMEOUT_SECONDS}s timeout)"
+            HuggingFaceGgmlAcquisition.DownloadEvent.RESUME ->
+                "Resuming ${progress.safeFilename} from the verified partial"
+            HuggingFaceGgmlAcquisition.DownloadEvent.DOWNLOAD ->
+                "Downloading ${progress.safeFilename}; no-data timeout is " +
+                    "${HuggingFaceGgmlAcquisition.READ_IDLE_TIMEOUT_MINUTES}m"
+            HuggingFaceGgmlAcquisition.DownloadEvent.RETRY ->
+                "Attempt ${progress.attempt} failed.${retryDelay} ${progress.message}"
+            HuggingFaceGgmlAcquisition.DownloadEvent.VERIFY ->
+                "${progress.message} · ${progress.safeFilename}"
+            HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE ->
+                "Verified ${progress.safeFilename} · ${progress.message}"
+        }
+        val snapshot = huggingFaceProgress(
+            step = step,
+            message = message,
+            attempt = progress.attempt,
+            maxAttempts = progress.maxAttempts,
+            resumedBytes = progress.resumedBytes,
+            completedBytes = progress.downloadedBytes,
+            totalBytes = progress.expectedBytes,
+            bytesPerSecond = progress.smoothedBytesPerSecond,
+            etaSeconds = progress.estimatedRemainingMillis?.let { (it + 999L) / 1000L },
+            retryWillResumeOrReuse = progress.retryWillResume
+        )
+        _huggingFaceImportState.value =
+            if (progress.event == HuggingFaceGgmlAcquisition.DownloadEvent.RETRY) {
+                HuggingFaceImportUiState.Retrying(snapshot)
+            } else {
+                HuggingFaceImportUiState.Working(snapshot)
+            }
+        val diagnosticKey = "${step.name}:${progress.event}:${progress.safeFilename}:${progress.attempt}"
+        if (lastHuggingFaceProgressDiagnosticKey != diagnosticKey) {
+            lastHuggingFaceProgressDiagnosticKey = diagnosticKey
+            persistHuggingFaceObservation(snapshot)
+            recordImportDiagnostic(
+                "hugging face model",
+                step.label.lowercase(),
+                when (progress.event) {
+                    HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE ->
+                        ImportDiagnosticSeverity.SUCCESS
+                    HuggingFaceGgmlAcquisition.DownloadEvent.RETRY ->
+                        ImportDiagnosticSeverity.ERROR
+                    else -> ImportDiagnosticSeverity.INFO
+                },
+                message,
+                when (progress.event) {
+                    HuggingFaceGgmlAcquisition.DownloadEvent.RETRY ->
+                        "The downloader will retry automatically; manual retry reuses valid saved bytes."
+                    HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE ->
+                        "The verified artifact is reusable by the next import stage."
+                    else -> "This event is retained in the Hugging Face import log and App Diagnostics."
+                },
+                technicalDetails = progress.message
+            )
         }
     }
 
@@ -820,46 +1829,177 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Resolve owner/repository, repository/tree URLs, or exact GGUF/GGML file URLs
      * directly through Hugging Face. Kompile staging is not part of this path.
      */
+    private suspend fun discoverHuggingFaceAcquisitionExclusively(
+        rawReference: String
+    ): HuggingFaceGgmlResolver.Discovery = runExclusiveImport(
+        operation = ImportOperationKind.HUGGING_FACE,
+        blocked = { reason -> throw IllegalStateException(reason) }
+    ) {
+        discoverHuggingFaceAcquisition(rawReference)
+    }
+
     suspend fun discoverHuggingFaceAcquisition(
         rawReference: String
-    ): Result<HuggingFaceGgmlResolver.Discovery> {
-        _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
-        val result = try {
-            Result.success(
-                withContext(Dispatchers.IO) {
-                    HuggingFaceGgmlAcquisition.discover(rawReference)
-                }
+    ): HuggingFaceGgmlResolver.Discovery {
+        _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+            huggingFaceProgress(
+                HuggingFaceImportStep.RESOLVE,
+                "Resolving the Hugging Face repository"
             )
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            Result.failure(failure)
+        )
+        val discovery = withContext(Dispatchers.IO) {
+            HuggingFaceGgmlAcquisition.discover(rawReference)
         }
-        if (result.isSuccess) {
-            val discovery = result.getOrThrow()
-            recordImportDiagnostic(
-                "hugging face discovery",
-                "ggml",
-                ImportDiagnosticSeverity.INFO,
-                "Resolved ${discovery.candidates.size} GGUF/GGML candidate(s) from " +
-                    "${discovery.reference.repository} at ${discovery.resolvedRevision}.",
-                if (discovery.requiresSelection()) {
-                    "Select one quantization explicitly; no repository candidate is chosen automatically."
-                } else {
-                    "Download, load, smoke-decode, and activate the resolved model directly in SDX."
-                }
+        _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+            huggingFaceProgress(
+                HuggingFaceImportStep.RESOLVE,
+                "Resolved ${discovery.candidates.size} GGUF/GGML candidate(s)"
+            )
+        )
+        recordImportDiagnostic(
+            "hugging face discovery",
+            "ggml",
+            ImportDiagnosticSeverity.INFO,
+            "Resolved ${discovery.candidates.size} GGUF/GGML candidate(s) from " +
+                "${discovery.reference.repository} at ${discovery.resolvedRevision}.",
+            if (discovery.requiresSelection()) {
+                "Select one quantization explicitly; no repository candidate is chosen automatically."
+            } else {
+                "Download, load, smoke-decode, and activate the resolved model directly in SDX."
+            }
+        )
+        return discovery
+    }
+
+    private fun prepareHuggingFaceImport(
+        candidate: HuggingFaceGgmlResolver.Candidate,
+        activeModelPath: String
+    ): HuggingFaceImportPreflight {
+        val modelsDir = File(context.filesDir, "models/hugging-face").apply { mkdirs() }
+        require(modelsDir.isDirectory) {
+            "Android could not create app-owned model storage."
+        }
+
+        val sourceName = HuggingFaceGgmlAcquisition.safeFilename(candidate)
+        val extension = sourceName.substringAfterLast('.', "gguf")
+        val stem = sourceName.substringBeforeLast('.', sourceName)
+        val expectedBytes = HuggingFaceGgmlAcquisition.expectedImportBytes(candidate)
+        // This ceiling validates only the selected immutable model. Companion tokenizer/config
+        // files have their own bounded requests and are included separately in storage preflight.
+        val validationLimitBytes = candidate.size.takeIf { it >= 0L }
+            ?.coerceAtLeast(1L) ?: Long.MAX_VALUE
+        val pinnedPlan = if (candidate.isCommitPinned) {
+            HuggingFaceGgmlAcquisition.planPinnedDownload(
+                candidate = candidate,
+                directory = modelsDir.toPath(),
+                activeModelPath = activeModelPath.takeIf(String::isNotBlank)?.let {
+                    File(it).toPath()
+                },
+                maxBytes = validationLimitBytes
             )
         } else {
-            recordImportDiagnostic(
-                "hugging face discovery",
-                "ggml",
-                ImportDiagnosticSeverity.ERROR,
-                result.exceptionOrNull()?.message
-                    ?: "The Hugging Face repository could not be resolved.",
-                "Check the public owner/repository or canonical Hugging Face URL and network access."
-            )
+            null
         }
-        return result
+        val finalFile = pinnedPlan?.finalPath?.toFile() ?: File(
+            modelsDir,
+            "$stem-${System.currentTimeMillis()}.$extension"
+        )
+        val reusableDownload = pinnedPlan?.reusableDownload
+        val obsoleteCacheFiles = pinnedPlan?.obsoletePathsAfterActivation
+            ?.map { it.toFile() }
+            .orEmpty()
+        val reusableModelBytes = when {
+            reusableDownload != null -> reusableDownload.downloadedBytes
+            candidate.isCommitPinned -> HuggingFaceGgmlAcquisition.resumablePartialBytes(
+                candidate,
+                finalFile.toPath(),
+                validationLimitBytes
+            )
+            else -> 0L
+        }
+        val reusableTokenizerBytes = HuggingFaceGgmlAcquisition.reusableTokenizerAssetBytes(
+            candidate,
+            finalFile.toPath()
+        )
+        val resumableBytes = if (Long.MAX_VALUE - reusableModelBytes < reusableTokenizerBytes) {
+            Long.MAX_VALUE
+        } else {
+            reusableModelBytes + reusableTokenizerBytes
+        }
+        val reuse = when {
+            reusableDownload != null -> HuggingFaceStorageReuse.VERIFIED_MODEL
+            resumableBytes > 0L -> HuggingFaceStorageReuse.VALIDATED_PARTIAL
+            else -> HuggingFaceStorageReuse.NONE
+        }
+        // usableSpace already excludes the partial's allocated blocks. Only the remaining bytes
+        // must fit after the explicit safety reserve.
+        val storage = huggingFaceStoragePreflight(
+            applicationId = context.packageName,
+            destinationPath = finalFile.absolutePath,
+            expectedBytes = expectedBytes,
+            usableBytes = modelsDir.usableSpace,
+            reserveBytes = DOWNLOAD_SPACE_RESERVE_BYTES,
+            reusableBytes = resumableBytes,
+            reuse = reuse
+        )
+        return HuggingFaceImportPreflight(
+            sourceName = sourceName,
+            finalFile = finalFile,
+            reusableDownload = reusableDownload,
+            obsoleteCacheFilesAfterActivation = obsoleteCacheFiles,
+            storage = storage
+        )
+    }
+
+    /** Re-run storage arithmetic for the same destination without discarding retry bytes. */
+    private fun refreshHuggingFaceImportPreflight(
+        candidate: HuggingFaceGgmlResolver.Candidate,
+        preflight: HuggingFaceImportPreflight,
+        verifiedDownload: HuggingFaceGgmlAcquisition.DownloadMetadata?
+    ): HuggingFaceImportPreflight {
+        val modelsDir = preflight.finalFile.parentFile
+            ?: throw IllegalStateException("The model destination has no app-owned parent directory.")
+        modelsDir.mkdirs()
+        require(modelsDir.isDirectory) {
+            "Android could not reopen app-owned model storage."
+        }
+        val expectedBytes = HuggingFaceGgmlAcquisition.expectedImportBytes(candidate)
+        val validationLimitBytes = candidate.size.takeIf { it >= 0L }
+            ?.coerceAtLeast(1L) ?: Long.MAX_VALUE
+        val reusableModelBytes = when {
+            verifiedDownload != null -> verifiedDownload.downloadedBytes
+            candidate.isCommitPinned -> HuggingFaceGgmlAcquisition.resumablePartialBytes(
+                candidate,
+                preflight.finalFile.toPath(),
+                validationLimitBytes
+            )
+            else -> 0L
+        }
+        val reusableTokenizerBytes = HuggingFaceGgmlAcquisition.reusableTokenizerAssetBytes(
+            candidate,
+            preflight.finalFile.toPath()
+        )
+        val resumableBytes = if (Long.MAX_VALUE - reusableModelBytes < reusableTokenizerBytes) {
+            Long.MAX_VALUE
+        } else {
+            reusableModelBytes + reusableTokenizerBytes
+        }
+        val reuse = when {
+            verifiedDownload != null -> HuggingFaceStorageReuse.VERIFIED_MODEL
+            resumableBytes > 0L -> HuggingFaceStorageReuse.VALIDATED_PARTIAL
+            else -> HuggingFaceStorageReuse.NONE
+        }
+        return preflight.copy(
+            storage = huggingFaceStoragePreflight(
+                applicationId = context.packageName,
+                destinationPath = preflight.finalFile.absolutePath,
+                expectedBytes = expectedBytes,
+                usableBytes = modelsDir.usableSpace,
+                reserveBytes = DOWNLOAD_SPACE_RESERVE_BYTES,
+                reusableBytes = resumableBytes,
+                reuse = reuse
+            )
+        )
     }
 
     /**
@@ -869,138 +2009,296 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     suspend fun importHuggingFaceModelAndActivate(
         candidate: HuggingFaceGgmlResolver.Candidate
-    ): Result<String> = runExclusiveImport(
-        blocked = { reason ->
-            _huggingFaceImportState.value = HuggingFaceImportUiState.Failed(reason)
-            recordImportDiagnostic(
-                "hugging face model",
-                "blocked",
-                ImportDiagnosticSeverity.ERROR,
-                reason,
-                "Wait for the active generation or import to finish, then retry."
-            )
-            Result.failure(IllegalStateException(reason))
-        }
+    ): String = importHuggingFaceModelAndActivate(candidate, null)
+
+    private suspend fun importHuggingFaceModelAndActivate(
+        candidate: HuggingFaceGgmlResolver.Candidate,
+        preparedRetry: HuggingFacePreparedImport?
+    ): String = runExclusiveImport(
+        operation = ImportOperationKind.HUGGING_FACE,
+        blocked = { reason -> throw IllegalStateException(reason) }
     ) {
         withContext(Dispatchers.IO) {
-            val previousSelection = prefs.snapshotActiveSelection()
-            val modelsDir = File(context.filesDir, "models/hugging-face").apply { mkdirs() }
-            require(modelsDir.isDirectory) {
-                "Android could not create app-owned model storage."
-            }
-
-            val sourceName = HuggingFaceGgmlAcquisition.safeFilename(candidate)
-            val extension = sourceName.substringAfterLast('.', "gguf")
-            val stem = sourceName.substringBeforeLast('.', sourceName)
-            val finalFile = File(
-                modelsDir,
-                "$stem-${System.currentTimeMillis()}.$extension"
-            )
-            val pendingFile = File(
-                modelsDir,
-                ".${finalFile.name}.${System.nanoTime()}.pending"
-            )
-            val expectedBytes = candidate.size.takeIf { it >= 0L }
-            val availableBytes = (modelsDir.usableSpace - DOWNLOAD_SPACE_RESERVE_BYTES)
-                .coerceAtLeast(0L)
-            val maxBytes = minOf(
-                HuggingFaceGgmlAcquisition.DEFAULT_MAX_DOWNLOAD_BYTES,
-                availableBytes
-            )
-            require(maxBytes > 0L) {
-                "Not enough free app storage to download a model."
-            }
-            require(expectedBytes == null || expectedBytes <= maxBytes) {
-                "${candidate.path} needs $expectedBytes bytes but only $availableBytes bytes " +
-                    "are available after the safety reserve."
-            }
-
-            val importJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
-            var imported: File? = null
-            var phase = "download"
-            _huggingFaceImportState.value = HuggingFaceImportUiState.Downloading(
-                sourceName,
-                0L,
-                expectedBytes
-            )
-            runCatching {
-                recordImportDiagnostic(
-                    "hugging face model",
-                    phase,
-                    ImportDiagnosticSeverity.INFO,
-                    "App-owned download started for ${candidate.path}.",
-                    "Keep this screen open; activation follows only after SDX loads and decodes it."
+            if (preparedRetry == null) {
+                persistHuggingFaceImportCheckpoint(
+                    candidate,
+                    HuggingFaceImportCheckpointStage.SELECTED
                 )
-            }.onFailure { Log.w(TAG, "Could not record Hugging Face import start", it) }
+            }
+            val previousSelection = prefs.snapshotActiveSelection()
+            _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                huggingFaceProgress(
+                    HuggingFaceImportStep.PREFLIGHT,
+                    if (preparedRetry == null) {
+                        "Calculating app-volume storage for the selected model"
+                    } else {
+                        "Rechecking app-volume storage without discarding saved model bytes"
+                    },
+                    retryWillResumeOrReuse = preparedRetry != null
+                )
+            )
+            persistCurrentHuggingFaceObservation()
+            val preflight = if (preparedRetry == null) {
+                prepareHuggingFaceImport(candidate, previousSelection.modelPath)
+            } else {
+                refreshHuggingFaceImportPreflight(
+                    candidate,
+                    preparedRetry.preflight,
+                    preparedRetry.verifiedDownload
+                )
+            }
+            val sourceName = preflight.sourceName
+            val finalFile = preflight.finalFile
+            val storage = preflight.storage
+            val expectedBytes = storage.expectedBytes
+            val expectedModelBytes = candidate.size.takeIf { it >= 0L }
+            val reusableDownload = preparedRetry?.verifiedDownload ?: preflight.reusableDownload
+            val maxBytes = expectedModelBytes?.coerceAtLeast(1L) ?: storage.transferLimitBytes
 
-            try {
-                val downloaded = HuggingFaceGgmlAcquisition.download(
+            huggingFacePreparedImport = HuggingFacePreparedImport(
+                candidate = candidate,
+                preflight = preflight,
+                verifiedDownload = reusableDownload
+            )
+            val preflightDetail = huggingFaceStoragePreflightMessage(storage)
+            val preflightProgress = huggingFaceProgress(
+                step = HuggingFaceImportStep.PREFLIGHT,
+                message = preflightDetail,
+                resumedBytes = storage.reusableBytes,
+                completedBytes = storage.reusableBytes,
+                totalBytes = expectedBytes,
+                retryWillResumeOrReuse = storage.reusableBytes > 0L,
+                storagePreflight = storage
+            )
+            if (!storage.canProceed) {
+                val failure = IllegalStateException(preflightDetail)
+                publishHuggingFaceFailure(
+                    progress = preflightProgress,
+                    remediation = "Free space on this APK's app volume or remove an inactive model, then retry this preflight step.",
+                    failure = failure,
+                    phase = "preflight"
+                )
+                persistHuggingFaceObservation(preflightProgress)
+                throw failure
+            }
+            _huggingFaceImportState.value = HuggingFaceImportUiState.Working(preflightProgress)
+            persistHuggingFaceObservation(preflightProgress)
+            recordImportDiagnostic(
+                "hugging face model",
+                HuggingFaceImportStep.PREFLIGHT.label.lowercase(),
+                ImportDiagnosticSeverity.SUCCESS,
+                preflightDetail,
+                "The destination, reusable bytes, required bytes, reserve, and available app-volume bytes were checked."
+            )
+            currentCoroutineContext().ensureActive()
+
+            var phase = if (reusableDownload == null) {
+                HuggingFaceImportStep.CONNECT
+            } else {
+                HuggingFaceImportStep.TOKENIZER_ASSETS
+            }
+            _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                huggingFaceProgress(
+                    step = phase,
+                    message = if (reusableDownload == null) {
+                        "Preparing to connect for $sourceName"
+                    } else {
+                        "Verified model is reusable; checking its pinned tokenizer/config assets"
+                    },
+                    resumedBytes = if (reusableDownload == null) storage.reusableBytes else 0L,
+                    completedBytes = if (reusableDownload == null) storage.reusableBytes else 0L,
+                    totalBytes = expectedModelBytes.takeIf { reusableDownload == null },
+                    retryWillResumeOrReuse = storage.reusableBytes > 0L,
+                    storagePreflight = storage
+                )
+            )
+            persistCurrentHuggingFaceObservation()
+            recordImportDiagnostic(
+                "hugging face model",
+                phase.label.lowercase(),
+                ImportDiagnosticSeverity.INFO,
+                if (reusableDownload == null) {
+                    "App-owned download started for ${candidate.path}."
+                } else {
+                    "Reusing the verified app-owned download for ${candidate.path}."
+                },
+                "Activation follows only after SDX loads and decodes the exact file."
+            )
+
+            val cancellation = HuggingFaceGgmlAcquisition.newDownloadCancellation()
+                huggingFaceDownloadCancellation = cancellation
+                val downloaded = reusableDownload ?: HuggingFaceGgmlAcquisition.download(
                     candidate = candidate,
-                    temporaryPath = pendingFile.toPath(),
                     finalPath = finalFile.toPath(),
                     maxBytes = maxBytes,
+                    onProgress = { progress -> publishHuggingFaceDownloadProgress(progress) },
+                    cancellation = cancellation
+                )
+                huggingFacePreparedImport = HuggingFacePreparedImport(
+                    candidate = candidate,
+                    preflight = preflight,
+                    verifiedDownload = downloaded
+                )
+                currentCoroutineContext().ensureActive()
+                val modelFile = downloaded.finalPath.toFile()
+                phase = HuggingFaceImportStep.TOKENIZER_ASSETS
+                _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                    huggingFaceProgress(
+                        step = phase,
+                        message = if (candidate.tokenizerAssets.isEmpty()) {
+                            "No repository tokenizer sidecars were found; SDX will use the tokenizer and chat template embedded in the GGUF"
+                        } else {
+                            "Preparing ${candidate.tokenizerAssets.size} tokenizer/config assets pinned to the same commit"
+                        },
+                        retryWillResumeOrReuse = true
+                    )
+                )
+                persistCurrentHuggingFaceObservation()
+                val tokenizerAssets = HuggingFaceGgmlAcquisition.ensureTokenizerAssets(
+                    candidate = candidate,
+                    modelPath = modelFile.toPath(),
                     onProgress = { progress ->
-                        _huggingFaceImportState.value = HuggingFaceImportUiState.Downloading(
-                            progress.safeFilename,
-                            progress.downloadedBytes,
-                            progress.expectedBytes
+                        publishHuggingFaceDownloadProgress(
+                            progress,
+                            HuggingFaceImportStep.TOKENIZER_ASSETS
                         )
                     },
-                    isCancelled = { importJob?.isActive == false }
+                    cancellation = cancellation
                 )
-                val modelFile = downloaded.finalPath.toFile()
-                imported = modelFile
-                phase = "SDX load and decode"
-                _huggingFaceImportState.value =
-                    HuggingFaceImportUiState.Activating(downloaded.safeFilename)
+                recordImportDiagnostic(
+                    "hugging face model",
+                    HuggingFaceImportStep.TOKENIZER_ASSETS.label.lowercase(),
+                    ImportDiagnosticSeverity.SUCCESS,
+                    if (tokenizerAssets.paths.isEmpty()) {
+                        "No external tokenizer assets were required; SDX will use GGUF metadata."
+                    } else {
+                        "Verified ${tokenizerAssets.paths.size} tokenizer/config asset(s) from the model's immutable revision."
+                    },
+                    "SDX now has the tokenizer, special-token, generation, configuration, and chat-template metadata available for load."
+                )
+                persistHuggingFaceImportCheckpoint(
+                    candidate,
+                    HuggingFaceImportCheckpointStage.VERIFIED_DOWNLOAD
+                )
+                currentCoroutineContext().ensureActive()
+                phase = HuggingFaceImportStep.CONVERT_SDZ
+                _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                    huggingFaceProgress(
+                        step = phase,
+                        message = "Preparing ${downloaded.safeFilename}: the verified GGUF is imported once, " +
+                            "optimized, and cached as SDZ with ${tokenizerAssets.paths.size} tokenizer/config assets",
+                        retryWillResumeOrReuse = true
+                    )
+                )
+                persistCurrentHuggingFaceObservation()
+                // From this visible state onward native work is deliberately non-interruptible.
+                huggingFaceDownloadCancellation = null
+                currentCoroutineContext().ensureActive()
 
                 val activation = engineMutex.withLock {
-                    activateStandaloneModelLocked(modelFile.absolutePath, previousSelection)
+                    activateStandaloneModelLocked(
+                        modelFile.absolutePath,
+                        previousSelection,
+                        clearHuggingFaceImportOnPromotion = true,
+                        verifiedSourceSha256 = downloaded.sha256,
+                        verifiedSourceBytes = downloaded.downloadedBytes
+                    ) { activationStep ->
+                        phase = activationStep
+                        _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                            huggingFaceProgress(
+                                step = activationStep,
+                                message = when (activationStep) {
+                                    HuggingFaceImportStep.CONVERT_SDZ ->
+                                        "Importing once and caching an optimized SDZ from ${downloaded.safeFilename}"
+                                    HuggingFaceImportStep.TARGET_CACHE ->
+                                        "Canonical SDZ is cached; preparing the strict ${BuildConfig.SDX_TARGET_PROFILE} target"
+                                    HuggingFaceImportStep.SDX_LOAD ->
+                                        "Loading the sharded SameDiff SDZ model through ${BuildConfig.SDX_TARGET_PROFILE}"
+                                    HuggingFaceImportStep.SMOKE_DECODE ->
+                                        "Running a bounded real-token decode"
+                                    HuggingFaceImportStep.ACTIVATE ->
+                                        "Publishing the verified model for chat"
+                                    else -> activationStep.label
+                                },
+                                retryWillResumeOrReuse = true
+                            )
+                        )
+                        persistCurrentHuggingFaceObservation()
+                        val diagnosticKey = "activation:${activationStep.name}"
+                        if (lastHuggingFaceProgressDiagnosticKey != diagnosticKey) {
+                            lastHuggingFaceProgressDiagnosticKey = diagnosticKey
+                            recordImportDiagnostic(
+                                "hugging face model",
+                                activationStep.label.lowercase(),
+                                ImportDiagnosticSeverity.INFO,
+                                when (activationStep) {
+                                    HuggingFaceImportStep.CONVERT_SDZ ->
+                                        "SDX is converting the verified raw model once; a complete content-addressed SDZ is reused on retry."
+                                    HuggingFaceImportStep.TARGET_CACHE ->
+                                        "The CPU importer has been released; SDX is reusing or preparing the strict accelerator target bundle."
+                                    HuggingFaceImportStep.SDX_LOAD ->
+                                        "SDX is loading the prepared sharded SameDiff SDZ model through the strict accelerator provider and NNAPI driver cache."
+                                    HuggingFaceImportStep.SMOKE_DECODE ->
+                                        "SDX is running a bounded real-token decode before activation."
+                                    HuggingFaceImportStep.ACTIVATE ->
+                                        "The proven model is being published transactionally for chat."
+                                    else -> activationStep.label
+                                },
+                                "A failure here retains the previously active chat model and can reuse the verified download."
+                            )
+                        }
+                    }
                 }
+                phase = HuggingFaceImportStep.ACTIVATE
+                _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
+                    huggingFaceProgress(
+                        step = phase,
+                        message = "Finalizing the active model and removing obsolete cache files",
+                        retryWillResumeOrReuse = true,
+                        storagePreflight = preflight.storage
+                    )
+                )
+                persistCurrentHuggingFaceObservation()
+                preflight.obsoleteCacheFilesAfterActivation.forEach { obsolete ->
+                    val modelPath = obsolete.toPath()
+                    val obsoletePaths = listOf(modelPath) +
+                        HuggingFaceGgmlAcquisition.tokenizerAssetPathsForModel(modelPath)
+                    obsoletePaths.forEach { path ->
+                        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                            require(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                                "Obsolete Hugging Face cache entry is not a regular file: $path"
+                            }
+                            Files.delete(path)
+                        }
+                    }
+                }
+                val preparedModel = activation.preparedModel
+                val activeStorage = preparedModel?.modelPath ?: modelFile.absolutePath
+                recordImportDiagnostic(
+                    "hugging face model",
+                    HuggingFaceImportStep.ACTIVE.label.lowercase(),
+                    ImportDiagnosticSeverity.SUCCESS,
+                    "${candidate.path} ${if (reusableDownload == null) "downloaded" else "reused"}, " +
+                        "loaded, decoded, and activated on ${activation.route} (${activation.modelId}). " +
+                        (preparedModel?.let {
+                            "Source GGUF=${modelFile.absolutePath}; canonical SDZ=${it.canonicalSdzPath} " +
+                                "(${it.canonicalSdzBytes} bytes); active target bundle=${it.modelPath}; " +
+                                "conversionCacheHit=${it.cacheHit}."
+                        } ?: "Active model=$activeStorage."),
+                    "Return to Chat; execution uses the displayed active target, while the verified source remains reusable."
+                )
+                huggingFaceCheckpoint = null
+                clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = false)
                 _huggingFaceImportState.value = HuggingFaceImportUiState.Active(
-                    activation.modelPath,
-                    activation.route
+                    artifactName = downloaded.safeFilename,
+                    route = activation.route,
+                    storageLocation = activeStorage,
+                    message = preparedModel?.let {
+                        "Loaded from cached SDZ and activated for chat; source GGUF retained at ${modelFile.absolutePath}"
+                    } ?: "Loaded, smoke-decoded, and activated for chat",
+                    storagePreflight = preflight.storage
                 )
-                runCatching {
-                    recordImportDiagnostic(
-                        "hugging face model",
-                        phase,
-                        ImportDiagnosticSeverity.SUCCESS,
-                        "${candidate.path} downloaded, loaded, decoded, and activated on " +
-                            "${activation.route} (${activation.modelId}).",
-                        "Return to Chat; this exact app-owned model is now the running model."
-                    )
-                }.onFailure { Log.w(TAG, "Could not record Hugging Face import success", it) }
-                Result.success(modelFile.absolutePath)
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                pendingFile.delete()
-                imported?.delete()
-                _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
-                throw cancelled
-            } catch (failure: Exception) {
-                pendingFile.delete()
-                imported?.delete()
-                if (importJob?.isActive == false) {
-                    _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
-                    throw kotlinx.coroutines.CancellationException(
-                        "Hugging Face model import was cancelled"
-                    ).also { it.initCause(failure) }
-                }
-                _huggingFaceImportState.value = HuggingFaceImportUiState.Failed(
-                    failure.message ?: failure.javaClass.simpleName
-                )
-                Log.e(TAG, "Hugging Face model import failed during $phase", failure)
-                runCatching {
-                    recordImportDiagnostic(
-                        "hugging face model",
-                        phase,
-                        ImportDiagnosticSeverity.ERROR,
-                        failure.message ?: "Hugging Face model import failed.",
-                        "The previous model remains active. Verify storage, network, and SDX model compatibility, then retry."
-                    )
-                }.onFailure { Log.w(TAG, "Could not record Hugging Face import failure", it) }
-                Result.failure(failure)
-            }
+                modelFile.absolutePath
         }
     }
 
@@ -1009,7 +2307,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * It supplies target-complete .sdz/.kproject downloads and receives no Hugging Face source.
      */
     fun openModelStaging(artifact: ModelStagingHandoff.Artifact): Result<Unit> {
-        val result = runCatching {
+        try {
             val base = prefs.modelStagingUrl.trim()
             stagingUrlLaunchProblem(base)?.let { problem ->
                 throw IllegalArgumentException(problem)
@@ -1021,20 +2319,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     artifact = artifact
                 ).toASCIIString()
             )
-            try {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, request).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            } catch (missing: android.content.ActivityNotFoundException) {
-                throw IllegalStateException(
-                    "No web browser is installed on this device, so prepared artifact downloads "
-                        + "cannot open. Install a browser or stage on another machine and "
-                        + "transfer the file.",
-                    missing
-                )
-            }
-        }
-        if (result.isSuccess) {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, request).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
             recordImportDiagnostic(
                 "browser handoff",
                 artifact.queryValue,
@@ -1042,149 +2329,210 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "External browser opened for a prepared ${artifact.fileExtension} download.",
                 "Download the prepared package, return here, then use the matching import button."
             )
-        } else {
-            recordImportDiagnostic(
-                "browser handoff",
-                artifact.queryValue,
-                ImportDiagnosticSeverity.ERROR,
-                result.exceptionOrNull()?.message ?: "The browser handoff could not be opened.",
-                "Check the prepared-artifact server URL and browser availability, then retry."
-            )
+            return Result.success(Unit)
+        } catch (caught: RuntimeException) {
+            val failure = if (caught is android.content.ActivityNotFoundException) {
+                IllegalStateException(
+                    "No web browser is installed on this device, so prepared artifact downloads " +
+                        "cannot open. Install a browser or stage on another machine and transfer the file.",
+                    caught
+                )
+            } else {
+                caught
+            }
+            try {
+                recordImportDiagnostic(
+                    "browser handoff",
+                    artifact.queryValue,
+                    ImportDiagnosticSeverity.ERROR,
+                    failure.message ?: "The browser handoff could not be opened.",
+                    "Expand and copy the full stack trace. Check the prepared-artifact server URL and browser availability, then retry.",
+                    failure = failure
+                )
+            } catch (persistenceFailure: RuntimeException) {
+                failure.addSuppressed(persistenceFailure)
+            }
+            return Result.failure(failure)
         }
-        return result
     }
 
     /**
-     * Caller holds [engineMutex]. Raw Hugging Face GGUF/GGML keeps the exact SDX session
-     * that passed prompt rendering and decode. Prepared provider sessions retain their
-     * existing fresh-session behavior because some providers own conversational state.
+     * Caller holds [engineMutex]. Ingestion is complete before this method receives a runnable
+     * model. The session that proves decode is the session promoted into chat; reopening the same
+     * canonical SDZ would repeat accelerator setup and briefly duplicate driver-owned resources.
      */
     private fun openVerifiedModelLocked(
         modelPath: String,
-        unavailableMessage: String
+        unavailableMessage: String,
+        verifiedSourceSha256: String? = null,
+        verifiedSourceBytes: Long? = null,
+        onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): AcceleratedChatModelAndroid {
-        val candidate = openAvailableModel(modelPath, unavailableMessage)
-        var verified = false
+        val candidate = openAvailableModel(
+            modelPath,
+            verifiedSourceSha256,
+            verifiedSourceBytes
+        ) { preparationStage ->
+            onImportStep(
+                when (preparationStage) {
+                    PreparationStage.CONVERT_AND_CACHE_SDZ -> HuggingFaceImportStep.CONVERT_SDZ
+                    PreparationStage.TARGET_CACHE_READY -> HuggingFaceImportStep.TARGET_CACHE
+                    PreparationStage.LOAD_ACCELERATOR -> HuggingFaceImportStep.SDX_LOAD
+                }
+            )
+        }
         try {
+            if (!candidate.isAvailable()) {
+                throw IOException(unavailableMessage)
+            }
+            onImportStep(HuggingFaceImportStep.SMOKE_DECODE)
             when (val smoke = smokeTestModelLocked(candidate)) {
                 is ModelSmokeUiState.Passed -> Unit
-                is ModelSmokeUiState.Failed -> throw IOException(
-                    "Model decode self-test failed on ${smoke.route}: ${smoke.message}"
+                is ModelSmokeUiState.Failed -> throw ChatException(
+                    "Model decode self-test failed on ${smoke.route}: ${smoke.message}",
+                    smoke.failure
                 )
                 is ModelSmokeUiState.Running,
                 ModelSmokeUiState.NotRun -> throw IOException(
                     "Model decode self-test did not complete."
                 )
             }
-            if (SdxRawGgufChatSession.supports(modelPath)) {
-                // GenerationPipeline supports repeated generate calls on one loaded model.
-                // Keep this exact decoded SDX session so HF activation cannot substitute an
-                // unverified native object after the runnable-model check.
-                verified = true
-                return candidate
+        } catch (failure: Throwable) {
+            try {
+                candidate.close()
+            } catch (closeFailure: Throwable) {
+                failure.addSuppressed(closeFailure)
             }
-        } finally {
-            if (!verified) {
-                runCatching { candidate.close() }
-                    .onFailure { Log.w(TAG, "Failed to close model verification session", it) }
-            }
+            throw failure
         }
-        return openAvailableModel(modelPath, unavailableMessage)
+        return candidate
     }
 
     private fun openAvailableModel(
         modelPath: String,
-        unavailableMessage: String
-    ): AcceleratedChatModelAndroid {
-        val model = AcceleratedChatModelAndroid(
-            context,
-            modelPath,
-            prefs.temperature,
-            prefs.maxTokens
+        verifiedSourceSha256: String? = null,
+        verifiedSourceBytes: Long? = null,
+        preparedModelInfo: PreparedModelInfo? = null,
+        onPreparationStage: (PreparationStage) -> Unit = {}
+    ): AcceleratedChatModelAndroid =
+        AcceleratedChatModelAndroid(
+            context = context,
+            modelPath = modelPath,
+            temperature = prefs.temperature,
+            maxTokens = prefs.maxTokens,
+            verifiedSourceSha256 = verifiedSourceSha256,
+            verifiedSourceBytes = verifiedSourceBytes,
+            onPreparationStage = onPreparationStage,
+            preparedModelInfo = preparedModelInfo
         )
-        if (!model.isAvailable()) {
-            val detail = model.startupError ?: unavailableMessage
-            runCatching { model.close() }
-            throw IOException("$unavailableMessage: $detail")
-        }
-        return model
-    }
 
     /** Caller holds [engineMutex]. Publish a standalone model only after real decode. */
     private fun activateStandaloneModelLocked(
         modelPath: String,
-        previousSelection: ActiveProjectSelection
+        previousSelection: ActiveProjectSelection,
+        clearHuggingFaceImportOnPromotion: Boolean = false,
+        verifiedSourceSha256: String? = null,
+        verifiedSourceBytes: Long? = null,
+        onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): StandaloneActivation {
-        var candidateModel: AcceleratedChatModelAndroid? = null
         var candidateBridge: GraphToolBackend? = null
-        var preferenceWriteAttempted = false
+        val candidateSelection = ActiveProjectSelection(
+            installationRoot = "",
+            modelPath = modelPath,
+            graphPath = previousSelection.graphPath,
+            sourcesPath = "",
+            sourceCount = 0,
+            projectId = "",
+            projectName = "",
+            revision = "",
+            targetProfile = ""
+        )
 
-        closeEngineResourcesLocked()
         try {
-            val openedModel = openVerifiedModelLocked(
-                modelPath,
-                "The imported model could not open in the local SDX runtime"
-            )
-            candidateModel = openedModel
-            val openedBridge = buildBridge(previousSelection.graphPath)
-            candidateBridge = openedBridge
-            val candidateEngine = ChatEngine(
-                InferenceRouter(openedModel, null),
-                openedBridge,
-                prefs.maxToolRounds
-            )
+            return ProvenModelActivationTransaction<String, AcceleratedChatModelAndroid, StandaloneActivation>(
+                stagePendingSelection = { prefs.stagePendingSelection(candidateSelection) },
+                detachPreviousRuntime = { closeEngineResourcesLocked() },
+                openCandidate = { exactModelPath ->
+                    openVerifiedModelLocked(
+                        exactModelPath,
+                        "The imported model could not open in the local SDX runtime",
+                        verifiedSourceSha256,
+                        verifiedSourceBytes,
+                        onImportStep
+                    )
+                },
+                decodedGeneration = {
+                    (_modelSmokeState.value as? ModelSmokeUiState.Passed)?.preview.orEmpty()
+                },
+                publish = { exactModelPath, openedModel ->
+                    onImportStep(HuggingFaceImportStep.ACTIVATE)
+                    val route = openedModel.routeName
+                    val modelId = openedModel.modelId()
+                    val preparedModel = openedModel.preparationInfo
+                    val activeModelPath = preparedModel?.canonicalSdzPath ?: exactModelPath
+                    if (activeModelPath != exactModelPath) {
+                        check(
+                            prefs.stagePendingSelection(
+                                candidateSelection.copy(modelPath = activeModelPath)
+                            )
+                        ) {
+                            "The cached canonical SDZ could not replace the raw pending model selection."
+                        }
+                    }
+                    val openedBridge = buildBridge(previousSelection.graphPath)
+                    candidateBridge = openedBridge
+                    val candidateEngine = ChatEngine(
+                        InferenceRouter(openedModel, null),
+                        openedBridge,
+                        prefs.maxToolRounds
+                    )
+                    val activation = StandaloneActivation(
+                        modelPath = activeModelPath,
+                        route = route,
+                        modelId = modelId,
+                        preparedModel = preparedModel
+                    )
 
-            preferenceWriteAttempted = true
-            val committed = prefs.activateProject(
-                ActiveProjectSelection(
-                    installationRoot = "",
-                    modelPath = modelPath,
-                    graphPath = previousSelection.graphPath,
-                    sourcesPath = "",
-                    sourceCount = 0,
-                    projectId = "",
-                    projectName = "",
-                    revision = "",
-                    targetProfile = ""
-                )
-            )
-            if (!committed) {
-                throw IOException("Android could not persist the imported model selection.")
+                    engine = candidateEngine
+                    bridge = openedBridge
+                    localModel = openedModel
+                    candidateBridge = null
+                    clearConversationLocked()
+                    _error.value = null
+                    _errorStackTrace.value = null
+                    _activeRoute.value = route
+                    _modelState.value = ModelUiState.Ready(activeModelPath, route)
+                    _graphState.value =
+                        GraphUiState.Ready(previousSelection.graphPath.takeIf(String::isNotBlank))
+                    activation
+                },
+                promotePendingSelection = {
+                    if (clearHuggingFaceImportOnPromotion) {
+                        prefs.promotePendingSelectionAndClearHuggingFaceImport()
+                    } else {
+                        prefs.promotePendingSelection()
+                    }
+                },
+                rollbackPublished = { closeEngineResourcesLocked() },
+                discardPendingSelection = prefs::discardPendingSelection,
+                restorePreviousSelection = { prefs.activateProject(previousSelection) },
+                restorePreviousRuntime = {
+                    check(prefs.snapshotActiveSelection() == previousSelection) {
+                        "The previous proven model selection could not be restored."
+                    }
+                    rebuildEngineLocked(resetConversation = false)
+                    check(previousSelection.modelPath.isBlank() || engine != null) {
+                        "The previous proven model runtime could not be restored."
+                    }
+                },
+                closeCandidate = AcceleratedChatModelAndroid::close
+            ).execute(modelPath)
+        } catch (failure: Throwable) {
+            try {
+                candidateBridge?.close()
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
             }
-
-            engine = candidateEngine
-            bridge = openedBridge
-            localModel = openedModel
-            candidateBridge = null
-            candidateModel = null
-            clearConversationLocked()
-            _error.value = null
-            _activeRoute.value = openedModel.routeName
-            _modelState.value = ModelUiState.Ready(modelPath, openedModel.routeName)
-            _graphState.value =
-                GraphUiState.Ready(previousSelection.graphPath.takeIf(String::isNotBlank))
-            return StandaloneActivation(
-                modelPath = modelPath,
-                route = openedModel.routeName,
-                modelId = openedModel.modelId()
-            )
-        } catch (failure: Exception) {
-            runCatching { candidateBridge?.close() }
-                .onFailure { failure.addSuppressed(it) }
-            runCatching { candidateModel?.close() }
-                .onFailure { failure.addSuppressed(it) }
-            if (preferenceWriteAttempted &&
-                !prefs.activateProject(previousSelection)
-            ) {
-                failure.addSuppressed(
-                    IOException("Android could not restore the previous selection.")
-                )
-            }
-            runCatching { rebuildEngineLocked(resetConversation = false) }
-                .onFailure { restoreFailure ->
-                    failure.addSuppressed(restoreFailure)
-                    Log.e(TAG, "Could not restore the previous runtime", restoreFailure)
-                }
             throw failure
         }
     }
@@ -1198,78 +2546,86 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         installed: ProjectArchiveInstaller.InstalledProject
     ) {
         val previousSelection = prefs.snapshotActiveSelection()
-        var candidateModel: AcceleratedChatModelAndroid? = null
         var candidateBridge: GraphToolBackend? = null
-        var preferenceWriteAttempted = false
-
-        closeEngineResourcesLocked()
+        val candidateSelection = ActiveProjectSelection(
+            installationRoot = installed.installationRoot().toString(),
+            modelPath = installed.modelPath().toString(),
+            graphPath = installed.graphPath().toString(),
+            sourcesPath = installed.sourcesRoot().toString(),
+            sourceCount = installed.sourcePaths().size,
+            projectId = installed.projectId(),
+            projectName = installed.projectName(),
+            revision = installed.revision(),
+            targetProfile = BuildConfig.SDX_TARGET_PROFILE
+        )
         try {
-            val openedModel = openVerifiedModelLocked(
-                installed.modelPath().toString(),
-                "The project model could not open on this accelerator"
-            )
-            candidateModel = openedModel
-            val openedBridge = buildBridge(installed.graphPath().toString())
-            candidateBridge = openedBridge
-            val candidateEngine = ChatEngine(
-                InferenceRouter(openedModel, null),
-                openedBridge,
-                prefs.maxToolRounds
-            )
-
-            preferenceWriteAttempted = true
-            val committed = prefs.activateProject(
-                ActiveProjectSelection(
-                    installationRoot = installed.installationRoot().toString(),
-                    modelPath = installed.modelPath().toString(),
-                    graphPath = installed.graphPath().toString(),
-                    sourcesPath = installed.sourcesRoot().toString(),
-                    sourceCount = installed.sourcePaths().size,
-                    projectId = installed.projectId(),
-                    projectName = installed.projectName(),
-                    revision = installed.revision(),
-                    targetProfile = BuildConfig.SDX_TARGET_PROFILE
-                )
-            )
-            if (!committed) {
-                throw IOException("Android could not persist the active project selection.")
-            }
-
-            engine = candidateEngine
-            bridge = openedBridge
-            localModel = openedModel
-            candidateBridge = null
-            candidateModel = null
-
-            clearConversationLocked()
-            _error.value = null
-            _activeRoute.value = openedModel.routeName
-            _modelState.value = ModelUiState.Ready(
-                installed.modelPath().toString(),
-                openedModel.routeName
-            )
-            _graphState.value = GraphUiState.Ready(installed.graphPath().toString())
+            ProvenModelActivationTransaction<String, AcceleratedChatModelAndroid, StandaloneActivation>(
+                stagePendingSelection = { prefs.stagePendingSelection(candidateSelection) },
+                detachPreviousRuntime = { closeEngineResourcesLocked() },
+                openCandidate = {
+                    openVerifiedModelLocked(
+                        installed.modelPath().toString(),
+                        "The project model could not open on this accelerator"
+                    )
+                },
+                decodedGeneration = {
+                    (_modelSmokeState.value as? ModelSmokeUiState.Passed)?.preview.orEmpty()
+                },
+                publish = { _, openedModel ->
+                    val openedBridge = buildBridge(installed.graphPath().toString())
+                    candidateBridge = openedBridge
+                    val candidateEngine = ChatEngine(
+                        InferenceRouter(openedModel, null),
+                        openedBridge,
+                        prefs.maxToolRounds
+                    )
+                    engine = candidateEngine
+                    bridge = openedBridge
+                    localModel = openedModel
+                    candidateBridge = null
+                    clearConversationLocked()
+                    _error.value = null
+                    _errorStackTrace.value = null
+                    _activeRoute.value = openedModel.routeName
+                    _modelState.value = ModelUiState.Ready(
+                        installed.modelPath().toString(),
+                        openedModel.routeName
+                    )
+                    _graphState.value = GraphUiState.Ready(installed.graphPath().toString())
+                    StandaloneActivation(
+                        modelPath = installed.modelPath().toString(),
+                        route = openedModel.routeName,
+                        modelId = openedModel.modelId(),
+                        preparedModel = null
+                    )
+                },
+                promotePendingSelection = prefs::promotePendingSelection,
+                rollbackPublished = { closeEngineResourcesLocked() },
+                discardPendingSelection = prefs::discardPendingSelection,
+                restorePreviousSelection = { prefs.activateProject(previousSelection) },
+                restorePreviousRuntime = {
+                    check(prefs.snapshotActiveSelection() == previousSelection) {
+                        "The previous proven project selection could not be restored."
+                    }
+                    rebuildEngineLocked(resetConversation = false)
+                    check(previousSelection.modelPath.isBlank() || engine != null) {
+                        "The previous proven project runtime could not be restored."
+                    }
+                },
+                closeCandidate = AcceleratedChatModelAndroid::close
+            ).execute(installed.modelPath().toString())
             Log.i(
                 TAG,
                 "Activated project " + installed.projectId()
                         + " revision=" + installed.revision()
                         + " target=" + BuildConfig.SDX_TARGET_PROFILE
             )
-        } catch (failure: Exception) {
-            runCatching { candidateBridge?.close() }
-                .onFailure { failure.addSuppressed(it) }
-            runCatching { candidateModel?.close() }
-                .onFailure { failure.addSuppressed(it) }
-            if (preferenceWriteAttempted && !prefs.activateProject(previousSelection)) {
-                failure.addSuppressed(
-                    IOException("Android could not restore the previous project selection.")
-                )
+        } catch (failure: Throwable) {
+            try {
+                candidateBridge?.close()
+            } catch (cleanupFailure: Throwable) {
+                failure.addSuppressed(cleanupFailure)
             }
-            runCatching { rebuildEngineLocked(resetConversation = false) }
-                .onFailure { restoreFailure ->
-                    failure.addSuppressed(restoreFailure)
-                    Log.e(TAG, "Could not restore the previous project runtime", restoreFailure)
-                }
             throw failure
         }
     }
@@ -1316,20 +2672,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             return destination
         } catch (failure: Exception) {
-            pending.delete()
+            try {
+                Files.deleteIfExists(pending.toPath())
+            } catch (cleanupFailure: Exception) {
+                failure.addSuppressed(cleanupFailure)
+            }
             throw failure
         }
     }
 
     private fun resolveFileName(uri: Uri): String? {
-        // Try display name from ContentResolver; fall back to last path segment.
-        return try {
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
-            }
-        } catch (e: Exception) {
-            null
+        // A provider that rejects metadata queries is an import failure, not a silent fallback.
+        return context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
         } ?: uri.lastPathSegment
     }
 
@@ -1373,10 +2729,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         bridge = null
         localModel = null
         engine = null
-        runCatching { oldBridge?.close() }
-            .onFailure { Log.w(TAG, "Failed to close graph bridge", it) }
-        runCatching { oldModel?.close() }
-            .onFailure { Log.w(TAG, "Failed to close model session", it) }
+        var firstFailure: Throwable? = null
+        try {
+            oldBridge?.close()
+        } catch (failure: Throwable) {
+            firstFailure = failure
+        }
+        try {
+            oldModel?.close()
+        } catch (failure: Throwable) {
+            if (firstFailure == null) {
+                firstFailure = failure
+            } else {
+                firstFailure.addSuppressed(failure)
+            }
+        }
+        firstFailure?.let { throw it }
     }
 
     private fun clearConversationLocked() {
@@ -1395,6 +2763,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        huggingFaceDownloadCancellation?.cancel()
+        huggingFaceJob?.cancel()
         // Cancellation is lock-free so it can interrupt a blocking native decode. Cleanup
         // then waits asynchronously for the same lifecycle lock used by send/rebuild.
         localModel?.cancel()
@@ -1408,3 +2778,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 }
+
+internal fun huggingFaceDownloadStep(
+    event: HuggingFaceGgmlAcquisition.DownloadEvent
+): HuggingFaceImportStep = when (event) {
+    HuggingFaceGgmlAcquisition.DownloadEvent.CONNECT -> HuggingFaceImportStep.CONNECT
+    HuggingFaceGgmlAcquisition.DownloadEvent.RESUME,
+    HuggingFaceGgmlAcquisition.DownloadEvent.DOWNLOAD,
+    HuggingFaceGgmlAcquisition.DownloadEvent.RETRY -> HuggingFaceImportStep.DOWNLOAD
+    HuggingFaceGgmlAcquisition.DownloadEvent.VERIFY,
+    HuggingFaceGgmlAcquisition.DownloadEvent.COMPLETE -> HuggingFaceImportStep.VERIFY
+}
+
+internal fun huggingFaceObservedOrFallbackStep(
+    observed: HuggingFaceImportUiState.Observable?,
+    fallback: HuggingFaceImportStep
+): HuggingFaceImportStep = observed?.step ?: fallback

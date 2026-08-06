@@ -663,7 +663,8 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public List<GraphNode> createSnippetNodesBatch(List<KnowledgeGraphService.SnippetSpec> specs) {
-            return rpc("createSnippetNodesBatch", new Object[]{specs}, typeListGraphNode);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(specs, mapper);
+            return rpc("createSnippetNodesBatch", new Object[]{payload}, typeListGraphNode);
         }
 
         @Override
@@ -693,7 +694,8 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public List<GraphNode> createNodesBatch(List<NodeSpec> specs, Long factSheetId) {
-            return rpc("createNodesBatch", new Object[]{specs, factSheetId}, typeListGraphNode);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(specs, mapper);
+            return rpc("createNodesBatch", new Object[]{payload, factSheetId}, typeListGraphNode);
         }
 
         @Override
@@ -714,7 +716,8 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public List<GraphNode> getNodesByExternalIds(List<KnowledgeGraphService.ExternalNodeLookup> lookups) {
-            return rpc("getNodesByExternalIds", new Object[]{lookups}, typeListGraphNode);
+            ArrayNode lookupPayload = GraphMatrixSubprocessMain.encodeExternalNodeLookups(lookups, mapper);
+            return rpc("getNodesByExternalIds", new Object[]{lookupPayload}, typeListGraphNode);
         }
 
         @Override
@@ -735,13 +738,15 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public int updateNodeKgeMetadataBatch(List<KnowledgeGraphService.NodeMetadataUpdate> updates) {
-            Integer result = rpc("updateNodeKgeMetadataBatch", new Object[]{updates}, typeInt);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(updates, mapper);
+            Integer result = rpc("updateNodeKgeMetadataBatch", new Object[]{payload}, typeInt);
             return result != null ? result : 0;
         }
 
         @Override
         public int updateNodesBatch(List<KnowledgeGraphService.NodeUpdate> updates) {
-            Integer result = rpc("updateNodesBatch", new Object[]{updates}, typeInt);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(updates, mapper);
+            Integer result = rpc("updateNodesBatch", new Object[]{payload}, typeInt);
             return result != null ? result : 0;
         }
 
@@ -790,13 +795,15 @@ public class GraphServiceSubprocessClients {
 
         @Override
         public int createEdgesBatch(List<KnowledgeGraphService.EdgeSpec> specs) {
-            Integer result = rpc("createEdgesBatch", new Object[]{specs}, typeInt);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(specs, mapper);
+            Integer result = rpc("createEdgesBatch", new Object[]{payload}, typeInt);
             return result != null ? result : 0;
         }
 
         @Override
         public int updateEdgeMetadataBatch(List<KnowledgeGraphService.EdgeMetadataUpdate> updates) {
-            Integer result = rpc("updateEdgeMetadataBatch", new Object[]{updates}, typeInt);
+            ArrayNode payload = GraphMatrixSubprocessMain.encodeKnowledgeGraphRecordList(updates, mapper);
+            Integer result = rpc("updateEdgeMetadataBatch", new Object[]{payload}, typeInt);
             return result != null ? result : 0;
         }
 

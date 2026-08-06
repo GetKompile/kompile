@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.gateway;
 
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -259,9 +260,11 @@ public class CliToolGatewayInterceptor {
 
     private static DirectLlmClient buildLlmClient(String modelSource, ObjectMapper objectMapper) {
         if ("STAGING".equalsIgnoreCase(modelSource)) {
-            // Use kompile-model-staging's OpenAI-compatible endpoint
+            // Use the same UI/CLI-managed Model Staging endpoint as every web persona.
+            String stagingUrl = ServiceEndpointsConfigManager.shared()
+                    .current().effectiveStagingUrl().replaceAll("/+$", "");
             ChatConfig config = new ChatConfig("kompile", "kompile-gateway",
-                    "default", "http://localhost:8090/v1");
+                    "default", stagingUrl + "/v1");
             return new DirectLlmClient(config, objectMapper);
         }
 

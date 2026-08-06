@@ -19,6 +19,7 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
@@ -143,8 +144,13 @@ public class DirectSubagentRunnerStdio {
         String effectivePrompt = prompt;
 
         String roleName = agent.getRoleName();
-        if (roleName != null && !roleName.isEmpty()) {
-            RoleConfig role = resolveRole(roleName);
+        if (roleName == null || roleName.isBlank()) {
+            roleName = resolveAssignedRole(agentName);
+        }
+
+        RoleConfig role = null;
+        if (roleName != null && !roleName.isBlank()) {
+            role = resolveRole(roleName);
             if (role != null) {
                 effectivePrompt = buildRolePrompt(role) + "\n\n---\n\n" + prompt;
                 System.err.println(DIM + "  Role: " + roleName + RESET);
@@ -152,6 +158,13 @@ public class DirectSubagentRunnerStdio {
                 System.err.println(DIM + "  Warning: role '" + roleName + "' not found, using prompt as-is" + RESET);
             }
         }
+
+        AgentLaunchDefaults.Selection launchDefaults = AgentLaunchDefaults.resolve(
+                agentName,
+                workDir,
+                agent.getModelOverride(),
+                agent.getThinkingOverride(),
+                role != null ? role.getAgentDefaultsFor(agentName) : null);
 
         System.err.println(GREEN + "Spawning managed subagent: " + agentName + RESET);
         System.err.println(DIM + "  Prompt: " + effectivePrompt.substring(0, Math.min(80, effectivePrompt.length())) + "..." + RESET);
@@ -164,11 +177,18 @@ public class DirectSubagentRunnerStdio {
                     + "), skipping MCP tool injection" + RESET);
         }
 
-        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools);
+        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
+                launchDefaults.model(), launchDefaults.thinking());
     }
 
     String executeManagedSubagent(String agentName, String effectivePrompt,
                                   int currentDepth, boolean injectMcpTools) throws Exception {
+        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools, null, null);
+    }
+
+    String executeManagedSubagent(String agentName, String effectivePrompt,
+                                  int currentDepth, boolean injectMcpTools,
+                                  String modelOverride, String thinkingOverride) throws Exception {
         long startTime = System.currentTimeMillis();
         cancelSignal.set(false);
         waitingThread = Thread.currentThread();
@@ -198,6 +218,7 @@ public class DirectSubagentRunnerStdio {
         metrics.setAgentName(agentName + " (subagent)");
 
         SubprocessAgentRunner runner = createManagedRunner(agentName, injectMcpTools);
+        runner.setLaunchOverrides(modelOverride, thinkingOverride);
         Map<String, String> env = new LinkedHashMap<>(extraEnvironment);
         env.put("KOMPILE_SUBAGENT_DEPTH", String.valueOf(currentDepth + 1));
         runner.setExtraEnvironment(env);
@@ -358,6 +379,18 @@ public class DirectSubagentRunnerStdio {
         try {
             RoleManager fallbackManager = new RoleManager(workDir);
             return fallbackManager.getRole(roleName);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String resolveAssignedRole(String agentName) {
+        if (roleManager != null) {
+            return roleManager.getAgentRole(agentName);
+        }
+        try {
+            RoleManager fallbackManager = new RoleManager(workDir);
+            return fallbackManager.getAgentRole(agentName);
         } catch (Exception e) {
             return null;
         }

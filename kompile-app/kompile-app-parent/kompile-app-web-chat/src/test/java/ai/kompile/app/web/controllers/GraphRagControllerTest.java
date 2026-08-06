@@ -14,6 +14,7 @@ import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.model.Community;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Relationship;
+import ai.kompile.core.graphrag.query.GraphRagContextMode;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.graphrag.query.SearchType;
@@ -110,6 +111,7 @@ class GraphRagControllerTest {
             request.put("searchType", "GLOBAL");
             request.put("maxResults", 10);
             request.put("conversationId", "conv-1");
+            request.put("factSheetId", "7");
 
             ResponseEntity<Map<String, Object>> response = controller.search(request);
 
@@ -125,6 +127,57 @@ class GraphRagControllerTest {
             assertEquals(SearchType.GLOBAL, captured.getSearchType());
             assertEquals(10, captured.getK());
             assertEquals("conv-1", captured.getConversationId());
+            assertEquals(7L, captured.getFactSheetId());
+            assertEquals(GraphRagContextMode.LEGACY_TEXT, captured.getContextMode());
+        }
+
+        @Test
+        void compactQueryPassesExplicitContextContractAndFactSheet() {
+            when(graphRagService.supportsContextMode(GraphRagContextMode.COMPACT_GRAPH))
+                    .thenReturn(true);
+            when(graphRagService.answerQuery(any())).thenReturn(GraphRagResult.builder()
+                    .answer("Compact answer")
+                    .formattedContext("{\"contract\":\"kompile.compact-graph.v1\"}")
+                    .build());
+
+            Map<String, Object> request = new HashMap<>();
+            request.put("query", "Why did revenue fall?");
+            request.put("searchType", "HYBRID");
+            request.put("factSheetId", 22L);
+            request.put("contextMode", "COMPACT_GRAPH");
+
+            ResponseEntity<Map<String, Object>> response = controller.search(request);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            ArgumentCaptor<GraphRagQuery> captor = ArgumentCaptor.forClass(GraphRagQuery.class);
+            verify(graphRagService).answerQuery(captor.capture());
+            assertEquals(22L, captor.getValue().getFactSheetId());
+            assertEquals(GraphRagContextMode.COMPACT_GRAPH, captor.getValue().getContextMode());
+            assertEquals(SearchType.HYBRID, captor.getValue().getSearchType());
+        }
+
+        @Test
+        void unsupportedCompactContextReturnsBadRequestWithoutQueryingService() {
+            when(graphRagService.supportsContextMode(GraphRagContextMode.COMPACT_GRAPH))
+                    .thenReturn(false);
+
+            ResponseEntity<Map<String, Object>> response = controller.search(Map.of(
+                    "query", "test",
+                    "contextMode", "COMPACT_GRAPH"));
+
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            assertTrue(response.getBody().get("error").toString().contains("not supported"));
+            verify(graphRagService, never()).answerQuery(any());
+        }
+
+        @Test
+        void invalidContextModeReturnsBadRequest() {
+            ResponseEntity<Map<String, Object>> response = controller.search(Map.of(
+                    "query", "test",
+                    "contextMode", "RAW_PROMPT"));
+
+            assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+            verify(graphRagService, never()).answerQuery(any());
         }
 
         @Test
@@ -144,6 +197,7 @@ class GraphRagControllerTest {
             assertEquals(SearchType.LOCAL, captor.getValue().getSearchType());
             assertEquals(5, captor.getValue().getK());
             assertEquals("default", captor.getValue().getConversationId());
+            assertEquals(GraphRagContextMode.LEGACY_TEXT, captor.getValue().getContextMode());
         }
 
         @Test

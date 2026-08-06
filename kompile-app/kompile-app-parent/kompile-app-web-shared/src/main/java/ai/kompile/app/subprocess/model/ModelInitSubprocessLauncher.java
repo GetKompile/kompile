@@ -143,31 +143,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
         String taskId = args.taskId();
         if (taskId == null || taskId.isBlank()) {
             taskId = UUID.randomUUID().toString();
-            args = ModelInitSubprocessArgs.builder()
-                    .taskId(taskId)
-                    .modelIdentifier(args.modelIdentifier())
-                    .modelSourceType(args.modelSourceType())
-                    .stagingUrl(args.stagingUrl())
-                    .stagingApiKey(args.stagingApiKey())
-                    .archivePath(args.archivePath())
-                    .optimalBatchSize(args.optimalBatchSize())
-                    .maxBatchSize(args.maxBatchSize())
-                    .nd4jConfigJson(args.nd4jConfigJson())
-                    .callbackBaseUrl(args.callbackBaseUrl())
-                    .memoryThresholdPercent(args.memoryThresholdPercent())
-                    .memoryCriticalPercent(args.memoryCriticalPercent())
-                    .memoryKillThresholdPercent(args.memoryKillThresholdPercent())
-                    .memoryCheckIntervalMs(args.memoryCheckIntervalMs())
-                    .gpuMemoryThresholdPercent(args.gpuMemoryThresholdPercent())
-                    .gpuMemoryCriticalPercent(args.gpuMemoryCriticalPercent())
-                    .gpuMemoryKillThresholdPercent(args.gpuMemoryKillThresholdPercent())
-                    .offHeapThresholdPercent(args.offHeapThresholdPercent())
-                    .offHeapCriticalPercent(args.offHeapCriticalPercent())
-                    .offHeapKillThresholdPercent(args.offHeapKillThresholdPercent())
-                    .skipValidation(args.skipValidation())
-                    .validationTestText(args.validationTestText())
-                    .options(args.options())
-                    .build();
+            args = copyWithTaskAndNd4jConfig(args, taskId, args.nd4jConfigJson());
         }
 
         // Apply device routing overlay for modelInit service if enabled
@@ -178,28 +154,7 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
                 String routedJson = OBJECT_MAPPER.writeValueAsString(routedConfig);
                 logger.info("Using device-routed ND4J config for modelInit: maxThreads={}, cudaDevice={}",
                         routedConfig.maxThreads(), routedConfig.cudaCurrentDevice());
-                args = ModelInitSubprocessArgs.builder()
-                        .taskId(taskId)
-                        .modelIdentifier(args.modelIdentifier())
-                        .modelSourceType(args.modelSourceType())
-                        .stagingUrl(args.stagingUrl())
-                        .stagingApiKey(args.stagingApiKey())
-                        .archivePath(args.archivePath())
-                        .optimalBatchSize(args.optimalBatchSize())
-                        .maxBatchSize(args.maxBatchSize())
-                        .nd4jConfigJson(routedJson)
-                        .callbackBaseUrl(args.callbackBaseUrl())
-                        .memoryThresholdPercent(args.memoryThresholdPercent())
-                        .memoryCriticalPercent(args.memoryCriticalPercent())
-                        .memoryKillThresholdPercent(args.memoryKillThresholdPercent())
-                        .memoryCheckIntervalMs(args.memoryCheckIntervalMs())
-                        .gpuMemoryThresholdPercent(args.gpuMemoryThresholdPercent())
-                        .gpuMemoryCriticalPercent(args.gpuMemoryCriticalPercent())
-                        .gpuMemoryKillThresholdPercent(args.gpuMemoryKillThresholdPercent())
-                        .skipValidation(args.skipValidation())
-                        .validationTestText(args.validationTestText())
-                        .options(args.options())
-                        .build();
+                args = copyWithTaskAndNd4jConfig(args, taskId, routedJson);
             } catch (Exception e) {
                 logger.warn("Failed to apply device routing for modelInit, using original config: {}", e.getMessage());
             }
@@ -226,6 +181,37 @@ public class ModelInitSubprocessLauncher implements BackendConfigurable {
                 throw new RuntimeException("Model init subprocess failed", e);
             }
         });
+    }
+
+    static ModelInitSubprocessArgs copyWithTaskAndNd4jConfig(
+            ModelInitSubprocessArgs source,
+            String taskId,
+            String nd4jConfigJson) {
+        return ModelInitSubprocessArgs.builder()
+                .taskId(taskId)
+                .modelIdentifier(source.modelIdentifier())
+                .modelSourceType(source.modelSourceType())
+                .stagingUrl(source.stagingUrl())
+                .stagingApiKey(source.stagingApiKey())
+                .archivePath(source.archivePath())
+                .optimalBatchSize(source.optimalBatchSize())
+                .maxBatchSize(source.maxBatchSize())
+                .nd4jConfigJson(nd4jConfigJson)
+                .callbackBaseUrl(source.callbackBaseUrl())
+                .memoryThresholdPercent(source.memoryThresholdPercent())
+                .memoryCriticalPercent(source.memoryCriticalPercent())
+                .memoryKillThresholdPercent(source.memoryKillThresholdPercent())
+                .memoryCheckIntervalMs(source.memoryCheckIntervalMs())
+                .gpuMemoryThresholdPercent(source.gpuMemoryThresholdPercent())
+                .gpuMemoryCriticalPercent(source.gpuMemoryCriticalPercent())
+                .gpuMemoryKillThresholdPercent(source.gpuMemoryKillThresholdPercent())
+                .offHeapThresholdPercent(source.offHeapThresholdPercent())
+                .offHeapCriticalPercent(source.offHeapCriticalPercent())
+                .offHeapKillThresholdPercent(source.offHeapKillThresholdPercent())
+                .skipValidation(source.skipValidation())
+                .validationTestText(source.validationTestText())
+                .options(source.options())
+                .build();
     }
 
     /**

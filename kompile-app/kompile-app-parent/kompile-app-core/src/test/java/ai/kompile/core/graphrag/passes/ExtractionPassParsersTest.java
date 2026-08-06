@@ -16,6 +16,9 @@
 
 package ai.kompile.core.graphrag.passes;
 
+import ai.kompile.core.graphrag.passes.ExtractionCandidates.ClaimCandidate;
+import ai.kompile.core.graphrag.passes.ExtractionPassParsers.FocusedMentionChoice;
+import ai.kompile.core.graphrag.passes.ExtractionPassParsers.FocusedMentionDecision;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.ClaimProposal;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.EpistemicProposal;
 import ai.kompile.core.graphrag.passes.ExtractionProposals.EvidenceRole;
@@ -30,6 +33,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,6 +78,112 @@ class ExtractionPassParsersTest {
     }
 
     @Test
+    void parsesTheProductionSingletonPropositionContractAndAssignsTheId() {
+        String response = """
+                {"proposition":{"text":"Acme Corp acquired Initech in 2019.",
+                  "subject":"Acme Corp","predicate":"acquired","object":"Initech",
+                  "polarity":"AFFIRMED","modality":"FACTUAL","timeExpression":"2019",
+                  "evidence":{"quote":"Acme Corp acquired Initech in 2019.",
+                              "role":"DIRECT_SUPPORT"}}}
+                """;
+
+        List<PropositionProposal> parsed =
+                ExtractionPassParsers.propositions(response, CONTEXT, 10);
+
+        assertEquals(1, parsed.size());
+        assertEquals("chunk-1:p1", parsed.get(0).id());
+        assertEquals("Acme Corp", parsed.get(0).subject());
+        assertEquals(Polarity.AFFIRMED, parsed.get(0).polarity());
+        assertEquals("Acme Corp acquired Initech in 2019.", parsed.get(0).evidence().quote());
+    }
+
+    @Test
+    void aNullSingletonPropositionMeansNoAssertion() {
+        assertTrue(ExtractionPassParsers.propositions(
+                "{\"proposition\":null}", CONTEXT, 10).isEmpty());
+    }
+
+    @Test
+    void focusedPropositionParsesTheFlatDiscriminatedContract() {
+        String response = """
+                {"asserted":true,"subject":"Acme Corp","predicate":"acquired","object":"Initech",
+                  "polarity":"AFFIRMED","modality":"FACTUAL","timeExpression":"2019",
+                  "condition":null,"attributedTo":null}
+                """;
+        String focus = "Acme Corp acquired Initech in 2019.";
+
+        PropositionProposal parsed = ExtractionPassParsers
+                .proposition(response, CONTEXT, focus).orElseThrow();
+
+        assertEquals("chunk-1:p1", parsed.id());
+        assertEquals(focus, parsed.text());
+        assertEquals(focus, parsed.evidence().quote());
+        assertEquals("Acme Corp", parsed.subject());
+        assertEquals("acquired", parsed.predicate());
+        assertEquals("Initech", parsed.object());
+        assertEquals(Polarity.AFFIRMED, parsed.polarity());
+        assertEquals(Modality.FACTUAL, parsed.modality());
+        assertEquals("2019", parsed.timeExpression());
+    }
+
+    @Test
+    void focusedPropositionMakesTextEvidenceAndIdEngineOwned() {
+        String response = """
+                {"proposition":{"subject":"Acme Corp","predicate":"acquired","object":"Initech",
+                  "polarity":"AFFIRMED","modality":"FACTUAL","timeExpression":"2019",
+                  "text":"model paraphrase that must be ignored",
+                  "evidence":{"quote":"fabricated quote"}}}
+                """;
+        String focus = "Acme Corp acquired Initech in 2019.";
+
+        PropositionProposal parsed = ExtractionPassParsers
+                .proposition(response, CONTEXT, focus).orElseThrow();
+
+        assertEquals("chunk-1:p1", parsed.id());
+        assertEquals(focus, parsed.text());
+        assertEquals(focus, parsed.evidence().quote());
+        assertEquals("Acme Corp", parsed.subject());
+        assertEquals("Initech", parsed.object());
+        assertEquals(Modality.FACTUAL, parsed.modality());
+    }
+
+    @Test
+    void focusedPropositionAcceptsLegacyArrayButOnlyOneSibling() {
+        String response = """
+                {"propositions":[
+                  {"subject":"Acme Corp","predicate":"acquired","object":"Initech"},
+                  {"subject":"unrelated","predicate":"must not escape"}
+                ]}
+                """;
+
+        PropositionProposal parsed = ExtractionPassParsers
+                .proposition(response, CONTEXT, CONTEXT.sourceText()).orElseThrow();
+
+        assertEquals("Acme Corp", parsed.subject());
+        assertEquals("acquired", parsed.predicate());
+    }
+
+    @Test
+    void focusedNullOrUnparseableOutputAbstains() {
+        String flatAbstention = "{\"asserted\":false,\"subject\":null,\"predicate\":null,"
+                + "\"object\":null,\"polarity\":null,\"modality\":null,"
+                + "\"timeExpression\":null,\"condition\":null,\"attributedTo\":null}";
+        assertTrue(ExtractionPassParsers
+                .proposition(flatAbstention, CONTEXT, CONTEXT.sourceText()).isEmpty());
+        assertTrue(ExtractionPassParsers.explicitNullProposition(flatAbstention));
+
+        assertTrue(ExtractionPassParsers
+                .proposition("{\"proposition\":null}", CONTEXT, CONTEXT.sourceText()).isEmpty());
+        assertTrue(ExtractionPassParsers.explicitNullProposition("{\"proposition\":null}"));
+        assertFalse(ExtractionPassParsers.explicitNullProposition(
+                "{\"asserted\":\"false\",\"subject\":null}"));
+        assertFalse(ExtractionPassParsers.explicitNullProposition(
+                "{\"proposition\":\"wrong shape\"}"));
+        assertTrue(ExtractionPassParsers
+                .proposition("not json", CONTEXT, CONTEXT.sourceText()).isEmpty());
+    }
+
+    @Test
     void assignsDeterministicIdsWhenTheModelOmitsThem() {
         String response = """
                 {"propositions":[{"text":"Acme acquired Initech","subject":"Acme"},
@@ -88,7 +198,7 @@ class ExtractionPassParsersTest {
     }
 
     @Test
-    void honoursThePropositionCapAndSkipsContentlessEntries() {
+    void honoursOnlyExplicitPositiveCapsAndSkipsContentlessEntries() {
         String response = """
                 {"propositions":[{"text":"one","subject":"a"},{"text":"two","subject":"b"},
                                  {"predicate":"dangling"},{"text":"three","subject":"c"}]}
@@ -96,6 +206,10 @@ class ExtractionPassParsersTest {
 
         assertEquals(2, ExtractionPassParsers.propositions(response, CONTEXT, 2).size());
         assertEquals(3, ExtractionPassParsers.propositions(response, CONTEXT, 10).size());
+        assertEquals(3, ExtractionPassParsers.propositions(response, CONTEXT, 0).size(),
+                "zero means the engine must retain every model proposal");
+        assertEquals(3, ExtractionPassParsers.propositions(response, CONTEXT, -1).size(),
+                "legacy negative values are also treated as unbounded");
     }
 
     @Test
@@ -180,6 +294,148 @@ class ExtractionPassParsersTest {
         assertEquals(1, ExtractionPassParsers.mentions(response, CONTEXT, "p1").size());
     }
 
+    @Test
+    void parsesTheFocusedSingletonMentionContractWithoutRedundantEngineFields() {
+        String response = """
+                {"mention":{"selectedEntityId":"ent-acme",
+                            "confidence":0.96,"reason":"exact candidate"}}
+                """;
+
+        MentionProposal mention =
+                ExtractionPassParsers.mention(response, CONTEXT, "p1").orElseThrow();
+
+        assertEquals(ProposalOperation.REUSE_ENTITY, mention.operation());
+        assertEquals("ent-acme", mention.selectedEntityId());
+        assertNull(mention.mentionText());
+        assertNull(mention.mentionRole());
+    }
+
+    @Test
+    void focusedMentionOperationIsDerivedFromMutuallyExclusiveChoiceFields() {
+        MentionProposal reuseDespiteContradictoryLegacyLabel = ExtractionPassParsers.mention("""
+                {"mention":{"operation":"CREATE_PROVISIONAL_ENTITY",
+                            "selectedEntityId":"ent-acme","provisionalName":"Acme"}}
+                """, CONTEXT, "p1").orElseThrow();
+        MentionProposal create = ExtractionPassParsers.mention("""
+                {"mention":{"selectedEntityId":null,"provisionalName":"Newco",
+                            "provisionalType":"ORGANIZATION"}}
+                """, CONTEXT, "p1").orElseThrow();
+        MentionProposal unresolved = ExtractionPassParsers.mention("""
+                {"mention":{"selectedEntityId":null,"provisionalName":null,
+                            "provisionalType":null,"reason":"ambiguous"}}
+                """, CONTEXT, "p1").orElseThrow();
+
+        assertEquals(ProposalOperation.REUSE_ENTITY,
+                reuseDespiteContradictoryLegacyLabel.operation());
+        assertEquals(ProposalOperation.CREATE_PROVISIONAL_ENTITY, create.operation());
+        assertEquals(ProposalOperation.UNRESOLVED, unresolved.operation());
+        assertFalse(ExtractionPassParsers.mentionInternallyConsistent(
+                reuseDespiteContradictoryLegacyLabel, false));
+        assertTrue(ExtractionPassParsers.mentionInternallyConsistent(create, false));
+        assertTrue(ExtractionPassParsers.mentionInternallyConsistent(unresolved, false));
+    }
+
+    @Test
+    void parsesAndValidatesTheProductionOrdinalMentionBranches() {
+        FocusedMentionDecision reuse = ExtractionPassParsers.focusedMentionDecision("""
+                {"mention":{"decision":"REUSE","candidateOrdinal":2,
+                            "confidence":0.96,"reason":"identifier match"}}
+                """).orElseThrow();
+        FocusedMentionDecision create = ExtractionPassParsers.focusedMentionDecision("""
+                {"mention":{"decision":"CREATE_PROVISIONAL","provisionalType":"PRODUCT",
+                            "confidence":0.8}}
+                """).orElseThrow();
+        FocusedMentionDecision contradictory = ExtractionPassParsers.focusedMentionDecision("""
+                {"mention":{"decision":"REUSE","candidateOrdinal":1,
+                            "selectedEntityId":"must-not-be-model-owned"}}
+                """).orElseThrow();
+        FocusedMentionDecision extraRootField = ExtractionPassParsers.focusedMentionDecision("""
+                {"mention":{"decision":"CREATE_PROVISIONAL","confidence":0.8},
+                 "mentionText":"Acme"}
+                """).orElseThrow();
+        FocusedMentionDecision extraNestedField = ExtractionPassParsers.focusedMentionDecision("""
+                {"mention":{"decision":"REUSE","candidateOrdinal":1,
+                            "proposalId":"model-owned-id"}}
+                """).orElseThrow();
+
+        assertEquals(FocusedMentionChoice.REUSE, reuse.choice());
+        assertEquals(2, reuse.candidateOrdinal());
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(reuse, true, true));
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(create, false, false));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                contradictory, true, true));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                extraRootField, false, true));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                extraNestedField, true, true));
+    }
+
+    @Test
+    void nonMergingMentionBranchesIgnoreStaleOrdinalsButRejectPlaceholderTypes() {
+        FocusedMentionDecision typedCreateWithStaleOrdinal =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL","candidateOrdinal":1,
+                                    "confidence":0.8}}
+                        """).orElseThrow();
+        FocusedMentionDecision unresolvedWithStaleOrdinal =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"UNRESOLVED","candidateOrdinal":1,
+                                    "confidence":0.4}}
+                        """).orElseThrow();
+        FocusedMentionDecision placeholderType =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL",
+                                    "provisionalType":"TYPE_FROM_SOURCE","confidence":0.7}}
+                        """).orElseThrow();
+        FocusedMentionDecision echoedTemplateType =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL",
+                                    "provisionalType":"__SOURCE_OR_SCHEMA_TYPE__","confidence":0.7}}
+                        """).orElseThrow();
+        FocusedMentionDecision invalidFormatType =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL",
+                                    "provisionalType":"sheet type","confidence":0.7}}
+                        """).orElseThrow();
+        FocusedMentionDecision concreteType =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL",
+                                    "provisionalType":"SHEET","confidence":0.7}}
+                        """).orElseThrow();
+        FocusedMentionDecision ballotType =
+                ExtractionPassParsers.focusedMentionDecision("""
+                        {"mention":{"decision":"CREATE_PROVISIONAL",
+                                    "provisionalTypeOrdinal":2,"confidence":0.7}}
+                        """).orElseThrow();
+
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                typedCreateWithStaleOrdinal, true, true));
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                unresolvedWithStaleOrdinal, true, false));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                placeholderType, false, false));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                echoedTemplateType, false, false));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                invalidFormatType, false, false));
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                concreteType, false, false));
+        assertTrue(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                ballotType, false, false, true));
+        assertFalse(ExtractionPassParsers.focusedMentionInternallyConsistent(
+                ballotType, false, false, false));
+    }
+
+    @Test
+    void focusedMentionLegacyOperationCanBePreservedForControlledAblation() {
+        MentionProposal mention = ExtractionPassParsers.mention("""
+                {"mention":{"operation":"CREATE_PROVISIONAL_ENTITY",
+                            "selectedEntityId":"ent-acme","provisionalName":"Acme"}}
+                """, CONTEXT, "p1", false).orElseThrow();
+
+        assertEquals(ProposalOperation.CREATE_PROVISIONAL_ENTITY, mention.operation());
+    }
+
     // ── pass 3 ────────────────────────────────────────────────────────
 
     @Test
@@ -253,6 +509,119 @@ class ExtractionPassParsersTest {
     }
 
     @Test
+    void parsesNeutralVerdictRelationExistenceContract() {
+        ExtractionPassParsers.RelationExistenceDecision asserted =
+                ExtractionPassParsers.relationExistence(
+                        "{\"decision\":{\"verdict\":\"ASSERTED\",\"confidence\":0.9}}")
+                        .orElseThrow();
+        ExtractionPassParsers.RelationExistenceDecision absent =
+                ExtractionPassParsers.relationExistence(
+                        "{\"decision\":{\"verdict\":\"NOT_ASSERTED\",\"confidence\":0.8}}")
+                        .orElseThrow();
+
+        assertEquals(ExtractionPassParsers.RelationExistence.ASSERTED, asserted.decision());
+        assertEquals(ExtractionPassParsers.RelationExistence.NOT_ASSERTED, absent.decision());
+    }
+
+    @Test
+    void normalizesSafeNumericRelationTypeShorthandToTheEngineOwnedOrdinal() {
+        ExtractionPassParsers.RelationTypeDecision decision = ExtractionPassParsers.relationType("""
+                {"selection":2,"schemaGap":false,"confidence":1.0,"qualifiers":{},
+                 "reason":"exact predicate match"}
+                """).orElseThrow();
+
+        assertEquals(2, decision.candidateOrdinal());
+        assertFalse(decision.schemaGap());
+        assertEquals("exact predicate match", decision.reason());
+    }
+
+    @Test
+    void retainsACompleteRelationProposalMissingOnlyTheFinalOuterBrace() {
+        ExtractionPassParsers.RelationTypeDecision decision = ExtractionPassParsers.relationType("""
+                {"selection":{"decision":"SELECT","candidateOrdinal":1,"schemaGap":false,
+                 "confidence":0.5,"qualifiers":{},
+                 "reason":"candidate [1] matches the source predicate and direction"}
+                """).orElseThrow();
+
+        assertEquals(ExtractionPassParsers.RelationTypeDisposition.SELECT,
+                decision.disposition());
+        assertEquals(1, decision.candidateOrdinal());
+        assertTrue(ExtractionPassParsers.relationTypeInternallyConsistent(decision));
+    }
+
+    @Test
+    void relationTypeReasonIsExplanatoryAndNeverAHiddenLanguageSpecificControlField() {
+        ExtractionPassParsers.RelationTypeDecision selected =
+                ExtractionPassParsers.relationType("""
+                        {"selection":{"decision":"SELECT","candidateOrdinal":3,
+                         "schemaGap":false,"confidence":1.0,
+                         "reason":"任意の自由形式の説明"}}
+                        """).orElseThrow();
+        ExtractionPassParsers.RelationTypeDecision schemaGap =
+                ExtractionPassParsers.relationType("""
+                        {"selection":{"decision":"SCHEMA_GAP","candidateOrdinal":null,
+                         "schemaGap":true,"confidence":1.0,
+                         "reason":"another free-form explanation"}}
+                        """).orElseThrow();
+
+        assertTrue(ExtractionPassParsers.relationTypeInternallyConsistent(selected));
+        assertTrue(ExtractionPassParsers.relationTypeInternallyConsistent(schemaGap));
+        assertEquals("任意の自由形式の説明", selected.reason());
+    }
+
+    @Test
+    void schemaGapSelectionMayOmitTheInapplicableNullableOrdinal() {
+        ExtractionPassParsers.RelationTypeDecision gap =
+                ExtractionPassParsers.relationType("""
+                        {"selection":{"schemaGap":true,"confidence":1.0,"qualifiers":{},
+                         "reason":"no permitted candidate expresses the predicate"}}
+                        """).orElseThrow();
+
+        assertNull(gap.candidateOrdinal());
+        assertTrue(gap.schemaGap());
+        assertTrue(ExtractionPassParsers.relationTypeInternallyConsistent(gap));
+    }
+
+    @Test
+    void relationContinuationDoneIsExplicitAndOnlyValidAfterASelection() {
+        ExtractionPassParsers.RelationTypeDecision done =
+                ExtractionPassParsers.relationType("""
+                        {"selection":{"decision":"DONE","candidateOrdinal":null,
+                         "schemaGap":false,"confidence":0.9,"qualifiers":{},
+                         "reason":"no additional distinct relation is asserted"}}
+                        """).orElseThrow();
+
+        assertEquals(ExtractionPassParsers.RelationTypeDisposition.DONE, done.disposition());
+        assertTrue(ExtractionPassParsers.relationTypeInternallyConsistent(done));
+        assertFalse(ExtractionPassParsers.relationTypeAllowedForRound(done, false));
+        assertTrue(ExtractionPassParsers.relationTypeAllowedForRound(done, true));
+    }
+
+    @Test
+    void recognizesMalformedLfmContinuationIntentWithoutAcceptingItsShape() {
+        String observedLfmResponse = """
+                {"selection":null,"schemaGap":false,"confidence":0.5,"qualifiers":{},
+                 "reason":"No additional semantically distinct relation type was identified."}
+                """;
+
+        assertTrue(ExtractionPassParsers.relationType(observedLfmResponse).isEmpty());
+        assertTrue(ExtractionPassParsers
+                .relationTypeContinuationCompletionIntent(observedLfmResponse));
+    }
+
+    @Test
+    void doneCannotCarryACandidateOrdinal() {
+        ExtractionPassParsers.RelationTypeDecision contradictory =
+                ExtractionPassParsers.relationType("""
+                        {"selection":{"decision":"DONE","candidateOrdinal":1,
+                         "schemaGap":false,"confidence":0.9,"qualifiers":{},
+                         "reason":"no additional relation"}}
+                        """).orElseThrow();
+
+        assertFalse(ExtractionPassParsers.relationTypeInternallyConsistent(contradictory));
+    }
+
+    @Test
     void schemaGapIsPreservedRatherThanForcedIntoAType() {
         String response = """
                 {"relation":{"operation":"PROPOSE_SCHEMA_GAP","type":null,
@@ -282,6 +651,42 @@ class ExtractionPassParsersTest {
         assertEquals(ProposalOperation.ADD_EVIDENCE, claim.operation());
         assertEquals("atom-1", claim.matchedAtomKey());
         assertEquals("p1|a|ACQUIRED|b", claim.relationKey());
+    }
+
+    @Test
+    void mapsCandidateOrdinalToTheExactEngineOwnedAtomKey() {
+        String response = """
+                {"decision":{"operation":"ADD_EVIDENCE","matchedCandidateOrdinal":"2",
+                  "confidence":0.75,"reason":"same acquisition"}}
+                """;
+        List<ClaimCandidate> ballot = List.of(
+                ClaimCandidate.of("opaque-atom-A", "unrelated claim", 0.4),
+                ClaimCandidate.of("opaque-atom-B", "same acquisition", 0.8));
+
+        ClaimProposal claim = ExtractionPassParsers
+                .claim(response, CONTEXT, "p1", "relation-key", ballot).orElseThrow();
+
+        assertEquals(ProposalOperation.ADD_EVIDENCE, claim.operation());
+        assertEquals("opaque-atom-B", claim.matchedAtomKey());
+        assertEquals("relation-key", claim.relationKey());
+    }
+
+    @Test
+    void sameClaimComparisonCannotOverrideAKnownAtomFieldMismatch() {
+        RelationProposal relation = new RelationProposal("p1", "ent-acme", "ent-initech",
+                "ACQUIRED", ProposalOperation.CREATE_CLAIM, 0.9, null, java.util.Map.of(),
+                List.of(), null, null);
+        ClaimCandidate differentSubject = new ClaimCandidate("atom-1", "ent-globex", "ACQUIRED",
+                "ent-initech", 0.8, 1, 0, "Globex acquired Initech");
+        var same = ExtractionPassParsers.claimComparison(
+                "{\"comparison\":{\"relationship\":\"SAME\"}}").orElseThrow();
+        var different = ExtractionPassParsers.claimComparison(
+                "{\"comparison\":{\"relationship\":\"DIFFERENT\"}}").orElseThrow();
+
+        assertFalse(ExtractionPassParsers.claimComparisonInternallyConsistent(
+                same, relation, differentSubject));
+        assertTrue(ExtractionPassParsers.claimComparisonInternallyConsistent(
+                different, relation, differentSubject));
     }
 
     @Test

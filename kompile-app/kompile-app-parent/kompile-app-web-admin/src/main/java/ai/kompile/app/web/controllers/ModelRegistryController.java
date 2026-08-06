@@ -32,6 +32,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
@@ -72,8 +73,9 @@ public class ModelRegistryController {
     // Optional embedding model for reload capability
     private final AnseriniEmbeddingModelImpl embeddingModel;
 
-    // Optional vector store to update encoder model ID
-    private final AnseriniVectorStoreImpl vectorStore;
+    // Optional vector store resolved without a class-based lazy proxy. ObjectProvider
+    // preserves lazy startup while returning the concrete bean for native-safe direct calls.
+    private final ObjectProvider<AnseriniVectorStoreImpl> vectorStoreProvider;
 
     // Staging services for UI-configured staging
     private final StagingServiceConfigService stagingConfigService;
@@ -88,13 +90,13 @@ public class ModelRegistryController {
     @Autowired
     public ModelRegistryController(
             @Lazy @Autowired(required = false) AnseriniEmbeddingModelImpl embeddingModel,
-            @Lazy @Autowired(required = false) AnseriniVectorStoreImpl vectorStore,
+            ObjectProvider<AnseriniVectorStoreImpl> vectorStoreProvider,
             @Autowired(required = false) StagingServiceConfigService stagingConfigService,
             @Autowired(required = false) StagingClientService stagingClientService,
             @Lazy @Autowired(required = false) OcrPipelineService ocrPipelineService,
             @Lazy @Autowired(required = false) ModelAutoInitializationService modelAutoInitService) {
         this.embeddingModel = embeddingModel;
-        this.vectorStore = vectorStore;
+        this.vectorStoreProvider = vectorStoreProvider;
         this.stagingConfigService = stagingConfigService;
         this.stagingClientService = stagingClientService;
         this.ocrPipelineService = ocrPipelineService;
@@ -107,6 +109,7 @@ public class ModelRegistryController {
      */
     @PostConstruct
     public void initializeEncoderModelId() {
+        AnseriniVectorStoreImpl vectorStore = getVectorStore();
         if (embeddingModel != null && vectorStore != null) {
             String activeModelId = embeddingModel.getActiveModelId();
             if (activeModelId != null) {
@@ -114,6 +117,10 @@ public class ModelRegistryController {
                 log.info("Initialized vector store encoder model ID to: {} on startup", activeModelId);
             }
         }
+    }
+
+    private AnseriniVectorStoreImpl getVectorStore() {
+        return vectorStoreProvider != null ? vectorStoreProvider.getIfAvailable() : null;
     }
 
     /**
@@ -920,6 +927,7 @@ public class ModelRegistryController {
      * This ensures the vector store knows which model was used for embeddings.
      */
     private void updateVectorStoreEncoderModel(String modelId) {
+        AnseriniVectorStoreImpl vectorStore = getVectorStore();
         if (vectorStore != null && modelId != null) {
             try {
                 vectorStore.setEncoderModelId(modelId);
@@ -1107,9 +1115,9 @@ public class ModelRegistryController {
     /**
      * Get the active model context — which models are currently powering
      * embedding, reranking, and what staging alternatives are available.
-     */
+    */
     @GetMapping("/active-context")
-    public ResponseEntity<ActiveModelContext> getActiveModelContext() {
+    public ResponseEntity<Map<String, Object>> getActiveModelContext() {
         EmbeddingContext embeddingCtx = null;
         RerankerContext rerankerCtx = null;
         StagingContext stagingCtx = null;
@@ -1132,6 +1140,7 @@ public class ModelRegistryController {
         }
 
         // Reranker info
+        AnseriniVectorStoreImpl vectorStore = getVectorStore();
         if (vectorStore != null) {
             try {
                 String rerankerModelId = vectorStore.getRerankerModelId();
@@ -1189,9 +1198,47 @@ public class ModelRegistryController {
             }
         }
 
-        return ResponseEntity.ok(new ActiveModelContext(
-                embeddingCtx, rerankerCtx, stagingCtx,
-                availableEmbeddingModels, availableRerankerModels));
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("embedding", embeddingContextResponse(embeddingCtx));
+        response.put("reranker", rerankerContextResponse(rerankerCtx));
+        response.put("staging", stagingContextResponse(stagingCtx));
+        response.put("availableEmbeddingModels", availableEmbeddingModels);
+        response.put("availableRerankerModels", availableRerankerModels);
+        return ResponseEntity.ok(response);
+    }
+
+    private static Map<String, Object> embeddingContextResponse(EmbeddingContext context) {
+        if (context == null) {
+            return null;
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("modelId", context.modelId);
+        response.put("encoderType", context.encoderType);
+        response.put("dimensions", context.dimensions);
+        response.put("status", context.status);
+        response.put("initialized", context.initialized);
+        return response;
+    }
+
+    private static Map<String, Object> rerankerContextResponse(RerankerContext context) {
+        if (context == null) {
+            return null;
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("modelId", context.modelId);
+        response.put("available", context.available);
+        return response;
+    }
+
+    private static Map<String, Object> stagingContextResponse(StagingContext context) {
+        if (context == null) {
+            return null;
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("connected", context.connected);
+        response.put("endpointUrl", context.endpointUrl);
+        response.put("uiUrl", context.uiUrl);
+        return response;
     }
 
 }

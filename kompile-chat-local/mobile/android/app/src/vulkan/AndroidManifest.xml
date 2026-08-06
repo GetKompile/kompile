@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Fatal JavaCPP/SDX failures stay inside this private runtime worker. -->
+        <service
+            android:name=".model.SdxRuntimeService"
+            android:exported="false"
+            android:process=":sdx_model_runtime"
+            android:stopWithTask="false" />
+    </application>
+
+</manifest>

@@ -39,6 +39,15 @@ interface VectorStoreOption {
     requiresServer: boolean;
 }
 
+interface ServiceEndpointsConfig {
+    adminUrl: string;
+    chatUrl: string;
+    crawlUrl: string;
+    stagingUrl: string;
+    servingUrl: string;
+    routes?: Record<string, string>;
+}
+
 @Component({
     selector: 'app-settings',
     templateUrl: './settings.component.html',
@@ -103,10 +112,22 @@ export class SettingsComponent implements OnInit {
     saveMessage: string | null = null;
     restartRequired = false;
 
+    serviceEndpoints: ServiceEndpointsConfig = {
+        adminUrl: 'http://localhost:8080',
+        chatUrl: 'http://localhost:8081',
+        crawlUrl: 'http://localhost:8082',
+        stagingUrl: 'http://localhost:8090',
+        servingUrl: 'http://127.0.0.1:8091'
+    };
+    endpointsLoading = false;
+    endpointsSaveMessage: string | null = null;
+    endpointsSaveError = false;
+
     constructor(private http: HttpClient) { }
 
     ngOnInit() {
         this.loadConfig();
+        this.loadServiceEndpoints();
     }
 
     loadConfig() {
@@ -126,6 +147,65 @@ export class SettingsComponent implements OnInit {
                     console.error('Failed to load settings', err);
                 }
             });
+    }
+
+    loadServiceEndpoints() {
+        this.endpointsLoading = true;
+        this.http.get<ServiceEndpointsConfig>('/api/service-endpoints')
+            .pipe(finalize(() => this.endpointsLoading = false))
+            .subscribe({
+                next: (data) => this.serviceEndpoints = { ...this.serviceEndpoints, ...data },
+                error: (err) => {
+                    console.error('Failed to load service endpoints', err);
+                    this.endpointsSaveError = true;
+                    this.endpointsSaveMessage = 'Failed to load service endpoints.';
+                }
+            });
+    }
+
+    saveServiceEndpoints() {
+        this.endpointsLoading = true;
+        this.endpointsSaveMessage = null;
+        this.endpointsSaveError = false;
+        const updates = {
+            adminUrl: this.serviceEndpoints.adminUrl,
+            chatUrl: this.serviceEndpoints.chatUrl,
+            crawlUrl: this.serviceEndpoints.crawlUrl,
+            stagingUrl: this.serviceEndpoints.stagingUrl,
+            servingUrl: this.serviceEndpoints.servingUrl
+        };
+        this.http.post<ServiceEndpointsConfig>('/api/service-endpoints', updates)
+            .pipe(finalize(() => this.endpointsLoading = false))
+            .subscribe({
+                next: (data) => {
+                    this.serviceEndpoints = { ...this.serviceEndpoints, ...data };
+                    this.endpointsSaveMessage = 'Service endpoints saved.';
+                    setTimeout(() => this.endpointsSaveMessage = null, 5000);
+                },
+                error: (err) => {
+                    console.error('Failed to save service endpoints', err);
+                    this.endpointsSaveError = true;
+                    this.endpointsSaveMessage = err?.error?.error || 'Failed to save service endpoints.';
+                }
+            });
+    }
+
+    serviceEndpointsAreValid(): boolean {
+        const values = [
+            this.serviceEndpoints.adminUrl,
+            this.serviceEndpoints.chatUrl,
+            this.serviceEndpoints.crawlUrl,
+            this.serviceEndpoints.stagingUrl,
+            this.serviceEndpoints.servingUrl
+        ];
+        return values.every(value => {
+            try {
+                const parsed = new URL(value);
+                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+            } catch {
+                return false;
+            }
+        });
     }
 
     saveSettings() {

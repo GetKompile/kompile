@@ -16,11 +16,11 @@
 package ai.kompile.app.staging;
 
 import ai.kompile.app.project.ProjectBackendService;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.knowledgegraph.staging.ModelTrainedEvent;
 import ai.kompile.modelmanager.registry.ModelType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.lang.Nullable;
 import org.springframework.scheduling.annotation.Async;
@@ -43,8 +43,8 @@ import java.util.Map;
  *       — after a successful KGE training run</li>
  * </ul>
  *
- * <p>On receipt it POSTs a deploy request to the STAGING SERVER's HTTP API:
- * {@code POST {kompile.staging.url}/api/staging/graph/{projectId}/{graphId}/deploy}
+     * <p>On receipt it resolves Model Staging from the managed service endpoint configuration and
+     * POSTs {@code /api/staging/graph/{projectId}/{graphId}/deploy} to that service
  * which stages + activates the artifact in the model registry, scoped to the current
  * project and trained fact-sheet.
  *
@@ -65,8 +65,7 @@ public class ModelDeploymentHook {
 
     private static final Logger log = LoggerFactory.getLogger(ModelDeploymentHook.class);
 
-    /** Base URL of the staging server (separate subprocess). Same key used across app-main. */
-    @Value("${kompile.staging.url:http://localhost:8090}")
+    /** Explicit test override; normal operation resolves the managed endpoint per event. */
     private String stagingUrl;
 
     private final RestTemplate restTemplate = new RestTemplate();
@@ -117,9 +116,10 @@ public class ModelDeploymentHook {
 
         String projectId = resolveProjectId();
         String graphId   = String.valueOf(factSheetId);
+        String stagingBase = stagingBase();
 
         // POST to the staging SERVER over HTTP — app-main never bundles kompile-model-staging.
-        String url = stagingUrl + "/api/staging/graph/" + projectId + "/" + graphId + "/deploy";
+        String url = stagingBase + "/api/staging/graph/" + projectId + "/" + graphId + "/deploy";
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("modelId", baseModelId);
         body.put("type", modelType);
@@ -129,15 +129,23 @@ public class ModelDeploymentHook {
         try {
             restTemplate.postForObject(url, body, Map.class);
             log.info("ModelDeploymentHook: staged+activated {} model '{}' for project={} graph={} via staging {} (artifact={})",
-                    modelType, baseModelId, projectId, graphId, stagingUrl, artifactPath.getFileName());
+                    modelType, baseModelId, projectId, graphId, stagingBase, artifactPath.getFileName());
         } catch (Exception e) {
             log.warn("ModelDeploymentHook: deploy POST to staging {} failed for {} factSheet={} — {} (training succeeded; artifact remains on disk at {})",
-                    stagingUrl, modelType, factSheetId, e.getMessage(), artifactPath);
+                    stagingBase, modelType, factSheetId, e.getMessage(), artifactPath);
             // Intentionally swallowed — training/cascade must not fail because staging is down or not running.
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private String stagingBase() {
+        String configured = stagingUrl;
+        if (configured == null || configured.isBlank()) {
+            configured = ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
+        }
+        return configured.trim().replaceAll("/+$", "");
+    }
 
     private String resolveProjectId() {
         if (projectBackendService == null) {

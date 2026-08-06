@@ -40,11 +40,11 @@ on:
         required: false
         default: 'windows-2022'
       releaseVersion:
-        description: 'Release version (e.g., 1.0.0). When set, uploads artifacts to GitHub Release v<version>'
+        description: 'Version label for workflow artifacts; canonical GitHub Release publishing is handled centrally'
         required: false
         default: ''
       prerelease:
-        description: 'Mark the GitHub Release as a pre-release'
+        description: 'Compatibility input; release state is owned by release.yml'
         required: false
         default: 'true'
       debug_enabled:
@@ -58,7 +58,7 @@ jobs:
     runs-on: ${{ inputs.runsOn || 'windows-2022' }}
     timeout-minutes: 360
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:

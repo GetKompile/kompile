@@ -154,20 +154,25 @@ public class CrawlPipelineRouter implements ContentRouter {
     }
 
     private void enrichLanguageIfNeeded(CrawlItem item) {
-        if (languageDetector == null || item.getLanguage() != null) {
-            return;
-        }
-        // Try to extract text from metadata for detection
+        // contentSample is transient routing input. Remove it before the item is
+        // handed to downstream listeners so raw page text is not retained in metadata.
         String textSample = null;
         if (item.getMetadata() != null) {
-            Object sample = item.getMetadata().get("contentSample");
+            Map<String, Object> metadata = item.getMetadata();
+            Object sample = metadata.get("contentSample");
+            if (metadata.containsKey("contentSample")) {
+                Map<String, Object> sanitized = new HashMap<>(metadata);
+                sanitized.remove("contentSample");
+                item.setMetadata(sanitized);
+            }
             if (sample instanceof String s && !s.isBlank()) {
                 textSample = s;
             }
         }
-        if (textSample != null) {
-            languageDetector.enrichWithLanguage(item, textSample);
+        if (languageDetector == null || item.getLanguage() != null || textSample == null) {
+            return;
         }
+        languageDetector.enrichWithLanguage(item, textSample);
     }
 
     // ---- Internal ----

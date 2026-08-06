@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.roles;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.core.agent.CliAgentRegistry;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -144,6 +145,15 @@ public class RoleManager {
      */
     public RoleConfig createRole(String name, String displayName, String description,
                                   String category, String systemPrompt) throws IOException {
+        return createRole(name, displayName, description, category, systemPrompt, Map.of());
+    }
+
+    /**
+     * Create a role with provider-specific model and thinking defaults.
+     */
+    public RoleConfig createRole(String name, String displayName, String description,
+                                 String category, String systemPrompt,
+                                 Map<String, RoleAgentDefaults> agentDefaults) throws IOException {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Role name cannot be empty");
         }
@@ -157,6 +167,7 @@ public class RoleManager {
                 .description(description != null ? description : "Custom role: " + name)
                 .category(category != null ? category : "general")
                 .systemPrompt(systemPrompt != null ? systemPrompt : "")
+                .agentDefaults(normalizeAgentDefaults(agentDefaults))
                 .isBuiltIn(false)
                 .build();
 
@@ -177,6 +188,16 @@ public class RoleManager {
      */
     public RoleConfig updateRole(String name, String displayName, String description,
                                   String category, String systemPrompt) throws IOException {
+        return updateRole(name, displayName, description, category, systemPrompt, null);
+    }
+
+    /**
+     * Update a role, replacing its provider defaults when {@code agentDefaults}
+     * is non-null and preserving them when it is null.
+     */
+    public RoleConfig updateRole(String name, String displayName, String description,
+                                 String category, String systemPrompt,
+                                 Map<String, RoleAgentDefaults> agentDefaults) throws IOException {
         RoleConfig existing = roles.get(name);
         if (existing == null) {
             throw new IllegalArgumentException("Role not found: " + name);
@@ -197,6 +218,9 @@ public class RoleManager {
                 .maxSteps(existing.getMaxSteps())
                 .canSpawnSubagents(existing.isCanSpawnSubagents())
                 .modelHint(existing.getModelHint())
+                .agentDefaults(agentDefaults != null
+                        ? normalizeAgentDefaults(agentDefaults)
+                        : existing.getAgentDefaults())
                 .agentFallbackPriority(existing.getAgentFallbackPriority())
                 .sourceFile(existing.getSourceFile())
                 .isBuiltIn(false)
@@ -258,6 +282,35 @@ public class RoleManager {
         Path rolePath = userDir.resolve(role.getName() + ".md");
 
         RoleLoader.saveRole(role, rolePath);
+    }
+
+    static Map<String, RoleAgentDefaults> normalizeAgentDefaults(
+            Map<String, RoleAgentDefaults> agentDefaults) {
+        if (agentDefaults == null || agentDefaults.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, RoleAgentDefaults> normalized = new LinkedHashMap<>();
+        agentDefaults.forEach((agentName, defaults) -> {
+            String agent = AgentLaunchDefaults.normalizeSupportedAgent(agentName);
+            if (agent == null) {
+                throw new IllegalArgumentException(
+                        "Unsupported role agent default '" + agentName
+                                + "'. Supported agents: " + AgentLaunchDefaults.SUPPORTED_AGENTS);
+            }
+            if (defaults == null) {
+                throw new IllegalArgumentException(
+                        "Role agent defaults for '" + agent + "' cannot be null");
+            }
+            if (defaults.isEmpty()) {
+                return;
+            }
+            if (normalized.putIfAbsent(agent, defaults) != null) {
+                throw new IllegalArgumentException(
+                        "Duplicate role agent defaults for '" + agent + "'");
+            }
+        });
+        return Map.copyOf(normalized);
     }
 
     // ── Active role tracking ──────────────────────────────────────────────

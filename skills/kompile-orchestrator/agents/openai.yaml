@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kompile Orchestrator"
+  short_description: "Route work through live kompile MCP tools"
+  default_prompt: "Use $kompile-orchestrator to inspect the live kompile tool and skill surface, then execute this task with the right kompile workflow."

@@ -51,6 +51,10 @@ class SchemaRelationCandidateProviderTest {
         return new RelationshipType(name, description, null);
     }
 
+    private static RelationshipType type(String name, String description, List<String> aliases) {
+        return new RelationshipType(name, description, null, aliases);
+    }
+
     private static List<String> typesOf(List<RelationCandidate> candidates) {
         return candidates.stream().map(RelationCandidate::type).toList();
     }
@@ -67,6 +71,22 @@ class SchemaRelationCandidateProviderTest {
         assertEquals(1, candidates.size());
         assertEquals("ACQUIRED", candidates.get(0).type());
         assertEquals("one organization bought another", candidates.get(0).description());
+    }
+
+    @Test
+    void schemaOwnedLexicalAliasesReachTheBoundedCandidate() {
+        SchemaRelationCandidateProvider provider = new SchemaRelationCandidateProvider(
+                schema(List.of(type("SUBMITTED_BY", "a person submitted the forecast",
+                                List.of("submitted", "提出しました"))),
+                        List.of("(PERSON)-[:SUBMITTED_BY]->(REGIONAL_FORECAST)")),
+                null, null);
+
+        RelationCandidate candidate = provider.candidatesFor(
+                "PERSON", "REGIONAL_FORECAST", CONTEXT, 12).get(0);
+
+        assertEquals(List.of("submitted", "提出しました"), candidate.aliases());
+        assertEquals("SUBMITTED_BY", candidate.type(),
+                "aliases are routing metadata and never replace the engine-owned canonical type");
     }
 
     @Test

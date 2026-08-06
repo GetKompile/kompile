@@ -319,7 +319,7 @@
       <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>tokenizers-native</artifactId>
       <version>${nd4j.version}</version>
-      <classifier>${javacpp.platform}</classifier>
+      <classifier>${tokenizers.platform.classifier}</classifier>
     </dependency>
 
     <dependency>
@@ -391,17 +391,17 @@
       <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
-    <dependency> <!-- nd4j CPU backend required for unit tests using Nd4j -->
+    <dependency> <!-- configured ND4J backend required for unit tests using Nd4j -->
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>nd4j-native</artifactId>
+      <artifactId>${nd4j.backend}</artifactId>
       <version>${nd4j.version}</version>
       <scope>test</scope>
     </dependency>
-    <dependency> <!-- nd4j CPU backend native binaries for the current platform -->
+    <dependency> <!-- configured ND4J backend native binaries for the current platform -->
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>nd4j-native</artifactId>
+      <artifactId>${nd4j.native.backend}</artifactId>
       <version>${nd4j.version}</version>
-      <classifier>${javacpp.platform}</classifier>
+      <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
       <scope>test</scope>
     </dependency>
     <dependency>

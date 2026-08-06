@@ -50,7 +50,7 @@ Commands:
 $ ./target/kompile-component list --format TABLE
 | id                    | name                  | description                             | type    | defaultPort | installed | status      |
 | kompile-app-main      | Kompile App Main      | Spring Boot RAG application with web UI | app     | 8080        | false     | not_running |
-| kompile-model-staging | Kompile Model Staging | Model lifecycle management service      | staging | 8081        | false     | not_running |
+| kompile-model-staging | Kompile Model Staging | Model lifecycle management service      | staging | 8090        | false     | not_running |
 | kompile-cli           | Kompile CLI           | Main command-line interface             | cli     | N/A         | false     | not_running |
 | kompile-app           | Kompile App CLI       | Application management CLI              | cli     | N/A         | false     | not_running |
 | kompile-model         | Kompile Model CLI     | Model management CLI                    | cli     | N/A         | false     | not_running |

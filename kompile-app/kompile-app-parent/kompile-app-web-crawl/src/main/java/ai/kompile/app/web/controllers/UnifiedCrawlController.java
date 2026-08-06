@@ -1859,32 +1859,41 @@ public class UnifiedCrawlController {
                     ge.getSchemaPresetId());
             return;
         }
-        schemaPresetService.getPresetTypeNames(ge.getSchemaPresetId()).ifPresentOrElse(
-                typeNames -> {
-                    List<String> entityTypes = typeNames.get("entityTypes");
-                    List<String> relationshipTypes = typeNames.get("relationshipTypes");
-                    List<String> relationPatterns = typeNames.get("patterns");
-                    if (entityTypes != null && !entityTypes.isEmpty()
+        schemaPresetService.getSchema(ge.getSchemaPresetId()).ifPresentOrElse(
+                schema -> {
+                    ge.setStandardizedSchema(schema);
+                    List<String> entityTypes = schema.getNodeTypes() == null
+                            ? List.of()
+                            : schema.getNodeTypes().stream()
+                                    .filter(type -> type != null && type.getLabel() != null)
+                                    .map(type -> type.getLabel())
+                                    .toList();
+                    List<String> relationshipTypes = schema.getRelationshipTypes() == null
+                            ? List.of()
+                            : schema.getRelationshipTypes().stream()
+                                    .filter(type -> type != null && type.getType() != null)
+                                    .map(type -> type.getType())
+                                    .toList();
+                    List<String> relationPatterns = schema.getPatterns() == null
+                            ? List.of() : List.copyOf(schema.getPatterns());
+                    if (!entityTypes.isEmpty()
                             && (ge.getEntityTypes() == null || ge.getEntityTypes().isEmpty())) {
                         ge.setEntityTypes(entityTypes);
                     }
-                    if (relationshipTypes != null && !relationshipTypes.isEmpty()
+                    if (!relationshipTypes.isEmpty()
                             && (ge.getRelationshipTypes() == null || ge.getRelationshipTypes().isEmpty())) {
                         ge.setRelationshipTypes(relationshipTypes);
                     }
                     GraphExtractionValidationPolicy policy = ge.getValidationPolicy() == null
                             ? GraphExtractionValidationPolicy.defaults()
                             : ge.getValidationPolicy().copy();
-                    if (relationPatterns != null && !relationPatterns.isEmpty()
-                            && policy.effectiveRelationPatterns().isEmpty()) {
-                        policy.setRelationPatterns(List.copyOf(relationPatterns));
+                    if (!relationPatterns.isEmpty() && policy.effectiveRelationPatterns().isEmpty()) {
+                        policy.setRelationPatterns(relationPatterns);
                     }
                     ge.setValidationPolicy(policy);
-                    log.info("Resolved schema preset '{}': {} entity types, {} relationship types, {} validation patterns",
-                            ge.getSchemaPresetId(),
-                            entityTypes != null ? entityTypes.size() : 0,
-                            relationshipTypes != null ? relationshipTypes.size() : 0,
-                            relationPatterns != null ? relationPatterns.size() : 0);
+                    log.info("Resolved standardized schema preset '{}': {} entity types, {} relation types, {} relation shapes",
+                            ge.getSchemaPresetId(), entityTypes.size(),
+                            relationshipTypes.size(), relationPatterns.size());
                 },
                 () -> log.warn("Schema preset '{}' not found", ge.getSchemaPresetId())
         );

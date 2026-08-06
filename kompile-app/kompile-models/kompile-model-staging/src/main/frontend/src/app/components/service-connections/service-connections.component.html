@@ -1,0 +1,81 @@
+<section class="connections-page">
+  <header>
+    <h1>Connections</h1>
+    <p>Configure every independently deployable service that Model Staging calls.</p>
+  </header>
+
+  <mat-card>
+    <mat-card-header>
+      <mat-icon mat-card-avatar>memory</mat-icon>
+      <mat-card-title>Model Serving child</mat-card-title>
+      <mat-card-subtitle>Required inference dependency for staged models</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p>
+        Model Staging exposes the OpenAI-compatible API and forwards inference to this local
+        serving process. The same managed endpoint is used by UI, CLI, and packaged startup.
+      </p>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Serving base URL</mat-label>
+        <input matInput type="url" [(ngModel)]="servingUrl"
+               placeholder="http://127.0.0.1:8091" [disabled]="loading || saving || testing">
+        <mat-hint>Must use localhost or a loopback address; saved in service-endpoints.json.</mat-hint>
+      </mat-form-field>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card>
+    <mat-card-header>
+      <mat-icon mat-card-avatar>admin_panel_settings</mat-icon>
+      <mat-card-title>Admin callback</mat-card-title>
+      <mat-card-subtitle>Optional model reload notifications</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p>
+        Model Staging calls Admin after an embedding or VLM model changes so the running
+        application can reload it. Leave the URL blank when testing Model Staging by itself.
+      </p>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Admin base URL</mat-label>
+        <input matInput type="url" [(ngModel)]="callbackUrl"
+               placeholder="http://localhost:8080" [disabled]="loading || saving || testing">
+        <mat-hint>Saved in the Model Staging managed settings file.</mat-hint>
+      </mat-form-field>
+
+      <div class="connection-options">
+        <mat-slide-toggle [(ngModel)]="autoReloadEnabled" [disabled]="loading || saving || testing">
+          Notify Admin after model changes
+        </mat-slide-toggle>
+
+        <mat-form-field appearance="outline" class="timeout-field">
+          <mat-label>Callback timeout</mat-label>
+          <input matInput type="number" min="1" step="1000" [(ngModel)]="callbackTimeoutMs"
+                 [disabled]="loading || saving || testing">
+          <span matTextSuffix>ms</span>
+        </mat-form-field>
+      </div>
+
+      <p class="error" *ngIf="error" role="alert">{{ error }}</p>
+      <p class="test-result" *ngIf="testMessage" role="status">{{ testMessage }}</p>
+    </mat-card-content>
+
+    <mat-card-actions align="end">
+      <button mat-stroked-button (click)="testConnection()"
+              [disabled]="loading || saving || testing || !callbackUrl.trim()">
+        <mat-spinner *ngIf="testing" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!testing">network_check</mat-icon>
+        Save and test callback
+      </button>
+      <button mat-flat-button color="primary" (click)="save()"
+              [disabled]="loading || saving || testing">
+        <mat-spinner *ngIf="saving" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!saving">save</mat-icon>
+        Save connections
+      </button>
+    </mat-card-actions>
+  </mat-card>
+</section>

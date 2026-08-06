@@ -382,9 +382,9 @@
              Same pattern PomModelBuilder emits for generated projects. -->
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>${nd4j.backend}</artifactId>
+            <artifactId>${nd4j.native.backend}</artifactId>
             <version>${nd4j.version}</version>
-            <classifier>${javacpp.platform}</classifier>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
         </dependency>
 
         <!-- Jetty for MCP server HTTP transport -->
@@ -542,6 +542,13 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-compute-graph-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Language runtimes are a separate JVM worker. Keep GraalJS/Truffle/Python4J out of
+             app-main's native-image closure while preserving the normal NodeExecutor contract. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-compute-graph-scripting-client</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -805,6 +812,10 @@
                                 <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf</buildArg>
                                 <buildArg>--initialize-at-build-time=com.google.protobuf</buildArg>
                                 <buildArg>--initialize-at-build-time=com.google.gson</buildArg>
+                                <!-- Query initializes Lucene VirtualMethod probes through Class.getDeclaredMethod.
+                                     Bake those immutable probes into the image so runtime execution does not depend
+                                     on Graal queried-method metadata for Query.rewrite(IndexReader). -->
+                                <buildArg>--initialize-at-build-time=org.apache.lucene.search.Query</buildArg>
                                 <!-- Runtime initialization (ND4J, JavaCPP, Lucene, JNI) -->
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Pointer,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.bytedeco.javacpp.Pointer$NativeDeallocator,org.bytedeco.javacpp.PointerScope,org.bytedeco.javacpp.indexer</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
@@ -861,9 +872,10 @@
                                 <!-- Exclude ByteBuddy bytecode provider from ServiceLoader - Hibernate falls back to property-based selection -->
                                 <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
                                 <!-- Agent-generated configs for main app and all subprocess types.
-                                     graph/ and serving/ directories are created by a separate agent;
-                                     referenced here so the unified binary picks them up when present. -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/main,${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/vector,${project.basedir}/src/main/resources/META-INF/native-image/embedding,${project.basedir}/src/main/resources/META-INF/native-image/model-init,${project.basedir}/src/main/resources/META-INF/native-image/graph,${project.basedir}/src/main/resources/META-INF/native-image/serving</buildArg>
+                                     The subprocess-args directories are closed, focused JSON traces:
+                                     shared records are available to every persona binary; app-main records
+                                     cover only its directly reachable learning/pipeline subprocesses. -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/main,${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/vector,${project.basedir}/src/main/resources/META-INF/native-image/embedding,${project.basedir}/src/main/resources/META-INF/native-image/model-init,${project.basedir}/src/main/resources/META-INF/native-image/graph,${project.basedir}/src/main/resources/META-INF/native-image/serving,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-main</buildArg>
                                 <!-- Resource inclusion -->
                                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
@@ -1007,7 +1019,7 @@
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for ingest subprocess -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
@@ -1115,7 +1127,7 @@
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for vector subprocess -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/vector</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/vector,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
@@ -1325,7 +1337,7 @@
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for model-init subprocess -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
@@ -1430,7 +1442,7 @@
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Use ingest configs as baseline (VLM test has similar deps) -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>

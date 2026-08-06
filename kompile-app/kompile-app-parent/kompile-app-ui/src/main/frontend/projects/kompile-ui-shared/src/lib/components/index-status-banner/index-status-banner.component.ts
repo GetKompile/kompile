@@ -101,11 +101,10 @@ export interface IndexStatus {
   `,
   styles: [`
     .index-status-banner {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 10000;
+      /* Keep the warning in document flow. A fixed banner covered the split app shell's
+         branding, model status, and settings controls on every persona. */
+      position: relative;
+      z-index: 1001;
       padding: 12px 20px;
       animation: slideDown 0.3s ease-out;
     }

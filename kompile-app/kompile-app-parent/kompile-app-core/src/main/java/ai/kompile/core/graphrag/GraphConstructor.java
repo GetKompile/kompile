@@ -46,6 +46,171 @@ public interface GraphConstructor {
     }
 
     /**
+     * Bounded task state for extracting one scheduled shard.
+     *
+     * <p>This is context, not evidence. It tells a small model why this exact chunk was selected,
+     * which identities already exist, and which corpus/graph revision its answer belongs to. The
+     * source text remains the only authority for newly emitted claims.</p>
+     */
+    record ConceptHint(
+            String term,
+            String category,
+            String provenance,
+            String observedContext) {
+
+        public ConceptHint {
+            term = term == null ? null : term.strip();
+            category = category == null ? null : category.strip();
+            provenance = provenance == null ? null : provenance.strip();
+            observedContext = observedContext == null ? null : observedContext.strip();
+        }
+    }
+
+    /**
+     * One engine-owned source boundary inside a chunk. Offsets are zero-based, end-exclusive and
+     * relative to the exact chunk text supplied to extraction. The model never supplies these.
+     */
+    record SourceSpan(int start, int end, String kind) {
+
+        public SourceSpan {
+            if (start < 0 || end <= start) {
+                throw new IllegalArgumentException("invalid source span: " + start + ".." + end);
+            }
+            kind = kind == null || kind.isBlank() ? "SOURCE_EVENT" : kind.strip();
+        }
+    }
+
+    record ExtractionTaskContext(
+            String taskId,
+            String partitionId,
+            String corpusSnapshotId,
+            List<String> subjects,
+            String chunkId,
+            String discoveryChannel,
+            String evidenceReason,
+            Double evidenceConfidence,
+            String graphRevision,
+            String graphContext,
+            List<ConceptHint> conceptHints,
+            List<SourceSpan> sourceSpans) {
+
+        public ExtractionTaskContext {
+            subjects = subjects == null ? List.of() : List.copyOf(subjects);
+            conceptHints = conceptHints == null ? List.of() : List.copyOf(conceptHints);
+            sourceSpans = sourceSpans == null ? List.of() : sourceSpans.stream()
+                    .filter(java.util.Objects::nonNull)
+                    .toList();
+        }
+
+        /** Source-compatible constructor for task producers predating source span plans. */
+        public ExtractionTaskContext(
+                String taskId,
+                String partitionId,
+                String corpusSnapshotId,
+                List<String> subjects,
+                String chunkId,
+                String discoveryChannel,
+                String evidenceReason,
+                Double evidenceConfidence,
+                String graphRevision,
+                String graphContext,
+                List<ConceptHint> conceptHints) {
+            this(taskId, partitionId, corpusSnapshotId, subjects, chunkId, discoveryChannel,
+                    evidenceReason, evidenceConfidence, graphRevision, graphContext, conceptHints,
+                    List.of());
+        }
+
+        /** Source-compatible constructor for task producers that do not yet supply concept hints. */
+        public ExtractionTaskContext(
+                String taskId,
+                String partitionId,
+                String corpusSnapshotId,
+                List<String> subjects,
+                String chunkId,
+                String discoveryChannel,
+                String evidenceReason,
+                Double evidenceConfidence,
+                String graphRevision,
+                String graphContext) {
+            this(taskId, partitionId, corpusSnapshotId, subjects, chunkId, discoveryChannel,
+                    evidenceReason, evidenceConfidence, graphRevision, graphContext, List.of(),
+                    List.of());
+        }
+
+        public ExtractionTaskContext withGraphState(String revision, String context) {
+            return new ExtractionTaskContext(taskId, partitionId, corpusSnapshotId, subjects,
+                    chunkId, discoveryChannel, evidenceReason, evidenceConfidence, revision,
+                    context, conceptHints, sourceSpans);
+        }
+
+        public ExtractionTaskContext withConceptHints(List<ConceptHint> hints) {
+            return new ExtractionTaskContext(taskId, partitionId, corpusSnapshotId, subjects,
+                    chunkId, discoveryChannel, evidenceReason, evidenceConfidence, graphRevision,
+                    graphContext, hints, sourceSpans);
+        }
+
+        public ExtractionTaskContext withSourceSpans(List<SourceSpan> spans) {
+            return new ExtractionTaskContext(taskId, partitionId, corpusSnapshotId, subjects,
+                    chunkId, discoveryChannel, evidenceReason, evidenceConfidence, graphRevision,
+                    graphContext, conceptHints, spans);
+        }
+
+        /** Rendering placed before the source text in a constructor prompt. */
+        public String promptBlock() {
+            StringBuilder prompt = new StringBuilder("\nTASK CONTEXT (routing and identity hints; NOT source evidence):\n");
+            append(prompt, "task", taskId);
+            append(prompt, "partition", partitionId);
+            append(prompt, "corpusSnapshot", corpusSnapshotId);
+            if (!subjects.isEmpty()) {
+                append(prompt, "subjects", String.join(" | ", subjects));
+            }
+            append(prompt, "chunk", chunkId);
+            append(prompt, "discoveryChannel", discoveryChannel);
+            append(prompt, "evidenceReason", evidenceReason);
+            if (evidenceConfidence != null) {
+                append(prompt, "evidenceConfidence", String.valueOf(evidenceConfidence));
+            }
+            append(prompt, "graphRevision", graphRevision);
+            if (graphContext != null && !graphContext.isBlank()) {
+                prompt.append("EXISTING GRAPH CONTEXT (reuse identities when appropriate):\n")
+                        .append(graphContext.strip()).append('\n');
+            }
+            if (!conceptHints.isEmpty()) {
+                prompt.append("CONCEPT COVERAGE HINTS (routing aids, NOT asserted facts):\n");
+                for (ConceptHint hint : conceptHints.stream().limit(16).toList()) {
+                    if (hint == null || hint.term() == null || hint.term().isBlank()) {
+                        continue;
+                    }
+                    prompt.append("- term=").append(hint.term());
+                    appendInline(prompt, "category", hint.category());
+                    appendInline(prompt, "provenance", hint.provenance());
+                    appendInline(prompt, "observedContext", hint.observedContext());
+                    prompt.append('\n');
+                }
+                prompt.append("Use each hint only to check whether SOURCE TEXT contains an explicit assertion involving it. A hint is never evidence by itself.\n");
+            }
+            prompt.append("AUTHORITY RULE: Emit a new entity, relationship, date, process step, or claim only when the SOURCE TEXT below supports it. Existing graph context may guide identity reuse but is never proof of a new claim.\n");
+            return prompt.toString();
+        }
+
+        private static void append(StringBuilder target, String name, String value) {
+            if (value != null && !value.isBlank()) {
+                target.append("- ").append(name).append(": ").append(value.strip()).append('\n');
+            }
+        }
+
+        private static void appendInline(StringBuilder target, String name, String value) {
+            if (value != null && !value.isBlank()) {
+                String bounded = value.strip();
+                if (bounded.length() > 240) {
+                    bounded = bounded.substring(0, 240) + "…";
+                }
+                target.append(" | ").append(name).append('=').append(bounded.replace('\n', ' '));
+            }
+        }
+    }
+
+    /**
      * Configure the extraction model settings.
      *
      * @param config the extraction model configuration
@@ -97,6 +262,19 @@ public interface GraphConstructor {
                                          boolean skipEmbedding, boolean skipMatrixGraph,
                                          ProgressListener progressListener) {
         return constructGraphFromDocs(docs, graphSchema, enforcementMode);
+    }
+
+    /**
+     * Context-aware form used by partition extraction. Implementations that do not yet consume
+     * task context retain their existing behavior through this default.
+     */
+    default Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema graphSchema,
+                                         SchemaEnforcementMode enforcementMode,
+                                         boolean skipEmbedding, boolean skipMatrixGraph,
+                                         ProgressListener progressListener,
+                                         ExtractionTaskContext taskContext) {
+        return constructGraphFromDocs(docs, graphSchema, enforcementMode, skipEmbedding,
+                skipMatrixGraph, progressListener);
     }
 
     /**

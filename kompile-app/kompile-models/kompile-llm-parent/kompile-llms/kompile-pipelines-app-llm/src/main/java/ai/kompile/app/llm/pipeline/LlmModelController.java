@@ -15,7 +15,8 @@
  */
 package ai.kompile.app.llm.pipeline;
 
-import ai.kompile.app.config.KompileServerConstants;
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -69,7 +70,7 @@ public class LlmModelController {
     private final SameDiffLanguageModelImpl languageModel;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
-    private final String defaultStagingUrl;
+    private final String defaultStagingUrlOverride;
     private final Path cacheDir;
     private final SubprocessLauncher subprocessLauncher;
 
@@ -79,8 +80,8 @@ public class LlmModelController {
             RestTemplateBuilder restTemplateBuilder,
             ObjectMapper objectMapper,
             ObjectProvider<SubprocessLauncher> subprocessLauncherProvider) {
-        this(languageModel, restTemplateBuilder, objectMapper, KompileServerConstants.DEFAULT_STAGING_URL,
-                Paths.get(System.getProperty("user.home"), ".kompile", "llm-cache"), subprocessLauncherProvider.getIfAvailable());
+        this(languageModel, restTemplateBuilder, objectMapper, configuredStagingUrl(),
+                KompileHome.llmCacheDirectory().toPath(), subprocessLauncherProvider.getIfAvailable());
     }
 
     public LlmModelController(
@@ -105,7 +106,7 @@ public class LlmModelController {
                 .setReadTimeout(Duration.ofMinutes(10))
                 .build();
         this.objectMapper = objectMapper;
-        this.defaultStagingUrl = defaultStagingUrl;
+        this.defaultStagingUrlOverride = defaultStagingUrl;
         this.cacheDir = cacheDir;
         this.subprocessLauncher = subprocessLauncher;
     }
@@ -118,9 +119,10 @@ public class LlmModelController {
         String modelId = request.getModelId().trim();
         String stagingUrl = (request.getStagingUrl() != null && !request.getStagingUrl().isBlank())
                 ? request.getStagingUrl().trim()
-                : defaultStagingUrl;
+                : defaultStagingUrl();
         if (stagingUrl == null || stagingUrl.isBlank()) {
-            return ResponseEntity.badRequest().body(error("stagingUrl not configured (kompile.staging.url) and not provided in request"));
+            return ResponseEntity.badRequest().body(error(
+                    "stagingUrl is not configured in managed service endpoints and was not provided"));
         }
         String baseUrl = stagingUrl.endsWith("/") ? stagingUrl.substring(0, stagingUrl.length() - 1) : stagingUrl;
 
@@ -261,7 +263,7 @@ public class LlmModelController {
                 response.put("modelId", null);
                 response.put("loading", false);
                 response.put("loadingPhase", "STOPPED");
-                response.put("stagingUrl", defaultStagingUrl);
+                response.put("stagingUrl", defaultStagingUrl());
                 response.put("cacheDir", cacheDir.toString());
                 return ResponseEntity.ok(response);
             }
@@ -272,7 +274,7 @@ public class LlmModelController {
                 response.put("error", "Failed to query serving subprocess: " + e.getMessage());
                 response.put("loadingPhase", "STATUS_UNAVAILABLE");
             }
-            response.put("stagingUrl", defaultStagingUrl);
+            response.put("stagingUrl", defaultStagingUrl());
             response.put("cacheDir", cacheDir.toString());
             return ResponseEntity.ok(response);
         }
@@ -288,9 +290,28 @@ public class LlmModelController {
         response.put("dspFrozenCount", languageModel.getDspFrozenCount());
         response.put("dspPlanReport", languageModel.getDspPlanReport());
         response.put("dspCompilationStats", languageModel.getDspCompilationStats());
-        response.put("stagingUrl", defaultStagingUrl);
+        response.put("stagingUrl", defaultStagingUrl());
         response.put("cacheDir", cacheDir.toString());
         return ResponseEntity.ok(response);
+    }
+
+    private String defaultStagingUrl() {
+        if (defaultStagingUrlOverride != null && !defaultStagingUrlOverride.isBlank()) {
+            return defaultStagingUrlOverride.trim().replaceAll("/+$", "");
+        }
+        String configured = configuredStagingUrl();
+        if (configured != null) {
+            return configured;
+        }
+        return ServiceEndpointsConfigManager.shared().current().effectiveStagingUrl();
+    }
+
+    private static String configuredStagingUrl() {
+        String configured = System.getProperty("kompile.staging.url");
+        if (configured == null || configured.isBlank()) {
+            return null;
+        }
+        return configured.trim().replaceAll("/+$", "");
     }
 
     @PostMapping("/unload")

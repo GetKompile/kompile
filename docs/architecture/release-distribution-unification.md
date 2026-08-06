@@ -79,11 +79,13 @@ image**. Complete type table (all statically linked except `training`):
   executable paths, `kompile.subprocess.executable.*`).
 
 **Native reachability metadata** lives per-context under
-`kompile-app-main/src/main/resources/META-INF/native-image/{main,ingest,vector,embedding,model-init,graph,serving}`;
-the unified `native` profile's `-H:ConfigurationFileDirectories` now lists **all seven**
-(graph/serving are placeholders awaiting `native-image-agent` captures).
-`TrainingSubprocessMain` is registered in `main/reflect-config.json` (ignored with a warning
-when the class is absent — safe).
+`kompile-app-main/src/main/resources/META-INF/native-image/{main,ingest,vector,embedding,model-init,graph,serving,subprocess-args-shared,subprocess-args-main}`;
+the unified `native` profile's `-H:ConfigurationFileDirectories` lists **all nine**.
+Graph, serving, and subprocess-argument metadata come from focused production traces.
+The parent-side model-init protocol slice is likewise agent-generated from a production
+JSON round trip, with contract tests deriving every sealed variant, nested payload,
+record constructor, and accessor. `TrainingSubprocessMain` remains registered in
+`main/reflect-config.json` (ignored with a warning when the class is absent — safe).
 
 **Build:** `mvn package -Dkompile.dist` (JDK **21-graal**; JDK 17 hits an unfixable
 huge-object layout limit on this image). The same profile now also emits the exec jar
@@ -131,9 +133,9 @@ kompile consumes DL4J through two root-pom properties: `nd4j.version` (default
 **Variant selection** — root-pom profiles keyed on `-Dkompile.backend=<value>`:
 `cpu`, `cpu-compile` (MLIR/Triton JIT classifier `-compile`), `cpu-onednn-avx512`,
 `cuda-12.6`, `cuda-12.9`, `zluda` (plus the pre-existing `avx2`/`avx512` extension
-profiles). Known wiring gap: several child poms still hardcode
-`<artifactId>nd4j-native</artifactId>` instead of `${nd4j.backend}` — they won't switch
-until migrated (tracked in §7).
+profiles). All live reactor consumers, including Anserini's test backend, select the
+artifact through `${nd4j.backend}`. The remaining literal `nd4j-native` dependencies
+are deliberate CPU fallback twins inside CUDA dual-backend profiles.
 
 **Custom builds** — `build-scripts/build-dl4j-backend.sh` wraps `../deeplearning4j`:
 
@@ -164,33 +166,31 @@ tier* keeps runtime multi-backend selection (`BackendManager`, both jars on clas
 | Concept | Disposition |
 |---|---|
 | `build-dist.sh` | **Kept — variant orchestrator.** Fixed broken CLI path (`kompile-cli/kompile-cli-main/target/…`), emits canon names + back-compat symlinks, bundles jar tier + jbang files into every variant. Layout must match `dist.xml`. |
-| `kompile-dist/` assembly | **Kept — canonical layout definition** (`src/main/assembly/dist.xml`). Now ships jar tier + jbang catalog; broken `kompile-app-lite-native` ref fixed. Gotchas: assembly descriptors have **no `<mapper>`** (use `<file><destName>`), and `--` is illegal inside XML comments. |
-| `install.sh` | Kept. Default variant now `cli-only` (the only one CI publishes); hosted/cpu/cuda opt-in until release matrix enables them. |
-| `release.yml` | **Owns the `v*` tag trigger.** Now also uploads stable-named jars when present. |
-| `publish-release.yml` | Demoted to `workflow_dispatch` only (was racing release.yml on the same tag/release). |
+| `kompile-dist/` assembly | **Kept — canonical layout definition** (`src/main/assembly/dist.xml`). `prepare-package` stages copies in `target/portable-bin` and applies the shared ELF normalizer before assembly. |
+| `install.sh` | Kept. Default `auto` selection tries the published Linux `full` variant first and falls back to `cli-only`; explicit native CPU/CUDA variants remain opt-in. |
+| `release.yml` | **Sole canonical release owner.** Owns the `v*` tag, release creation, installable archives, checksums, and stable jar assets. |
+| `publish-release.yml` | Manual supplemental SDK builder/uploader only. It shares per-version concurrency, requires an existing canonical release, and never creates, edits, or clobbers release assets. |
 | Root `Dockerfile`, `Dockerfile.rockylinux8` | **Deprecated in-place** (headers added). Use `build-scripts/Dockerfile.cpu` / `.cuda`. |
 | Root `native-image/` | **Legacy/unwired** (README added). Canonical metadata is per-module `META-INF/native-image/`. |
 | Per-subprocess native profiles (`native-ingest`, …) | Kept as opt-in *separate* binaries; the unified image is the default story. |
 | fpna-vN trees, `relaunch-jvm.sh` | Dev dogfood instances, not reactor members. `relaunch-jvm.sh` hardcodes a personal JDK path; `dist/` has ~40 stray build logs — hygiene items, not build inputs. |
 
-## 7. Open gaps (ranked)
+## 7. Verified native-dist status
 
-1. **Prove the unified app-main native build end-to-end** with JDK-21-graal (never yet
-   completed; last "close" iteration was on run-time-init classes; `ai.onnxruntime` needs
-   `--initialize-at-run-time`). Until then the jar tier is the only proven server deployment.
-2. **Serving-context AOT:** `ServingSubprocessMain` starts its own Spring context; only
-   `MainApplication`'s context is `process-aot`-processed. Needs agent-captured configs in
-   `native-image/serving/` (placeholders exist) or its own AOT pass.
-3. **Agent captures for `graph/` + `serving/`** metadata dirs (run each subprocess under
-   `-agentlib:native-image-agent` in JVM mode and drop the JSONs in).
-4. **`${nd4j.backend}` adoption** in child poms that hardcode `nd4j-native`
-   (kompile-knowledge-graph, kompile-graph-algorithms, kompile-graph-reasoning,
-   kompile-event-attribution, kompile-model-staging, e2e tests).
-5. **CI publish of jar assets + hosted variant** so the root JBang catalog URLs and
-   `install.sh --variant hosted` resolve; consider `graalvm.sdk.version` (24.0.1) ↔
-   GraalVM-21 toolchain alignment at the same time.
-6. **Merge `build-dist.sh` onto the assembly** (script should unpack/rename the assembly
-   output instead of hand-copying) — one layout definition instead of two.
+The unified JDK-21 GraalVM image and all five application launchers have now been built and
+booted from the `cpu-intel` distribution with ambient library-path variables removed. The
+release artifact uses the canonical side-loaded `lib/` layout, system ELF interpreters, and
+`$ORIGIN/../lib` RUNPATHs. Graph, embedding, model-init, and serving children self-execute the
+same native server binary without a runtime classpath; graph and serving bind only to loopback.
+Focused native-image-agent captures cover those subprocess entry points, including the complete
+`ModelInitMessage` protocol, and structural tests guard the captured metadata. The serving child
+uses its narrow `AnnotationConfigApplicationContext` rather than starting the full application.
+
+The former closure items are complete: live child poms honor `${nd4j.backend}`; release CI
+publishes the canonical `full` archive and stable jar names from that archive; and both Maven
+assembly and `build-dist.sh` normalize staged ELF copies through
+`kompile-dist/src/main/build/normalize-elf-portability.sh`. Linux native publication fails
+closed when `patchelf` is unavailable.
 
 ## 9. 2026-07-02 addendum: bundled jlink runtime + full-variant CI
 
@@ -216,14 +216,12 @@ now resolve Java with this precedence:
 `kompile-server.sh` also gains a JAR-tier fallback (`lib/kompile-server.jar`) when
 `bin/kompile-server` native binary is absent.
 
-**`release.yml`** — new `full-dist-linux` job (same runner class as the existing Linux CLI job):
-sets up both GraalVM (CLI native image) and Temurin 21 (jar builds + jlink). Builds the CLI
-native image under GraalVM, then the server + staging exec jars under Temurin (with UI,
-no `-Dskip.ui`), then produces the jlink runtime. Assembles
-`kompile-dist-<version>-full-linux-x86_64.tar.gz` with `bin/`, `lib/`, `runtime/`,
-`jbang-catalog.json`, `JBANG.md`, and data skeleton dirs. The `release:` job now waits on
-`[build, full-dist-linux]` and uploads stable-named jar assets (`kompile-server.jar`,
-`kompile-model-staging.jar`, `kompile-cli.jar`) from the full-dist `lib/` directory.
+**`release.yml`** — `full-dist-linux` sets up Temurin 21 and GraalVM 21, builds the CLI image
+under GraalVM, and builds app-main, chat, crawl-manager, and model-staging exec jars under
+Temurin without activating native profiles. It then calls
+`./build-dist.sh full --skip-java-build`, making the variant orchestrator the single owner of
+the jlink runtime, layout, manifest, checksum, and ELF policy. The canonical release job uploads
+the archive plus stable jar names directly from the packaged `lib/` directory.
 
 **`install.sh`** — default variant is now `auto` (tries `full` first via HEAD request, falls
 back to `cli-only` with a printed notice). After extraction, marks the bundled runtime
@@ -242,6 +240,8 @@ duplicates. Get-started text notes that `kompile project init` works fully only 
 | `kompile-server.jar` | stable name, from full-dist `lib/` |
 | `kompile-model-staging.jar` | stable name, from full-dist `lib/` |
 | `kompile-cli.jar` | stable name, from full-dist `lib/` |
+| `kompile-chat.jar` | stable name, from full-dist `lib/` |
+| `kompile-crawl-manager.jar` | stable name, from full-dist `lib/` |
 
 ## 8. Further design directions (suggested, not implemented)
 

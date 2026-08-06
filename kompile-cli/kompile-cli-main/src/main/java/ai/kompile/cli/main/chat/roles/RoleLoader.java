@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.roles;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 
 import java.io.IOException;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -46,6 +48,9 @@ import java.util.stream.Stream;
  * model: default
  * max_steps: 50
  * can_spawn: true
+ * agent_defaults.codex.model: gpt-5.6-terra
+ * agent_defaults.codex.thinking.default: medium
+ * agent_defaults.codex.thinking.models.gpt-5.6-sol: ultra
  * tools: read, write, edit, bash, grep, glob
  * deny_tools: patch
  * ---
@@ -150,7 +155,7 @@ public class RoleLoader {
                     .build();
         }
 
-        int endIdx = content.indexOf("---", 3);
+        int endIdx = findFrontmatterEnd(content);
         if (endIdx < 0) {
             // Malformed frontmatter — treat as no frontmatter
             String name = file.getFileName().toString().replaceFirst("\\.md$", "");
@@ -224,6 +229,7 @@ public class RoleLoader {
                 .enabledTools(enabledTools)
                 .permissionOverrides(overrides)
                 .canSpawnSubagents(canSpawn)
+                .agentDefaults(parseAgentDefaults(fields))
                 .agentFallbackPriority(agentFallbackPriority)
                 .sourceFile(file.toString())
                 .isBuiltIn(isBuiltIn)
@@ -231,17 +237,81 @@ public class RoleLoader {
                 .build();
     }
 
+    private int findFrontmatterEnd(String content) {
+        int searchFrom = 3;
+        while (searchFrom < content.length()) {
+            int candidate = content.indexOf("---", searchFrom);
+            if (candidate < 0) {
+                return -1;
+            }
+            boolean lineStart = candidate == 0
+                    || content.charAt(candidate - 1) == '\n'
+                    || content.charAt(candidate - 1) == '\r';
+            int after = candidate + 3;
+            boolean lineEnd = after == content.length()
+                    || content.charAt(after) == '\n'
+                    || content.charAt(after) == '\r';
+            if (lineStart && lineEnd) {
+                return candidate;
+            }
+            searchFrom = candidate + 3;
+        }
+        return -1;
+    }
+
+    private Map<String, RoleAgentDefaults> parseAgentDefaults(Map<String, String> fields) {
+        Map<String, RoleAgentDefaults> defaults = new LinkedHashMap<>();
+        for (String agent : AgentLaunchDefaults.SUPPORTED_AGENTS) {
+            String prefix = "agent_defaults." + agent + ".";
+            String model = fields.get(prefix + "model");
+            String defaultThinking = fields.get(prefix + "thinking.default");
+            if (defaultThinking == null || defaultThinking.isBlank()) {
+                // Compatibility shorthand for hand-authored role files.
+                defaultThinking = fields.get(prefix + "thinking");
+            }
+
+            String modelPrefix = prefix + "thinking.models.";
+            Map<String, String> thinkingByModel = new LinkedHashMap<>();
+            fields.forEach((key, value) -> {
+                if (key.startsWith(modelPrefix) && key.length() > modelPrefix.length()) {
+                    thinkingByModel.put(key.substring(modelPrefix.length()), value);
+                }
+            });
+
+            RoleAgentDefaults agentDefaults =
+                    new RoleAgentDefaults(model, defaultThinking, thinkingByModel);
+            if (!agentDefaults.isEmpty()) {
+                defaults.put(agent, agentDefaults);
+            }
+        }
+        return Map.copyOf(defaults);
+    }
+
     private Map<String, String> parseFrontmatter(String frontmatter) {
         Map<String, String> fields = new LinkedHashMap<>();
         for (String line : frontmatter.split("\n")) {
-            int colonIdx = line.indexOf(':');
+            int colonIdx = line.indexOf(": ");
+            if (colonIdx < 0) {
+                colonIdx = line.indexOf(':');
+            }
             if (colonIdx > 0) {
-                String key = line.substring(0, colonIdx).trim().toLowerCase();
+                String key = normalizeFrontmatterKey(line.substring(0, colonIdx).trim());
                 String value = line.substring(colonIdx + 1).trim();
                 fields.put(key, value);
             }
         }
         return fields;
+    }
+
+    private String normalizeFrontmatterKey(String rawKey) {
+        String lowerKey = rawKey.toLowerCase(Locale.ROOT);
+        String modelMarker = ".thinking.models.";
+        int markerIndex = lowerKey.indexOf(modelMarker);
+        if (lowerKey.startsWith("agent_defaults.") && markerIndex >= 0) {
+            int modelStart = markerIndex + modelMarker.length();
+            return lowerKey.substring(0, modelStart) + rawKey.substring(modelStart);
+        }
+        return lowerKey;
     }
 
     private int parseIntOrDefault(String value, int defaultValue) {

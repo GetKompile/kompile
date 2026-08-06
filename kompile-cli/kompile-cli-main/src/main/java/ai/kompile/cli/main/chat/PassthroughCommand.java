@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.agent.AgentFlagOverrides;
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
@@ -100,6 +101,10 @@ public class PassthroughCommand implements Callable<Integer> {
             "Examples: haiku, gpt-5.2-codex, anthropic/claude-haiku-4-5"
     })
     String model;
+
+    @CommandLine.Option(names = {"--thinking", "--effort"}, description =
+            "Thinking/effort override (Codex reasoning effort, Claude effort; OpenCode variants apply to managed run tasks)")
+    String thinking;
 
     /** System prompt manager — set by ChatCommand when launching passthrough mode. */
     SystemPromptManager systemPromptManager;
@@ -1563,7 +1568,11 @@ public class PassthroughCommand implements Callable<Integer> {
                 cmd, agent, skipPermissions,
                 workingDir == null ? null : Path.of(workingDir));
 
-        AgentFlagOverrides.addModelFlag(cmd, agent, model);
+        Path resolvedWorkingDir = workingDir == null ? null : Path.of(workingDir);
+        AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
+                agent, resolvedWorkingDir, model, thinking);
+        cmd.addAll(AgentLaunchDefaults.commandArguments(
+                agent, selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.INTERACTIVE));
 
         // Append system prompt args (Claude: --append-system-prompt-file, Qwen: --append-system-prompt)
         if (systemPromptManager != null) {

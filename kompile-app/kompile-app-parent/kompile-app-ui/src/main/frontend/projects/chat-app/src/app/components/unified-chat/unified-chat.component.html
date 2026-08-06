@@ -559,8 +559,8 @@
 
       <!-- Kompile Local Model -->
       <div class="settings-section">
-        <h4>Kompile Local Model</h4>
-        <p class="setting-hint">Connect to a local kompile-model-staging instance</p>
+        <h4>Model Staging Connection</h4>
+        <p class="setting-hint">Chat depends on this independently deployable service for local model discovery and inference.</p>
 
         <div class="setting-row" *ngIf="kompileLocalStatus">
           <label>Status</label>
@@ -572,7 +572,8 @@
         <div class="setting-row">
           <label>Staging URL</label>
           <input type="text" class="text-input" [(ngModel)]="kompileLocalStagingUrl"
-            [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8081">
+            [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8090">
+          <p class="setting-hint">Connect saves this dependency in the shared managed service-endpoints.json file for future Chat sessions and CLI startup.</p>
         </div>
 
         <div class="setting-row" *ngIf="kompileLocalStatus?.modelId">

@@ -17,6 +17,7 @@ package ai.kompile.knowledgegraph.matrix.service;
 
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -560,6 +561,256 @@ class MatrixGraphConstructorTest {
         }
 
         @Test
+        @DisplayName("places bounded partition and graph state before the authoritative shard")
+        void includesBoundedTaskAndGraphContext() {
+            when(callResponseSpec.content()).thenReturn(
+                    "{\"entities\": [], \"relationships\": []}");
+            String source = "North forecast is approved by the Finance Lead.";
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "job-7:partition-acme:chunk-4",
+                    "partition-acme",
+                    "partition-corpus-v1:abc123",
+                    List.of("Acme", "North forecast"),
+                    "chunk-4",
+                    "SEMANTIC",
+                    "matched Acme and forecast",
+                    0.91,
+                    "graph-revision-3",
+                    "entity[acme] Acme | entity[forecast] North forecast");
+
+            constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk-4", source, Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
+            verify(requestSpec).user(promptCaptor.capture());
+            String prompt = promptCaptor.getValue();
+            assertTrue(prompt.contains("- partition: partition-acme"));
+            assertTrue(prompt.contains("- corpusSnapshot: partition-corpus-v1:abc123"));
+            assertTrue(prompt.contains("- discoveryChannel: SEMANTIC"));
+            assertTrue(prompt.contains("entity[acme] Acme"));
+            assertTrue(prompt.contains("context may guide identity reuse but is never proof"));
+            assertTrue(prompt.contains("PHASE 1 OF 2 — ENTITY IDENTIFICATION ONLY"));
+            assertTrue(prompt.contains("Begin with the exact lowercase characters {\"entities\":["));
+            assertTrue(prompt.contains("Entity label VALUES use precise UPPERCASE_WITH_UNDERSCORES"));
+            assertTrue(prompt.contains("JSON property names remain lowercase"));
+            assertFalse(prompt.contains("Use precise UPPERCASE_WITH_UNDERSCORES entity labels"),
+                    "label-value casing must not look like an instruction to uppercase JSON keys");
+            assertTrue(prompt.contains("exactly {\"entities\":[]}"));
+            assertTrue(prompt.contains("Do not emit a \"relationships\" key"));
+            assertTrue(prompt.contains("MUST be a JSON object"));
+            assertTrue(prompt.indexOf("TASK CONTEXT") < prompt.indexOf("\nSOURCE TEXT:\n"));
+            assertTrue(prompt.contains(source));
+        }
+
+        @Test
+        @DisplayName("normalizes partition labels and expands only unambiguous source-grounded subjects")
+        void normalizesPartitionEntitiesBeforeValidation() {
+            when(callResponseSpec.content()).thenReturn(
+                    """
+                    {"entities":[
+                      {"id":"1","title":"Maya","label":"REAL-WORLD ENTITY","description":""},
+                      {"id":"2","title":"EMEA","label":"GEOGRAPHIC REGION","description":""},
+                      {"id":"3","title":"ERIN","label":"REAL-TIME ENTITY","description":""}
+                    ]}
+                    """,
+                    "{\"relationships\":[]}");
+            String source = "Maya submitted the EMEA forecast to Erin for approval.";
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "task", "partition", "snapshot", List.of("Maya", "EMEA forecast", "Erin"),
+                    "chunk", "SEED", "matched subjects", 1.0, "in-run:0:0", "(none)");
+
+            Graph graph = constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk", source, Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            assertEquals(Set.of("Maya", "EMEA forecast", "Erin"), graph.getEntities().stream()
+                    .map(Entity::getTitle).collect(java.util.stream.Collectors.toSet()));
+            assertTrue(graph.getEntities().stream()
+                    .allMatch(entity -> entity.getType().matches("[A-Z][A-Z0-9_]*")));
+            assertTrue(graph.getEntities().stream()
+                    .allMatch(entity -> entity.getDescription() != null
+                            && !entity.getDescription().isBlank()));
+            verify(requestSpec, times(2)).user(anyString());
+        }
+
+        @Test
+        @DisplayName("partitions entities first and gives relationships only engine-fixed ids")
+        void partitionsEntitiesBeforeRelationshipsWithFixedIds() {
+            String snapshot = "partition-corpus-v1:fixed-id-test";
+            String aliceId = stableEntityId(snapshot, "Alice", "PERSON");
+            String acmeId = stableEntityId(snapshot, "Acme Corp", "ORGANIZATION");
+            when(callResponseSpec.content()).thenReturn(
+                    """
+                    {"entities":[
+                      {"id":"temporary-a","title":"Alice","label":"PERSON","description":"A person"},
+                      {"id":"temporary-b","title":"Acme Corp","label":"ORGANIZATION","description":"A company"}
+                    ]}
+                    """,
+                    """
+                    {"relationships":[
+                      {"source":"%s","target":"%s","type":"WORKS_AT","description":"Alice works at Acme Corp"}
+                    ]}
+                    """.formatted(aliceId, acmeId));
+            String source = "Alice works at Acme Corp.";
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "job-1:partition-people:chunk-1",
+                    "partition-people",
+                    snapshot,
+                    List.of("Alice"),
+                    "chunk-1",
+                    "SEED",
+                    "matched Alice",
+                    1.0,
+                    "in-run:0:0",
+                    "(no prior entities are available; resolve identities from the source text)");
+
+            Graph graph = constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk-1", source, Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            assertEquals(Set.of(aliceId, acmeId), graph.getEntities().stream()
+                    .map(Entity::getId).collect(java.util.stream.Collectors.toSet()));
+            assertEquals(1, graph.getRelationships().size());
+            assertEquals(aliceId, graph.getRelationships().get(0).getSource());
+            assertEquals(acmeId, graph.getRelationships().get(0).getTarget());
+
+            ArgumentCaptor<String> prompts = ArgumentCaptor.forClass(String.class);
+            verify(requestSpec, times(2)).user(prompts.capture());
+            String entityPrompt = prompts.getAllValues().get(0);
+            String relationPrompt = prompts.getAllValues().get(1);
+            assertTrue(entityPrompt.contains("PHASE 1 OF 2 — ENTITY IDENTIFICATION ONLY"));
+            assertTrue(relationPrompt.contains("PHASE 2 OF 2 — RELATIONSHIP IDENTIFICATION ONLY"));
+            assertTrue(relationPrompt.contains(aliceId));
+            assertTrue(relationPrompt.contains(acmeId));
+            assertFalse(relationPrompt.contains("temporary-a"));
+            assertFalse(relationPrompt.contains("temporary-b"));
+            assertTrue(relationPrompt.contains("Do not emit an \"entities\" key"));
+            assertTrue(relationPrompt.contains("never copy either candidate's entity label or category"));
+            assertTrue(relationPrompt.contains("type\" MUST name the source-grounded predicate/action"));
+            assertTrue(relationPrompt.contains(source));
+        }
+
+        @Test
+        @DisplayName("rejects an entity label copied into the relationship type")
+        void rejectsEntityLabelAsRelationshipType() {
+            String snapshot = "partition-corpus-v1:predicate-test";
+            String aliceId = stableEntityId(snapshot, "Alice", "PERSON");
+            String acmeId = stableEntityId(snapshot, "Acme Corp", "ORGANIZATION");
+            when(callResponseSpec.content()).thenReturn(
+                    """
+                    {"entities":[
+                      {"id":"left","title":"Alice","label":"PERSON","description":"A person"},
+                      {"id":"right","title":"Acme Corp","label":"ORGANIZATION","description":"A company"}
+                    ]}
+                    """,
+                    """
+                    {"relationships":[
+                      {"source":"%s","target":"%s","type":"PERSON","description":"Alice works at Acme Corp"}
+                    ]}
+                    """.formatted(aliceId, acmeId));
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "task", "partition", snapshot, List.of("Alice"), "chunk",
+                    "SEED", "matched Alice", 1.0, "in-run:0:0", "(none)");
+
+            Graph graph = constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk", "Alice works at Acme Corp.", Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            assertEquals(2, graph.getEntities().size());
+            assertTrue(graph.getRelationships().isEmpty());
+            verify(requestSpec, times(2)).user(anyString());
+        }
+
+        @Test
+        @DisplayName("preserves validated entities when the independent relationship phase fails")
+        void preservesEntitiesWhenRelationshipPhaseFails() {
+            when(callResponseSpec.content()).thenReturn(
+                    """
+                    {"entities":[
+                      {"id":"left","title":"Alice","label":"PERSON","description":"A person"},
+                      {"id":"right","title":"Acme Corp","label":"ORGANIZATION","description":"A company"}
+                    ]}
+                    """,
+                    """
+                    {"relationships":[
+                      {"source":"invented-left","target":"invented-right","type":"WORKS_AT","description":"unsupported ids"}
+                    ]}
+                    """);
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "task", "partition", "snapshot", List.of("Alice"), "chunk",
+                    "SEED", "matched Alice", 1.0, "in-run:0:0", "(none)");
+
+            Graph graph = constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk", "Alice works at Acme Corp.", Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            assertEquals(2, graph.getEntities().size());
+            assertTrue(graph.getRelationships().isEmpty());
+            verify(requestSpec, times(2)).user(anyString());
+        }
+
+        @Test
+        @DisplayName("reuses an existing graph id only when the entity phase selects it")
+        void reusesSelectedExistingGraphId() {
+            when(callResponseSpec.content()).thenReturn(
+                    """
+                    {"entities":[
+                      {"id":"acme","title":"Acme Corp","label":"ORGANIZATION","description":"A company"}
+                    ]}
+                    """,
+                    "{\"relationships\":[]}");
+            ExtractionTaskContext task = new ExtractionTaskContext(
+                    "task", "partition", "snapshot", List.of("Acme"), "chunk",
+                    "SEED", "matched Acme", 1.0, "in-run:1:0",
+                    "ENTITIES:\n- id=acme | title=Acme Corp | type=ORGANIZATION\n");
+
+            Graph graph = constructor.constructGraphFromDocs(
+                    List.of(new RetrievedDoc("chunk", "Acme Corp issued the memo.", Map.of())),
+                    null,
+                    SchemaEnforcementMode.NONE,
+                    true,
+                    true,
+                    null,
+                    task);
+
+            assertEquals(1, graph.getEntities().size());
+            assertEquals("acme", graph.getEntities().get(0).getId());
+        }
+
+        private String stableEntityId(String scope, String title, String label) {
+            String seed = scope + "|" + title.toLowerCase(java.util.Locale.ROOT) + "|"
+                    + label.toLowerCase(java.util.Locale.ROOT);
+            return "entity-" + java.util.UUID.nameUUIDFromBytes(
+                    seed.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        @Test
         @DisplayName("includes schema node types in prompt when schema is provided")
         void includesSchemaInPrompt() {
             GraphSchema schema = new GraphSchema();
@@ -616,6 +867,30 @@ class MatrixGraphConstructorTest {
             assertFalse(prompt.contains("John"));
             assertFalse(prompt.contains("Acme"));
         }
+    }
+
+    @Test
+    @DisplayName("ignores non-contract top-level commentary without discarding valid graph JSON")
+    void ignoresUnknownTopLevelMetadata() {
+        when(callResponseSpec.content()).thenReturn("""
+                {
+                  "entities": [
+                    {"id":"e","title":"AMER forecast June","label":"EMAIL_MESSAGE","description":"Email"},
+                    {"id":"p","title":"Sarah Chen","label":"PERSON","description":"Sender"}
+                  ],
+                  "relationships": [
+                    {"source":"e","target":"p","type":"SENT_BY","description":"Email was sent by Sarah"}
+                  ],
+                  "metadata": "unrequested model commentary"
+                }
+                """);
+
+        Graph result = constructor.constructGraphFromDocs(
+                List.of(new RetrievedDoc("doc1", "text", Map.of())), null, null,
+                true, true, null);
+
+        assertEquals(2, result.getEntities().size());
+        assertEquals(1, result.getRelationships().size());
     }
 
     @Test

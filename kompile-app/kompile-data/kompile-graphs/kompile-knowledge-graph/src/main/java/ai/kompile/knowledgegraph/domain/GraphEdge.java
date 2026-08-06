@@ -22,6 +22,9 @@ import lombok.*;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -295,6 +298,33 @@ public class GraphEdge {
         return targetNode != null
                 ? targetNode
                 : targetNodeId != null ? GraphNode.builder().nodeId(targetNodeId).build() : null;
+    }
+
+    /** Shared parser for {@link #metadataJson}; ObjectMapper is thread-safe for reads. */
+    private static final com.fasterxml.jackson.databind.ObjectMapper METADATA_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * Store-neutral parsed view of the edge's open metadata bag.
+     *
+     * <p>Keeping this on the shared domain object gives JPA and matrix/vector stores the same
+     * contract. Callers can consume bounded inference, embedding, and provenance facets without
+     * reparsing JSON or depending on a particular backing store.</p>
+     */
+    @Transient
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "metadata",
+            access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public Map<String, Object> getMetadata() {
+        if (metadataJson == null || metadataJson.isBlank()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return METADATA_MAPPER.readValue(metadataJson,
+                    METADATA_MAPPER.getTypeFactory().constructMapType(
+                            LinkedHashMap.class, String.class, Object.class));
+        } catch (Exception e) {
+            return Collections.emptyMap();
+        }
     }
 
     /** Source endpoint ID independent of whether the endpoint is fully materialized. */

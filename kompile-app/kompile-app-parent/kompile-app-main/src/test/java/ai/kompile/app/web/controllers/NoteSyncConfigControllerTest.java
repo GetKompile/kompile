@@ -18,6 +18,30 @@ class NoteSyncConfigControllerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void persistedConfigDeserializesAllSettings() throws Exception {
+        NoteSyncConfig config = objectMapper.readValue("""
+                {
+                  "notionEnabled": true,
+                  "notionWebhookSecret": "secret",
+                  "notionCallbackBaseUrl": "https://callback.example",
+                  "obsidianEnabled": true,
+                  "obsidianFileWatchEnabled": true,
+                  "schedulerEnabled": true,
+                  "schedulerCheckIntervalMs": 15000
+                }
+                """, NoteSyncConfig.class);
+
+        assertAll(
+                () -> assertEquals(Boolean.TRUE, config.getNotionEnabled()),
+                () -> assertEquals("secret", config.getNotionWebhookSecret()),
+                () -> assertEquals("https://callback.example", config.getNotionCallbackBaseUrl()),
+                () -> assertEquals(Boolean.TRUE, config.getObsidianEnabled()),
+                () -> assertEquals(Boolean.TRUE, config.getObsidianFileWatchEnabled()),
+                () -> assertEquals(Boolean.TRUE, config.getSchedulerEnabled()),
+                () -> assertEquals(15_000L, config.getSchedulerCheckIntervalMs()));
+    }
+
+    @Test
     void configResponsesExposeOnlySecretPresence() throws Exception {
         NoteSyncConfigService service = mock(NoteSyncConfigService.class);
         NoteSyncConfig configured = NoteSyncConfig.builder()
