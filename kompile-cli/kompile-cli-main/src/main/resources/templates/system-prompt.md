@@ -45,7 +45,7 @@ Execution: `bash` (restricted), `process`
 Knowledge: `rag_search`, `graph_search`, `memory`
 Tasks: `todowrite`, `todoread`
 Agents: `task`, `multi_task`, `quorum_task`, `edit_coordinator`, `role_manager`, `skill_manager`
-History: `transcript_search`, `conversation_import`, `resume`, `tool_call_catalog`
+History: `diff_index`, `transcript_search`, `conversation_import`, `resume`, `tool_call_catalog`
 Web: `webfetch`, `websearch`
 DevOps: `config_archive`, `test_milestone`, `performance_harness`
 

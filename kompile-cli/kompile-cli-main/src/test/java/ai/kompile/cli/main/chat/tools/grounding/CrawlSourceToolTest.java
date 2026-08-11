@@ -56,6 +56,7 @@ class CrawlSourceToolTest {
         AgentConfig agent = AgentConfig.builder("coder").enabledTools(Set.of("*")).build();
         PermissionService perms = new PermissionService();
         perms.setUserOverride("crawl_source", PermissionService.PermissionLevel.ALLOW);
+        perms.setUserOverride("external_directory", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
     }
@@ -121,14 +122,14 @@ class CrawlSourceToolTest {
     }
 
     @Test
-    void nullBaseUrl_returnsError_mentioningKompileApp() throws Exception {
+    void nullBaseUrl_usesLocalBackendAndReportsMissingSource() throws Exception {
         CrawlSourceTool tool = new CrawlSourceTool((String) null, om);
         ObjectNode params = om.createObjectNode();
-        params.put("path", "/tmp/file.txt");
+        params.put("path", "missing-file.txt");
         ToolResult result = tool.execute(params, ctx);
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"),
-                "Error should mention 'kompile-app' but was: " + result.getOutput());
+        assertTrue(result.getOutput().contains("Local crawl source does not exist"),
+                "Error should identify the local source problem but was: " + result.getOutput());
     }
 
     // ── Dry-run success ───────────────────────────────────────────────────
@@ -292,6 +293,22 @@ class CrawlSourceToolTest {
         assertEquals(200, resp.statusCode(), "Injected-client call must return 200 from mock");
         assertTrue(resp.body().contains("DRY_RUN"), "Body must contain DRY_RUN: " + resp.body());
         mockServer.verify();
+    }
+
+    @Test
+    void productionClientAvoidsReflectiveJacksonModuleDiscovery() {
+        GroundingBackendClient client = new GroundingBackendClient("http://localhost");
+
+        var converters = client.getRestTemplate().getMessageConverters();
+        assertTrue(converters.stream().anyMatch(
+                converter -> converter instanceof org.springframework.http.converter.StringHttpMessageConverter));
+        assertTrue(converters.stream().anyMatch(
+                converter -> converter instanceof org.springframework.http.converter.ByteArrayHttpMessageConverter));
+        assertTrue(converters.stream().anyMatch(
+                converter -> converter instanceof org.springframework.http.converter.FormHttpMessageConverter));
+        assertFalse(converters.stream().anyMatch(
+                converter -> converter.getClass().getName().contains("Jackson")),
+                "native MCP startup must not trigger optional Jackson/Kotlin module discovery");
     }
 
     // ── Response fixture helpers ──────────────────────────────────────────

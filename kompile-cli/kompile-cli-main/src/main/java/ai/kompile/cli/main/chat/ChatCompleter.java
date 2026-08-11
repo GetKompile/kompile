@@ -469,8 +469,14 @@ public class ChatCompleter implements Completer {
     /** Terminal reference for measuring width (set via {@link #setTerminalRef}). */
     private static volatile Terminal terminalRef;
 
+    /** Active standard-chat reader used for thread-safe asynchronous output. */
+    private static volatile LineReader lineReaderRef;
+
     /** Optional supplier of queued message strings to display below the bottom border. */
     private static volatile Supplier<List<String>> queueSupplier;
+
+    /** Current standard-chat model activity rendered by the persistent status bar. */
+    private static volatile String activityLabel;
 
     /** DIM ANSI escape. */
     private static final String DIM = "\033[2m";
@@ -484,7 +490,42 @@ public class ChatCompleter implements Completer {
      * sized to the actual terminal width.
      */
     public static void setTerminalRef(LineReader reader, Terminal terminal) {
+        lineReaderRef = reader;
         terminalRef = terminal;
+    }
+
+    /**
+     * Whether a standard-chat line editor is available for managed asynchronous output.
+     */
+    public static boolean hasLineReader() {
+        return lineReaderRef != null;
+    }
+
+    public static void setActivity(String activity) {
+        activityLabel = activity == null || activity.isBlank() ? null : activity;
+    }
+
+    public static String getActivity() {
+        return activityLabel;
+    }
+
+    /**
+     * Print complete lines above the active input buffer. JLine clears and restores
+     * the prompt around the output, so background model/tool events cannot erase
+     * text the user is typing. Falls back to stdout outside an interactive REPL.
+     */
+    public static void printAbove(String text) {
+        String line = text == null ? "" : text;
+        LineReader reader = lineReaderRef;
+        if (reader instanceof LineReaderImpl impl && impl.isReading()) {
+            try {
+                reader.printAbove(line);
+                return;
+            } catch (RuntimeException ignored) {
+                // Terminal may be shutting down; preserve the output via stdout.
+            }
+        }
+        System.out.println(line);
     }
 
     /**

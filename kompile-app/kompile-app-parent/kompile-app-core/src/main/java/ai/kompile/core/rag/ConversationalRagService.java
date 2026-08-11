@@ -120,6 +120,15 @@ public interface ConversationalRagService {
     List<Message> getConversationHistory(String conversationId);
 
     /**
+     * Replaces the conversation history without generating model responses.
+     * Used to rehydrate a persisted transcript after a server restart.
+     *
+     * @param conversationId The conversation ID
+     * @param messages Complete ordered history to restore
+     */
+    void replaceConversationHistory(String conversationId, List<Message> messages);
+
+    /**
      * Checks if a conversation exists and has messages.
      *
      * @param conversationId The conversation ID

@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.terminal.TerminalQueryStripResult;
@@ -1312,7 +1313,12 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             assertTrue(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"),
                     provider + " should use Kompile-managed background dispatch");
             List<String> built = invokeBuildCommand(command, provider, "next draft");
-            assertEquals(List.of(provider), built, provider + " should launch only the interactive provider binary");
+            AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(provider, null, null, null);
+            assertEquals(provider, built.get(0), provider + " should launch the interactive provider binary");
+            assertEquals(AgentLaunchDefaults.commandArguments(
+                            provider, selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.INTERACTIVE),
+                    built.subList(1, built.size()),
+                    provider + " should apply the configured interactive model and reasoning defaults");
             assertFalse(built.contains("--continue"), provider + " must not continue an active background session");
             assertFalse(built.contains("resume"), provider + " must not resume an active background session");
             assertFalse(built.contains("--resume"), provider + " must not resume an active background session");
@@ -1320,6 +1326,24 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             assertFalse(built.contains("provider-session"), provider + " must not reuse an active background session id");
             assertFalse(built.contains("--fork"), provider + " must not rely on provider-specific fork flags");
             assertFalse(built.contains("next draft"), provider + " should receive the queued prompt over stdin, not argv");
+        }
+    }
+
+    @Test
+    void managedResumeUsesResolvedNativeSessionForEveryProvider() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "resumeSessionId", "kompile-session");
+        setField(command, "agentSessionId", "native-session");
+
+        for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "pi")) {
+            setField(command, "agent", provider);
+            List<String> built = invokeBuildCommand(command, provider, "continue");
+            List<String> resumeArgs = AgentLaunchDefaults.resumeArguments(provider, "native-session");
+            assertEquals(resumeArgs,
+                    built.subList(built.size() - resumeArgs.size(), built.size()),
+                    provider + " should attach the managed child to the native session");
+            assertFalse(built.contains("kompile-session"),
+                    provider + " must not pass Kompile's synthetic session id to the provider");
         }
     }
 

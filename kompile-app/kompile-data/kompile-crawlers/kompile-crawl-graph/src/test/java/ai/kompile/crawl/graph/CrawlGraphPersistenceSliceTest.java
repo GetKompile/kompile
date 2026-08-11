@@ -25,6 +25,7 @@ import ai.kompile.core.crawl.graph.VectorIndexConfig;
 import ai.kompile.core.crawl.graph.archive.CrawlStepArchiveService;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.core.graphrag.maintenance.GraphMaintenanceService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
@@ -131,6 +132,7 @@ class CrawlGraphPersistenceSliceTest {
     @MockBean private CrossDocumentRelationCallback crossDocumentRelationCallback;
     @MockBean private CrawlStepArchiveService crawlStepArchiveService;
     @MockBean private GraphExtractionCheckpointStore graphExtractionCheckpointStore;
+    @MockBean private GraphMaintenanceService graphMaintenanceService;
     @Autowired private DocumentLoader fileLoader;
     @Autowired private TextChunker tableAwareChunker;
     @Autowired private TextChunker htmlChunker;

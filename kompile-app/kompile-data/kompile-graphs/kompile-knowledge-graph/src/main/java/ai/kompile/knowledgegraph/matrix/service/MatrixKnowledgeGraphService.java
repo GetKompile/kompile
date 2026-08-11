@@ -457,14 +457,22 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         List<MatrixGraphNode> matrixNodes = new ArrayList<>(specs.size());
         List<GraphNode> result = new ArrayList<>(specs.size());
         for (NodeSpec s : specs) {
-            String nodeId = s.nodeType().name().toLowerCase() + "_" + s.externalId();
+            Map<String, Object> metadata = s.metadata() != null
+                    ? new LinkedHashMap<>(s.metadata()) : new LinkedHashMap<>();
+            Map<String, Object> restore = restoreState(metadata,
+                    KnowledgeGraphService.NODE_RESTORE_STATE_KEY);
+            String fallbackNodeId = s.nodeType().name().toLowerCase() + "_" + s.externalId();
+            String nodeId = stateString(restore, "nodeId", fallbackNodeId);
             MatrixGraphNode matrixNode = MatrixGraphNode.builder()
                     .nodeId(nodeId)
                     .nodeType(s.nodeType().name())
                     .title(s.title())
                     .description(s.description())
-                    .metadata(s.metadata() != null ? s.metadata() : new HashMap<>())
+                    .embeddingId(stateString(restore, "vectorId", null))
+                    .metadata(metadata)
                     .factSheetId(factSheetId)
+                    .createdAt(stateEpochMillis(restore.get("createdAt")))
+                    .updatedAt(stateEpochMillis(restore.get("updatedAt")))
                     .build();
             matrixNodes.add(matrixNode);
             result.add(convertToGraphNode(matrixNode, s.externalId()));
@@ -613,10 +621,9 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     /**
-     * Batch-create edges, skipping pairs that already have an edge between them.
-     *
-     * <p>Server-side idempotency check: for each spec, checks {@link #edgeExists} before
-     * calling {@link #createEdge} so the per-edge check happens locally (no extra RPC per edge).</p>
+     * Batch-create edges with typed idempotency. Parallel semantic relations between the same
+     * endpoints are retained; only the same stored relation key in the same fact-sheet graph is
+     * skipped. The checks and writes remain local to the matrix store.
      */
     @Override
     public int createEdgesBatch(List<KnowledgeGraphService.EdgeSpec> specs) {
@@ -625,7 +632,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         for (KnowledgeGraphService.EdgeSpec s : specs) {
             if (s.sourceNodeId() == null || s.targetNodeId() == null) continue;
             try {
-                if (!edgeExists(s.sourceNodeId(), s.targetNodeId())) {
+                if (!edgeExists(s.sourceNodeId(), s.targetNodeId(),
+                        s.edgeType(), s.label(), s.factSheetId())) {
                     createEdgeWithMetadata(
                             s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(),
                             s.label(), s.description(), s.metaJson(), s.provenance(),
@@ -1281,7 +1289,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         }
         edge.setBidirectional(bidirectional);
         edge.setProvenance(sourceProvenance);
-        edge.setMetadataJson(serializeMetadata(storedMetadata));
+        edge.setMetadataJson(serializeMetadata(publicRestoreMetadata(storedMetadata,
+                KnowledgeGraphService.EDGE_RESTORE_STATE_KEY)));
         if (factSheetId != null) {
             edge.setFactSheetId(factSheetId);
         }
@@ -1297,6 +1306,8 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
         if (pType != null) {
             edge.setProvenanceType(pType);
         }
+        applyEdgeRestoreState(edge, restoreState(storedMetadata,
+                KnowledgeGraphService.EDGE_RESTORE_STATE_KEY));
         return edge;
     }
 
@@ -1439,6 +1450,16 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     @Override
     public boolean edgeExists(String sourceNodeId, String targetNodeId) {
         return graphStore.hasEdge(graphIdHolding(sourceNodeId), sourceNodeId, targetNodeId, null);
+    }
+
+    @Override
+    public boolean edgeExists(String sourceNodeId, String targetNodeId,
+                              EdgeType edgeType, String label, Long factSheetId) {
+        String storedType = label != null && !label.isBlank()
+                ? label : edgeTypeToString(edgeType);
+        String graphId = factSheetId != null
+                ? graphIdForFactSheet(factSheetId) : graphIdHolding(sourceNodeId);
+        return graphStore.hasEdge(graphId, sourceNodeId, targetNodeId, storedType);
     }
 
     @Override
@@ -1800,17 +1821,25 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     // ═══════════════════════════════════════════════════════════════════════════
 
     private GraphNode convertToGraphNode(MatrixGraphNode matrixNode, String externalId) {
-        return GraphNode.builder()
+        Map<String, Object> metadata = matrixNode.getMetadata() == null
+                ? Map.of() : matrixNode.getMetadata();
+        Map<String, Object> restore = restoreState(metadata,
+                KnowledgeGraphService.NODE_RESTORE_STATE_KEY);
+        GraphNode node = GraphNode.builder()
                 .nodeId(matrixNode.getNodeId())
                 .externalId(externalId)
                 .nodeType(NodeLevel.valueOf(matrixNode.getNodeType()))
                 .title(matrixNode.getTitle())
                 .description(matrixNode.getDescription())
-                .metadataJson(serializeMetadata(matrixNode.getMetadata()))
-                .createdAt(LocalDateTime.ofEpochSecond(matrixNode.getCreatedAt() / 1000, 0, ZoneOffset.UTC))
-                .updatedAt(LocalDateTime.ofEpochSecond(matrixNode.getUpdatedAt() / 1000, 0, ZoneOffset.UTC))
+                .metadataJson(serializeMetadata(publicRestoreMetadata(metadata,
+                        KnowledgeGraphService.NODE_RESTORE_STATE_KEY)))
+                .vectorId(matrixNode.getEmbeddingId())
+                .createdAt(matrixTime(matrixNode.getCreatedAt()))
+                .updatedAt(matrixTime(matrixNode.getUpdatedAt()))
                 .factSheetId(matrixNode.getFactSheetId())
                 .build();
+        applyNodeRestoreState(node, restore);
+        return node;
     }
 
     /**
@@ -1851,7 +1880,10 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                 edge.setDescription(meta.description());
             }
             if (meta.metadata() != null && !meta.metadata().isEmpty()) {
-                edge.setMetadataJson(serializeMetadata(meta.metadata()));
+                edge.setMetadataJson(serializeMetadata(publicRestoreMetadata(meta.metadata(),
+                        KnowledgeGraphService.EDGE_RESTORE_STATE_KEY)));
+                applyEdgeRestoreState(edge, restoreState(meta.metadata(),
+                        KnowledgeGraphService.EDGE_RESTORE_STATE_KEY));
             }
         }
         return edge;
@@ -1873,7 +1905,10 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
                 .bidirectional(stored.bidirectional())
                 .build();
         if (stored.metadata() != null && !stored.metadata().isEmpty()) {
-            edge.setMetadataJson(serializeMetadata(stored.metadata()));
+            edge.setMetadataJson(serializeMetadata(publicRestoreMetadata(stored.metadata(),
+                    KnowledgeGraphService.EDGE_RESTORE_STATE_KEY)));
+            applyEdgeRestoreState(edge, restoreState(stored.metadata(),
+                    KnowledgeGraphService.EDGE_RESTORE_STATE_KEY));
         }
         return edge;
     }
@@ -1903,6 +1938,196 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     private String extractExternalId(String nodeId) {
         int underscoreIdx = nodeId.indexOf('_');
         return underscoreIdx >= 0 ? nodeId.substring(underscoreIdx + 1) : nodeId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> restoreState(Map<String, Object> metadata, String key) {
+        if (metadata == null || key == null) return Map.of();
+        Object value = metadata.get(key);
+        if (!(value instanceof Map<?, ?> map)) return Map.of();
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((field, item) -> result.put(String.valueOf(field), item));
+        return result;
+    }
+
+    private static Map<String, Object> publicRestoreMetadata(Map<String, Object> metadata, String key) {
+        if (metadata == null || metadata.isEmpty()) return Map.of();
+        Map<String, Object> result = new LinkedHashMap<>(metadata);
+        result.remove(key);
+        return result;
+    }
+
+    private static void applyNodeRestoreState(GraphNode node, Map<String, Object> state) {
+        if (node == null || state == null || state.isEmpty()) return;
+        node.setExternalId(stateString(state, "externalId", node.getExternalId()));
+        node.setTitle(stateString(state, "title", node.getTitle()));
+        node.setDescription(stateString(state, "description", node.getDescription()));
+        node.setContentPreview(stateString(state, "contentPreview", node.getContentPreview()));
+        node.setVectorId(stateString(state, "vectorId", node.getVectorId()));
+        node.setSourceType(stateString(state, "sourceType", node.getSourceType()));
+        node.setPathOrUrl(stateString(state, "pathOrUrl", node.getPathOrUrl()));
+        node.setChildCount(stateInteger(state.get("childCount"), node.getChildCount()));
+        node.setEdgeCount(stateInteger(state.get("edgeCount"), node.getEdgeCount()));
+        node.setConfidence(stateDouble(state.get("confidence"), node.getConfidence()));
+        node.setNamedGraphId(stateString(state, "namedGraphId", node.getNamedGraphId()));
+        node.setStale(stateBoolean(state.get("stale"), node.getStale()));
+        node.setUserPinned(stateBoolean(state.get("userPinned"), node.getUserPinned()));
+        node.setStaleAt(stateLocalDateTime(state.get("staleAt")));
+        node.setValidUntil(stateLocalDateTime(state.get("validUntil")));
+        node.setLastVerifiedAt(stateLocalDateTime(state.get("lastVerifiedAt")));
+        node.setObservedAt(stateLocalDateTime(state.get("observedAt")));
+        node.setOccurredAt(stateLocalDateTime(state.get("occurredAt")));
+        node.setCreatedAt(firstNonNull(stateLocalDateTime(state.get("createdAt")), node.getCreatedAt()));
+        node.setUpdatedAt(firstNonNull(stateLocalDateTime(state.get("updatedAt")), node.getUpdatedAt()));
+        node.setKgEmbeddingAlgorithm(stateEnum(KGEmbeddingAlgorithm.class,
+                state.get("kgEmbeddingAlgorithm"), node.getKgEmbeddingAlgorithm()));
+        node.setKgEmbeddingVersion(stateLong(state.get("kgEmbeddingVersion"), node.getKgEmbeddingVersion()));
+        node.setKgEmbeddingUpdatedAt(stateInstant(state.get("kgEmbeddingUpdatedAt")));
+
+        String parentId = stateString(state, "parentId", null);
+        if (parentId != null) {
+            node.setParentId(parentId);
+            node.setParent(GraphNode.builder().nodeId(parentId).build());
+        }
+        String sourceId = stateString(state, "sourceNodeId", null);
+        if (sourceId != null) {
+            node.setSourceNode(GraphNode.builder().nodeId(sourceId).build());
+        }
+        Object children = state.get("children");
+        if (children instanceof Collection<?> values) {
+            node.setChildren(values.stream()
+                    .filter(Objects::nonNull)
+                    .map(value -> GraphNode.builder().nodeId(String.valueOf(value)).build())
+                    .toList());
+        }
+    }
+
+    private static void applyEdgeRestoreState(GraphEdge edge, Map<String, Object> state) {
+        if (edge == null || state == null || state.isEmpty()) return;
+        edge.setEdgeId(stateString(state, "edgeId", edge.getEdgeId()));
+        edge.setEdgeType(stateEnum(EdgeType.class, state.get("edgeType"), edge.getEdgeType()));
+        edge.setRelationType(stateString(state, "relationType", edge.getRelationType()));
+        edge.setWeight(stateDouble(state.get("weight"), edge.getWeight()));
+        edge.setDescription(stateString(state, "description", edge.getDescription()));
+        edge.setLabel(stateString(state, "label", edge.getLabel()));
+        edge.setSharedEntitiesJson(stateString(state, "sharedEntitiesJson", edge.getSharedEntitiesJson()));
+        edge.setSimilarityScore(stateDouble(state.get("similarityScore"), edge.getSimilarityScore()));
+        edge.setBidirectional(stateBoolean(state.get("bidirectional"), edge.getBidirectional()));
+        edge.setConfidence(stateDouble(state.get("confidence"), edge.getConfidence()));
+        edge.setProvenance(stateString(state, "provenance", edge.getProvenance()));
+        edge.setProvenanceType(stateEnum(EdgeProvenance.class,
+                state.get("provenanceType"), edge.getProvenanceType()));
+        edge.setKgEmbeddingAlgorithm(stateEnum(KGEmbeddingAlgorithm.class,
+                state.get("kgEmbeddingAlgorithm"), edge.getKgEmbeddingAlgorithm()));
+        edge.setKgEmbeddingVersion(stateLong(state.get("kgEmbeddingVersion"), edge.getKgEmbeddingVersion()));
+        edge.setStale(stateBoolean(state.get("stale"), edge.getStale()));
+        edge.setUserPinned(stateBoolean(state.get("userPinned"), edge.getUserPinned()));
+        edge.setCreatedAt(firstNonNull(stateLocalDateTime(state.get("createdAt")), edge.getCreatedAt()));
+        edge.setComputedAt(stateLocalDateTime(state.get("computedAt")));
+        edge.setStaleAt(stateLocalDateTime(state.get("staleAt")));
+        edge.setValidUntil(stateLocalDateTime(state.get("validUntil")));
+        edge.setLastVerifiedAt(stateLocalDateTime(state.get("lastVerifiedAt")));
+        edge.setObservedAt(stateLocalDateTime(state.get("observedAt")));
+        edge.setOccurredAt(stateLocalDateTime(state.get("occurredAt")));
+    }
+
+    private static LocalDateTime matrixTime(long epochMillis) {
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(Math.max(0L, epochMillis)), ZoneOffset.UTC);
+    }
+
+    private static long stateEpochMillis(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        Instant instant = stateInstant(value);
+        if (instant != null) return instant.toEpochMilli();
+        LocalDateTime local = stateLocalDateTime(value);
+        return local == null ? 0L : local.toInstant(ZoneOffset.UTC).toEpochMilli();
+    }
+
+    private static LocalDateTime stateLocalDateTime(Object value) {
+        if (value == null) return null;
+        if (value instanceof LocalDateTime local) return local;
+        if (value instanceof Instant instant) return LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) return null;
+        try {
+            return LocalDateTime.parse(text);
+        } catch (RuntimeException ignored) {
+            try {
+                return LocalDateTime.ofInstant(Instant.parse(text), ZoneOffset.UTC);
+            } catch (RuntimeException invalid) {
+                return null;
+            }
+        }
+    }
+
+    private static Instant stateInstant(Object value) {
+        if (value == null) return null;
+        if (value instanceof Instant instant) return instant;
+        if (value instanceof Number number) return Instant.ofEpochMilli(number.longValue());
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) return null;
+        try {
+            return Instant.parse(text);
+        } catch (RuntimeException ignored) {
+            try {
+                return LocalDateTime.parse(text).toInstant(ZoneOffset.UTC);
+            } catch (RuntimeException invalid) {
+                return null;
+            }
+        }
+    }
+
+    private static String stateString(Map<String, Object> state, String key, String fallback) {
+        Object value = state == null ? null : state.get(key);
+        if (value == null) return fallback;
+        String text = String.valueOf(value);
+        return text.isBlank() ? fallback : text;
+    }
+
+    private static Integer stateInteger(Object value, Integer fallback) {
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return value == null ? fallback : Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static Long stateLong(Object value, Long fallback) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? fallback : Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static Double stateDouble(Object value, Double fallback) {
+        if (value instanceof Number number) return number.doubleValue();
+        try {
+            return value == null ? fallback : Double.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static Boolean stateBoolean(Object value, Boolean fallback) {
+        if (value instanceof Boolean flag) return flag;
+        return value == null ? fallback : Boolean.valueOf(String.valueOf(value));
+    }
+
+    private static <T extends Enum<T>> T stateEnum(
+            Class<T> type, Object value, T fallback) {
+        if (value == null) return fallback;
+        try {
+            return Enum.valueOf(type, String.valueOf(value).trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return fallback;
+        }
+    }
+
+    private static <T> T firstNonNull(T value, T fallback) {
+        return value == null ? fallback : value;
     }
 
     private String serializeMetadata(Map<String, Object> metadata) {
@@ -1935,7 +2160,7 @@ public class MatrixKnowledgeGraphService implements KnowledgeGraphService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // NODE EMBEDDINGS (store-agnostic portability — used by GraphEmbeddingSidecar)
+    // NODE EMBEDDINGS (store-agnostic live-vector access)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**

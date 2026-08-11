@@ -194,11 +194,12 @@ final class UnifiedGraphReader {
             throw new IOException("Unexpected graph file format: " + format);
         }
         long version = asLong(manifest.get("formatVersion"), 0);
-        if (version != UnifiedGraphFormat.FORMAT_VERSION) {
+        if (!UnifiedGraphFormat.supportsRead(version)) {
             throw new IOException("Unsupported unified-graph formatVersion " + version
-                    + " (reader supports " + UnifiedGraphFormat.FORMAT_VERSION + ")");
+                    + " (reader supports " + UnifiedGraphFormat.MIN_READABLE_VERSION + ".."
+                    + UnifiedGraphFormat.CURRENT_VERSION + ")");
         }
-        GraphLayout layout = validateManifestLayout(manifest, entries);
+        GraphLayout layout = validateManifestLayout(manifest, entries, (int) version);
 
         UnifiedGraph graph = new UnifiedGraph();
 
@@ -252,6 +253,8 @@ final class UnifiedGraphReader {
                     throw new IOException("Invalid or duplicate entity id in entities.jsonl: " + id);
                 }
                 double[] emb = entityEmbeddings == null ? null : entityEmbeddings.get(id);
+                Map<String, Object> entityAttributes = attributes(m.get("attributes"));
+                mergeExplicitTypeMemberships(entityAttributes, m.get("typeMemberships"), str(m.get("type")));
                 SimpleGraphEntity entity = new SimpleGraphEntity(
                         id,
                         str(m.get("type")),
@@ -261,7 +264,7 @@ final class UnifiedGraphReader {
                         tags(m.get("tags")),
                         emb,
                         timestamp(m.get("timestamp")),
-                        attributes(m.get("attributes")));
+                        entityAttributes);
                 graph.addEntity(entity);
                 Opinion op = opinion(m.get("opinion"));
                 if (op != null) graph.putEntityOpinion(id, op);
@@ -363,11 +366,16 @@ final class UnifiedGraphReader {
                     + layout.embeddingDim() + ", loaded=" + loadedEmbeddingDim);
         }
 
+        byte[] schemaBytes = entries.get(UnifiedGraphFormat.ENTRY_SCHEMA_INDEX);
+        if (schemaBytes != null) {
+            validateSchemaIndex(schemaBytes, graph, entries);
+        }
+
         return graph;
     }
 
     private static GraphLayout validateManifestLayout(
-            Map<String, Object> manifest, Map<String, byte[]> entries) throws IOException {
+            Map<String, Object> manifest, Map<String, byte[]> entries, int formatVersion) throws IOException {
         Set<String> expected = new LinkedHashSet<>();
         expected.add(UnifiedGraphFormat.ENTRY_MANIFEST);
 
@@ -377,6 +385,7 @@ final class UnifiedGraphReader {
         }
         Set<String> structural = new LinkedHashSet<>();
         Set<String> allowedSections = Set.of(
+                UnifiedGraphFormat.ENTRY_SCHEMA_INDEX,
                 UnifiedGraphFormat.ENTRY_ENTITIES,
                 UnifiedGraphFormat.ENTRY_RELATIONS,
                 UnifiedGraphFormat.ENTRY_WEIGHTS,
@@ -391,6 +400,9 @@ final class UnifiedGraphReader {
         if (!structural.contains(UnifiedGraphFormat.ENTRY_ENTITIES)
                 || !structural.contains(UnifiedGraphFormat.ENTRY_RELATIONS)) {
             throw new IOException("Unified-graph manifest must declare entities.jsonl and relations.jsonl");
+        }
+        if (formatVersion >= 2 && !structural.contains(UnifiedGraphFormat.ENTRY_SCHEMA_INDEX)) {
+            throw new IOException("Unified-graph v2 manifest must declare schemas/index.json");
         }
 
         Object rawArtifacts = manifest.get("artifacts");
@@ -462,6 +474,75 @@ final class UnifiedGraphReader {
         }
         int embeddingDim = requiredNonNegativeInt(manifest.get("embeddingDim"), "embeddingDim");
         return new GraphLayout(entityCount, relationCount, vectorCount, embeddingDim, vectors);
+    }
+
+    private static void validateSchemaIndex(
+            byte[] bytes, UnifiedGraph graph, Map<String, byte[]> entries) throws IOException {
+        Map<String, Object> schema = MiniJson.parseObject(new String(bytes, StandardCharsets.UTF_8));
+        if (!"kompile-unified-schema".equals(schema.get("format"))) {
+            throw new IOException("Invalid unified-graph schema index format");
+        }
+        if (requiredNonNegativeInt(schema.get("version"), "schemas/index.json.version") != 1) {
+            throw new IOException("Unsupported unified-graph schema index version");
+        }
+        if (requiredNonNegativeInt(schema.get("entityCount"), "schemas/index.json.entityCount")
+                != graph.entityCount()
+                || requiredNonNegativeInt(schema.get("relationCount"), "schemas/index.json.relationCount")
+                != graph.relationCount()) {
+            throw new IOException("Unified-graph schema index count mismatch");
+        }
+
+        Set<String> entityTypes = new LinkedHashSet<>();
+        Set<String> entityAttributeKeys = new LinkedHashSet<>();
+        collectSchemaFacts(entries.get(UnifiedGraphFormat.ENTRY_ENTITIES), entityTypes, entityAttributeKeys);
+        Set<String> relationTypes = new LinkedHashSet<>();
+        Set<String> relationAttributeKeys = new LinkedHashSet<>();
+        collectSchemaFacts(entries.get(UnifiedGraphFormat.ENTRY_RELATIONS), relationTypes, relationAttributeKeys);
+        Set<String> schemaArtifacts = graph.artifacts().keySet().stream()
+                .filter(name -> name.startsWith("schema/"))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+
+        validateSchemaSet(schema, "entityTypes", entityTypes);
+        validateSchemaSet(schema, "relationTypes", relationTypes);
+        validateSchemaSet(schema, "entityAttributeKeys", entityAttributeKeys);
+        validateSchemaSet(schema, "relationAttributeKeys", relationAttributeKeys);
+        validateSchemaSet(schema, "declaredSchemaArtifacts", schemaArtifacts);
+    }
+
+    private static void collectSchemaFacts(
+            byte[] rows, Set<String> types, Set<String> attributeKeys) throws IOException {
+        for (String line : lines(rows)) {
+            Map<String, Object> row = MiniJson.parseObject(line);
+            Object type = row.get("type");
+            if (type instanceof String string) {
+                types.add(string);
+            }
+            Object attributes = row.get("attributes");
+            if (attributes instanceof Map<?, ?> map) {
+                for (Object key : map.keySet()) {
+                    if (key != null) {
+                        attributeKeys.add(String.valueOf(key));
+                    }
+                }
+            }
+        }
+    }
+
+    private static void validateSchemaSet(
+            Map<String, Object> schema, String field, Set<String> actual) throws IOException {
+        Object value = schema.get(field);
+        if (!(value instanceof List<?> list)) {
+            throw new IOException("Unified-graph schema index field " + field + " must be an array");
+        }
+        Set<String> declared = new LinkedHashSet<>();
+        for (Object item : list) {
+            if (!(item instanceof String string) || !declared.add(string)) {
+                throw new IOException("Invalid or duplicate unified-graph schema index value in " + field);
+            }
+        }
+        if (!declared.equals(actual)) {
+            throw new IOException("Unified-graph schema index mismatch for " + field);
+        }
     }
 
     private static void validateVectorSpec(String entry, VectorLayer layer, VectorSpec spec)
@@ -571,14 +652,44 @@ final class UnifiedGraphReader {
 
     /** Build an attributes map, dropping JSON-null values (the model's map forbids null values). */
     private static Map<String, Object> attributes(Object v) {
-        if (!(v instanceof Map<?, ?> map)) return Map.of();
         Map<String, Object> out = new LinkedHashMap<>();
+        if (!(v instanceof Map<?, ?> map)) return out;
         for (Map.Entry<?, ?> e : map.entrySet()) {
             if (e.getKey() != null && e.getValue() != null) {
                 out.put(String.valueOf(e.getKey()), e.getValue());
             }
         }
         return out;
+    }
+
+    private static void mergeExplicitTypeMemberships(
+            Map<String, Object> attributes, Object rawMemberships, String primaryType) throws IOException {
+        if (rawMemberships == null) {
+            return;
+        }
+        if (!(rawMemberships instanceof List<?> memberships)) {
+            throw new IOException("Entity typeMemberships must be an array");
+        }
+        Set<String> additional = new LinkedHashSet<>();
+        Object existing = attributes.get("additionalTypes");
+        if (existing instanceof List<?> existingTypes) {
+            for (Object item : existingTypes) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    additional.add(String.valueOf(item));
+                }
+            }
+        }
+        for (Object item : memberships) {
+            if (!(item instanceof String membership) || membership.isBlank()) {
+                throw new IOException("Entity typeMemberships must contain non-empty strings");
+            }
+            if (!membership.equals(primaryType)) {
+                additional.add(membership);
+            }
+        }
+        if (!additional.isEmpty()) {
+            attributes.put("additionalTypes", List.copyOf(additional));
+        }
     }
 
     private static Instant timestamp(Object v) {

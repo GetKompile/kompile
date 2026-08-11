@@ -45,16 +45,19 @@ public class GraphReasonTool implements CliTool {
 
     private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     public GraphReasonTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.groundingClient = new GroundingBackendClient(baseUrl);
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
     GraphReasonTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.groundingClient = groundingClient;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     @Override
@@ -115,8 +118,7 @@ public class GraphReasonTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("graph_reason requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return localBackend.reason(params, context);
         }
 
         try {

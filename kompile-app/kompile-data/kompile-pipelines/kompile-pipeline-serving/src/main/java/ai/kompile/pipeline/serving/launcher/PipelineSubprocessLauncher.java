@@ -318,7 +318,11 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
 
     private List<String> buildCommand(UnifiedPipelineDefinition definition, Path argsFile) {
         String javaPath = ProcessHandle.current().info().command().orElse("java");
-        String classpath = System.getProperty("java.class.path");
+        String classpath = System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path", ""));
+        if (classpath.isBlank()) {
+            throw new IllegalStateException("Pipeline subprocess requires a JVM classpath");
+        }
 
         UnifiedPipelineDefinition.ServingConfig serving = definition.getServing() != null ?
                 definition.getServing() : UnifiedPipelineDefinition.ServingConfig.builder().build();

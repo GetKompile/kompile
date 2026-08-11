@@ -16,6 +16,8 @@
 
 package ai.kompile.core.crawl.graph;
 
+import ai.kompile.core.llm.StructuredChatLanguageModel;
+
 /**
  * Dependency-free bridge to the local LLM serving subprocess, letting the crawl pipeline route
  * extraction to it as a <b>quota-free local backend</b> without depending on {@code kompile-app-main}
@@ -82,6 +84,29 @@ public interface LocalServingBackend {
             throw new IllegalStateException("Requested serving model is no longer active: " + modelId);
         }
         return generate(prompt, maxNewTokens);
+    }
+
+    /** Whether this bridge preserves structured messages, tools, and parsed calls end to end. */
+    default boolean supportsStructuredChat() {
+        return false;
+    }
+
+    /**
+     * Run model-owned structured chat. The default deliberately fails instead of flattening the
+     * request into raw text; callers that select this capability must never silently fall back.
+     */
+    default StructuredChatLanguageModel.Response generateChat(
+            StructuredChatLanguageModel.Request request, int maxNewTokens) throws Exception {
+        throw new UnsupportedOperationException("Structured chat is not supported by this serving backend");
+    }
+
+    /** Structured generation guarded by exact model identity. */
+    default StructuredChatLanguageModel.Response generateChatForModel(
+            String modelId, StructuredChatLanguageModel.Request request, int maxNewTokens) throws Exception {
+        if (!matchesModel(modelId)) {
+            throw new IllegalStateException("Requested serving model is no longer active: " + modelId);
+        }
+        return generateChat(request, maxNewTokens);
     }
 
     /**

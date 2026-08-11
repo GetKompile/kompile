@@ -9,8 +9,61 @@ Kompile exposes its full tool set to any MCP-compatible agent (Claude Code, Code
 The agent launches kompile as a subprocess:
 
 ```bash
-kompile mcp-stdio --profile=full
+kompile mcp-stdio --profile=full --work-dir /path/to/project
 ```
+
+With no `--url`, the stdio process is also the crawl/index worker: `crawl_documents`,
+`crawl_source`, `crawl_discover`, `crawl_control`, `knowledge_search`, and `knowledge_status` use a
+project-local knowledge base under `data/crawls`. The same session exposes `memory` and
+`semantic_memory`. Add `--url` only to route those contracts to a distributed Kompile instance.
+
+#### Offline crawl pipelines
+
+Call `crawl_discover` with `section: "pipelines"` before composing a crawl. Its response is generated
+from the local executable registry and lists pipeline templates, loaders, chunkers, supported file
+types, model-processing options, and whether the document-model worker is present. The offline
+worker accepts every managed pipeline kind: `STANDARD_TEXT`, `CODE`, `TABLE_AWARE`,
+`KEYWORD_ONLY`, `OCR`, `VLM`, and `CUSTOM`.
+
+A `crawl_documents` request can select a pipeline per document, set a default, or route files by
+extension or content type:
+
+```json
+{
+  "documents": [
+    { "path": "docs/guide.md", "pipelineId": "text" },
+    { "path": "scans/report.pdf", "pipelineId": "vision" }
+  ],
+  "pipelines": [
+    {
+      "pipelineId": "text",
+      "pipelineType": "STANDARD_TEXT",
+      "loaderName": "markdown",
+      "chunkerName": "recursive-character"
+    },
+    {
+      "pipelineId": "vision",
+      "pipelineType": "VLM",
+      "options": {
+        "vlmModel": "my-document-model",
+        "outputFormat": "MARKDOWN",
+        "maxNewTokens": 2048,
+        "pdfRenderDpi": 150
+      }
+    }
+  ],
+  "knowledgeBase": { "name": "project-docs" }
+}
+```
+
+Text, code, delimited/HTML tables, and keyword-only indexing run directly in the crawl worker. OCR
+and VLM PDF extraction run in the isolated document-model subprocess already used by Kompile's
+serving infrastructure. A pipeline of any type can instead provide an executable
+`UnifiedPipelineDefinition` through `pipelineDefinition` or `pipelineDefinitionPath`; it is
+executed in the generic pipeline subprocess and its text or Markdown output is indexed normally.
+For a native CLI distribution, configure
+`kompile.subprocess.executable.vlm-test-path` or `KOMPILE_VLM_SUBPROCESS_PATH` when the model
+worker is installed as a separate executable.
 
 ### SSE mode
 
@@ -61,8 +114,10 @@ Kompile also auto-configures hooks in agent settings files (`.claude/settings.lo
 | Execution | `bash`, `process` |
 | Network | `webfetch`, `websearch`, `browser` (CDP-based) |
 | Workflow | `todowrite`, `todoread` |
-| Knowledge | `rag_search`, `graph_rag_search`, `semantic_memory`, `memory`, `transcript_search` |
+| Knowledge | `knowledge_search`, `knowledge_status`, `rag_search`, `graph_rag_search`, `semantic_memory`, `memory`, `transcript_search` |
+| Crawl | `crawl_discover`, `crawl_documents`, `crawl_source`, `crawl_control` |
 | Code | `code_search`, `code_graph`, `local_code_index`, `tool_call_catalog` |
+| Edit history | `diff_index` (search, filter, and sort old/new text and unified diffs) |
 | Delegation | `task` (single subagent), `multi_task` (parallel), `quorum_task` (consensus voting) |
 | Coordination | `edit_coordinator`, `file_activity` (file watcher for multi-agent) |
 | Config | `project_config`, `enforcer_config`, `role_manager`, `skill_manager`, `config_archive` |

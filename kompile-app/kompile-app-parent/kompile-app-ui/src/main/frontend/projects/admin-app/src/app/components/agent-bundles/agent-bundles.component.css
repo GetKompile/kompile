@@ -1,0 +1,23 @@
+.agent-bundles { display: grid; gap: 16px; padding: 16px; }
+.import-row, .run-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.import-row { margin-bottom: 16px; }
+.run-card textarea { width: 100%; box-sizing: border-box; resize: vertical; padding: 12px; font: inherit; }
+.run-controls { margin-top: 12px; }
+.run-controls mat-form-field { width: 190px; }
+.tool-list { display: grid; gap: 4px; margin-top: 12px; font-family: monospace; }
+.tool-list span { color: var(--mat-app-on-surface-variant); }
+.bundle-list, .run-list { display: grid; gap: 8px; }
+.bundle, .run { display: grid; text-align: left; gap: 4px; border: 1px solid var(--mat-app-outline-variant); background: transparent; border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+.bundle.selected, .run.selected { border-color: var(--mat-app-primary); background: var(--mat-app-surface-container-high); }
+.bundle-name { font-weight: 600; }
+.bundle-meta, .run small, .muted { color: var(--mat-app-on-surface-variant); }
+.activity-grid { display: grid; grid-template-columns: minmax(240px, .75fr) minmax(0, 1.5fr); gap: 16px; }
+.event-card { min-width: 0; }
+.events { display: grid; gap: 6px; max-height: 520px; overflow: auto; font-family: monospace; }
+.event { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 10px; padding: 7px; border-bottom: 1px solid var(--mat-app-outline-variant); }
+.event.tool { background: color-mix(in srgb, var(--mat-app-primary) 9%, transparent); }
+.event-type { font-weight: 600; color: var(--mat-app-primary); }
+.event-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-time { color: var(--mat-app-on-surface-variant); white-space: nowrap; }
+.error { color: var(--mat-app-error); margin: 8px 0; }
+@media (max-width: 900px) { .activity-grid { grid-template-columns: 1fr; } }

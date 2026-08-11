@@ -119,6 +119,42 @@ class ToolRegistryTest {
     }
 
     @Test
+    void testBuildDirectToolDefinitionsUsesProviderNeutralShape() {
+        registry.register(new ExitPlanModeTool());
+
+        AgentConfig agent = AgentConfig.builder("test")
+                .enabledTools(Set.of("*"))
+                .build();
+
+        ArrayNode defs = registry.buildDirectToolDefinitions(agent);
+        assertEquals(1, defs.size());
+        assertEquals("exit_plan_mode", defs.path(0).path("name").asText());
+        assertFalse(defs.path(0).path("description").asText().isEmpty());
+        assertTrue(defs.path(0).has("inputSchema"));
+        assertFalse(defs.path(0).has("function"));
+    }
+
+    @Test
+    void rejectsBlankToolIdsBeforeTheyReachProviderRequests() {
+        CliTool unnamed = new CliTool() {
+            @Override public String id() { return " "; }
+            @Override public String description() { return "invalid"; }
+            @Override public com.fasterxml.jackson.databind.JsonNode parameterSchema() {
+                return om.createObjectNode();
+            }
+            @Override public String permissionKey() { return "invalid"; }
+            @Override public ToolResult execute(
+                    com.fasterxml.jackson.databind.JsonNode params, ToolContext context) {
+                return null;
+            }
+        };
+
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> registry.register(unnamed));
+        assertTrue(error.getMessage().contains("must not be blank"));
+    }
+
+    @Test
     void testRegisterOverwritesExisting() {
         ExitPlanModeTool tool1 = new ExitPlanModeTool();
         ExitPlanModeTool tool2 = new ExitPlanModeTool();

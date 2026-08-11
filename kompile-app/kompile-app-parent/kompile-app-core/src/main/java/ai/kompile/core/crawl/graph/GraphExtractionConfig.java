@@ -54,6 +54,36 @@ public class GraphExtractionConfig {
     }
 
     /**
+     * Fact families requested from one extraction pass.
+     *
+     * <p>{@link #FULL_GRAPH} preserves the normal entity-and-relation crawl. {@link #ENTITIES_ONLY}
+     * is a deliberate first pass for identity discovery: the model proposes entity records while
+     * graph admission and identity resolution remain engine-owned, and no relation proposal is
+     * accepted from that pass.</p>
+     */
+    public enum ExtractionTarget {
+        FULL_GRAPH,
+        ENTITIES_ONLY
+    }
+
+    /**
+     * One deterministic mapping from a graph evidence rule id to an operational disposition.
+     *
+     * <p>String-valued disposition keeps this core configuration independent of graph-reasoning.
+     * The crawl adapter validates and converts it when graph-policy admission is enabled.</p>
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class OperationalAdmissionRule {
+        private String ruleId;
+        private String disposition;
+        private int priority;
+        private String statement;
+    }
+
+    /**
      * Compatibility accessor for callers that still ask whether graph extraction is enabled.
      * Graph extraction is mandatory for unified crawls.
      */
@@ -86,6 +116,10 @@ public class GraphExtractionConfig {
     /** Relationship types to focus extraction on (empty = extract all) */
     @Builder.Default
     private List<String> relationshipTypes = new ArrayList<>();
+
+    /** Which fact families this pass may propose. */
+    @Builder.Default
+    private ExtractionTarget extractionTarget = ExtractionTarget.FULL_GRAPH;
 
     /** LLM provider for extraction (e.g., "openai", "anthropic", "ollama", "default") */
     @Builder.Default
@@ -322,6 +356,39 @@ public class GraphExtractionConfig {
             }
         }
     }
+
+    /**
+     * Admission mode for candidate entities emitted by decomposed extraction.
+     * LLM_ONLY preserves the historical path; SHADOW_COMPARE observes the graph branch while keeping
+     * the staged model action authoritative; GRAPH_POLICY admits configured entity types only when a
+     * deterministic operational rule returns ALLOW. The value is intentionally a string here so the
+     * core extraction configuration does not depend on the graph-reasoning module.
+     */
+    @Builder.Default
+    private String admissionMode = "LLM_ONLY";
+
+    /** Accept a loose value while keeping older project configuration files loadable. */
+    @JsonSetter("admissionMode")
+    public void setAdmissionModeFromString(String value) {
+        this.admissionMode = value == null || value.isBlank()
+                ? "LLM_ONLY" : value.trim().toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * Entity types governed by GRAPH_POLICY. This scope must be explicit so supporting ontology,
+     * status, policy, and evidence nodes remain available to the graph without being mistaken for
+     * operational candidates. Use "*" only when every extracted entity is intentionally governed.
+     */
+    @Builder.Default
+    private List<String> operationalAdmissionEntityTypes = new ArrayList<>();
+
+    /**
+     * Deterministic rule mappings consumed by GRAPH_POLICY. Rule ids must match the machine-readable
+     * ids emitted by graph admission evidence; an in-scope candidate with no matching rule is REVIEW
+     * and is not inserted.
+     */
+    @Builder.Default
+    private List<OperationalAdmissionRule> operationalAdmissionRules = new ArrayList<>();
 
     /**
      * Optional upper bound on propositions taken from one chunk in the decomposed pipeline.

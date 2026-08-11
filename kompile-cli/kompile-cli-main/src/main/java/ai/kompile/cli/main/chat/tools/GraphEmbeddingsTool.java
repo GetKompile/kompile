@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -44,10 +45,12 @@ public class GraphEmbeddingsTool implements CliTool {
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     public GraphEmbeddingsTool(String baseUrl, ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -134,7 +137,7 @@ public class GraphEmbeddingsTool implements CliTool {
             return ToolResult.error("action is required");
         }
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("graph_embeddings requires a running kompile-app. Use --url to connect.");
+            return localBackend.embeddings(params, context);
         }
 
         try {

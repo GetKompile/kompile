@@ -1244,8 +1244,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     }
 
     /**
-     * Repair staged models by checking for missing vocab files and attempting to fix issues.
-     * Returns a map of model IDs to whether they were successfully repaired.
+     * Repair staged models by checking for missing vocabulary and tokenizer protocol metadata.
+     *
+     * <p>GGUF-derived SameDiff graphs staged before tokenizer metadata preservation was added may
+     * have a valid {@code tokenizer.json} but no {@code tokenizer_config.json}. For those models,
+     * repair deterministically backfills the source container's chat template and BOS/EOS/PAD
+     * tokens. It never invents protocol tokens and never overwrites metadata already present.</p>
+     *
+     * @return model IDs mapped to whether all applicable repairs succeeded
      */
     public Map<String, Boolean> repairStagedModels() {
         Map<String, Boolean> results = new LinkedHashMap<>();
@@ -1255,7 +1261,9 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             String modelId = entry.getKey();
             ModelEntry model = entry.getValue();
 
-            if (model.getPath() == null) continue;
+            if (model.getPath() == null) {
+                continue;
+            }
 
             Path modelPath = modelsDir.resolve(model.getPath());
             if (!Files.exists(modelPath)) {
@@ -1263,32 +1271,55 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 continue;
             }
 
-            // Check for vocab file
+            boolean vocabOk = true;
             Path vocabPath = modelsDir.resolve(model.getVocabFilePath());
             if (!Files.exists(vocabPath)) {
-                // Try to find any vocab file in the model directory
                 try {
-                    Path found = findFile(modelPath, "vocab.txt", "tokenizer.json", "sentencepiece.model");
+                    Path found = findFile(
+                            modelPath, "vocab.txt", "tokenizer.json", "sentencepiece.model");
                     if (found != null) {
                         model.setVocabFile(found.getFileName().toString());
                         registryService.addModel(model);
-                        results.put(modelId, true);
                         log.info("Repaired vocab path for model {}: {}", modelId, found.getFileName());
                     } else {
-                        results.put(modelId, false);
+                        vocabOk = false;
                         log.warn("No vocab file found for model {}", modelId);
                     }
                 } catch (IOException e) {
-                    results.put(modelId, false);
-                    log.warn("Error repairing model '{}'", modelId, e);
+                    vocabOk = false;
+                    log.warn("Error repairing vocabulary for model '{}'", modelId, e);
                 }
-            } else {
-                // Model is fine
-                results.put(modelId, true);
             }
+
+            boolean tokenizerMetadataOk = true;
+            if (model.getType() == ModelType.LLM_GGML) {
+                tokenizerMetadataOk =
+                        ensureTokenizerMetadata(modelId, modelPath, null);
+            }
+            results.put(modelId, vocabOk && tokenizerMetadataOk);
         }
 
         return results;
+    }
+
+    /**
+     * Repair tokenizer protocol metadata for one registered GGUF-derived model.
+     *
+     * <p>This is the targeted migration counterpart to {@link #repairStagedModels()} and is useful
+     * when a caller must validate one model before loading it.</p>
+     */
+    public boolean repairTokenizerMetadata(String modelId) {
+        Optional<ModelEntry> registered = registryService.getModel(modelId);
+        if (registered.isEmpty() || registered.get().getPath() == null) {
+            return false;
+        }
+        ModelEntry model = registered.get();
+        if (model.getType() != ModelType.LLM_GGML) {
+            return true;
+        }
+        Path modelPath = modelsDir.resolve(model.getPath());
+        return Files.isDirectory(modelPath)
+                && ensureTokenizerMetadata(modelId, modelPath, null);
     }
 
     /**
@@ -1707,95 +1738,113 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
     }
 
     /**
-     * Ensure the staged model carries the chat template its tokenizer needs.
+     * Ensure the staged model carries the tokenizer protocol metadata declared by its source GGUF.
      *
-     * <p>{@code tokenizer.json} holds vocabulary and merges only — the chat template lives in
-     * {@code tokenizer_config.json}, which GGUF repositories do not publish. A model staged without
-     * it loads and encodes perfectly well and then behaves as a base completion model: the prompt is
-     * fed verbatim with no turn markers and no generation prompt, so an instruction that ends in a
-     * directive is continued as a document rather than answered, and the likeliest continuation of
-     * such a document is its end. The symptom is a model that replies with end-of-sequence and
-     * nothing else.</p>
-     *
-     * <p>The template is read from the GGUF that was staged alongside the converted graph, which
-     * declares {@code tokenizer.chat_template} in its own metadata — the model's real template, not
-     * a generic ChatML stand-in that merely resembles it. Nothing is downloaded, and an existing
-     * template is never overwritten.</p>
+     * <p>{@code tokenizer.json} contains vocabulary and merges, while the chat template and
+     * BOS/EOS/PAD roles live in {@code tokenizer_config.json}. The migration reads those roles from
+     * the source container. It never guesses token strings and never overwrites existing fields.</p>
      */
-    private void ensureChatTemplate(DownloadRequest request, Path pendingDir, Path originalModelPath) {
-        Path configPath = pendingDir.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE);
-        try {
-            if (hasChatTemplate(configPath)
-                    || Files.isRegularFile(pendingDir.resolve(TextModelAssetMap.CHAT_TEMPLATE_FILE))) {
-                log.debug("Chat template already staged for model {}", request.getModelId());
-                return;
-            }
+    private void ensureChatTemplate(
+            DownloadRequest request, Path pendingDir, Path originalModelPath) {
+        ensureTokenizerMetadata(request.getModelId(), pendingDir, originalModelPath);
+    }
 
-            Path gguf = findGgufBeside(pendingDir, originalModelPath);
+    private boolean ensureTokenizerMetadata(
+            String modelId, Path modelDirectory, Path originalModelPath) {
+        Path configPath = modelDirectory.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE);
+        try {
+            Path gguf = findGgufBeside(modelDirectory, originalModelPath);
             if (gguf == null) {
-                log.debug("No GGUF beside {} to read a chat template from", pendingDir);
-                return;
+                log.warn(
+                        "No source GGUF is available to repair tokenizer metadata for model {}",
+                        modelId);
+                return false;
             }
 
             String template;
             List<String> tokens;
             int bosId;
             int eosId;
+            int padId;
             try (GGUFReader reader = new GGUFReader(gguf.toFile())) {
                 GGUFHeader header = reader.getHeader();
                 template = header.getChatTemplate();
                 tokens = header.getTokens();
                 bosId = header.getBosTokenId();
                 eosId = header.getEosTokenId();
-            }
-            if (template == null || template.isBlank()) {
-                log.warn(
-                        "GGUF {} declares no chat template; model {} will be prompted as a base "
-                                + "completion model",
-                        gguf.getFileName(), request.getModelId());
-                return;
+                padId = header.getPadTokenId();
             }
 
             ObjectNode config = Files.isRegularFile(configPath)
-                    ? (ObjectNode) objectMapper.readTree(configPath.toFile())
+                    ? requireObjectConfig(configPath)
                     : objectMapper.createObjectNode();
-            config.put("chat_template", template);
-            // The template itself interpolates bos_token/eos_token, so they travel with it.
-            putTokenIfResolvable(config, "bos_token", tokens, bosId);
-            putTokenIfResolvable(config, "eos_token", tokens, eosId);
+            boolean changed = applyTokenizerMetadata(
+                    config, template, tokens, bosId, eosId, padId);
+            if (!changed) {
+                log.debug("Tokenizer metadata already complete for model {}", modelId);
+                return true;
+            }
 
-            Path partial = pendingDir.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE + ".part");
+            Path partial =
+                    modelDirectory.resolve(TextModelAssetMap.TOKENIZER_CONFIG_FILE + ".part");
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(partial.toFile(), config);
             replaceAtomically(partial, configPath);
             log.info(
-                    "Wrote {} for model {} with the chat template declared by {} ({} chars)",
-                    TextModelAssetMap.TOKENIZER_CONFIG_FILE, request.getModelId(),
-                    gguf.getFileName(), template.length());
+                    "Wrote {} for model {} from source container {} "
+                            + "(chatTemplate={}, bos={}, eos={}, pad={})",
+                    TextModelAssetMap.TOKENIZER_CONFIG_FILE,
+                    modelId,
+                    gguf.getFileName(),
+                    config.hasNonNull("chat_template"),
+                    config.hasNonNull("bos_token"),
+                    config.hasNonNull("eos_token"),
+                    config.hasNonNull("pad_token"));
+            return true;
         } catch (Exception e) {
             log.warn(
-                    "Could not stage a chat template for model '{}': {}",
-                    request.getModelId(), e.getMessage());
-        }
-    }
-
-    private boolean hasChatTemplate(Path configPath) {
-        if (!Files.isRegularFile(configPath)) {
-            return false;
-        }
-        try {
-            var root = objectMapper.readTree(configPath.toFile());
-            var template = root == null ? null : root.get("chat_template");
-            return template != null && !template.asText("").isBlank();
-        } catch (IOException e) {
+                    "Could not preserve tokenizer metadata for model '{}': {}",
+                    modelId, e.getMessage());
             return false;
         }
     }
 
-    private void putTokenIfResolvable(ObjectNode config, String field, List<String> tokens, int id) {
+    private ObjectNode requireObjectConfig(Path configPath) throws IOException {
+        var root = objectMapper.readTree(configPath.toFile());
+        if (!(root instanceof ObjectNode object)) {
+            throw new IOException(
+                    TextModelAssetMap.TOKENIZER_CONFIG_FILE + " must contain a JSON object");
+        }
+        return object;
+    }
+
+    static boolean applyTokenizerMetadata(
+            ObjectNode config,
+            String chatTemplate,
+            List<String> tokens,
+            int bosId,
+            int eosId,
+            int padId) {
+        boolean changed = false;
+        if ((!config.hasNonNull("chat_template")
+                || config.path("chat_template").asText("").isBlank())
+                && chatTemplate != null
+                && !chatTemplate.isBlank()) {
+            config.put("chat_template", chatTemplate);
+            changed = true;
+        }
+        changed |= putTokenIfResolvable(config, "bos_token", tokens, bosId);
+        changed |= putTokenIfResolvable(config, "eos_token", tokens, eosId);
+        changed |= putTokenIfResolvable(config, "pad_token", tokens, padId);
+        return changed;
+    }
+
+    private static boolean putTokenIfResolvable(
+            ObjectNode config, String field, List<String> tokens, int id) {
         if (config.hasNonNull(field) || tokens == null || id < 0 || id >= tokens.size()) {
-            return;
+            return false;
         }
         config.put(field, tokens.get(id));
+        return true;
     }
 
     private Path findGgufBeside(Path pendingDir, Path originalModelPath) throws IOException {

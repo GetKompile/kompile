@@ -81,7 +81,9 @@ public class SemanticMemoryTool implements CliTool {
 
         ObjectNode topK = props.putObject("top_k");
         topK.put("type", "integer");
-        topK.put("description", "Number of results to return (default 5)");
+        topK.put("minimum", 1);
+        topK.put("maximum", 100);
+        topK.put("description", "Number of ranked results to return (default 5, max 100)");
 
         ObjectNode threshold = props.putObject("threshold");
         threshold.put("type", "number");
@@ -114,8 +116,8 @@ public class SemanticMemoryTool implements CliTool {
                 if (query.isEmpty()) {
                     return ToolResult.error("query is required for search action");
                 }
-                int topK = params.path("top_k").asInt(5);
-                double threshold = params.path("threshold").asDouble(0.15);
+                int topK = Math.max(1, Math.min(params.path("top_k").asInt(5), 100));
+                double threshold = Math.max(0.0, Math.min(params.path("threshold").asDouble(0.15), 1.0));
 
                 List<SemanticMemoryEngine.RetrievedMemory> results =
                         engine.query(query, topK, threshold);
@@ -131,6 +133,10 @@ public class SemanticMemoryTool implements CliTool {
                     SemanticMemoryEngine.RetrievedMemory rm = results.get(i);
                     sb.append(String.format("%d. [similarity=%.3f] %s (%s)\n",
                             i + 1, rm.similarity, rm.entry.name, rm.entry.type));
+                    sb.append("   id: ").append(rm.entry.id).append("\n");
+                    if (rm.entry.sourcePath != null) {
+                        sb.append("   source: ").append(rm.entry.sourcePath).append("\n");
+                    }
                     sb.append("   ")
                       .append(rm.entry.content.replace("\n", "\n   "))
                       .append("\n\n");

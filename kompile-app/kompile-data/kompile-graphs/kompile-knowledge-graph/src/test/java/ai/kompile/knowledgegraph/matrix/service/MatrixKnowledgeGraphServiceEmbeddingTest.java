@@ -44,9 +44,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for the store-agnostic node-embedding seam on the matrix/vector-store
- * {@link MatrixKnowledgeGraphService} — the path that lets {@code GraphEmbeddingSidecar}
- * make the vector store's embeddings travel on clone.
+ * Unit tests for the store-agnostic node-embedding seam on the matrix/vector store.
  */
 @ExtendWith(MockitoExtension.class)
 class MatrixKnowledgeGraphServiceEmbeddingTest {

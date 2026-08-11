@@ -22,6 +22,7 @@ import ai.kompile.cli.main.chat.harness.JudgeBackend;
 import ai.kompile.cli.main.chat.harness.RemoteJudgeBackend;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
@@ -44,6 +45,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * Requires {@code claude} on PATH (Claude Code CLI).
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@EnabledIfEnvironmentVariable(
+        named = "KOMPILE_LIVE_AGENT_TESTS", matches = "(?i:true)")
 class EnforcerRealSessionTest {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();

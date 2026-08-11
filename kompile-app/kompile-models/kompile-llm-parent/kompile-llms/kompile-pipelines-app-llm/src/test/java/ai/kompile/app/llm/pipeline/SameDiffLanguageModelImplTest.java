@@ -6,7 +6,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.eclipse.deeplearning4j.llm.generation.ChatGenerationResult;
+import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -27,6 +28,9 @@ class SameDiffLanguageModelImplTest {
 
     @Mock
     private SameDiffLanguageModelImpl.InferenceBackend mockBackend;
+
+    @Mock
+    private SameDiffLanguageModelImpl.StructuredChatInferenceBackend mockStructuredBackend;
 
     private SameDiffLanguageModelImpl impl;
 
@@ -79,50 +83,74 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
-    void structuredChatDelegatesWithoutFlatteningTheRequest() throws Exception {
-        ChatTemplate.Request[] captured = new ChatTemplate.Request[1];
-        int[] capturedBudget = new int[1];
-        SameDiffLanguageModelImpl.StructuredChatInferenceBackend backend =
-                new SameDiffLanguageModelImpl.StructuredChatInferenceBackend() {
-                    @Override
-                    public String generate(String prompt) {
-                        throw new AssertionError("structured chat was flattened to text");
-                    }
+    void toolCapableGenerationUsesTheActualTextGenerationPath() throws Exception {
+        injectLoadedModel("test-model", mockBackend);
+        String prompt = "Use the exact tool envelope for this request.";
+        String modelOutput = "{\"tool\":\"search_graph\",\"args\":{}}";
+        when(mockBackend.generate(prompt)).thenReturn(modelOutput);
 
-                    @Override
-                    public ChatGenerationResult generateChat(
-                            ChatTemplate.Request request) {
-                        captured[0] = request;
-                        return null;
-                    }
+        ChatResponse response = impl.generateResponseWithPotentialToolCalls(prompt, List.of());
 
-                    @Override
-                    public ChatGenerationResult generateChat(
-                            ChatTemplate.Request request,
-                            int maxNewTokens) {
-                        captured[0] = request;
-                        capturedBudget[0] = maxNewTokens;
-                        return null;
-                    }
+        assertNotNull(response);
+        assertEquals(modelOutput, response.getResult().getOutput().getText());
+        verify(mockBackend).generate(prompt);
+    }
 
-                    @Override
-                    public void close() {
-                    }
-                };
-        injectLoadedModel("test-model", backend);
+    @Test
+    void structuredChatDelegatesRequestAndBudgetToNativeBackend() throws Exception {
+        injectLoadedModel("test-model", mockStructuredBackend);
         ChatTemplate.Request request = ChatTemplate.Request.builder()
                 .messages(List.of(
-                        ChatTemplate.Message.system("Use tools."),
-                        ChatTemplate.Message.user("Find Revenue.")))
+                        ChatTemplate.Message.system("You are a graph extraction tool."),
+                        ChatTemplate.Message.user("Find the approval role.")))
                 .tools(List.of(ChatTemplate.Tool.function(
-                        "search_graph",
-                        "Search the graph",
+                        "search_graph", "Search the graph.",
                         Map.of("type", "object"))))
                 .build();
 
         assertNull(impl.generateChat(request, 192));
-        assertSame(request, captured[0]);
-        assertEquals(192, capturedBudget[0]);
+        verify(mockStructuredBackend).generateChat(request, 192);
+    }
+
+    @Test
+    void portableStructuredCapabilityPreservesNativeFormatsAndParsedCalls() throws Exception {
+        injectLoadedModel("test-model", mockStructuredBackend);
+        when(mockStructuredBackend.generateChat(any(ChatTemplate.Request.class), eq(192)))
+                .thenReturn(new org.eclipse.deeplearning4j.llm.generation.ChatGenerationResult(
+                        "<native>",
+                        "",
+                        List.of(ChatTemplate.ToolCall.function(
+                                "call-1", "submit_graph_delta",
+                                Map.of("entities", List.of(), "relations", List.of()))),
+                        List.of()));
+
+        ai.kompile.core.llm.StructuredChatLanguageModel.Request request =
+                new ai.kompile.core.llm.StructuredChatLanguageModel.Request(
+                        List.of(
+                                new ai.kompile.core.llm.StructuredChatLanguageModel.Message(
+                                        "system", "extract"),
+                                new ai.kompile.core.llm.StructuredChatLanguageModel.Message(
+                                        "user", "source")),
+                        List.of(new ai.kompile.core.llm.StructuredChatLanguageModel.Tool(
+                                "submit_graph_delta", "submit", Map.of("type", "object"))),
+                        true,
+                        ai.kompile.core.llm.StructuredChatLanguageModel.ToolDefinitionFormat.FLAT,
+                        ai.kompile.core.llm.StructuredChatLanguageModel.ToolCallFormat.NATIVE);
+
+        ai.kompile.core.llm.StructuredChatLanguageModel.Response response =
+                impl.generateChat(request, 192);
+
+        assertEquals("<native>", response.rawText());
+        assertEquals("submit_graph_delta", response.toolCalls().get(0).name());
+        var captor = org.mockito.ArgumentCaptor.forClass(ChatTemplate.Request.class);
+        verify(mockStructuredBackend).generateChat(captor.capture(), eq(192));
+        assertEquals(ChatTemplate.ToolDefinitionFormat.FLAT,
+                captor.getValue().getToolDefinitionFormat());
+        assertEquals(ChatTemplate.ToolCallFormat.NATIVE,
+                captor.getValue().getToolCallFormat());
+        assertEquals(List.of("system", "user"),
+                captor.getValue().getMessages().stream()
+                        .map(ChatTemplate.Message::getRole).toList());
     }
 
     @Test
@@ -211,19 +239,71 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
-    void infersChatMlTemplateAndEndTokenFromTokenizerMarkers() {
+    void resolvesAdditionalStopTokenIdsWithoutDuplicates() {
+        assertEquals(
+                Set.of(7, 8),
+                SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
+                        Map.of("additionalStopTokenIds", List.of(7, 8, 7))));
+        assertEquals(
+                Set.of(),
+                SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(Map.of()));
+    }
+
+    @Test
+    void mapsImportedGgufProtocolMetadataWithoutGuessingTokens() {
+        org.nd4j.ggml.format.GGMLMetadata.TokenizerInfo tokenizerInfo =
+                org.nd4j.ggml.format.GGMLMetadata.TokenizerInfo.builder()
+                        .bosTokenId(1)
+                        .eosTokenId(7)
+                        .padTokenId(0)
+                        .chatTemplate("{{ messages }}")
+                        .build();
+
+        GenerationPipeline.ModelMetadata metadata =
+                SameDiffLanguageModelImpl.generationMetadata(tokenizerInfo);
+
+        assertEquals(1, metadata.getBosTokenId());
+        assertEquals(7, metadata.getEosTokenId());
+        assertEquals(0, metadata.getPadTokenId());
+        assertEquals("{{ messages }}", metadata.getChatTemplate());
+        assertEquals(Set.of(7), metadata.getStopTokenIds());
+        assertEquals(Set.of(), metadata.getSpecialTokenIds());
+    }
+
+    @Test
+    void rejectsMalformedAdditionalStopTokenIds() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
+                        Map.of("additionalStopTokenIds", "7,8")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
+                        Map.of("additionalStopTokenIds", List.of(7, "8"))));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
+                        Map.of("additionalStopTokenIds", List.of(-1))));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
+                        Map.of("additionalStopTokenIds", List.of(7.5d))));
+    }
+
+    @Test
+    void doesNotInventChatTemplateOrEndTokenFromTokenizerMarkers() {
         Tokenizer tokenizer = mock(Tokenizer.class);
         when(tokenizer.getChatTemplate()).thenReturn(null);
-        when(tokenizer.getTokenId("<|im_start|>")).thenReturn(6);
-        when(tokenizer.getTokenId("<|im_end|>")).thenReturn(7);
+        when(tokenizer.getEosTokenId()).thenReturn(-1);
 
         String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, null);
 
-        assertSame(SameDiffLanguageModelImpl.CHATML_TEMPLATE, template);
+        assertNull(template);
         assertEquals(
-                7,
+                -1,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
-                        tokenizer, template, Map.of()));
+                        tokenizer, Map.of()));
+        verify(tokenizer, never()).getTokenId(anyString());
     }
 
     @Test
@@ -238,7 +318,7 @@ class SameDiffLanguageModelImplTest {
         assertEquals(
                 42,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
-                        tokenizer, configuredTemplate, Map.of("eosTokenId", 42)));
+                        tokenizer, Map.of("eosTokenId", 42)));
         verifyNoInteractions(tokenizer);
     }
 
@@ -251,7 +331,7 @@ class SameDiffLanguageModelImplTest {
         assertEquals(
                 2,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
-                        tokenizer, configuredTemplate, Map.of()));
+                        tokenizer, Map.of()));
         verify(tokenizer, never()).getTokenId("<|im_end|>");
     }
 
@@ -259,8 +339,6 @@ class SameDiffLanguageModelImplTest {
     void leavesPlainTokenizerUnwrappedAndUsesItsNativeEndToken() {
         Tokenizer tokenizer = mock(Tokenizer.class);
         when(tokenizer.getChatTemplate()).thenReturn(null);
-        when(tokenizer.getTokenId("<|im_start|>")).thenReturn(null);
-        when(tokenizer.getTokenId("<|im_end|>")).thenReturn(null);
         when(tokenizer.getEosTokenId()).thenReturn(2);
 
         String template = SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, null);
@@ -269,7 +347,7 @@ class SameDiffLanguageModelImplTest {
         assertEquals(
                 2,
                 SameDiffLanguageModelImpl.resolveEosTokenId(
-                        tokenizer, template, Map.of()));
+                        tokenizer, Map.of()));
     }
 
     @Test
@@ -292,17 +370,16 @@ class SameDiffLanguageModelImplTest {
     }
 
     @Test
-    void fallsBackToChatMlWhenTheSourceGgufDeclaresNoTemplate() throws Exception {
+    void sourceGgufWithoutTemplateDoesNotTriggerAProtocolFallback() throws Exception {
         Files.write(tempDir.resolve("source-model.gguf"), GgufFixture.headerWithChatTemplate(null));
         Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
 
         Tokenizer tokenizer = mock(Tokenizer.class);
         when(tokenizer.getChatTemplate()).thenReturn(null);
-        when(tokenizer.getTokenId("<|im_start|>")).thenReturn(6);
-        when(tokenizer.getTokenId("<|im_end|>")).thenReturn(7);
 
-        assertSame(SameDiffLanguageModelImpl.CHATML_TEMPLATE,
-                SameDiffLanguageModelImpl.resolveChatTemplate(tokenizer, null, stagedModel));
+        assertNull(SameDiffLanguageModelImpl.resolveChatTemplate(
+                tokenizer, null, stagedModel));
+        verify(tokenizer, never()).getTokenId(anyString());
     }
 
     @Test
@@ -311,36 +388,6 @@ class SameDiffLanguageModelImplTest {
         Path stagedModel = Files.createFile(tempDir.resolve("model.sdnb"));
 
         assertNull(SameDiffLanguageModelImpl.chatTemplateFromGguf(stagedModel));
-    }
-
-    @Test
-    void resolvesAndStripsOnlyTheConfiguredTrailingEndToken() {
-        Tokenizer tokenizer = mock(Tokenizer.class);
-        when(tokenizer.decode(any(int[].class), eq(false))).thenReturn("<|im_end|>");
-
-        String eosTokenText = SameDiffLanguageModelImpl.resolveEosTokenText(tokenizer, 7);
-
-        assertEquals("<|im_end|>", eosTokenText);
-        assertEquals(
-                "{\"entities\":[]}",
-                SameDiffLanguageModelImpl.stripTrailingEosToken(
-                        "{\"entities\":[]}<|im_end|>", eosTokenText));
-        assertEquals(
-                "prefix<|im_end|>suffix",
-                SameDiffLanguageModelImpl.stripTrailingEosToken(
-                        "prefix<|im_end|>suffix", eosTokenText));
-    }
-
-    @Test
-    void strippingTrailingEndTokenPreservesTrailingWhitespaceAndNulls() {
-        assertEquals(
-                "OK.\n",
-                SameDiffLanguageModelImpl.stripTrailingEosToken(
-                        "OK.<|im_end|>\n", "<|im_end|>"));
-        assertNull(SameDiffLanguageModelImpl.stripTrailingEosToken(null, "<|im_end|>"));
-        assertEquals(
-                "unchanged",
-                SameDiffLanguageModelImpl.stripTrailingEosToken("unchanged", null));
     }
 
     /**

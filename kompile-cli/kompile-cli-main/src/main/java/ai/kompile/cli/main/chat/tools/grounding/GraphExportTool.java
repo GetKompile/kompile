@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * MCP tool: {@code graph_export}
@@ -38,16 +39,19 @@ public class GraphExportTool implements CliTool {
 
     private final GroundingBackendClient client;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     public GraphExportTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = new GroundingBackendClient(baseUrl);
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
     GraphExportTool(GroundingBackendClient client, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = client;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     @Override
@@ -55,17 +59,15 @@ public class GraphExportTool implements CliTool {
 
     @Override
     public String description() {
-        return "Saves the whole graph to one .kgraph file — structure, confidence, and learned state — "
-                + "for backup or moving between instances. The file can later be reloaded with graph_import "
-                + "so graph_reasoning_query can reason over it immediately. "
-                + "Optionally scope the export to a specific fact sheet; omit factSheetId for the global graph.";
+        return "Exports the whole graph for backup or debugging: .kgraph preserves state, ASCII includes "
+                + "properties/connections/schema, and PNG renders the same diagnostics. Use vectors=values for "
+                + "full vector values or bundle=false for one PNG. Optionally scope to a fact sheet.";
     }
 
     @Override
     public String compactHint() {
-        return "Save the whole graph to a .kgraph file (structure, confidence, learned state). "
-                + "path = local file path to write. factSheetId optional — omit for the global graph. "
-                + "Use graph_import to reload it on any instance.";
+        return "Save graph diagnostics or a .kgraph archive. path = local file path; format = kgraph, ascii, "
+                + "or png; vectors = summary|values; bundle=false returns one PNG; factSheetId is optional.";
     }
 
     @Override
@@ -79,6 +81,19 @@ public class GraphExportTool implements CliTool {
         props.putObject("factSheetId")
                 .put("type", "integer")
                 .put("description", "Fact sheet to export. Omit for the global/default graph.");
+        ObjectNode formatProperty = props.putObject("format");
+        formatProperty.put("type", "string");
+        formatProperty.set("enum", objectMapper.createArrayNode().add("kgraph").add("ascii").add("png"));
+        formatProperty.put("description", "Output format; kgraph preserves state, ascii is text, png is a PNG bundle.");
+        ObjectNode vectorsProperty = props.putObject("vectors");
+        vectorsProperty.put("type", "string");
+        vectorsProperty.set("enum", objectMapper.createArrayNode().add("summary").add("values"));
+        vectorsProperty.put("default", "summary");
+        vectorsProperty.put("description", "For ASCII/PNG diagnostics, emit vector dimensions/hashes or full values.");
+        ObjectNode bundleProperty = props.putObject("bundle");
+        bundleProperty.put("type", "boolean");
+        bundleProperty.put("default", true);
+        bundleProperty.put("description", "For PNG diagnostics, write a complete ZIP page bundle; false returns one PNG.");
         schema.putArray("required").add("path");
         return schema;
     }
@@ -98,16 +113,28 @@ public class GraphExportTool implements CliTool {
             return ToolResult.error("path is required");
         }
         if (!client.isAvailable()) {
-            return ToolResult.error("graph_export requires kompile-graph-service or a compatible kompile-app.");
+            return localBackend.exportGraph(params, context);
         }
 
         JsonNode fsNode = params.path("factSheetId");
         Integer factSheetId = (fsNode.isMissingNode() || fsNode.isNull()) ? null : fsNode.asInt();
+        String format = params.path("format").asText("kgraph").toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("kgraph", "ascii", "png").contains(format)) {
+            return ToolResult.error("format must be kgraph, ascii or png");
+        }
+        String vectors = params.path("vectors").asText("summary").toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("summary", "values").contains(vectors)) {
+            return ToolResult.error("vectors must be summary or values");
+        }
+        boolean bundle = params.path("bundle").isMissingNode() || params.path("bundle").asBoolean(true);
 
         try {
-            String apiPath = "/api/graph/unified/export";
+            StringBuilder apiPathBuilder = new StringBuilder("/api/graph/unified/export?format=").append(format);
+            if (!"summary".equals(vectors)) apiPathBuilder.append("&vectors=values");
+            if ("png".equals(format) && !bundle) apiPathBuilder.append("&bundle=false");
+            String apiPath = apiPathBuilder.toString();
             if (factSheetId != null) {
-                apiPath += "?factSheetId=" + factSheetId;
+                apiPath += "&factSheetId=" + factSheetId;
             }
 
             byte[] bytes = client.getBytes(apiPath);

@@ -15,10 +15,12 @@
  */
 package ai.kompile.app.services.subprocess;
 
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.lang.reflect.Modifier;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -81,6 +83,35 @@ class ServingSubprocessBackendTest {
     }
 
     @Test
+    void structuredChatPreservesParsedCallsAcrossSubprocessBridge() throws Exception {
+        ServingSubprocessLauncher launcher = mock(ServingSubprocessLauncher.class);
+        StructuredChatLanguageModel.Request request = new StructuredChatLanguageModel.Request(
+                List.of(new StructuredChatLanguageModel.Message("user", "source")),
+                List.of(new StructuredChatLanguageModel.Tool(
+                        "submit_graph_delta", "submit", Map.of("type", "object"))));
+        when(launcher.generateChatForModel(
+                "lfm2.5-1.2b-instruct", request, 256))
+                .thenReturn("{\"finishReason\":\"completed\",\"rawText\":\"<native>\","
+                        + "\"content\":\"\",\"toolCalls\":[{\"id\":\"call-1\","
+                        + "\"name\":\"submit_graph_delta\",\"arguments\":{\"entities\":[],"
+                        + "\"relations\":[]}}],\"parseErrors\":[]}");
+
+        ServingSubprocessBackend backend = new ServingSubprocessBackend();
+        ReflectionTestUtils.setField(backend, "launcher", launcher);
+
+        StructuredChatLanguageModel.Response response = backend.generateChatForModel(
+                "lfm2.5-1.2b-instruct", request, 256);
+
+        assertTrue(backend.supportsStructuredChat());
+        assertEquals("<native>", response.rawText());
+        assertEquals("submit_graph_delta", response.toolCalls().get(0).name());
+        verify(launcher).generateChatForModel(
+                "lfm2.5-1.2b-instruct", request, 256);
+        verify(launcher, never()).generateForModel(
+                "lfm2.5-1.2b-instruct", "source", 256);
+    }
+
+    @Test
     void unexpectedChildExitClearsPublishedServingStateAndCanBeCleanedUp() {
         ServingSubprocessLauncher launcher = new ServingSubprocessLauncher();
         Process exited = mock(Process.class);
@@ -108,6 +139,10 @@ class ServingSubprocessBackendTest {
         int boundedGenerateModifiers = ServingSubprocessLauncher.class
                 .getDeclaredMethod("generateForModel", String.class, String.class, int.class)
                 .getModifiers();
+        int structuredGenerateModifiers = ServingSubprocessLauncher.class
+                .getDeclaredMethod("generateChatForModel", String.class,
+                        StructuredChatLanguageModel.Request.class, int.class)
+                .getModifiers();
 
         assertTrue(Modifier.isSynchronized(loadModifiers),
                 "loadModel must serialize model transitions");
@@ -115,5 +150,7 @@ class ServingSubprocessBackendTest {
                 "generateForModel must keep the identity check and generation atomic");
         assertTrue(Modifier.isSynchronized(boundedGenerateModifiers),
                 "bounded generateForModel must keep the identity check and generation atomic");
+        assertTrue(Modifier.isSynchronized(structuredGenerateModifiers),
+                "structured generateChatForModel must keep identity and protocol atomic");
     }
 }

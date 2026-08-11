@@ -407,9 +407,11 @@ public class MatrixGraphConstructor implements GraphConstructor {
                 if (extracted != null) {
                     if (mode == SchemaEnforcementMode.STRICT && schema != null) {
                         cleanGraph(extracted, schema);
+                    } else if (extracted.getRelationships() != null && !extracted.getRelationships().isEmpty()) {
+                        pruneInvalidRelationshipsForNonStrictMode(extracted);
                     }
 
-                    ValidationResult validation = validateExtractedGraph(extracted, schema);
+                    ValidationResult validation = validateExtractedGraph(extracted, schema, mode);
                     if (!validation.valid()) {
                         throw new IllegalArgumentException(
                                 "Graph extraction validation failed: " + validationFeedback(validation.errors()));
@@ -612,12 +614,14 @@ public class MatrixGraphConstructor implements GraphConstructor {
                                       String phase) {
         if (mode == SchemaEnforcementMode.STRICT && schema != null) {
             cleanGraph(graph, schema);
+        } else if (graph.getRelationships() != null && !graph.getRelationships().isEmpty()) {
+            pruneInvalidRelationshipsForNonStrictMode(graph);
         }
         if ("relationship".equals(phase) && !relationshipTypesArePredicates(graph, schema)) {
             log.debug("Rejecting partition relationship phase response: a relationship type reused an entity label");
             return false;
         }
-        ValidationResult validation = validateExtractedGraph(graph, schema);
+        ValidationResult validation = validateExtractedGraph(graph, schema, mode);
         if (!validation.valid()) {
             log.debug("Rejecting partition {} phase response: {}", phase,
                     validationFeedback(validation.errors()));
@@ -631,12 +635,14 @@ public class MatrixGraphConstructor implements GraphConstructor {
                                     String phase) {
         if (mode == SchemaEnforcementMode.STRICT && schema != null) {
             cleanGraph(graph, schema);
+        } else if (graph.getRelationships() != null && !graph.getRelationships().isEmpty()) {
+            pruneInvalidRelationshipsForNonStrictMode(graph);
         }
         if ("relationship".equals(phase) && !relationshipTypesArePredicates(graph, schema)) {
             throw new IllegalArgumentException("Partition relationship phase validation failed: "
                     + "relationship type must be a predicate, not an entity label");
         }
-        ValidationResult validation = validateExtractedGraph(graph, schema);
+        ValidationResult validation = validateExtractedGraph(graph, schema, mode);
         if (!validation.valid()) {
             throw new IllegalArgumentException("Partition " + phase + " phase validation failed: "
                     + validationFeedback(validation.errors()));
@@ -1153,8 +1159,11 @@ public class MatrixGraphConstructor implements GraphConstructor {
         }
         if (mode == SchemaEnforcementMode.STRICT && schema != null) {
             cleanGraph(extracted, schema);
+        } else if (extracted != null && extracted.getRelationships() != null
+                && !extracted.getRelationships().isEmpty()) {
+            pruneInvalidRelationshipsForNonStrictMode(extracted);
         }
-        ValidationResult validation = validateExtractedGraph(extracted, schema);
+        ValidationResult validation = validateExtractedGraph(extracted, schema, mode);
         if (!validation.valid()) {
             log.debug("Rejecting graph-constructor response: {}", validationFeedback(validation.errors()));
         }
@@ -1162,9 +1171,10 @@ public class MatrixGraphConstructor implements GraphConstructor {
     }
 
     private ValidationResult validateExtractedGraph(ExtractedGraphDTO.ExtractedGraph extracted,
-                                                    GraphSchema schema) {
+                                                    GraphSchema schema,
+                                                    SchemaEnforcementMode mode) {
         List<GraphExtractionSchema.ExtractedEntity> entities = new ArrayList<>();
-        if (extracted.getEntities() != null) {
+        if (extracted != null && extracted.getEntities() != null) {
             for (ExtractedGraphDTO.ExtractedEntity entity : extracted.getEntities()) {
                 if (entity == null) {
                     entities.add(null);
@@ -1182,7 +1192,7 @@ public class MatrixGraphConstructor implements GraphConstructor {
         }
 
         List<GraphExtractionSchema.ExtractedRelation> relations = new ArrayList<>();
-        if (extracted.getRelationships() != null) {
+        if (extracted != null && extracted.getRelationships() != null) {
             for (ExtractedGraphDTO.ExtractedRelationship relation : extracted.getRelationships()) {
                 if (relation == null) {
                     relations.add(null);
@@ -1204,8 +1214,62 @@ public class MatrixGraphConstructor implements GraphConstructor {
 
         return GraphExtractionValidator.validate(
                 GraphExtractionSchema.ExtractionResult.of(entities, relations, null),
-                validationPolicy,
+                validationPolicyForMode(mode),
                 schema);
+    }
+
+    private GraphExtractionValidationPolicy validationPolicyForMode(SchemaEnforcementMode mode) {
+        if (mode == SchemaEnforcementMode.STRICT) {
+            return validationPolicy;
+        }
+        GraphExtractionValidationPolicy base = validationPolicy == null
+                ? GraphExtractionValidationPolicy.defaults()
+                : validationPolicy;
+
+        List<String> enabledValidators = base.effectiveEnabledValidators().stream()
+                .filter(v -> !GraphExtractionValidationPolicy.ENTITY_TYPE_SCHEMA.equals(v))
+                .filter(v -> !GraphExtractionValidationPolicy.RELATION_TYPE_SCHEMA.equals(v))
+                .toList();
+
+        if (enabledValidators.size() == base.effectiveEnabledValidators().size()) {
+            return base;
+        }
+
+        return GraphExtractionValidationPolicy.builder()
+                .failureMode(base.effectiveFailureMode())
+                .enabledValidators(new ArrayList<>(enabledValidators))
+                .relationPatterns(base.effectiveRelationPatterns())
+                .requiredOccurredAtRelationTypes(base.effectiveRequiredOccurredAtRelationTypes())
+                .requirePatternForEveryRelationType(base.isRequirePatternForEveryRelationType())
+                .maxErrorsInRetryPrompt(base.effectiveMaxErrorsInRetryPrompt())
+                .build();
+    }
+
+    private void pruneInvalidRelationshipsForNonStrictMode(ExtractedGraphDTO.ExtractedGraph extracted) {
+        Set<String> entityIds = extracted.getEntities() == null
+                ? Set.of()
+                : extracted.getEntities().stream()
+                .filter(Objects::nonNull)
+                .map(ExtractedGraphDTO.ExtractedEntity::getId)
+                .filter(this::hasText)
+                .collect(Collectors.toSet());
+
+        List<ExtractedGraphDTO.ExtractedRelationship> relationships = extracted.getRelationships() == null
+                ? List.of()
+                : extracted.getRelationships().stream()
+                .filter(Objects::nonNull)
+                .filter(relation -> hasText(relation.getSource())
+                        && hasText(relation.getTarget())
+                        && hasText(relation.getRelationshipType())
+                        && entityIds.contains(relation.getSource())
+                        && entityIds.contains(relation.getTarget()))
+                .toList();
+
+        extracted.setRelationships(new ArrayList<>(relationships));
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private Map<String, String> stringMetadata(Map<String, Object> metadata) {

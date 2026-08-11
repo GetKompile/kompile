@@ -68,4 +68,14 @@ class CrawlSourceLoadingServiceTest {
         assertEquals(Map.of("preserveParagraphs", false),
                 metadata.get(GraphConstants.META_CHUNKER_OPTIONS));
     }
+
+    @Test
+    void sourceScopeIdentityIsStableAndPathNormalized() {
+        UnifiedCrawlSource source = UnifiedCrawlSource.builder()
+                .sourceType(DocumentSourceDescriptor.SourceType.DIRECTORY)
+                .pathOrUrl("C:\\workspace\\docs")
+                .build();
+
+        assertEquals("DIRECTORY:C:/workspace/docs", CrawlSourceLoadingService.sourceScopeId(source));
+    }
 }

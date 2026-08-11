@@ -103,6 +103,41 @@ class ChatConfigTest {
     }
 
     @Test
+    void standardChatThinkingEffortPersistsWithTheSelectedModel() throws Exception {
+        Path project = tempDir.resolve("thinking-project");
+        ChatConfig config = new ChatConfig("ollama", null, "reasoning-model", null);
+        config.setThinking("high");
+
+        config.saveProject(project);
+        ChatConfig loaded = ChatConfig.loadProject(project);
+
+        assertNotNull(loaded);
+        assertEquals("reasoning-model", loaded.getModel());
+        assertEquals("high", loaded.getThinking());
+    }
+
+    @Test
+    void liveProviderSwitchUpdatesSharedLlmSettingsWithoutReplacingSessionPreferences() {
+        ChatConfig active = new ChatConfig("openai", "old-key", "gpt-4o", "https://old.example/v1");
+        active.setThinking("low");
+        active.setCancelKey("Ctrl+Q");
+
+        ChatConfig selected = new ChatConfig(
+                "anthropic", "new-key", "claude-sonnet-4-20250514", "https://new.example/v1");
+        selected.setThinking("high");
+
+        active.applyLlmSettingsFrom(selected);
+
+        assertEquals("anthropic", active.getProvider());
+        assertEquals("new-key", active.getApiKey());
+        assertEquals("claude-sonnet-4-20250514", active.getModel());
+        assertEquals("high", active.getThinking());
+        assertEquals("https://new.example/v1", active.getBaseUrl());
+        assertEquals("Ctrl+Q", active.getCancelKey(),
+                "session-level controls must survive a provider switch");
+    }
+
+    @Test
     void passthroughAgentOrderComesFromPackagedCliAgentRegistry() {
         assertTrue(ChatConfig.getPassthroughAgentOrder().contains("codex"),
                 "setup wizard must be able to offer Codex when codex is on PATH");

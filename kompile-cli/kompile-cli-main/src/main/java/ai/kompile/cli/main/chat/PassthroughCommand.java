@@ -165,6 +165,9 @@ public class PassthroughCommand implements Callable<Integer> {
                         injectedSettingsFile = McpToolInjection.injectTools(
                                 Path.of(workingDir), agent, sseUrl);
                         if (injectedSettingsFile != null) {
+                            agentCommand = SubprocessAgentRunner.prependGlobalOptions(
+                                    agentCommand,
+                                    McpToolInjection.commandLineOverrides(Path.of(workingDir), agent));
                             String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
                             System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
                                     + DIM + " (" + injectedSettingsFile + ")" + RESET);

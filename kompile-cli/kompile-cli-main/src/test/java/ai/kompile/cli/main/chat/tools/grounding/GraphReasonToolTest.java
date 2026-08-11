@@ -178,7 +178,7 @@ class GraphReasonToolTest {
 
         @BeforeEach
         void setUp() {
-            // null baseUrl → backend will not be reachable
+            // A missing remote URL selects the project-local graph backend.
             tool = new GraphReasonTool((String) null, om);
         }
 
@@ -202,14 +202,15 @@ class GraphReasonToolTest {
         }
 
         @Test
-        @DisplayName("kompile-app not running returns descriptive error")
-        void backendDown_returnsDescriptiveError() throws Exception {
+        @DisplayName("missing project-local graph returns descriptive error")
+        void missingLocalGraph_returnsDescriptiveError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.put("target", "Alice Smith");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when kompile-app not running");
-            assertTrue(result.getOutput().contains("kompile-app"),
-                    "Error should mention kompile-app; was: " + result.getOutput());
+            assertTrue(result.isError(), "Expected error when no local graph exists");
+            assertTrue(result.getOutput().contains("graph_reason local error"));
+            assertTrue(result.getOutput().contains("project-local"),
+                    "Error should mention the project-local graph; was: " + result.getOutput());
         }
     }
 

@@ -122,6 +122,13 @@ public class ProjectController {
         return Map.of("projectId", codingProjectId, "indexing", true, "forceReindex", forceReindex);
     }
 
+    @PostMapping("/current/code-projects/{codingProjectId}/fact-sheet")
+    public ProjectResponse bindCodingProjectFactSheet(
+            @PathVariable String codingProjectId,
+            @RequestBody FactSheetBindingRequest request) {
+        return projectService.bindCodingProjectFactSheet(codingProjectId, request.factSheetId());
+    }
+
     @PutMapping("/current/tags")
     public ProjectResponse setProjectTags(@RequestBody TagsRequest request) {
         return projectService.setProjectTags(request.tags());
@@ -267,6 +274,9 @@ public class ProjectController {
     }
 
     public record IndexRequest(boolean forceReindex) {
+    }
+
+    public record FactSheetBindingRequest(Long factSheetId) {
     }
 
     public record RegisterFactsRequest(String factSheetName) {

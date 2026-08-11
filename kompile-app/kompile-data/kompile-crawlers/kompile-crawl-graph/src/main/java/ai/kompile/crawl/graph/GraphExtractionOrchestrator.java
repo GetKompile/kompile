@@ -47,16 +47,23 @@ import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
+import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.ModelCapability;
 import ai.kompile.core.llm.ModelContextWindows;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.crawl.graph.passes.CrawlExtractionToolBackend;
+import ai.kompile.crawl.graph.passes.ExtractionAdmissionComparator;
 import ai.kompile.crawl.graph.passes.DecomposedExtractionExecutor;
 import ai.kompile.crawl.graph.passes.ToolDrivenExtractionExecutor;
+import ai.kompile.graph.reasoning.admission.AdmissionComparisonSink;
+import ai.kompile.graph.reasoning.admission.AdmissionMode;
+import ai.kompile.graph.reasoning.admission.GraphOperationalPolicy;
+import ai.kompile.graph.reasoning.admission.OperationalDisposition;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.confidence.ExtractionConfidenceStamper;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
@@ -105,6 +112,12 @@ class GraphExtractionOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(GraphExtractionOrchestrator.class);
 
     private static final int DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE = 10;
+
+    /** Conservative prompt accounting for local/unknown tokenizers. The extraction instruction/schema
+     *  is not part of the document char budget, and JSON output needs headroom; using two chars/token
+     *  keeps a 4k-context local model below its KV-cache ceiling even when the tokenizer is dense. */
+    private static final int INLINE_PROMPT_OVERHEAD_TOKENS = 1_536;
+    private static final int INLINE_PROMPT_CHARS_PER_TOKEN = 2;
 
     private static final int CORPUS_SCHEMA_MAX_PASSAGES = 96;
     private static final int CORPUS_SCHEMA_MAX_PASSAGE_CHARS = 12_000;
@@ -203,6 +216,9 @@ class GraphExtractionOrchestrator {
     ConceptExtractor conceptExtractor;
 
     @Autowired(required = false)
+    CorpusSchemaUnifier corpusSchemaUnifier;
+
+    @Autowired(required = false)
     GraphConstructor graphConstructor;
 
     /** Read side of the unified crawl corpus assembled before extraction. */
@@ -274,6 +290,10 @@ class GraphExtractionOrchestrator {
     /** Optional production diagnostics; remains allocation-only at decision sites when enabled. */
     @Autowired(required = false)
     GraphDecisionTraceSink graphDecisionTraceSink = GraphDecisionTraceSink.noop();
+
+    /** Optional shadow-admission comparison observer; never participates in projection or persistence. */
+    @Autowired(required = false)
+    AdmissionComparisonSink admissionComparisonSink = AdmissionComparisonSink.noop();
 
     /**
      * Belt-and-suspenders transcript logger for inline LLM extraction calls.
@@ -659,8 +679,10 @@ class GraphExtractionOrchestrator {
                     if (!hasText(passage.content())) {
                         return null;
                     }
-                    String chunkId = hasText(passage.chunkId()) ? passage.chunkId() : "chunk-" + UUID.randomUUID();
                     String content = passage.content();
+                    String chunkId = hasText(passage.chunkId())
+                            ? passage.chunkId()
+                            : "chunk-" + sha256Hex(content);
                     if (content.length() > CORPUS_SCHEMA_MAX_PASSAGE_CHARS) {
                         content = content.substring(0, CORPUS_SCHEMA_MAX_PASSAGE_CHARS);
                     }
@@ -697,106 +719,48 @@ class GraphExtractionOrchestrator {
                 return null;
             }
 
-            Map<String, Integer> nodeSupport = new LinkedHashMap<>();
-            Map<String, Double> nodeConfidence = new LinkedHashMap<>();
-            for (Map.Entry<String, ConceptExtractor.ExtractionResult> entry : prepass.entrySet()) {
-                    if (entry == null || entry.getValue() == null || entry.getValue().concepts() == null) {
-                        continue;
-                    }
-                    for (ConceptExtractor.ExtractedConcept concept : entry.getValue().concepts()) {
-                    if (concept == null || !CORPUS_SCHEMA_CATEGORIES.contains(concept.category())) {
-                        continue;
-                    }
-                    double confidence = concept.confidence();
-                    if (!Double.isFinite(confidence) || confidence < CORPUS_SCHEMA_MIN_CONCEPT_CONFIDENCE) {
-                        continue;
-                    }
-                    String label = deriveSchemaLabel(concept.name(), concept.normalizedName(), concept.normalizedName());
-                    if (!hasText(label)) {
-                        continue;
-                    }
-                    int support = Math.max(1, concept.frequency());
-                    nodeSupport.put(label, nodeSupport.getOrDefault(label, 0) + support);
-                    nodeConfidence.put(label, Math.max(nodeConfidence.getOrDefault(label, 0.0), confidence));
-                }
-            }
-
-            Map<String, Integer> relationSupport = new LinkedHashMap<>();
-            Map<String, Double> relationStrength = new LinkedHashMap<>();
-            for (Map.Entry<String, ConceptExtractor.ExtractionResult> entry : prepass.entrySet()) {
-                if (entry == null || entry.getValue() == null || entry.getValue().relationships() == null) {
-                    continue;
-                }
-                for (ConceptExtractor.ConceptRelationship relation : entry.getValue().relationships()) {
-                    if (relation == null) {
-                        continue;
-                    }
-                    double strength = relation.strength();
-                    if (!Double.isFinite(strength) || strength < CORPUS_SCHEMA_MIN_RELATION_STRENGTH) {
-                        continue;
-                    }
-                    String label = deriveSchemaLabel(relation.relationshipType(), null,
-                            relation.relationshipType());
-                    if (!hasText(label)) {
-                        continue;
-                    }
-                    relationSupport.put(label, relationSupport.getOrDefault(label, 0) + 1);
-                    relationStrength.put(label, Math.max(relationStrength.getOrDefault(label, 0.0), strength));
-                }
-            }
-
-            List<NodeType> derivedNodeTypes = nodeSupport.entrySet().stream()
-                    .filter(entry -> entry.getValue() >= CORPUS_SCHEMA_MIN_TYPE_OCCURRENCES)
-                    .sorted((left, right) -> {
-                        int countCmp = Integer.compare(
-                                right.getValue(),
-                                left.getValue());
-                        if (countCmp != 0) {
-                            return countCmp;
-                        }
-                        double leftScore = nodeConfidence.getOrDefault(left.getKey(), 0.0);
-                        double rightScore = nodeConfidence.getOrDefault(right.getKey(), 0.0);
-                        return Double.compare(rightScore, leftScore);
-                    })
-                    .limit(CORPUS_SCHEMA_MAX_TYPES)
-                    .map(entry -> new NodeType(entry.getKey(),
-                            "Inferred from unified-corpus concept extraction",
-                            null))
-                    .toList();
-
-            List<RelationshipType> derivedRelationTypes = relationSupport.entrySet().stream()
-                    .sorted((left, right) -> {
-                        int countCmp = Integer.compare(
-                                right.getValue(),
-                                left.getValue());
-                        if (countCmp != 0) {
-                            return countCmp;
-                        }
-                        double leftScore = relationStrength.getOrDefault(left.getKey(), 0.0);
-                        double rightScore = relationStrength.getOrDefault(right.getKey(), 0.0);
-                        return Double.compare(rightScore, leftScore);
-                    })
-                    .limit(CORPUS_SCHEMA_MAX_TYPES)
-                    .map(entry -> new RelationshipType(entry.getKey(),
-                            "Inferred from unified-corpus co-occurrence extraction", null))
-                    .toList();
-
-            if (derivedNodeTypes.isEmpty() && derivedRelationTypes.isEmpty()) {
+            CorpusSchemaCandidates.Inventory candidates = CorpusSchemaCandidateCollector.collect(prepass);
+            if (candidates.isEmpty()) {
                 log.debug("[Job {}] Unified-corpus schema pre-pass completed with no inferred candidates", jobId);
                 return null;
             }
 
-            log.debug("[Job {}] Unified-corpus schema pre-pass inferred {} node types and {} relation types from {} passages",
-                    jobId, derivedNodeTypes.size(), derivedRelationTypes.size(), passageTexts.size());
+            if (corpusSchemaUnifier == null) {
+                markSchemaPrepassFailure(job, "CorpusSchemaUnifier is unavailable");
+                log.warn(
+                        "[Job {}] Corpus schema candidates were collected, but no CorpusSchemaUnifier is available",
+                        jobId
+                );
+                return null;
+            }
 
-            return new GraphSchema(
-                    derivedNodeTypes.isEmpty() ? null : derivedNodeTypes,
-                    derivedRelationTypes.isEmpty() ? null : derivedRelationTypes,
-                    null);
+            GraphSchema configuredSchema = parseConfiguredSchema(config);
+            return corpusSchemaUnifier.unify(candidates, configuredSchema, job, corpus.snapshotId());
         } catch (RuntimeException e) {
+            String schemaError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            markSchemaPrepassFailure(job, schemaError);
             log.warn("[Job {}] Unified-corpus schema pre-pass failed; continuing without derived schema: {}",
-                    jobId, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                    jobId, schemaError);
             return null;
+        }
+    }
+
+    private static void markSchemaPrepassFailure(UnifiedCrawlJob job, String reason) {
+        if (job == null) {
+            return;
+        }
+        if (job.getErrorCount() != null) {
+            job.getErrorCount().incrementAndGet();
+        }
+        if (job.getErrors() != null) {
+            String detail = reason == null || reason.isBlank() ? "unknown schema pre-pass failure" : reason;
+            if (detail.length() > 1_000) {
+                detail = detail.substring(0, 1_000);
+            }
+            job.getErrors().add("Schema pre-pass failed: " + detail);
+        }
+        if (job.getCurrentPhase() != null) {
+            job.getCurrentPhase().set("SCHEMA_UNIFICATION_FAILED");
         }
     }
 
@@ -1802,7 +1766,15 @@ class GraphExtractionOrchestrator {
                                      GraphSchema corpusSchemaOverride) {
         GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
         String extractionPrompt = buildExtractionPrompt(config, schema);
-        resetGraphExtractionProgress(job, documents.size());
+
+        // Resolve the model budget before planning batches. Oversized source documents are split
+        // losslessly so prompt size is bounded by model capacity without scaling with corpus size
+        // or silently discarding the document tail.
+        ModelCapability modelCap = resolveExtractionModelCapability(job, config);
+        final List<Document> effectiveDocuments =
+                splitDocumentsForPromptBudget(documents, modelCap, config);
+        resetGraphExtractionProgress(job, effectiveDocuments.size());
+
         // Chunks that fail this pass are returned for re-accumulation (per-chunk retry then deferral).
         List<Document> failed = new CopyOnWriteArrayList<>();
 
@@ -1811,16 +1783,17 @@ class GraphExtractionOrchestrator {
         // at the output-safe starting budget (no intra-run AIMD ramp). Honors an explicit
         // crawlGraphExtractionTargetCharsPerBatch override; item cap + remote parallelism are the same
         // configurable knobs as the constructor path.
-        ModelCapability modelCap = resolveExtractionModelCapability(job, config);
         boolean remoteBackend = !modelCap.local();
         boolean targetOverridden = graphExtractionTargetCharsPerBatch != DEFAULT_GRAPH_EXTRACTION_TARGET_CHARS;
+        int safePromptBudget = inlinePromptContentBudget(modelCap, config);
         int charBudget = targetOverridden
-                ? Math.max(1, graphExtractionTargetCharsPerBatch) : modelCap.initInputChars();
+                ? Math.min(Math.max(1, graphExtractionTargetCharsPerBatch), safePromptBudget)
+                : Math.min(modelCap.initInputChars(), safePromptBudget);
         // graphExtractionMaxItemsPerBatch is an upper-bound cap on the configured batch size.
         int maxItems = Math.min(resolveGraphExtractionBatchSize(config), Math.max(1, graphExtractionMaxItemsPerBatch));
 
         List<CostBatch<Document>> batches = planCostBatches(
-                documents,
+                effectiveDocuments,
                 this::estimateDocumentCost,
                 maxItems,
                 charBudget,
@@ -1840,11 +1813,11 @@ class GraphExtractionOrchestrator {
             parallelism = 1;
         }
         pipelineStepTracker.updatePipelineStep(job, "GRAPH_EXTRACTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
-                0, documents.size(), 0, 0, batches.size(), 0, null,
+                0, effectiveDocuments.size(), 0, 0, batches.size(), 0, null,
                 "Planned inline LLM extraction batches");
         documentTracker.recordEvent(job, "GRAPH_EXTRACTION", "INFO",
                 "Planned inline LLM extraction batches",
-                "chunks=" + documents.size() + ", batches=" + batches.size()
+                "chunks=" + effectiveDocuments.size() + ", batches=" + batches.size()
                         + ", backend=" + (remoteBackend ? "remote" : "local")
                         + ", parallelism=" + parallelism + ", charBudget=" + charBudget + ", maxItems=" + maxItems);
 
@@ -1862,25 +1835,27 @@ class GraphExtractionOrchestrator {
                     ? 1 : Math.max(1, graphExtractionChunksPerPrompt);
             if (serialChunksPerPrompt <= 1) {
                 // Legacy serial path: one call per chunk.
-                for (int docIndex = 0; docIndex < documents.size(); docIndex++) {
+                for (int docIndex = 0; docIndex < effectiveDocuments.size(); docIndex++) {
                     if (isCancelled(job)) return failed;
-                            if (extractGraphViaLlmDocument(documents.get(docIndex), docIndex, documents.size(),
+                            if (extractGraphViaLlmDocument(effectiveDocuments.get(docIndex), docIndex,
+                                    effectiveDocuments.size(),
                                     extractionPrompt, config, targetGraph, job,
                                     corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId)) {
-                                failed.add(documents.get(docIndex));
+                                failed.add(effectiveDocuments.get(docIndex));
                             }
                     memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
-                            "after inline graph chunk " + (docIndex + 1) + "/" + documents.size());
+                            "after inline graph chunk " + (docIndex + 1) + "/" + effectiveDocuments.size());
                 }
             } else {
                 // Serial multi-chunk path: group up to N chunks per LLM call.
                 int docIndex = 0;
-                while (docIndex < documents.size()) {
+                while (docIndex < effectiveDocuments.size()) {
                     if (isCancelled(job)) break;
                     List<Document> group = new ArrayList<>(serialChunksPerPrompt);
                     int combinedChars = 0;
-                    for (int gi = docIndex; gi < documents.size() && group.size() < serialChunksPerPrompt; gi++) {
-                        Document d = documents.get(gi);
+                    for (int gi = docIndex;
+                            gi < effectiveDocuments.size() && group.size() < serialChunksPerPrompt; gi++) {
+                        Document d = effectiveDocuments.get(gi);
                         String t = d.getText();
                         int tLen = t != null ? t.length() : 0;
                         if (!group.isEmpty() && charBudget > 0
@@ -1895,13 +1870,13 @@ class GraphExtractionOrchestrator {
                     }
                     int groupEndExcl = docIndex + group.size();
                     List<Document> failedInGroup = extractGraphViaLlmChunkGroup(
-                            group, docIndex, documents.size(),
+                            group, docIndex, effectiveDocuments.size(),
                             config, targetGraph, job, corpusSchemaOverride, parentDocCache,
                             entityNodeCache, factSheetId);
                     failed.addAll(failedInGroup);
                     for (int gi = docIndex; gi < groupEndExcl; gi++) {
                         memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
-                                "after inline graph group chunk " + (gi + 1) + "/" + documents.size());
+                                "after inline graph group chunk " + (gi + 1) + "/" + effectiveDocuments.size());
                     }
                     docIndex = groupEndExcl;
                 }
@@ -1928,13 +1903,15 @@ class GraphExtractionOrchestrator {
                         // Legacy path: one LLM call per chunk — byte-for-byte identical behaviour.
                             for (int i = 0; i < batch.items().size(); i++) {
                             if (isCancelled(job)) break;
-                            if (extractGraphViaLlmDocument(batch.items().get(i), baseIndex + i, documents.size(),
+                            if (extractGraphViaLlmDocument(batch.items().get(i), baseIndex + i,
+                                    effectiveDocuments.size(),
                                     extractionPrompt, config, targetGraph, job,
                                     corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId)) {
                                 failed.add(batch.items().get(i));
                             }
                             memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
-                                    "after inline graph chunk " + (baseIndex + i + 1) + "/" + documents.size());
+                                    "after inline graph chunk " + (baseIndex + i + 1) + "/"
+                                            + effectiveDocuments.size());
                         }
                     } else {
                         // Multi-chunk path: group up to N chunks into one LLM call, respecting
@@ -1963,13 +1940,14 @@ class GraphExtractionOrchestrator {
                             }
                             int groupEndExcl = groupStart + group.size();
                             List<Document> failedInGroup = extractGraphViaLlmChunkGroup(
-                                    group, baseIndex + groupStart, documents.size(),
+                                    group, baseIndex + groupStart, effectiveDocuments.size(),
                                     config, targetGraph, job, corpusSchemaOverride, parentDocCache,
                                     entityNodeCache, factSheetId);
                             failed.addAll(failedInGroup);
                             for (int gi = groupStart; gi < groupEndExcl; gi++) {
                                 memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
-                                        "after inline graph group chunk " + (baseIndex + gi + 1) + "/" + documents.size());
+                                        "after inline graph group chunk " + (baseIndex + gi + 1) + "/"
+                                                + effectiveDocuments.size());
                             }
                             groupStart = groupEndExcl;
                         }
@@ -2059,13 +2037,8 @@ class GraphExtractionOrchestrator {
             // allow more text through for better entity/relationship extraction.
             boolean isVlmContent = doc.getMetadata() != null
                     && Boolean.TRUE.equals(doc.getMetadata().get(GraphConstants.META_VLM_PROCESSED));
-            int maxLength = isVlmContent ? maxCharsPerChunkVlm : maxCharsPerChunk;
-
-            // Truncate very long documents to avoid LLM context limits
-            if (text.length() > maxLength) {
-                text = text.substring(0, maxLength);
-            }
-
+            // Oversized documents are split before batching in extractGraphViaLlm(). Keep this
+            // method lossless; silently taking only the prefix would hide tail entities/relationships.
             // Add VLM context hint when applicable
             String vlmHint = "";
             if (isVlmContent) {
@@ -2111,6 +2084,9 @@ class GraphExtractionOrchestrator {
                         llmCallLatencyMs,
                         responseOk,
                         responseOk ? null : badLlmResponseMessage("LLM", response));
+                if (!responseOk) {
+                    lastValidationErrors = badLlmResponseMessage("LLM", response);
+                }
 
             if (responseOk) {
                 String json = extractJsonFromResponse(response);
@@ -2315,17 +2291,30 @@ class GraphExtractionOrchestrator {
                                     valAttempt + 1, maxValRetries + 1, validation.errors());
                         }
                     }
+                } else {
+                    lastValidationErrors = "Response did not contain extractable JSON (likely truncated or non-JSON output)";
+                    log.debug("[Job {}] Graph extraction response contained no extractable JSON (attempt {}/{}); retrying when enabled",
+                            jobId, valAttempt + 1, maxValRetries + 1);
                 }
             }
             } // end validation retry loop
 
             if (!recordedResult) {
-                // LLM returned null or empty — this is a failure, not a quiet success
+                // LLM returned null or empty — this is a failure, not a quiet success. Keep a bounded
+                // job-level diagnostic as well as the numeric count so loose corpus tests can explain
+                // an empty graph without scraping native/model logs.
                 job.getErrorCount().incrementAndGet();
                 failed = true;
+                String failureReason = lastValidationErrors == null
+                        ? "LLM returned null/empty — check LLM configuration"
+                        : lastValidationErrors;
+                job.getErrors().add("LLM graph extraction returned no result for chunk "
+                        + (doc.getId() == null ? docIndex : doc.getId()) + ": " + failureReason);
+                log.warn("[Job {}] LLM graph extraction produced no usable result for chunk {}: {}",
+                        job.getJobId(), doc.getId() == null ? docIndex : doc.getId(), failureReason);
                 documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
                         "LLM graph extraction returned no result",
-                        "LLM returned null/empty — check LLM configuration",
+                        failureReason,
                         EXTRACTORS_INLINE_LLM, true);
             }
 
@@ -2469,19 +2458,21 @@ class GraphExtractionOrchestrator {
             promptBuilder.append("\n\nAdditional instructions: ").append(config.getCustomPrompt());
         }
         promptBuilder.append("\n\n");
+        int contentBudget = inlinePromptContentBudget(resolveExtractionModelCapability(job, config), config);
+        int combinedPromptContentChars = 0;
 
         for (int k = 0; k < group.size(); k++) {
             Document d = group.get(k);
             String cid = chunkIds.get(k);
             String text = d.getText() != null ? d.getText() : "";
-            boolean isVlm = d.getMetadata() != null
-                    && Boolean.TRUE.equals(d.getMetadata().get(GraphConstants.META_VLM_PROCESSED));
-            int limit = isVlm ? maxCharsPerChunkVlm : maxCharsPerChunk;
-            if (text.length() > limit) {
-                text = text.substring(0, limit);
+            int remainingBudget = Math.max(1, contentBudget - combinedPromptContentChars);
+            if (text.length() > remainingBudget) {
+                throw new IllegalStateException("Prompt planner exceeded its content budget for chunk "
+                        + cid + ": length=" + text.length() + ", remainingBudget=" + remainingBudget);
             }
             promptBuilder.append("===== CHUNK ").append(k + 1).append(" | source=").append(cid).append(" =====\n");
             promptBuilder.append(text).append("\n\n");
+            combinedPromptContentChars += text.length();
         }
 
         // Update progress markers.
@@ -2520,11 +2511,17 @@ class GraphExtractionOrchestrator {
                         responseOk,
                         responseOk ? null : badLlmResponseMessage("LLM", response));
                 if (!responseOk) {
+                    lastValidationErrors = badLlmResponseMessage("LLM", response);
                     continue;
                 }
 
                 String json = extractJsonFromResponse(response);
-                if (json == null) continue;
+                if (json == null) {
+                    lastValidationErrors = "Response did not contain extractable JSON (likely truncated or non-JSON output)";
+                    log.debug("[Job {}] Multi-chunk graph extraction response contained no extractable JSON (attempt {}/{}); retrying when enabled",
+                            jobId, valAttempt + 1, maxValRetries + 1);
+                    continue;
+                }
 
                 GraphExtractionSchema.ExtractionResult result;
                 try {
@@ -2761,11 +2758,20 @@ class GraphExtractionOrchestrator {
                     for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
                 } else {
                     // Terminal: depth limit reached or size==1 unexpectedly (safety guard).
-                    job.getErrorCount().incrementAndGet();
+                    String failureReason = lastValidationErrors == null
+                            ? "LLM returned null/empty — check LLM configuration"
+                            : lastValidationErrors;
+                    String terminalMessage = "LLM multi-chunk extraction returned no result for "
+                            + group.size() + " chunk(s) at rebatch depth " + rebatchDepth
+                            + "/" + maxRebatchDepth + ": " + failureReason;
+                    job.getErrors().add(terminalMessage);
+                    // Count terminal failures per chunk, not per group, so the loose harness can
+                    // distinguish one bad prompt from a whole failed corpus wave.
+                    job.getErrorCount().addAndGet(Math.max(1, group.size()));
                     for (Document doc : group) {
                         documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
                                 "LLM multi-chunk extraction returned no result (rebatch depth " + rebatchDepth + "/" + maxRebatchDepth + ")",
-                                "LLM returned null/empty — check LLM configuration",
+                                failureReason,
                                 EXTRACTORS_INLINE_LLM, true);
                         if (!failed.contains(doc)) failed.add(doc);
                     }
@@ -2797,7 +2803,7 @@ class GraphExtractionOrchestrator {
                 for (Document d : secondFailed) { if (!failed.contains(d)) failed.add(d); }
             } else {
                 job.getErrors().add("Multi-chunk graph extraction failed: " + errorDetail);
-                job.getErrorCount().incrementAndGet();
+                job.getErrorCount().addAndGet(Math.max(1, group.size()));
                 for (Document doc : group) {
                     if (!failed.contains(doc)) {
                         documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "FAILED", 0, 0, 0,
@@ -3179,6 +3185,107 @@ class GraphExtractionOrchestrator {
         return new ModelCapability(modelName, contextTokens, maxOutputTokens, local);
     }
 
+    /**
+     * Returns the maximum document text budget for one inline prompt. This is deliberately more
+     * conservative than the generic batch sizer: inline prompts carry extraction instructions/schema
+     * and emit JSON, while local tokenizers can use more than four characters per token. The budget is
+     * independent of corpus/document count and is applied to both single- and multi-chunk dispatch.
+     */
+    private int inlinePromptContentBudget(ModelCapability capability, GraphExtractionConfig config) {
+        if (capability == null) {
+            return 4_096;
+        }
+        int requestedOutput = config == null ? capability.maxOutputTokens() : config.getMaxTokens();
+        int outputTokens = requestedOutput > 0
+                ? Math.min(capability.maxOutputTokens(), requestedOutput)
+                : capability.maxOutputTokens();
+        long availableTokens = (long) capability.contextTokens()
+                - outputTokens - INLINE_PROMPT_OVERHEAD_TOKENS;
+        if (availableTokens <= 0) {
+            throw new IllegalStateException("Model context cannot fit extraction prompt overhead and output reserve: "
+                    + "contextTokens=" + capability.contextTokens()
+                    + ", outputTokens=" + outputTokens
+                    + ", promptOverheadTokens=" + INLINE_PROMPT_OVERHEAD_TOKENS);
+        }
+        long maxInputChars = capability.maxInputChars();
+        if (maxInputChars <= 0) {
+            throw new IllegalStateException("Model capability has no positive input budget: maxInputChars="
+                    + maxInputChars);
+        }
+        long safeChars = availableTokens * INLINE_PROMPT_CHARS_PER_TOKEN;
+        long bounded = Math.min(safeChars, maxInputChars);
+        return (int) Math.min(Integer.MAX_VALUE, bounded);
+    }
+
+    /**
+     * Split oversized source documents into bounded prompt chunks without dropping their tail.
+     * The previous implementation truncated a document to the first budget-sized prefix, which
+     * made extraction appear successful while silently removing entities and relationships from
+     * the golden corpus. Chunk IDs retain the parent ID and metadata preserves source provenance.
+     */
+    private List<Document> splitDocumentsForPromptBudget(List<Document> documents,
+                                                          ModelCapability capability,
+                                                          GraphExtractionConfig config) {
+        if (documents == null || documents.isEmpty()) {
+            return documents;
+        }
+        int contentBudget = Math.max(1, inlinePromptContentBudget(capability, config));
+        List<Document> bounded = new ArrayList<>(documents.size());
+        int splitCount = 0;
+        for (Document document : documents) {
+            if (document == null) {
+                continue;
+            }
+            String text = document.getText();
+            if (text == null || text.length() <= contentBudget) {
+                bounded.add(document);
+                continue;
+            }
+
+            String parentId = document.getId() == null || document.getId().isBlank()
+                    ? "document-" + bounded.size()
+                    : document.getId();
+            Map<String, Object> sourceMetadata = document.getMetadata() == null
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(document.getMetadata());
+            // Pick boundaries first, then publish metadata with the actual count. A newline
+            // boundary can produce more chunks than ceil(length / budget), so deriving the
+            // count from the raw length would leave incorrect provenance on the final chunks.
+            List<int[]> chunkRanges = new ArrayList<>();
+            for (int start = 0; start < text.length();) {
+                int hardEnd = Math.min(text.length(), start + contentBudget);
+                int end = promptChunkBoundary(text, start, hardEnd);
+                chunkRanges.add(new int[]{start, end});
+                start = end;
+            }
+            int partCount = chunkRanges.size();
+            for (int part = 0; part < partCount; part++) {
+                int[] range = chunkRanges.get(part);
+                Map<String, Object> metadata = new LinkedHashMap<>(sourceMetadata);
+                metadata.put("kompile.parent_document_id", parentId);
+                metadata.put("kompile.chunk_index", part);
+                metadata.put("kompile.chunk_count", partCount);
+                bounded.add(new Document(parentId + "#chunk-" + (part + 1),
+                        text.substring(range[0], range[1]), metadata));
+            }
+            splitCount++;
+        }
+        if (splitCount > 0) {
+            log.info("Split {} oversized document(s) into {} bounded prompt chunks (contentBudget={} chars)",
+                    splitCount, bounded.size(), contentBudget);
+        }
+        return bounded;
+    }
+
+    private static int promptChunkBoundary(String text, int start, int hardEnd) {
+        if (hardEnd >= text.length()) {
+            return hardEnd;
+        }
+        int preferred = text.lastIndexOf('\n', hardEnd - 1);
+        int minimumUseful = start + Math.max(1, (hardEnd - start) / 2);
+        return preferred >= minimumUseful ? preferred + 1 : hardEnd;
+    }
+
     /** Lowest-priority (preferred) enabled llm-capable backend type from the job's route, or null. */
     private ProcessingRouteConfig.ProcessingBackendType primaryLlmBackendType(UnifiedCrawlJob job) {
         ProcessingRouteConfig.ProcessingBackend backend = primaryLlmBackend(job);
@@ -3312,49 +3419,240 @@ class GraphExtractionOrchestrator {
                     vectors.store(),
                     vectors.initializationError(),
                     () -> reasoningGraphSnapshot(targetGraph, job, model),
-                    graphReasoningQueryService);
+                    graphReasoningQueryService,
+                    config == null
+                            ? GraphExtractionConfig.ExtractionTarget.FULL_GRAPH
+                            : config.getExtractionTarget());
 
-            ToolDrivenExtractionExecutor.Result result = toolDrivenExecutor.extract(
-                    text,
-                    effectiveTask,
-                    backend,
-                    (passId, prompt) -> {
-                        int invocation = passSequence.incrementAndGet();
-                        int graphEntities = graphEntityCount(targetGraph);
-                        int graphRelationships = graphRelationshipCount(targetGraph);
-                        CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
-                                phase, passId, invocation, effectiveTask.taskId(),
-                                effectiveTask.partitionId(), effectiveTask.chunkId(),
-                                effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
-                                graphEntities, graphRelationships);
-                        emitDecomposedPassProgress(job, phase, scope, "started", "INFO", null);
-                        try {
-                            String response = llmDispatcher.promptWithCapacityFallback(
-                                    prompt, "llm", job, scope);
-                            boolean usable = CrawlLlmDispatcher.isUsableLlmResponse(response);
-                            emitDecomposedPassProgress(job, phase, scope,
-                                    usable ? "completed" : "returned no usable response",
-                                    usable ? "INFO" : "WARN", null);
-                            return response;
-                        } catch (RuntimeException e) {
-                            emitDecomposedPassProgress(job, phase, scope, "failed", "WARN",
-                                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
-                            throw e;
-                        }
-                    },
-                    DecomposedExtractionExecutor.promptProfileFrom(config, promptCapability));
+            DecomposedExtractionExecutor.PromptProfile promptProfile =
+                    DecomposedExtractionExecutor.promptProfileFrom(config, promptCapability);
+            ToolDrivenExtractionExecutor.Result result;
+            if (llmDispatcher.hasStructuredChatBackend()) {
+                result = toolDrivenExecutor.extractStructured(
+                        text,
+                        effectiveTask,
+                        backend,
+                        (passId, request) -> {
+                            int invocation = passSequence.incrementAndGet();
+                            int graphEntities = graphEntityCount(targetGraph);
+                            int graphRelationships = graphRelationshipCount(targetGraph);
+                            CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
+                                    phase, passId, invocation, effectiveTask.taskId(),
+                                    effectiveTask.partitionId(), effectiveTask.chunkId(),
+                                    effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
+                                    graphEntities, graphRelationships);
+                            emitDecomposedPassProgress(job, phase, scope, "started", "INFO", null);
+                            try {
+                                StructuredChatLanguageModel.Response response =
+                                        llmDispatcher.promptStructuredWithCapacityFallback(
+                                                toStructuredChatRequest(request), "llm", job, scope);
+                                boolean usable = response != null
+                                        && (!response.toolCalls().isEmpty()
+                                        || !response.content().isBlank()
+                                        || !response.parseErrors().isEmpty());
+                                emitDecomposedPassProgress(job, phase, scope,
+                                        usable ? "completed" : "returned no usable structured response",
+                                        usable ? "INFO" : "WARN", null);
+                                return toExtractionStructuredResponse(response);
+                            } catch (RuntimeException e) {
+                                emitDecomposedPassProgress(job, phase, scope, "failed", "WARN",
+                                        e.getMessage() != null
+                                                ? e.getMessage() : e.getClass().getSimpleName());
+                                throw e;
+                            }
+                        },
+                        promptProfile);
+            } else {
+                result = toolDrivenExecutor.extract(
+                        text,
+                        effectiveTask,
+                        backend,
+                        (passId, prompt) -> {
+                            int invocation = passSequence.incrementAndGet();
+                            int graphEntities = graphEntityCount(targetGraph);
+                            int graphRelationships = graphRelationshipCount(targetGraph);
+                            CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
+                                    phase, passId, invocation, effectiveTask.taskId(),
+                                    effectiveTask.partitionId(), effectiveTask.chunkId(),
+                                    effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
+                                    graphEntities, graphRelationships);
+                            emitDecomposedPassProgress(job, phase, scope, "started", "INFO", null);
+                            try {
+                                String response = llmDispatcher.promptWithCapacityFallback(
+                                        prompt, "llm", job, scope);
+                                boolean usable = CrawlLlmDispatcher.isUsableLlmResponse(response);
+                                emitDecomposedPassProgress(job, phase, scope,
+                                        usable ? "completed" : "returned no usable response",
+                                        usable ? "INFO" : "WARN", null);
+                                return response;
+                            } catch (RuntimeException e) {
+                                emitDecomposedPassProgress(job, phase, scope, "failed", "WARN",
+                                        e.getMessage() != null
+                                                ? e.getMessage() : e.getClass().getSimpleName());
+                                throw e;
+                            }
+                        },
+                        promptProfile);
+            }
             log.debug("[Job {}] Tool-driven extraction chunk {}: {}", jobId, chunkId, result.summary());
+            if (!result.usable()) {
+                log.warn("[Job {}] Tool-driven extraction produced no usable delta for chunk {}: {}; notes={}",
+                        jobId, chunkId, result.summary(), result.notes());
+            }
             if (log.isTraceEnabled()) {
                 for (String note : result.notes()) {
                     log.trace("[Job {}] chunk {} tool loop note: {}", jobId, chunkId, note);
                 }
             }
+            result = applyAdmissionPolicy(result, effectiveTask, targetGraph, job, model, config);
             return result.usable() ? result.json() : null;
         } catch (RuntimeException e) {
             log.warn("[Job {}] Tool-driven extraction failed for chunk {}: {}",
                     jobId, chunkId, e.toString());
             return null;
         }
+    }
+
+    private static StructuredChatLanguageModel.Request toStructuredChatRequest(
+            ToolDrivenExtractionExecutor.StructuredRequest request) {
+        List<StructuredChatLanguageModel.Message> messages = request.messages().stream()
+                .map(message -> new StructuredChatLanguageModel.Message(
+                        message.role(), message.content()))
+                .toList();
+        List<StructuredChatLanguageModel.Tool> tools = request.tools().stream()
+                .map(tool -> new StructuredChatLanguageModel.Tool(
+                        tool.name(), tool.description(), tool.parameters()))
+                .toList();
+        return new StructuredChatLanguageModel.Request(
+                messages,
+                tools,
+                true,
+                StructuredChatLanguageModel.ToolDefinitionFormat.FLAT,
+                StructuredChatLanguageModel.ToolCallFormat.MODEL,
+                StructuredChatLanguageModel.ToolChoice.REQUIRED);
+    }
+
+    private static ToolDrivenExtractionExecutor.StructuredResponse
+            toExtractionStructuredResponse(StructuredChatLanguageModel.Response response) {
+        if (response == null) {
+            return null;
+        }
+        List<ToolDrivenExtractionExecutor.ToolRequest> calls = response.toolCalls().stream()
+                .map(call -> new ToolDrivenExtractionExecutor.ToolRequest(
+                        call.id(), call.name(), call.arguments()))
+                .toList();
+        return new ToolDrivenExtractionExecutor.StructuredResponse(
+                response.rawText(), response.content(), calls, response.parseErrors());
+    }
+
+    private ToolDrivenExtractionExecutor.Result applyAdmissionPolicy(
+            ToolDrivenExtractionExecutor.Result result,
+            ExtractionTaskContext taskContext,
+            Graph targetGraph,
+            UnifiedCrawlJob job,
+            String model,
+            GraphExtractionConfig config) {
+        if (result == null || !result.usable()) {
+            return result;
+        }
+        AdmissionMode mode = ExtractionAdmissionComparator.mode(
+                config == null ? null : config.getAdmissionMode());
+        if (mode == AdmissionMode.LLM_ONLY) {
+            return result;
+        }
+        GraphOperationalPolicy operationalPolicy = mode == AdmissionMode.GRAPH_POLICY
+                ? operationalAdmissionPolicy(config)
+                : null;
+        Set<String> governedEntityTypes = config == null
+                || config.getOperationalAdmissionEntityTypes() == null
+                ? Set.of()
+                : new LinkedHashSet<>(config.getOperationalAdmissionEntityTypes());
+        try {
+            UnifiedGraph frozen = reasoningGraphSnapshot(targetGraph, job, model);
+            ExtractionAdmissionComparator.AdmissionOutcome outcome =
+                    ExtractionAdmissionComparator.admit(
+                    result.extraction(),
+                    taskContext,
+                    frozen,
+                    taskContext == null ? null : taskContext.graphRevision(),
+                    mode,
+                    governedEntityTypes,
+                    operationalPolicy,
+                    admissionComparisonSink);
+            if (mode != AdmissionMode.GRAPH_POLICY) {
+                return result;
+            }
+            int staged = result.extraction().entities().size();
+            int admitted = outcome.extraction().entities().size();
+            if (log.isDebugEnabled()) {
+                outcome.verdicts().stream()
+                        .filter(verdict -> verdict.disposition() != OperationalDisposition.ALLOW)
+                        .forEach(verdict -> log.debug(
+                                "Graph policy withheld candidate {}: {} ({})",
+                                verdict.candidateId(), verdict.disposition(), verdict.ruleId()));
+            }
+            List<String> notes = new ArrayList<>(result.notes());
+            notes.add("graph policy admitted " + admitted + " of " + staged
+                    + " staged entities");
+            try {
+                return new ToolDrivenExtractionExecutor.Result(
+                        GraphExtractionValidator.toJson(outcome.extraction()),
+                        outcome.extraction(),
+                        result.rounds(),
+                        result.toolCalls(),
+                        result.toolsUsed(),
+                        notes);
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw new IllegalStateException(
+                        "failed to serialize graph-policy admitted extraction", e);
+            }
+        } catch (RuntimeException e) {
+            if (mode == AdmissionMode.SHADOW_COMPARE) {
+                log.warn("Admission shadow comparison failed for chunk {}: {}",
+                        taskContext == null ? "?" : taskContext.chunkId(), e.toString());
+                return result;
+            }
+            throw e;
+        }
+    }
+
+    private static GraphOperationalPolicy operationalAdmissionPolicy(
+            GraphExtractionConfig config) {
+        List<GraphExtractionConfig.OperationalAdmissionRule> configured =
+                config == null ? null : config.getOperationalAdmissionRules();
+        if (configured == null || configured.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "GRAPH_POLICY requires at least one operational admission rule");
+        }
+        GraphOperationalPolicy.Builder builder = GraphOperationalPolicy.builder();
+        for (int index = 0; index < configured.size(); index++) {
+            GraphExtractionConfig.OperationalAdmissionRule rule = configured.get(index);
+            if (rule == null) {
+                throw new IllegalArgumentException(
+                        "operational admission rule[" + index + "] must not be null");
+            }
+            String configuredDisposition = rule.getDisposition();
+            if (configuredDisposition == null || configuredDisposition.isBlank()) {
+                throw new IllegalArgumentException(
+                        "operational admission rule[" + index + "] disposition must not be blank");
+            }
+            OperationalDisposition disposition;
+            try {
+                disposition = OperationalDisposition.valueOf(
+                        configuredDisposition.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        "unsupported operational admission disposition '"
+                                + configuredDisposition + "' at rule[" + index + "]",
+                        e);
+            }
+            builder.rule(
+                    rule.getRuleId(),
+                    disposition,
+                    rule.getPriority(),
+                    rule.getStatement());
+        }
+        return builder.build();
     }
 
     private static ExtractionTaskContext withCorpusSnapshot(
@@ -4189,23 +4487,22 @@ class GraphExtractionOrchestrator {
         if (corpusDerived == null || corpusDerived.isEmpty()) {
             return configured;
         }
-        Set<String> known = configured.stream()
-                .filter(Objects::nonNull)
-                .map(NodeType::getLabel)
-                .filter(GraphExtractionOrchestrator::hasText)
-                .map(GraphExtractionOrchestrator::schemaTypeKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        List<NodeType> merged = new ArrayList<>(configured);
+        Map<String, NodeType> mergedByKey = new LinkedHashMap<>();
+        for (NodeType value : configured) {
+            if (value != null && hasText(value.getLabel())) {
+                mergedByKey.putIfAbsent(schemaTypeKey(value.getLabel()), copyNodeType(value));
+            }
+        }
         for (NodeType candidate : corpusDerived) {
             if (candidate == null || !hasText(candidate.getLabel())) {
                 continue;
             }
             String key = schemaTypeKey(candidate.getLabel());
-            if (known.add(key)) {
-                merged.add(candidate);
-            }
+            NodeType existing = mergedByKey.get(key);
+            mergedByKey.put(key, existing == null ? copyNodeType(candidate)
+                    : mergeNodeType(existing, candidate));
         }
-        return merged;
+        return new ArrayList<>(mergedByKey.values());
     }
 
     private static List<RelationshipType> mergeRelationshipTypes(List<RelationshipType> configured,
@@ -4216,23 +4513,92 @@ class GraphExtractionOrchestrator {
         if (corpusDerived == null || corpusDerived.isEmpty()) {
             return configured;
         }
-        Set<String> known = configured.stream()
-                .filter(Objects::nonNull)
-                .map(RelationshipType::getType)
-                .filter(GraphExtractionOrchestrator::hasText)
-                .map(GraphExtractionOrchestrator::schemaTypeKey)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        List<RelationshipType> merged = new ArrayList<>(configured);
+        Map<String, RelationshipType> mergedByKey = new LinkedHashMap<>();
+        for (RelationshipType value : configured) {
+            if (value != null && hasText(value.getType())) {
+                mergedByKey.putIfAbsent(schemaTypeKey(value.getType()), copyRelationshipType(value));
+            }
+        }
         for (RelationshipType candidate : corpusDerived) {
             if (candidate == null || !hasText(candidate.getType())) {
                 continue;
             }
             String key = schemaTypeKey(candidate.getType());
-            if (known.add(key)) {
-                merged.add(candidate);
+            RelationshipType existing = mergedByKey.get(key);
+            mergedByKey.put(key, existing == null ? copyRelationshipType(candidate)
+                    : mergeRelationshipType(existing, candidate));
+        }
+        return new ArrayList<>(mergedByKey.values());
+    }
+
+    private static NodeType copyNodeType(NodeType source) {
+        return new NodeType(source.getLabel(), source.getDescription(),
+                copyProperties(source.getProperties()));
+    }
+
+    private static NodeType mergeNodeType(NodeType configured, NodeType derived) {
+        String description = hasText(configured.getDescription())
+                ? configured.getDescription() : derived.getDescription();
+        return new NodeType(configured.getLabel(), description,
+                mergeProperties(configured.getProperties(), derived.getProperties()));
+    }
+
+    private static RelationshipType copyRelationshipType(RelationshipType source) {
+        return new RelationshipType(source.getType(), source.getDescription(),
+                copyProperties(source.getProperties()), copyTextValues(source.getAliases()));
+    }
+
+    private static RelationshipType mergeRelationshipType(RelationshipType configured,
+                                                          RelationshipType derived) {
+        String description = hasText(configured.getDescription())
+                ? configured.getDescription() : derived.getDescription();
+        return new RelationshipType(configured.getType(), description,
+                mergeProperties(configured.getProperties(), derived.getProperties()),
+                mergeTextValues(configured.getAliases(), derived.getAliases()));
+    }
+
+    private static List<PropertyType> copyProperties(List<PropertyType> values) {
+        return mergeProperties(values, null);
+    }
+
+    private static List<PropertyType> mergeProperties(List<PropertyType> configured,
+                                                      List<PropertyType> derived) {
+        LinkedHashMap<String, PropertyType> merged = new LinkedHashMap<>();
+        addProperties(merged, configured);
+        addProperties(merged, derived);
+        return merged.isEmpty() ? null : List.copyOf(merged.values());
+    }
+
+    private static void addProperties(Map<String, PropertyType> target, List<PropertyType> values) {
+        if (values == null) {
+            return;
+        }
+        for (PropertyType value : values) {
+            if (value == null || !hasText(value.getName())) {
+                continue;
+            }
+            String key = value.getName().trim().toLowerCase(Locale.ROOT);
+            PropertyType existing = target.get(key);
+            if (existing == null) {
+                target.put(key, new PropertyType(value.getName(), value.getType()));
+            } else if (!hasText(existing.getType()) && hasText(value.getType())) {
+                target.put(key, new PropertyType(existing.getName(), value.getType()));
             }
         }
-        return merged;
+    }
+
+    private static List<String> copyTextValues(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream().filter(GraphExtractionOrchestrator::hasText)
+                .map(String::trim).distinct().toList();
+    }
+
+    private static List<String> mergeTextValues(List<String> configured, List<String> derived) {
+        LinkedHashSet<String> merged = new LinkedHashSet<>(copyTextValues(configured));
+        merged.addAll(copyTextValues(derived));
+        return List.copyOf(merged);
     }
 
     private static List<String> normalizedSchemaTypes(List<String> configured) {

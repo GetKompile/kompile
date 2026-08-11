@@ -139,7 +139,8 @@ public class HybridReasoner {
             double blended = (sw * s + mw * sem) / total;
             out.add(new ScoredEntity(e.id(), blended, s, sem));
         }
-        out.sort(Comparator.comparingDouble(ScoredEntity::score).reversed());
+        out.sort(Comparator.comparingDouble(ScoredEntity::score).reversed()
+                .thenComparing(ScoredEntity::entityId));
         return out;
     }
 

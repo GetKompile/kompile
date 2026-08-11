@@ -44,6 +44,14 @@ import java.util.stream.Stream;
  */
 public interface KnowledgeGraphService {
 
+    /**
+     * Versioned, backend-neutral archive state carried inside node/edge metadata during restores.
+     * Matrix stores retain it privately so first-class domain fields can be reconstructed on reads;
+     * exporters remove it from the public metadata bag to prevent recursive archive growth.
+     */
+    String NODE_RESTORE_STATE_KEY = "kompile.restore.node.v1";
+    String EDGE_RESTORE_STATE_KEY = "kompile.restore.edge.v1";
+
     // ═══════════════════════════════════════════════════════════════════════════
     // NODE MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
@@ -437,10 +445,9 @@ public interface KnowledgeGraphService {
     /**
      * Specification for one edge to create via {@link #createEdgesBatch}.
      *
-     * <p>The batch method performs server-side idempotency: if an edge already exists between
-     * {@code sourceNodeId} and {@code targetNodeId} (regardless of edge type), the tuple is
-     * skipped rather than creating a duplicate.  Duplicate checking is intentionally coarse
-     * (same source+target pair) to match the behaviour of the normalizer redirect step.</p>
+     * <p>The batch method performs server-side idempotency. Implementations with typed relation
+     * storage should distinguish structural type, semantic label, and fact-sheet scope so parallel
+     * relations between the same endpoints survive archive restore.</p>
      */
     record EdgeSpec(
             String sourceNodeId,
@@ -478,7 +485,8 @@ public interface KnowledgeGraphService {
         int created = 0;
         for (EdgeSpec s : specs) {
             try {
-                if (!edgeExists(s.sourceNodeId(), s.targetNodeId())) {
+                if (!edgeExists(s.sourceNodeId(), s.targetNodeId(),
+                        s.edgeType(), s.label(), s.factSheetId())) {
                     createEdgeWithMetadata(
                             s.sourceNodeId(), s.targetNodeId(), s.edgeType(), s.weight(),
                             s.label(), s.description(), s.metaJson(), s.provenance(),
@@ -779,8 +787,8 @@ public interface KnowledgeGraphService {
     /**
      * Export the embeddings the live store holds for a fact sheet's nodes, keyed by nodeId.
      *
-     * <p>Store-agnostic seam so {@code GraphEmbeddingSidecar} can serialize whatever the
-     * @Primary store actually holds, rather than only the JPA {@code kgEmbedding} column:
+     * <p>Store-agnostic seam for callers that need the vectors held by the
+     * @Primary store, rather than only the JPA {@code kgEmbedding} column:
      * the matrix/vector store returns its per-node vectors (the text embeddings used for
      * similarity search); a JPA-backed store may return its KGE columns. Only nodes that
      * have an embedding are included. Returned arrays are caller-owned and should be closed

@@ -1,46 +1,64 @@
 import Foundation
 
-/// Role of a message in the conversation, mirroring the Java `Message` record's role strings.
+/// Provider-neutral message roles consumed by the imported model template.
 enum MessageRole: String, Codable, Equatable {
-    case system       = "system"
-    case user         = "user"
-    case assistant    = "assistant"
-    case toolResult   = "tool_result"
+    case system = "system"
+    case user = "user"
+    case assistant = "assistant"
+    case tool = "tool"
 }
 
-/// An immutable chat message.  Mirrors `ai.kompile.chat.local.Message`.
-///
-/// The `toolResult` role uses content format "TOOL_RESULT <tool>: <json>"
-/// exactly as defined in Message.toolResult() — this is critical for models
-/// that do not have a native tool_result role.
+/// Immutable structured chat message mirroring the Java Message record.
 struct ChatMessage: Identifiable, Codable, Equatable {
     let id: UUID
     let role: MessageRole
     let content: String
-    /// Wall-clock timestamp when the message was created.
     let timestamp: Date
+    /// Canonical JSON array of assistant tool calls, when present.
+    let toolCallsJson: String?
+    let toolCallId: String?
+    let toolName: String?
 
-    // MARK: - Factory methods (mirror Message.java static constructors)
+    init(
+        id: UUID = UUID(),
+        role: MessageRole,
+        content: String,
+        timestamp: Date = Date(),
+        toolCallsJson: String? = nil,
+        toolCallId: String? = nil,
+        toolName: String? = nil
+    ) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.timestamp = timestamp
+        self.toolCallsJson = toolCallsJson
+        self.toolCallId = toolCallId
+        self.toolName = toolName
+    }
 
     static func system(_ content: String) -> ChatMessage {
-        ChatMessage(id: UUID(), role: .system, content: content, timestamp: Date())
+        ChatMessage(role: .system, content: content)
     }
 
     static func user(_ content: String) -> ChatMessage {
-        ChatMessage(id: UUID(), role: .user, content: content, timestamp: Date())
+        ChatMessage(role: .user, content: content)
     }
 
-    static func assistant(_ content: String) -> ChatMessage {
-        ChatMessage(id: UUID(), role: .assistant, content: content, timestamp: Date())
+    static func assistant(_ content: String, toolCallsJson: String? = nil) -> ChatMessage {
+        ChatMessage(role: .assistant, content: content, toolCallsJson: toolCallsJson)
     }
 
-    /// "TOOL_RESULT <tool>: <json>" — matches Message.toolResult() exactly.
-    static func toolResult(tool: String, json: String) -> ChatMessage {
+    static func toolResult(
+        callId: String?,
+        tool: String,
+        json: String
+    ) -> ChatMessage {
         ChatMessage(
-            id: UUID(),
-            role: .toolResult,
-            content: "TOOL_RESULT \(tool): \(json)",
-            timestamp: Date()
+            role: .tool,
+            content: json,
+            toolCallId: callId,
+            toolName: tool
         )
     }
 }

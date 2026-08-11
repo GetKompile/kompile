@@ -57,11 +57,13 @@ public class GraphReasoningQueryTool implements CliTool {
 
     private final GroundingBackendClient groundingClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     /** Production constructor. */
     public GraphReasoningQueryTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper    = objectMapper;
         this.groundingClient = new GroundingBackendClient(baseUrl);
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     /** Testing constructor — accepts an injected {@code GroundingBackendClient} so
@@ -69,6 +71,7 @@ public class GraphReasoningQueryTool implements CliTool {
     GraphReasoningQueryTool(GroundingBackendClient groundingClient, ObjectMapper objectMapper) {
         this.objectMapper    = objectMapper;
         this.groundingClient = groundingClient;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     @Override
@@ -156,8 +159,11 @@ public class GraphReasoningQueryTool implements CliTool {
         context.checkPermission(permissionKey(), "Query knowledge graph");
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("graph_reasoning_query requires kompile-graph-service or a compatible " +
-                    "kompile-app. Start one and use --graph-url or --url to connect.");
+            try {
+                return formatResult(localBackend.reasoningQuery(params, context));
+            } catch (Exception e) {
+                return ToolResult.error("graph_reasoning_query local error: " + e.getMessage());
+            }
         }
 
         try {

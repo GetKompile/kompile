@@ -324,6 +324,7 @@ internal object NativeOperationDiagnosticPolicy {
 internal class NativeOperationJournal(context: Context) {
     private val applicationContext = context.applicationContext
     private val directory = File(applicationContext.noBackupFilesDir, JOURNAL_DIRECTORY)
+    private val smokeTrace = SmokeDecodeTraceLog(applicationContext)
 
     @Synchronized
     fun begin(
@@ -356,6 +357,24 @@ internal class NativeOperationJournal(context: Context) {
             memory = NativeOperationMemorySnapshot.capture(applicationContext)
         )
         persist(attempt)
+        if (operation == NativeOperationKind.SDX_MODEL_EXECUTION) {
+            smokeTrace.record(
+                "attempt_started",
+                attempt.attemptId,
+                mapOf(
+                    "operation" to operation.name,
+                    "checkpoint" to checkpoint.name,
+                    "provider" to attempt.provider,
+                    "target_profile" to attempt.targetProfile,
+                    "process_name" to processName,
+                    "process_id" to processId,
+                    "model_bytes" to attempt.modelBytes,
+                    "java_heap_used" to attempt.memory.javaHeapUsedBytes,
+                    "native_heap_used" to attempt.memory.nativeHeapAllocatedBytes,
+                    "system_available" to attempt.memory.systemAvailableBytes
+                )
+            )
+        }
         return NativeOperationTransaction(this, attempt)
     }
 
@@ -415,6 +434,22 @@ internal class NativeOperationJournal(context: Context) {
             memory = NativeOperationMemorySnapshot.capture(applicationContext)
         )
         persist(updated)
+        if (updated.operation == NativeOperationKind.SDX_MODEL_EXECUTION) {
+            smokeTrace.record(
+                "checkpoint",
+                updated.attemptId,
+                mapOf(
+                    "checkpoint" to updated.checkpoint.name,
+                    "checkpoint_label" to updated.checkpoint.label,
+                    "process_name" to processName,
+                    "process_id" to processId,
+                    "java_heap_used" to updated.memory.javaHeapUsedBytes,
+                    "native_heap_used" to updated.memory.nativeHeapAllocatedBytes,
+                    "system_available" to updated.memory.systemAvailableBytes,
+                    "system_low_memory" to updated.memory.systemLowMemory
+                )
+            )
+        }
         return updated
     }
 
@@ -432,9 +467,30 @@ internal class NativeOperationJournal(context: Context) {
             exitEvidence = null,
             managedFailure = failure
         )
+        smokeTrace.recordFailure(
+            "attempt_failed",
+            attemptId,
+            failure,
+            mapOf(
+                "operation" to stored.operation.name,
+                "checkpoint" to stored.checkpoint.name,
+                "process_id" to stored.processId
+            )
+        )
         ImportDiagnosticStore(applicationContext).appendDurably(diagnostic)
         clear(attemptId)
         return stored
+    }
+
+    @Synchronized
+    internal fun traceCompletion(attempt: NativeOperationAttempt) {
+        if (attempt.operation == NativeOperationKind.SDX_MODEL_EXECUTION) {
+            smokeTrace.record(
+                "attempt_completed",
+                attempt.attemptId,
+                mapOf("checkpoint" to attempt.checkpoint.name)
+            )
+        }
     }
 
     @Synchronized
@@ -646,6 +702,7 @@ internal class NativeOperationTransaction(
 
     private fun finish() {
         if (finished) return
+        journal.traceCompletion(attempt)
         journal.clear(attempt.attemptId)
         finished = true
     }

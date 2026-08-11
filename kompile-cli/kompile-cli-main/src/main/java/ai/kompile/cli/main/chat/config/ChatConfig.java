@@ -17,6 +17,9 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -50,13 +53,24 @@ public class ChatConfig {
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @JsonProperty
-    private String provider; // kompile, openai, anthropic, gemini, ollama, openrouter, custom
+    private String provider; // kompile, kompile-local, openai, anthropic, gemini, ollama, custom
 
-    @JsonProperty
+    /**
+     * Legacy/in-memory API key input. It is accepted when reading older config
+     * files but is never written back; persisted secrets live in auth.json.
+     */
+    @JsonProperty(value = "apiKey", access = JsonProperty.Access.WRITE_ONLY)
     private String apiKey;
 
     @JsonProperty
     private String model;
+
+    /**
+     * Optional reasoning effort for standard direct-model chat. A null/blank
+     * value leaves the provider's model default unchanged.
+     */
+    @JsonProperty
+    private String thinking;
 
     @JsonProperty
     private String baseUrl; // null = use provider default
@@ -113,14 +127,73 @@ public class ChatConfig {
     public String getProvider() { return provider; }
     public void setProvider(String provider) { this.provider = provider; }
 
-    public String getApiKey() { return apiKey; }
+    /**
+     * Resolve request credentials in Pi-compatible priority order: an explicit
+     * in-memory value, the managed credential store, then the provider's
+     * environment variable. This computed value is never serialized.
+     */
+    @JsonIgnore
+    public String getApiKey() {
+        OAuthProviderFlow.RequestAuth auth = resolveRequestAuth();
+        return auth == null ? null : auth.token();
+    }
+
+    /** Resolve and, when necessary, refresh the provider's request credential. */
+    @JsonIgnore
+    public OAuthProviderFlow.RequestAuth resolveRequestAuth() {
+        if (apiKey != null && !apiKey.isBlank()) {
+            return OAuthProviderFlow.RequestAuth.apiKey(apiKey);
+        }
+        if (provider == null || provider.isBlank()) {
+            return null;
+        }
+        try {
+            OAuthProviderFlow.RequestAuth stored = OAuthCredentialManager.create().resolve(provider);
+            if (stored != null) {
+                return stored;
+            }
+        } catch (IOException e) {
+            System.err.println("Warning: Could not resolve managed credentials for "
+                    + provider + ": " + e.getMessage());
+        }
+        String environmentName = getEnvironmentVariable(provider);
+        if (environmentName == null) {
+            return null;
+        }
+        String value = System.getenv(environmentName);
+        return value == null || value.isBlank()
+                ? null
+                : OAuthProviderFlow.RequestAuth.apiKey(value);
+    }
+
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
 
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
 
+    public String getThinking() { return thinking; }
+    public void setThinking(String thinking) { this.thinking = thinking; }
+
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+
+    /**
+     * Hot-apply only the live LLM settings from another configuration.
+     * Keeping this object identity lets the active direct client, tool registry,
+     * and performance harness observe a provider switch without rebuilding the
+     * REPL or changing its session/transcript state.
+     */
+    public void applyLlmSettingsFrom(ChatConfig source) {
+        if (source == null) {
+            throw new IllegalArgumentException("Source chat configuration is required");
+        }
+        this.provider = source.provider;
+        this.apiKey = source.apiKey;
+        this.model = source.model;
+        this.thinking = source.thinking;
+        this.baseUrl = source.baseUrl;
+        this.loadedFrom = source.loadedFrom;
+    }
 
     public String getDefaultAgent() { return defaultAgent; }
     public void setDefaultAgent(String defaultAgent) { this.defaultAgent = defaultAgent; }
@@ -152,8 +225,15 @@ public class ChatConfig {
      * Resolve the actual API base URL for the configured provider.
      */
     public String resolveBaseUrl() {
+        return resolveBaseUrl(resolveRequestAuth());
+    }
+
+    public String resolveBaseUrl(OAuthProviderFlow.RequestAuth auth) {
         if (baseUrl != null && !baseUrl.isBlank()) {
             return baseUrl;
+        }
+        if (auth != null && auth.baseUrl() != null && !auth.baseUrl().isBlank()) {
+            return auth.baseUrl();
         }
         return getDefaultBaseUrl(provider);
     }
@@ -166,12 +246,15 @@ public class ChatConfig {
         // Passthrough mode doesn't need provider/model/key - the agent handles its own auth
         if ("passthrough".equals(chatMode)) return true;
         if (provider == null || provider.isBlank()) return false;
-        // Kompile server mode doesn't need model or API key
+        // Kompile instance mode doesn't need model or API key.
         if ("kompile".equals(provider)) return true;
         if (model == null || model.isBlank()) return false;
-        // Ollama doesn't need an API key
-        if ("ollama".equals(provider)) return true;
-        return apiKey != null && !apiKey.isBlank();
+        // First-party Kompile serving and external local endpoints do not require an API key.
+        if ("kompile-local".equals(provider)
+                || "ollama".equals(provider)
+                || "custom".equals(provider)) return true;
+        String resolvedApiKey = getApiKey();
+        return resolvedApiKey != null && !resolvedApiKey.isBlank();
     }
 
     /**
@@ -182,18 +265,32 @@ public class ChatConfig {
         return "kompile".equals(provider);
     }
 
+    /**
+     * Whether this config owns Kompile's first-party serving subprocess.
+     */
+    @JsonIgnore
+    public boolean isKompileLocalServing() {
+        return "kompile-local".equals(provider);
+    }
+
     // --- Static helpers ---
 
     public static String getDefaultBaseUrl(String provider) {
         if (provider == null) return null;
         switch (provider.toLowerCase()) {
             // Server mode talks to /api/agents/chat, which kompile-app-chat owns.
-            case "kompile":    return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
+            case "kompile":       return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
+            // The bootstrap assigns a private loopback URL for each local chat session.
+            case "kompile-local": return null;
             case "openai":     return "https://api.openai.com/v1";
             case "anthropic":  return "https://api.anthropic.com";
             case "gemini":     return "https://generativelanguage.googleapis.com/v1beta/openai";
             case "ollama":     return "http://localhost:11434/v1";
             case "openrouter": return "https://openrouter.ai/api/v1";
+            case "xai":        return "https://api.x.ai/v1";
+            case "github-copilot": return "https://api.individual.githubcopilot.com";
+            case "openai-codex": return "https://chatgpt.com/backend-api";
+            case "radius":     return "https://radius.pi.dev";
             case "deepseek":   return "https://api.deepseek.com/v1";
             case "groq":       return "https://api.groq.com/openai/v1";
             default:           return null;
@@ -203,12 +300,23 @@ public class ChatConfig {
     public static String[] getDefaultModels(String provider) {
         if (provider == null) return new String[0];
         switch (provider.toLowerCase()) {
-            case "kompile":    return new String[0]; // kompile uses server-side agents, not model names
+            case "kompile":       return new String[0]; // instance uses server-side agents
+            case "kompile-local": return new String[]{
+                    "Qwen2.5-0.5B-Instruct", "Qwen2.5-1.5B-Instruct"};
             case "openai":     return new String[]{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"};
             case "anthropic":  return new String[]{"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"};
             case "gemini":     return new String[]{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"};
             case "ollama":     return new String[]{"llama3.3", "qwen2.5-coder:32b", "codellama:34b", "deepseek-coder-v2"};
             case "openrouter": return new String[]{"anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro"};
+            case "xai":        return new String[]{"grok-4", "grok-4-fast-reasoning"};
+            case "github-copilot": return new String[]{
+                    "gpt-5.6-terra", "gpt-5.4", "gpt-4.1",
+                    "claude-sonnet-4.6", "gemini-3.1-pro-preview"};
+            case "openai-codex": return new String[]{
+                    "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna",
+                    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+                    "gpt-5.3-codex-spark"};
+            case "radius":     return new String[0]; // loaded dynamically from /v1/config
             case "deepseek":   return new String[]{"deepseek-chat", "deepseek-coder", "deepseek-reasoner"};
             case "groq":       return new String[]{"llama-3.3-70b-versatile", "mixtral-8x7b-32768"};
             default:           return new String[0];
@@ -224,12 +332,24 @@ public class ChatConfig {
         return "anthropic".equals(provider);
     }
 
+    /** Whether this provider uses OpenAI's Responses protocol through ChatGPT. */
+    @JsonIgnore
+    public boolean isOpenAiCodexFormat() {
+        return "openai-codex".equals(provider);
+    }
+
+    /** Whether this provider uses Pi's native messages protocol. */
+    @JsonIgnore
+    public boolean isPiMessagesFormat() {
+        return "radius".equals(provider);
+    }
+
     /**
      * Whether this provider uses OpenAI-compatible Chat Completions format.
      */
     @JsonIgnore
     public boolean isOpenAiCompatible() {
-        return !isAnthropicFormat();
+        return !isAnthropicFormat() && !isOpenAiCodexFormat() && !isPiMessagesFormat();
     }
 
     // --- Persistence ---
@@ -310,6 +430,7 @@ public class ChatConfig {
         try {
             ChatConfig config = MAPPER.readValue(path.toFile(), ChatConfig.class);
             config.loadedFrom = path.toAbsolutePath().normalize();
+            config.migrateLegacyApiKey(path);
             return config;
         } catch (IOException e) {
             System.err.println("Warning: Could not load chat config: " + e.getMessage());
@@ -335,8 +456,39 @@ public class ChatConfig {
 
     private void saveTo(Path path) throws IOException {
         Files.createDirectories(path.getParent());
-        MAPPER.writeValue(path.toFile(), this);
-        loadedFrom = path.toAbsolutePath().normalize();
+        String transientApiKey = apiKey;
+        if (transientApiKey != null && !transientApiKey.isBlank()
+                && provider != null && !provider.isBlank()) {
+            CredentialStore.create().putApiKey(provider, transientApiKey);
+            apiKey = null;
+        }
+        try {
+            MAPPER.writeValue(path.toFile(), this);
+            loadedFrom = path.toAbsolutePath().normalize();
+        } catch (IOException e) {
+            apiKey = transientApiKey;
+            throw e;
+        }
+    }
+
+    /**
+     * Import a plaintext API key from an older chat-config.json into the private
+     * managed store and scrub it from the original config file.
+     */
+    private void migrateLegacyApiKey(Path path) {
+        if (apiKey == null || apiKey.isBlank() || provider == null || provider.isBlank()) {
+            return;
+        }
+        String legacyApiKey = apiKey;
+        try {
+            CredentialStore.create().putApiKey(provider, legacyApiKey);
+            apiKey = null;
+            MAPPER.writeValue(path.toFile(), this);
+        } catch (IOException e) {
+            apiKey = legacyApiKey;
+            System.err.println("Warning: Could not migrate legacy API key from "
+                    + path + " to managed credential storage: " + e.getMessage());
+        }
     }
 
     /**
@@ -360,6 +512,22 @@ public class ChatConfig {
             return config;
         }
         return fromEnv();
+    }
+
+    private static String getEnvironmentVariable(String provider) {
+        if (provider == null) return null;
+        return switch (provider.toLowerCase()) {
+            case "openai" -> "OPENAI_API_KEY";
+            case "anthropic" -> "ANTHROPIC_API_KEY";
+            case "gemini" -> "GOOGLE_API_KEY";
+            case "openrouter" -> "OPENROUTER_API_KEY";
+            case "xai" -> "XAI_API_KEY";
+            case "github-copilot" -> "COPILOT_GITHUB_TOKEN";
+            case "radius" -> "RADIUS_API_KEY";
+            case "deepseek" -> "DEEPSEEK_API_KEY";
+            case "groq" -> "GROQ_API_KEY";
+            default -> null;
+        };
     }
 
     private static ChatConfig fromEnv() {
@@ -389,18 +557,25 @@ public class ChatConfig {
     // Available provider names for the setup wizard
     public static final Map<String, String> PROVIDERS = Map.ofEntries(
             Map.entry("kompile", "Kompile (connect to a running kompile-app instance)"),
+            Map.entry("kompile-local", "Kompile Local (first-party serving subprocess)"),
             Map.entry("openai", "OpenAI (GPT-4o, o4-mini)"),
             Map.entry("anthropic", "Anthropic (Claude Sonnet/Opus)"),
             Map.entry("gemini", "Google Gemini (2.5 Pro/Flash)"),
             Map.entry("ollama", "Ollama (local models, no API key needed)"),
+            Map.entry("custom", "OpenAI-compatible endpoint"),
             Map.entry("openrouter", "OpenRouter (multi-provider gateway)"),
+            Map.entry("xai", "xAI (Grok)"),
+            Map.entry("github-copilot", "GitHub Copilot"),
+            Map.entry("openai-codex", "OpenAI Codex (ChatGPT Plus/Pro)"),
+            Map.entry("radius", "Radius (dynamic Pi gateway)"),
             Map.entry("deepseek", "DeepSeek (DeepSeek-V3/Coder)"),
             Map.entry("groq", "Groq (fast inference)")
     );
 
     // Ordered list for display — kompile first
     public static final String[] PROVIDER_ORDER = {
-            "kompile", "anthropic", "openai", "gemini", "ollama", "openrouter", "deepseek", "groq"
+            "kompile", "anthropic", "openai", "gemini", "ollama", "openrouter", "xai",
+            "github-copilot", "openai-codex", "radius", "deepseek", "groq"
     };
 
     // Available passthrough agents — derived from CliAgentRegistry (single source of truth).

@@ -29,6 +29,42 @@ class KgraphArtifactValidatorTest {
     }
 
     @Test
+    fun acceptsV2ContainerWithSchemaIndex() {
+        val graph = writeGraph(
+            mapOf(
+                "manifest.json" to """{"format":"kompile-graph","formatVersion":2}""",
+                "schemas/index.json" to """{"format":"kompile-unified-schema","version":1}""",
+                "entities.jsonl" to "",
+                "relations.jsonl" to ""
+            )
+        )
+
+        try {
+            KgraphArtifactValidator.validate(graph)
+        } finally {
+            Files.deleteIfExists(graph)
+        }
+    }
+
+    @Test
+    fun rejectsV2ContainerWithoutSchemaIndex() {
+        val graph = writeGraph(
+            mapOf(
+                "manifest.json" to """{"format":"kompile-graph","formatVersion":2}""",
+                "entities.jsonl" to "",
+                "relations.jsonl" to ""
+            )
+        )
+
+        try {
+            val failure = expectIOException { KgraphArtifactValidator.validate(graph) }
+            assertTrue(failure.message.orEmpty().contains("schemas/index.json"))
+        } finally {
+            Files.deleteIfExists(graph)
+        }
+    }
+
+    @Test
     fun rejectsContainerWithoutManifest() {
         val graph = writeGraph(
             mapOf(

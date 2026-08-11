@@ -33,6 +33,7 @@ public final class KgraphArtifactValidator {
     private static final long MAX_TOTAL_UNCOMPRESSED_BYTES = 1024L * 1024L * 1024L;
     private static final int MAX_MANIFEST_BYTES = 64 * 1024;
     private static final String MANIFEST = "manifest.json";
+    private static final String SCHEMA_INDEX = "schemas/index.json";
     private static final String ENTITIES = "entities.jsonl";
     private static final String RELATIONS = "relations.jsonl";
     private static final String[] REQUIRED_ENTRIES = {MANIFEST, ENTITIES, RELATIONS};
@@ -51,7 +52,13 @@ public final class KgraphArtifactValidator {
 
         try (ZipFile zip = new ZipFile(path.toFile())) {
             List<ZipEntry> entries = inspectEntries(zip);
-            validateManifest(zip.getEntry(MANIFEST), zip);
+            int formatVersion = validateManifest(zip.getEntry(MANIFEST), zip);
+            if (formatVersion >= 2) {
+                ZipEntry schema = zip.getEntry(SCHEMA_INDEX);
+                if (schema == null || schema.isDirectory()) {
+                    throw new IOException("Invalid .kgraph v2: missing " + SCHEMA_INDEX);
+                }
+            }
             validatePayloadBounds(entries, zip);
         } catch (ZipException malformed) {
             throw new IOException("Invalid .kgraph: not a readable graph container", malformed);
@@ -129,7 +136,7 @@ public final class KgraphArtifactValidator {
         }
     }
 
-    private static void validateManifest(ZipEntry manifest, ZipFile zip) throws IOException {
+    private static int validateManifest(ZipEntry manifest, ZipFile zip) throws IOException {
         String manifestJson;
         try (InputStream input = zip.getInputStream(manifest)) {
             manifestJson = new String(readBounded(input, MAX_MANIFEST_BYTES, MANIFEST),
@@ -148,9 +155,12 @@ public final class KgraphArtifactValidator {
             throw new IOException("Invalid .kgraph: unsupported manifest format");
         }
         Object formatVersion = root.get("formatVersion");
-        if (!(formatVersion instanceof Long) || ((Long) formatVersion).longValue() != 1L) {
+        if (!(formatVersion instanceof Long)
+                || (((Long) formatVersion).longValue() != 1L
+                && ((Long) formatVersion).longValue() != 2L)) {
             throw new IOException("Invalid .kgraph: unsupported formatVersion");
         }
+        return ((Long) formatVersion).intValue();
     }
 
     private static void validatePayloadBounds(List<ZipEntry> entries, ZipFile zip)

@@ -4483,8 +4483,6 @@
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/impl/SourceWeightingServiceImpl.class\\E"
   }, {
-    "pattern":"\\Qai/kompile/knowledgegraph/io/GraphEmbeddingSidecar.class\\E"
-  }, {
     "pattern":"\\Qai/kompile/knowledgegraph/io/GraphIOService.class\\E"
   }, {
     "pattern":"\\Qai/kompile/knowledgegraph/io/GraphMergeService$MergeResult.class\\E"

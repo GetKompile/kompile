@@ -112,6 +112,17 @@ public interface SdxLlmAbi extends Library {
     int sdxLlmGenerate(Pointer runtime, Pointer model, String prompt, String optionsJson,
                        PointerByReference outText);
 
+    /**
+     * Generate a structured chat result using the imported model's own template,
+     * thinking-block rules, and tool-call protocol.
+     */
+    int sdxLlmGenerateChat(Pointer runtime, Pointer model, String requestJson,
+                           String optionsJson, PointerByReference outJson);
+
+    /** Decode already-generated assistant text through the imported model protocol. */
+    int sdxLlmParseChatResult(Pointer runtime, Pointer model, String requestJson,
+                              String rawText, PointerByReference outJson);
+
     /** Receives complete UTF-8 chunks while generation is in progress. */
     interface ChunkCallback extends Callback {
         void invoke(String utf8Chunk);

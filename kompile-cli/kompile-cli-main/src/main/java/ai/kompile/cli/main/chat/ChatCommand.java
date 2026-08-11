@@ -56,8 +56,8 @@ import java.util.concurrent.Callable;
 
 @CommandLine.Command(
         name = "chat",
-        description = "Interactive chat REPL. Works with a running kompile-app (server mode) "
-                + "or directly with LLM APIs (local mode).",
+        description = "Interactive chat REPL. Uses a Kompile instance, the first-party "
+                + "Kompile serving subprocess, or a configured model API.",
         mixinStandardHelpOptions = true
 )
 public class ChatCommand implements Callable<Integer> {
@@ -70,6 +70,15 @@ public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--port", "-p"}, description = "Port of the kompile chat server on localhost")
     private Integer port;
+
+    @CommandLine.Option(names = {"--start"}, negatable = true, defaultValue = "true",
+            fallbackValue = "true", description =
+            "Start the installed chat subprocess when no instance is configured (default: true)")
+    private boolean startServer;
+
+    @CommandLine.Option(names = {"--startup-timeout"}, defaultValue = "120", description =
+            "Seconds to wait for the installed chat subprocess (default: 120)")
+    private int startupTimeoutSeconds;
 
     @CommandLine.Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
     private String sessionId;
@@ -102,7 +111,7 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--memory"}, negatable = true, description = "Enable memory (default: true)", defaultValue = "true")
     private boolean memory;
 
-    @CommandLine.Option(names = {"--local"}, description = "Force local mode (direct LLM, no server)", defaultValue = "false")
+    @CommandLine.Option(names = {"--local"}, description = "Force no-instance mode (Kompile serving subprocess or direct model API)", defaultValue = "false")
     private boolean forceLocal;
 
     @CommandLine.Option(names = {"--setup"}, description = "Run chat configuration setup wizard", defaultValue = "false")
@@ -176,9 +185,9 @@ public class ChatCommand implements Callable<Integer> {
             sessionId = "cli-" + UUID.randomUUID().toString().substring(0, 8);
         }
 
-        // Check if explicit action flags are given (skip wizard if so)
+        // Explicit action flags retain their existing behavior and skip the session wizard.
         boolean hasExplicitAction = isResume || (mode != null && !mode.isBlank())
-                || (url != null && !url.isBlank()) || port != null || forceLocal;
+                || (url != null && !url.isBlank()) || port != null || forceLocal || !startServer;
 
         // Load saved chat settings. The legacy direct-LLM path can still fall back
         // to env-based provider config; passthrough configs are CLI-agent/session
@@ -190,7 +199,9 @@ public class ChatCommand implements Callable<Integer> {
             config = configFromExplicitRoute();
         }
 
-        if (!hasExplicitAction || runSetup || config == null) {
+        // Bare chat keeps the established wizard-first flow. The installed subprocess is
+        // considered only after the user has selected Standard Chat and a provider.
+        if (shouldRunSetupWizard(config, hasExplicitAction)) {
             config = runSetupWizard();
             configSelectedInThisRun = true;
             if (config == null) {
@@ -204,11 +215,35 @@ public class ChatCommand implements Callable<Integer> {
             config.setChatMode(mode.toLowerCase());
         }
 
-        return routeFromConfig(config, isResume, resolvedRole, configSelectedInThisRun);
+        boolean startInstalledChatSubprocess = config.isKompileServer()
+                && shouldStartInstalledChatSubprocess(config,
+                ChatInstanceBootstrap.isDistributionInstalled());
+
+        return routeFromConfig(config, isResume, resolvedRole, configSelectedInThisRun,
+                startInstalledChatSubprocess);
     }
 
     private ChatConfig runSetupWizard() {
         return globalConfig ? SetupWizard.runGlobal() : SetupWizard.run();
+    }
+
+    boolean shouldRunSetupWizard(ChatConfig config, boolean hasExplicitAction) {
+        return !hasExplicitAction || config == null;
+    }
+
+    boolean canUseInstalledChatSubprocessFallback() {
+        if (!startServer || forceLocal || (url != null && !url.isBlank()) || port != null) {
+            return false;
+        }
+        String normalizedMode = mode == null ? null : mode.trim().toLowerCase(Locale.ROOT);
+        return normalizedMode == null || normalizedMode.isBlank() || "standard".equals(normalizedMode);
+    }
+
+    boolean shouldStartInstalledChatSubprocess(ChatConfig config,
+                                               boolean distributionInstalled) {
+        return config != null && config.isKompileServer() && distributionInstalled
+                && canUseInstalledChatSubprocessFallback()
+                && ChatInstanceBootstrap.isLoopbackHttpUrl(resolveServerUrl(config));
     }
 
     ChatConfig configFromExplicitRoute() {
@@ -221,7 +256,10 @@ public class ChatCommand implements Callable<Integer> {
             }
             return config;
         }
-        if ((url != null && !url.isBlank()) || port != null) {
+        if ((url != null && !url.isBlank()) || port != null
+                || (!startServer && !forceLocal
+                && (normalizedMode == null || normalizedMode.isBlank()
+                || "standard".equals(normalizedMode)))) {
             ChatConfig config = new ChatConfig("kompile", null, null, null);
             config.setChatMode("standard");
             return config;
@@ -234,7 +272,8 @@ public class ChatCommand implements Callable<Integer> {
      * Dispatches between passthrough (managed/direct), server, and local LLM modes.
      */
     private int routeFromConfig(ChatConfig config, boolean isResume, String resolvedRole,
-                                boolean configSelectedInThisRun) {
+                                boolean configSelectedInThisRun,
+                                boolean startInstalledChatSubprocess) {
         String chatMode = config.getChatMode();
 
         // Resume mode: wizard already launched ResumeTool, nothing else to do
@@ -283,26 +322,40 @@ public class ChatCommand implements Callable<Integer> {
             }
         }
 
-        // Server mode only when explicitly requested via --url or --port
+        // Explicit server routes remain connect-only for backwards compatibility.
         String targetUrl = resolveExplicitUrl();
         if (targetUrl != null) {
             return runServerMode(targetUrl, isResume, resolvedRole);
         }
 
-        // If config has kompile provider, use its URL when explicit
         if (config.isKompileServer()) {
-            String serverUrl = resolveExplicitUrl();
-            if (serverUrl != null) {
-                return runServerMode(serverUrl, isResume, resolvedRole);
+            String serverUrl = resolveServerUrl(config);
+            if (serverUrl == null || serverUrl.isBlank()) {
+                System.err.println("Kompile chat server URL is not configured.");
+                System.err.println("Reconfigure with: kompile chat --setup");
+                return 1;
             }
-            System.err.println("Config has kompile provider but no --url/--port given.");
-            System.err.println("Use: kompile chat --url "
-                    + KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl());
-            System.err.println("Or reconfigure with: kompile chat --setup");
-            return 1;
+
+            if (startInstalledChatSubprocess) {
+                try {
+                    ChatInstanceBootstrap.StartupResult started = ChatInstanceBootstrap.ensureReady(
+                            serverUrl, startupTimeoutSeconds);
+                    serverUrl = started.chatUrl();
+                } catch (ChatInstanceBootstrap.BootstrapException e) {
+                    System.err.println("Could not start local Kompile chat: " + e.getMessage());
+                    System.err.println("Use --no-start to connect without launching the subprocess, "
+                            + "or run 'kompile chat --setup' for another provider.");
+                    return 1;
+                }
+            }
+            return runServerMode(serverUrl, isResume, resolvedRole);
         }
 
-        // Local mode - direct LLM API calls
+        if (config.isKompileLocalServing()) {
+            return runKompileLocalServingMode(config, isResume, resolvedRole);
+        }
+
+        // Direct LLM API mode.
         return runLocalLlmMode(config, isResume, resolvedRole);
     }
 
@@ -377,6 +430,7 @@ public class ChatCommand implements Callable<Integer> {
         try (McpSseClient client = new McpSseClient(targetUrl)) {
             client.connect();
             client.initialize();
+            client.notifyInitialized();
 
             if (isResume) {
                 System.out.println("Resuming conversation: " + sessionId);
@@ -400,6 +454,28 @@ public class ChatCommand implements Callable<Integer> {
             return 0;
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /**
+     * First-party local model mode: start Kompile's low-overhead serving
+     * subprocess with the selected model, then keep it alive for the normal
+     * Standard Chat REPL. No full Kompile application instance is started.
+     */
+    private int runKompileLocalServingMode(
+            ChatConfig config, boolean isResume, String assignedRole) {
+        try (KompileLocalServingBootstrap.StartupResult runtime =
+                     KompileLocalServingBootstrap.ensureReady(
+                             config, startupTimeoutSeconds)) {
+            runtime.applyTo(config);
+            return runLocalLlmMode(config, isResume, assignedRole);
+        } catch (KompileLocalServingBootstrap.BootstrapException e) {
+            System.err.println("Could not start Kompile local serving: "
+                    + e.getMessage());
+            System.err.println("Reconfigure with 'kompile chat --setup' to use "
+                    + "an external Ollama/OpenAI-compatible endpoint, a cloud provider, "
+                    + "or a Kompile instance.");
             return 1;
         }
     }
@@ -718,16 +794,12 @@ public class ChatCommand implements Callable<Integer> {
             System.out.println();
         }
 
-        createChatSession(client);
-
         System.out.println("Restoring " + turns.size() + " turns to server...");
-        System.out.println("(server session is fresh; local transcript preserved for reference)");
+        createChatSession(client, turns);
+        System.out.println("Restored conversation context.");
     }
 
-    /**
-     * Resolve URL only from explicit --url or --port flags.
-     * Never auto-discovers — server mode is opt-in.
-     */
+    /** Resolve URL only from explicit --url or --port flags. */
     private String resolveExplicitUrl() {
         if (url != null && !url.isBlank()) {
             return url;
@@ -738,10 +810,16 @@ public class ChatCommand implements Callable<Integer> {
         return null;
     }
 
-    private String resolveUrl() {
+    String resolveServerUrl(ChatConfig config) {
         String explicit = resolveExplicitUrl();
         if (explicit != null) {
             return explicit;
+        }
+        if (config != null && config.isKompileServer()) {
+            String configured = config.resolveBaseUrl();
+            if (configured != null && !configured.isBlank()) {
+                return configured;
+            }
         }
         return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
     }
@@ -844,6 +922,10 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     private void createChatSession(McpSseClient client) throws Exception {
+        createChatSession(client, List.of());
+    }
+
+    private void createChatSession(McpSseClient client, List<ChatHistory.Turn> turns) throws Exception {
         ObjectNode args = client.getObjectMapper().createObjectNode();
         args.put("sessionId", sessionId);
         args.put("agentName", agentName);
@@ -855,6 +937,14 @@ public class ChatCommand implements Callable<Integer> {
         args.put("maxHistoryMessages", 50);
         args.put("similarityThreshold", 0.5);
         args.put("systemPrompt", "");
+        if (turns != null && !turns.isEmpty()) {
+            var history = args.putArray("history");
+            for (ChatHistory.Turn turn : turns) {
+                ObjectNode item = history.addObject();
+                item.put("role", turn.role());
+                item.put("content", turn.content());
+            }
+        }
         client.callTool("create_chat_session", args);
     }
 }

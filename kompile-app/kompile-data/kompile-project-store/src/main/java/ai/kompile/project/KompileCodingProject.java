@@ -35,6 +35,8 @@ public class KompileCodingProject {
     private String includePatterns;
     private String excludePatterns;
     private boolean autoIndex;
+    /** Fact sheet shared by code-index structure, crawl evidence, reasoning, and .kgraph snapshots. */
+    private Long factSheetId;
     private KompileProjectLifecycleState lifecycle = KompileProjectLifecycleState.ACTIVE;
     private List<String> tags = new ArrayList<>();
     private Map<String, String> metadata = new LinkedHashMap<>();
@@ -143,6 +145,14 @@ public class KompileCodingProject {
 
     public void setAutoIndex(boolean autoIndex) {
         this.autoIndex = autoIndex;
+    }
+
+    public Long getFactSheetId() {
+        return factSheetId;
+    }
+
+    public void setFactSheetId(Long factSheetId) {
+        this.factSheetId = factSheetId;
     }
 
     public KompileProjectLifecycleState getLifecycle() {

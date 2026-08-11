@@ -47,8 +47,22 @@ public final class UnifiedGraphFormat {
     /** {@code "kompile-graph"} — written to the manifest {@code format} field. */
     public static final String FORMAT = "kompile-graph";
 
-    /** Current format version. Bumped only on incompatible manifest/section changes. */
-    public static final int FORMAT_VERSION = 1;
+    /** Oldest format version accepted by the reader. */
+    public static final int MIN_READABLE_VERSION = 1;
+
+    /** Current format version. v2 is the property-complete debugging/persistence contract. */
+    public static final int CURRENT_VERSION = 2;
+
+    /** Compatibility alias used by existing callers and manifests. */
+    public static final int FORMAT_VERSION = CURRENT_VERSION;
+
+    /** Required schema index entry in a v2 archive. */
+    public static final String ENTRY_SCHEMA_INDEX = "schemas/index.json";
+
+    /** Whether this library can read {@code version} without rewriting the source archive. */
+    public static boolean supportsRead(long version) {
+        return version >= MIN_READABLE_VERSION && version <= CURRENT_VERSION;
+    }
 
     /** Identifies the producing library in the manifest. */
     public static final String GENERATOR = "kompile-graph-reasoning";

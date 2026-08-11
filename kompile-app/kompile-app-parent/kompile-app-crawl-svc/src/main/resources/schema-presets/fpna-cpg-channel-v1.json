@@ -2,7 +2,7 @@
   "id": "fpna-cpg-channel-v1",
   "name": "FP&A — CPG Channel Mix",
   "description": "Financial Planning & Analysis schema for CPG companies with multi-channel sales, regional forecasting, and close-cycle automation.",
-  "version": 2,
+  "version": 3,
   "nodeTypes": [
     {
       "label": "CHANNEL_TAXONOMY",
@@ -227,6 +227,39 @@
         {"name": "email", "type": "String"},
         {"name": "role", "type": "String"},
         {"name": "department", "type": "String"}
+      ]
+    },
+    {
+      "label": "GOVERNANCE_RULE",
+      "description": "A deterministic policy, approval rule, threshold, or escalation requirement governing the FP&A workflow.",
+      "properties": [
+        {"name": "rule_name", "type": "String"},
+        {"name": "condition", "type": "String"},
+        {"name": "required_action", "type": "String"}
+      ]
+    },
+    {
+      "label": "COMMUNICATION_CHANNEL",
+      "description": "A named channel used to communicate, submit, review, or escalate FP&A work.",
+      "properties": [
+        {"name": "channel_name", "type": "String"},
+        {"name": "channel_kind", "type": "String"}
+      ]
+    },
+    {
+      "label": "PROCESS_ACTION",
+      "description": "A concrete action performed as part of an FP&A process, review, approval, or remediation flow.",
+      "properties": [
+        {"name": "action_name", "type": "String"},
+        {"name": "status", "type": "String"}
+      ]
+    },
+    {
+      "label": "LINEAGE",
+      "description": "A named data-lineage path or mapping that records how an FP&A artifact is sourced or transformed.",
+      "properties": [
+        {"name": "lineage_name", "type": "String"},
+        {"name": "lineage_kind", "type": "String"}
       ]
     },
     {

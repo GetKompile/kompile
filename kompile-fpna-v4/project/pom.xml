@@ -157,6 +157,14 @@
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
+    <!-- The production crawl CLI supervises the app's agentic REST stream. Keep the chat
+         persona scoped to this FP&A instance; the shared admin app intentionally omits it. -->
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-app-web-chat</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-core</artifactId>

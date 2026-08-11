@@ -113,8 +113,7 @@ import javax.sql.DataSource;
         // KGEmbeddingSchemaBridgeService, the JPA KG-embedding adapter, …). KGE training runs in the main app.
         @ComponentScan.Filter(type = FilterType.REGEX, pattern = "ai\\.kompile\\.knowledgegraph\\.embedding\\..*"),
         // Graph maintenance (snapshots/restore/compaction/health/orphan-pruning) is an ADMIN subsystem that
-        // runs in the MAIN app — its SnapshotManager REQUIRES GraphIOService + GraphEmbeddingSidecar (in the
-        // excluded io/ package). The matrix store path consumes NONE of maintenance.* (verified: only
+        // runs in the MAIN app. The matrix store path consumes NONE of maintenance.* (verified: only
         // GraphMaintenanceController + maintenance-internal beans reference it). In the split architecture the
         // main app's SnapshotManager reaches the subprocess-resident graph through the @Primary service client,
         // so snapshot/restore still works end-to-end without standing maintenance up inside the subprocess.

@@ -99,6 +99,8 @@ final class UnifiedGraphWriter {
             byte[] manifest = buildManifest(graph, layers,
                     entityEmbeddings == null ? 0 : entityEmbeddings.dim()).getBytes(StandardCharsets.UTF_8);
             putEntry(zip, UnifiedGraphFormat.ENTRY_MANIFEST, manifest);
+            putEntry(zip, UnifiedGraphFormat.ENTRY_SCHEMA_INDEX,
+                    buildSchemaIndex(graph).getBytes(StandardCharsets.UTF_8));
 
             writeEntities(zip, graph);
             writeRelations(zip, graph);
@@ -131,6 +133,7 @@ final class UnifiedGraphWriter {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", e.id());
             m.put("type", e.type());
+            if (!e.typeMemberships().isEmpty()) m.put("typeMemberships", new ArrayList<>(e.typeMemberships()));
             m.put("label", e.label());
             m.put("weight", e.weight());
             m.put("confidence", e.confidence());
@@ -254,6 +257,7 @@ final class UnifiedGraphWriter {
         if (!graph.meta().isEmpty()) manifest.put("meta", graph.meta());
 
         List<Object> sections = new ArrayList<>();
+        sections.add(UnifiedGraphFormat.ENTRY_SCHEMA_INDEX);
         sections.add(UnifiedGraphFormat.ENTRY_ENTITIES);
         sections.add(UnifiedGraphFormat.ENTRY_RELATIONS);
         if (!graph.weightMaps().isEmpty()) sections.add(UnifiedGraphFormat.ENTRY_WEIGHTS);
@@ -277,6 +281,26 @@ final class UnifiedGraphWriter {
         }
         manifest.put("vectorLayers", layerIndex);
         return MiniJson.write(manifest);
+    }
+
+    private static String buildSchemaIndex(UnifiedGraph graph) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("format", "kompile-unified-schema");
+        schema.put("version", 1);
+        schema.put("entityCount", graph.entityCount());
+        schema.put("relationCount", graph.relationCount());
+        schema.put("entityTypes", graph.entities().stream().map(GraphEntity::type)
+                .filter(java.util.Objects::nonNull).distinct().sorted().toList());
+        schema.put("relationTypes", graph.relations().stream().map(GraphRelation::type)
+                .filter(java.util.Objects::nonNull).distinct().sorted().toList());
+        schema.put("entityAttributeKeys", graph.entities().stream().flatMap(e -> e.attributes().keySet().stream())
+                .distinct().sorted().toList());
+        schema.put("relationAttributeKeys", graph.relations().stream().flatMap(r -> r.attributes().keySet().stream())
+                .distinct().sorted().toList());
+        List<String> declared = graph.artifacts().keySet().stream()
+                .filter(name -> name.startsWith("schema/")).sorted().toList();
+        schema.put("declaredSchemaArtifacts", declared);
+        return MiniJson.write(schema);
     }
 
     // ═════════════════════════════════════════════════════════════════════════

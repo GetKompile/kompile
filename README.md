@@ -377,6 +377,7 @@ auto-discover the tools:
 | Workflow | `todowrite`, `todoread` |
 | Knowledge | `rag_search`, `graph_rag_search`, `semantic_memory`, `memory`, `transcript_search` |
 | Code | `code_search`, `code_graph`, `local_code_index`, `tool_call_catalog` |
+| Edit history | `diff_index` (search, filter, and sort old/new text and unified diffs) |
 | Delegation | `task` (single subagent), `multi_task` (parallel), `quorum_task` (consensus voting) |
 | Coordination | `edit_coordinator`, `file_activity` (file watcher for multi-agent) |
 | Config | `project_config`, `enforcer_config`, `role_manager`, `skill_manager`, `config_archive` |

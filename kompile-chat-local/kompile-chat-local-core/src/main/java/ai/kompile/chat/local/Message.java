@@ -1,12 +1,30 @@
 package ai.kompile.chat.local;
 
+import java.util.List;
+
 /**
- * An immutable chat message with a role and text content.
+ * An immutable provider-neutral chat message.
  *
  * <p>Roles follow the OpenAI convention: {@code "system"}, {@code "user"},
- * {@code "assistant"}, {@code "tool_result"}.</p>
+ * {@code "assistant"}, and {@code "tool"}.</p>
  */
-public record Message(String role, String content) {
+public record Message(
+        String role,
+        String content,
+        List<ChatToolCall> toolCalls,
+        String toolCallId,
+        String toolName) {
+
+    public Message {
+        if (role == null || role.isBlank()) {
+            throw new IllegalArgumentException("Message role must not be blank");
+        }
+        toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
+    }
+
+    public Message(String role, String content) {
+        this(role, content, List.of(), null, null);
+    }
 
     /**
      * Create a system-role message.
@@ -38,18 +56,23 @@ public record Message(String role, String content) {
         return new Message("assistant", content);
     }
 
+    /** Preserve the backend-decoded tool calls for model-owned history rendering. */
+    public static Message assistant(ChatResponse response) {
+        return new Message("assistant", response.rawText(), response.toolCalls(), null, null);
+    }
+
     /**
-     * Create a tool-result message encoding the output of a tool call.
-     *
-     * <p>Content format: {@code "TOOL_RESULT <tool>: <json>"} — this prefix makes the
-     * tool result unambiguous in conversation history passed to models that do not have a
-     * native tool-result role.</p>
+     * Create a structured tool-result message.
      *
      * @param tool the tool name that produced this result
      * @param json the JSON result string returned by the tool
      * @return a new tool_result message
      */
     public static Message toolResult(String tool, String json) {
-        return new Message("tool_result", "TOOL_RESULT " + tool + ": " + json);
+        return toolResult(null, tool, json);
+    }
+
+    public static Message toolResult(String toolCallId, String tool, String json) {
+        return new Message("tool", json, List.of(), toolCallId, tool);
     }
 }

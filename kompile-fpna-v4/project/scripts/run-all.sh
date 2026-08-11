@@ -120,24 +120,20 @@ else
     fi
 fi
 
-# --- Step 4: Crawl all FP&A data with graph extraction ---
+# --- Step 4: Run the production crawl/reasoning harness ---
 echo ""
-echo "=== Step 4/4: Unified crawl with graph extraction ==="
+echo "=== Step 4/4: Production crawl agent with graph reasoning ==="
 echo "Crawling all documents from: $DATA_DIR"
 echo "Schema preset: fpna-cpg-channel-v1"
 echo ""
 
-# Extract port from BASE_URL for --port flag
-PORT=$(echo "$BASE_URL" | sed -n 's/.*:\([0-9]*\)$/\1/p')
-PORT="${PORT:-8080}"
-
-java -jar "$KOMPILE_CLI_JAR" crawl start \
-    "$DATA_DIR" \
-    --schema-preset fpna-cpg-channel-v1 \
-    --graph-schema-mode LENIENT \
-    --name "FP&A Workflow v3" \
-    --port "$PORT" \
-    --watch
+SKIP_APP_START=true \
+APP_URL="$BASE_URL" \
+DATA_DIR="$DATA_DIR" \
+KOMPILE_CLI_JAR="$KOMPILE_CLI_JAR" \
+CRAWL_MODE="${CRAWL_MODE:-auto}" \
+CRAWL_SESSION_ID="${CRAWL_SESSION_ID:-fpna-$(date +%Y%m%d-%H%M%S)}" \
+"$PROJECT_DIR/launch-crawl.sh"
 
 echo ""
 echo "=============================================="
@@ -145,4 +141,5 @@ echo "  FP&A Workflow Console v3 is ready!"
 echo "  UI: $BASE_URL"
 echo "  API: $BASE_URL/api"
 echo "  Graph: $BASE_URL/api/knowledge-graph/nodes"
+echo "  Crawl ledger: $PROJECT_DIR/data/logs/latest-crawl-run-events.jsonl"
 echo "=============================================="

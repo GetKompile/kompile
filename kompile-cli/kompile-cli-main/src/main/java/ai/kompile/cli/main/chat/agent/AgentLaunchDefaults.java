@@ -158,6 +158,24 @@ public final class AgentLaunchDefaults {
         return List.copyOf(arguments);
     }
 
+    /**
+     * Returns provider-native arguments for attaching an interactive process to
+     * an existing native session. Keeping this mapping beside the other launch
+     * defaults prevents managed and direct resume paths from drifting.
+     */
+    public static List<String> resumeArguments(String agentName, String sessionId) {
+        String id = cleanCliValue(sessionId, "session id");
+        if (id == null) {
+            return List.of();
+        }
+        return switch (AgentFlagOverrides.agentKey(agentName)) {
+            case "codex" -> List.of("resume", id);
+            case "claude", "qwen", "gemini" -> List.of("--resume", id);
+            case "opencode", "pi" -> List.of("--session", id);
+            default -> List.of();
+        };
+    }
+
     public static boolean isSupportedAgent(String agentName) {
         return AgentDefaultsStore.isSupportedAgent(agentName);
     }

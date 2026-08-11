@@ -196,6 +196,96 @@ class UnifiedCrawlGraphToolTest {
     }
 
     @Test
+    @DisplayName("Start incremental knowledge-base crawl passes fact-sheet and runtime controls")
+    void startCrawl_withKnowledgeBaseIncrementalControls() {
+        UnifiedCrawlJob mockJob = buildMockJob("job-kb", UnifiedCrawlJob.Status.PENDING);
+        when(unifiedCrawlService.startJob(any())).thenReturn(mockJob);
+
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
+                "kb refresh",
+                List.of(new UnifiedCrawlGraphTool.SourceInput(
+                        "docs", "DIRECTORY", "/data/docs", 3, 0, null, null, null)),
+                null, null, null, null,
+                42L, null, true, false, false, true);
+
+        Map<String, Object> result = tool.startUnifiedCrawl(input);
+
+        ArgumentCaptor<UnifiedCrawlRequest> captor = ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
+        verify(unifiedCrawlService).startJob(captor.capture());
+        UnifiedCrawlRequest request = captor.getValue();
+        assertEquals(42L, request.getFactSheetId());
+        assertTrue(request.getRuntimeConfig().getIncrementalByContentHash());
+        assertFalse(request.getRuntimeConfig().getForceFullRecrawl());
+        assertTrue(request.getDeriveOntology());
+        assertEquals(42L, result.get("factSheetId"));
+        assertTrue(result.containsKey("nextActions"));
+    }
+
+    @Test
+    @DisplayName("Start crawl maps per-request embedding training controls")
+    void startCrawl_withEmbeddingTrainingControls() {
+        when(unifiedCrawlService.startJob(any())).thenReturn(
+                buildMockJob("job-kge", UnifiedCrawlJob.Status.PENDING));
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
+                "learn graph",
+                List.of(new UnifiedCrawlGraphTool.SourceInput(
+                        "code", "DIRECTORY", "/workspace/code", null, null, null, null, null)),
+                null, null, null, null,
+                42L, null, true, false, false, true,
+                new UnifiedCrawlGraphTool.EmbeddingTrainingInput(true, "rotate", 128, 20, 256, 4));
+
+        Map<String, Object> result = tool.startUnifiedCrawl(input);
+
+        ArgumentCaptor<UnifiedCrawlRequest> captor = ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
+        verify(unifiedCrawlService).startJob(captor.capture());
+        UnifiedCrawlRequest.RuntimeConfig runtime = captor.getValue().getRuntimeConfig();
+        assertTrue(runtime.getTrainEmbeddingsAfterEnrichment());
+        assertEquals("ROTATE", runtime.getEmbeddingAlgorithm());
+        assertEquals(128, runtime.getEmbeddingDim());
+        assertEquals(20, runtime.getEmbeddingEpochs());
+        assertEquals(256, runtime.getEmbeddingBatchSize());
+        assertEquals(4, runtime.getEmbeddingWarmStartEpochs());
+        assertTrue(result.get("nextActions").toString().contains("graph_embeddings"));
+    }
+
+    @Test
+    @DisplayName("Start crawl rejects unsupported embedding algorithms")
+    void startCrawl_rejectsUnsupportedEmbeddingAlgorithm() {
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
+                "learn graph",
+                List.of(new UnifiedCrawlGraphTool.SourceInput(
+                        "code", "DIRECTORY", "/workspace/code", null, null, null, null, null)),
+                null, null, null, null,
+                42L, null, true, false, false, true,
+                new UnifiedCrawlGraphTool.EmbeddingTrainingInput(true, "unknown", null, null, null, null));
+
+        Map<String, Object> result = tool.startUnifiedCrawl(input);
+
+        assertTrue(result.get("error").toString().contains("TRANSE or ROTATE"));
+        verify(unifiedCrawlService, never()).startJob(any());
+    }
+
+    @Test
+    @DisplayName("Destructive graph clear always forces a full recrawl")
+    void startCrawl_clearGraphForcesFullRecrawl() {
+        when(unifiedCrawlService.startJob(any())).thenReturn(
+                buildMockJob("job-full", UnifiedCrawlJob.Status.PENDING));
+        var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput(
+                "replace kb",
+                List.of(new UnifiedCrawlGraphTool.SourceInput(
+                        "docs", "DIRECTORY", "/data/docs", null, null, null, null, null)),
+                null, null, null, null,
+                42L, null, true, false, true, null);
+
+        tool.startUnifiedCrawl(input);
+
+        ArgumentCaptor<UnifiedCrawlRequest> captor = ArgumentCaptor.forClass(UnifiedCrawlRequest.class);
+        verify(unifiedCrawlService).startJob(captor.capture());
+        assertTrue(captor.getValue().getRuntimeConfig().getClearGraphBeforeRun());
+        assertTrue(captor.getValue().getRuntimeConfig().getForceFullRecrawl());
+    }
+
+    @Test
     @DisplayName("Start crawl with empty sources returns error map")
     void startCrawl_emptySourcesReturnsError() {
         var input = new UnifiedCrawlGraphTool.StartUnifiedCrawlInput("empty", List.of(), null, null, null, null);
@@ -283,7 +373,9 @@ class UnifiedCrawlGraphToolTest {
         job.getEntitiesExtracted().set(10);
         job.getRelationshipsExtracted().set(7);
         job.getDocumentsIndexed().set(5);
-        job.setRequest(UnifiedCrawlRequest.builder().name("status test").sources(List.of()).build());
+        job.getFilesSkippedUnchanged().set(4);
+        job.getFilesReprocessed().set(1);
+        job.setRequest(UnifiedCrawlRequest.builder().name("status test").factSheetId(42L).sources(List.of()).build());
         job.setSourceProgress(List.of(
                 UnifiedCrawlJob.SourceProgress.builder()
                         .label("docs").sourceType("DIRECTORY").status(UnifiedCrawlJob.Status.COMPLETED)
@@ -301,6 +393,10 @@ class UnifiedCrawlGraphToolTest {
         assertEquals(10, result.get("entitiesExtracted"));
         assertEquals(7, result.get("relationshipsExtracted"));
         assertEquals(5, result.get("documentsIndexed"));
+        assertEquals(4, result.get("filesSkippedUnchanged"));
+        assertEquals(1, result.get("filesReprocessed"));
+        assertEquals(42L, result.get("factSheetId"));
+        assertEquals(true, result.get("reasoningReady"));
         assertNotNull(result.get("sources"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> sources = (List<Map<String, Object>>) result.get("sources");

@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,6 +27,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import ai.kompile.utils.HashUtils;
@@ -35,8 +37,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Persistent per-file SHA-256 content-hash store for incremental crawling.
@@ -67,7 +75,9 @@ import java.util.Map;
  *   <li>Global post-processing steps (ENTITY_RESOLUTION, EDGE_COMPUTATION,
  *       ENRICHMENT) always run over the full current graph — skipped files'
  *       kept nodes + newly extracted nodes — so graph-wide invariants hold.</li>
- *   <li>After successful processing, {@link #recordHash} persists the new entry.</li>
+ *   <li>Production crawls stage mutations in memory and publish them only after a
+ *       {@link GraphBuildCompletedEvent}. A failed/crashed crawl therefore cannot make
+ *       a partially-built graph look current on the next run.</li>
  * </ul>
  */
 @Slf4j
@@ -83,6 +93,7 @@ class DocumentHashStore {
     private static final TypeReference<Map<String, HashEntry>> MAP_TYPE = new TypeReference<>() {};
 
     private final ObjectMapper mapper = JsonUtils.standardMapper();
+    private final ConcurrentMap<String, PendingRun> pendingByRun = new ConcurrentHashMap<>();
 
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -139,6 +150,18 @@ class DocumentHashStore {
      * @param crawlRunId       the job ID that produced this result
      */
     void recordHash(Long factSheetId, String sourceDocumentId, String contentHash, String crawlRunId) {
+        recordHash(factSheetId, sourceDocumentId, contentHash, crawlRunId, null);
+    }
+
+    /**
+     * Persist a hash immediately. Kept for direct callers and tests; production crawl
+     * code should use {@link #stageHash} so publication follows graph persistence.
+     */
+    synchronized void recordHash(Long factSheetId,
+                                 String sourceDocumentId,
+                                 String contentHash,
+                                 String crawlRunId,
+                                 String sourceScopeId) {
         if (sourceDocumentId == null || contentHash == null) {
             return;
         }
@@ -150,6 +173,7 @@ class DocumentHashStore {
                     .contentHash(contentHash)
                     .lastCrawlRunId(crawlRunId)
                     .lastProcessedAt(Instant.now().toString())
+                    .sourceScopeId(sourceScopeId)
                     .build());
             writeStoreAtomic(file, store);
         } catch (Exception e) {
@@ -173,6 +197,138 @@ class DocumentHashStore {
         }
         HashEntry stored = lookup(factSheetId, sourceDocumentId);
         return stored != null && freshHash.equals(stored.getContentHash());
+    }
+
+    /**
+     * Stage a successful source load for atomic publication after the graph build.
+     * Upsert wins over a deletion for the same source in one run.
+     */
+    void stageHash(Long factSheetId,
+                   String sourceDocumentId,
+                   String contentHash,
+                   String crawlRunId,
+                   String sourceScopeId) {
+        if (crawlRunId == null || sourceDocumentId == null || contentHash == null) {
+            return;
+        }
+        PendingRun pending = pendingByRun.computeIfAbsent(crawlRunId, ignored -> new PendingRun());
+        PendingKey key = new PendingKey(new FactSheetScope(factSheetId), sourceDocumentId);
+        pending.deletions.remove(key);
+        pending.upserts.put(key, HashEntry.builder()
+                .contentHash(contentHash)
+                .lastCrawlRunId(crawlRunId)
+                .lastProcessedAt(Instant.now().toString())
+                .sourceScopeId(sourceScopeId)
+                .build());
+    }
+
+    /** Stage a source tombstone; it becomes durable only after graph-build completion. */
+    void stageDeletion(Long factSheetId, String sourceDocumentId, String crawlRunId) {
+        if (crawlRunId == null || sourceDocumentId == null) {
+            return;
+        }
+        PendingRun pending = pendingByRun.computeIfAbsent(crawlRunId, ignored -> new PendingRun());
+        PendingKey key = new PendingKey(new FactSheetScope(factSheetId), sourceDocumentId);
+        if (!pending.upserts.containsKey(key)) {
+            pending.deletions.add(key);
+        }
+    }
+
+    /**
+     * Return manifest sources owned by {@code sourceScopeId} that were not present in
+     * the latest successful discovery. Callers decide whether absence is a verified
+     * deletion (local files) or merely an unavailable/excluded remote source.
+     */
+    List<String> findMissingSources(Long factSheetId,
+                                    String sourceScopeId,
+                                    Set<String> liveSourceDocumentIds) {
+        if (sourceScopeId == null) {
+            return List.of();
+        }
+        Set<String> live = liveSourceDocumentIds != null
+                ? new HashSet<>(liveSourceDocumentIds)
+                : Set.of();
+        List<String> missing = new ArrayList<>();
+        for (Map.Entry<String, HashEntry> entry : loadStore(factSheetId).entrySet()) {
+            HashEntry value = entry.getValue();
+            if (value != null
+                    && sourceScopeId.equals(value.getSourceScopeId())
+                    && !live.contains(entry.getKey())) {
+                missing.add(entry.getKey());
+            }
+        }
+        missing.sort(String::compareTo);
+        return missing;
+    }
+
+    /** Publish all staged mutations for one crawl run using per-fact-sheet atomic writes. */
+    synchronized CommitSummary commitStaged(String crawlRunId) {
+        PendingRun pending = crawlRunId == null ? null : pendingByRun.get(crawlRunId);
+        if (pending == null) {
+            return new CommitSummary(0, 0);
+        }
+
+        Map<FactSheetScope, Map<String, HashEntry>> upsertsByScope = new LinkedHashMap<>();
+        pending.upserts.forEach((key, value) -> upsertsByScope
+                .computeIfAbsent(key.scope(), ignored -> new LinkedHashMap<>())
+                .put(key.sourceDocumentId(), value));
+        Map<FactSheetScope, Set<String>> deletionsByScope = new LinkedHashMap<>();
+        pending.deletions.forEach(key -> deletionsByScope
+                .computeIfAbsent(key.scope(), ignored -> new HashSet<>())
+                .add(key.sourceDocumentId()));
+
+        Set<FactSheetScope> scopes = new HashSet<>(upsertsByScope.keySet());
+        scopes.addAll(deletionsByScope.keySet());
+        int upserted = 0;
+        int deleted = 0;
+        try {
+            for (FactSheetScope scope : scopes) {
+                Map<String, HashEntry> store = loadStore(scope.factSheetId());
+                for (String source : deletionsByScope.getOrDefault(scope, Set.of())) {
+                    if (store.remove(source) != null) {
+                        deleted++;
+                    }
+                }
+                Map<String, HashEntry> upserts = upsertsByScope.getOrDefault(scope, Map.of());
+                store.putAll(upserts);
+                upserted += upserts.size();
+                Path file = hashFilePath(scope.factSheetId());
+                Files.createDirectories(file.getParent());
+                writeStoreAtomic(file, store);
+            }
+            pendingByRun.remove(crawlRunId, pending);
+            return new CommitSummary(upserted, deleted);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to publish incremental crawl manifest for run "
+                    + crawlRunId, e);
+        }
+    }
+
+    /** Forget uncommitted mutations for a failed or cancelled crawl. */
+    void discardStaged(String crawlRunId) {
+        if (crawlRunId != null) {
+            pendingByRun.remove(crawlRunId);
+        }
+    }
+
+    /** Graph completion is the commit barrier for the crawl manifest. */
+    @EventListener
+    void onGraphBuildCompleted(GraphBuildCompletedEvent event) {
+        if (event == null || event.getJobId() == null) {
+            return;
+        }
+        try {
+            CommitSummary summary = commitStaged(event.getJobId());
+            if (summary.upserted() > 0 || summary.deleted() > 0) {
+                log.info("Published incremental crawl manifest for run {}: {} upserted, {} deleted",
+                        event.getJobId(), summary.upserted(), summary.deleted());
+            }
+        } catch (Exception e) {
+            // Leave the staged run in memory. More importantly, leave the durable manifest
+            // unchanged so the next crawl re-processes rather than trusting partial state.
+            log.warn("Graph completed but incremental crawl manifest publication failed for run {}: {}",
+                    event.getJobId(), e.getMessage());
+        }
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -250,5 +406,19 @@ class DocumentHashStore {
 
         /** ISO-8601 timestamp of when this entry was recorded. */
         private String lastProcessedAt;
+
+        /** Stable crawl-root identity used to reconcile deletions within one source scope. */
+        private String sourceScopeId;
+    }
+
+    record CommitSummary(int upserted, int deleted) {}
+
+    private record FactSheetScope(Long factSheetId) {}
+
+    private record PendingKey(FactSheetScope scope, String sourceDocumentId) {}
+
+    private static final class PendingRun {
+        private final ConcurrentMap<PendingKey, HashEntry> upserts = new ConcurrentHashMap<>();
+        private final Set<PendingKey> deletions = ConcurrentHashMap.newKeySet();
     }
 }

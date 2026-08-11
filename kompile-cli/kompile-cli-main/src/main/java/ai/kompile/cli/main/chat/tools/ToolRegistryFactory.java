@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.DirectSubagentRunner;
 import ai.kompile.cli.main.chat.agent.ServerSubagentRunner;
@@ -34,6 +36,9 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphQueryTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
@@ -82,8 +87,32 @@ public class ToolRegistryFactory {
                                        BackgroundProcessManager processManager,
                                        ChatConfig chatConfig,
                                        RoleManager roleManager) {
+        return create(objectMapper, baseUrl, agentRegistry, permissionService, renderer,
+                processManager, chatConfig, roleManager, null);
+    }
+
+    /**
+     * Create a registry with an optional crawl-manager routing override.
+     *
+     * <p>The override is intentionally independent from {@code baseUrl}: an offline
+     * direct LLM worker has no chat-server URL, but still needs to address a local
+     * crawl/index service.</p>
+     */
+    public static ToolRegistry create(ObjectMapper objectMapper, String baseUrl,
+                                       AgentRegistry agentRegistry,
+                                       PermissionService permissionService,
+                                       TerminalRenderer renderer,
+                                       BackgroundProcessManager processManager,
+                                       ChatConfig chatConfig,
+                                       RoleManager roleManager,
+                                       String crawlBaseUrlOverride) {
         ToolRegistry registry = new ToolRegistry(objectMapper);
         String graphBaseUrl = GraphServiceRouting.resolve(null).baseUrl();
+        String crawlRoutingUrl = crawlBaseUrlOverride == null || crawlBaseUrlOverride.isBlank()
+                ? baseUrl : crawlBaseUrlOverride;
+        String crawlBaseUrl = crawlRoutingUrl == null || crawlRoutingUrl.isBlank()
+                ? null
+                : KompileServiceEndpoints.resolve(KompileService.CRAWL, crawlRoutingUrl).baseUrl();
 
         // File I/O tools
         registry.register(new ReadTool());
@@ -124,6 +153,9 @@ public class ToolRegistryFactory {
         // Knowledge & memory tools
         registry.register(new TranscriptSearchTool());
         registry.register(new ConversationImportTool());
+        registry.register(new KnowledgeSearchCliTool(baseUrl, objectMapper));
+        registry.register(new KnowledgeStatusCliTool(baseUrl, objectMapper));
+        registry.register(new DiffIndexTool(baseUrl, objectMapper));
         registry.register(new RagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphRagSearchTool(baseUrl, objectMapper));
         registry.register(new GraphAggregateTool(baseUrl, objectMapper));
@@ -142,7 +174,10 @@ public class ToolRegistryFactory {
         registry.register(new GraphReasonTool(baseUrl, objectMapper));
         registry.register(new GraphImportTool(graphBaseUrl, objectMapper));
         registry.register(new GraphExportTool(graphBaseUrl, objectMapper));
-        registry.register(new CrawlSourceTool(baseUrl, objectMapper));
+        registry.register(new CrawlSourceTool(crawlBaseUrl, objectMapper));
+        registry.register(new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
+        registry.register(new CrawlDiscoveryTool(crawlBaseUrl, objectMapper));
+        registry.register(new CrawlControlTool(crawlBaseUrl, objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
         registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
         registry.register(new GraphReasoningQueryTool(graphBaseUrl, objectMapper));

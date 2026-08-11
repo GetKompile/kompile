@@ -301,12 +301,75 @@ class UnifiedGraphRoundTripTest {
     void rejectsNewerGraphFormat(@TempDir Path dir) throws IOException {
         Path file = dir.resolve("future.kgraph");
         writeRawGraph(file, Map.of(
-                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":2}",
+                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":3}",
                 "entities.jsonl", "",
                 "relations.jsonl", ""));
 
         IOException error = assertThrows(IOException.class, () -> UnifiedGraph.load(file));
         assertTrue(error.getMessage().contains("formatVersion"));
+    }
+
+    @Test
+    void readsV1WithoutSchemaIndex(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("legacy-v1.kgraph");
+        writeRawGraph(file, Map.of(
+                "manifest.json", "{\"format\":\"kompile-graph\",\"formatVersion\":1,"
+                        + "\"counts\":{\"entities\":1,\"relations\":0,\"vectorLayers\":0},"
+                        + "\"embeddingDim\":0,\"sections\":[\"entities.jsonl\",\"relations.jsonl\"],"
+                        + "\"vectorLayers\":[]}",
+                "entities.jsonl", "{\"id\":\"legacy\",\"type\":\"PERSON\",\"label\":\"Alice\"}\n",
+                "relations.jsonl", ""));
+
+        UnifiedGraph graph = UnifiedGraph.load(file);
+
+        assertEquals(1, graph.entityCount());
+        assertEquals("Alice", graph.entity("legacy").orElseThrow().label());
+    }
+
+    @Test
+    void explicitTypeMembershipsSurviveCanonicalLoadAndResave(@TempDir Path dir) throws IOException {
+        String manifest = "{\"format\":\"kompile-graph\",\"formatVersion\":2,"
+                + "\"counts\":{\"entities\":1,\"relations\":0,\"vectorLayers\":0},"
+                + "\"embeddingDim\":0,"
+                + "\"sections\":[\"schemas/index.json\",\"entities.jsonl\",\"relations.jsonl\"],"
+                + "\"vectorLayers\":[]}";
+        String schema = "{\"format\":\"kompile-unified-schema\",\"version\":1,"
+                + "\"entityCount\":1,\"relationCount\":0,\"entityTypes\":[\"PERSON\"],"
+                + "\"relationTypes\":[],\"entityAttributeKeys\":[],\"relationAttributeKeys\":[],"
+                + "\"declaredSchemaArtifacts\":[]}";
+        Path source = dir.resolve("explicit-memberships.kgraph");
+        writeRawGraph(source, Map.of(
+                "manifest.json", manifest,
+                "schemas/index.json", schema,
+                "entities.jsonl", "{\"id\":\"alice\",\"type\":\"PERSON\","
+                        + "\"typeMemberships\":[\"PERSON\",\"Employee\"],\"label\":\"Alice\"}\n",
+                "relations.jsonl", ""));
+
+        UnifiedGraph loaded = UnifiedGraph.load(source);
+        assertTrue(loaded.entity("alice").orElseThrow().hasTypeMembership("Employee"));
+
+        Path migrated = dir.resolve("migrated.kgraph");
+        loaded.save(migrated);
+        UnifiedGraph reloaded = UnifiedGraph.load(migrated);
+        assertTrue(reloaded.entity("alice").orElseThrow().hasTypeMembership("Employee"));
+    }
+
+    @Test
+    void rejectsInvalidV2SchemaIndex(@TempDir Path dir) throws IOException {
+        String manifest = "{\"format\":\"kompile-graph\",\"formatVersion\":2,"
+                + "\"counts\":{\"entities\":0,\"relations\":0,\"vectorLayers\":0},"
+                + "\"embeddingDim\":0,"
+                + "\"sections\":[\"schemas/index.json\",\"entities.jsonl\",\"relations.jsonl\"],"
+                + "\"vectorLayers\":[]}";
+        Path file = dir.resolve("bad-schema.kgraph");
+        writeRawGraph(file, Map.of(
+                "manifest.json", manifest,
+                "schemas/index.json", "{}",
+                "entities.jsonl", "",
+                "relations.jsonl", ""));
+
+        IOException error = assertThrows(IOException.class, () -> UnifiedGraph.load(file));
+        assertTrue(error.getMessage().contains("schema index"));
     }
 
     @Test
@@ -326,10 +389,10 @@ class UnifiedGraphRoundTripTest {
 
     @Test
     void rejectsTruncatedOrCountMismatchedManifestInventory(@TempDir Path dir) throws IOException {
-        String manifest = "{\"format\":\"kompile-graph\",\"formatVersion\":1,"
+        String manifest = "{\"format\":\"kompile-graph\",\"formatVersion\":2,"
                 + "\"counts\":{\"entities\":0,\"relations\":0,\"vectorLayers\":0},"
                 + "\"embeddingDim\":0,"
-                + "\"sections\":[\"entities.jsonl\",\"relations.jsonl\"],"
+                + "\"sections\":[\"schemas/index.json\",\"entities.jsonl\",\"relations.jsonl\"],"
                 + "\"vectorLayers\":[]}";
         Path truncated = dir.resolve("truncated.kgraph");
         writeRawGraph(truncated, Map.of("manifest.json", manifest, "entities.jsonl", ""));
@@ -339,7 +402,7 @@ class UnifiedGraphRoundTripTest {
         Path wrongCount = dir.resolve("wrong-count.kgraph");
         writeRawGraph(wrongCount, Map.of(
                 "manifest.json", manifest.replace("\"entities\":0", "\"entities\":1"),
-                "entities.jsonl", "", "relations.jsonl", ""));
+                "schemas/index.json", "{}", "entities.jsonl", "", "relations.jsonl", ""));
         IOException count = assertThrows(IOException.class, () -> UnifiedGraph.load(wrongCount));
         assertTrue(count.getMessage().contains("entity count mismatch"));
     }

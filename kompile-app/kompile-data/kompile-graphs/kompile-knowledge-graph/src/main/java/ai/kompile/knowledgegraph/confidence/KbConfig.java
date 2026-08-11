@@ -285,7 +285,7 @@ public class KbConfig {
      * Maximum number of trail lines to inject into the LLM prompt.
      * Keeps the prompt within token budget even for deep derivation chains.
      */
-    private int reasoningTrailPromptMaxLines = 30;
+    private int reasoningTrailPromptMaxLines = 20;
 
     // ── Personal / free email providers (belongs_to_org exclusion list) ───────────
     private List<String> personalEmailDomains = new ArrayList<>(List.of(

@@ -22,12 +22,14 @@ import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.context.Context;
 import ai.kompile.pipelines.framework.api.data.*;
 import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
+import ai.kompile.pipelines.steps.nd4j.llm.StrictToolCallParser;
 import ai.kompile.pipelines.steps.deeplearning4j.nlp.DL4JLLMTokenizer;
 import ai.kompile.pipelines.steps.deeplearning4j.nlp.WordPieceLLMTokenizer;
-import com.fasterxml.jackson.core.type.TypeReference;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.deeplearning4j.llm.generation.ToolCallParser;
+import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.util.ModelSerializer;
 import org.nd4j.autodiff.samediff.SameDiff;
@@ -45,9 +47,6 @@ import java.util.stream.Collectors;
 
 @Slf4j
 public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
-
-    private static final String TOOL_CALL_MARKER_START = "<tool_call_json>";
-    private static final String TOOL_CALL_MARKER_END = "</tool_call_json>";
 
     private static final String DEFAULT_SAMEDIFF_INPUT_IDS_PLACEHOLDER = "input_ids";
     private static final String DEFAULT_SAMEDIFF_ATTENTION_MASK_PLACEHOLDER = "attention_mask";
@@ -436,66 +435,40 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
     private PipelineToolCallRequest parseToolCall(String llmOutputText) {
         if (config.getToolChoice() == LLMStepConfig.ToolChoiceMode.NONE) return null;
         LLMStepConfig.ToolCallOutputFormat format = config.getToolCallOutputFormat() != null ?
-                config.getToolCallOutputFormat() : LLMStepConfig.ToolCallOutputFormat.JSON_MARKER_BASED;
-        switch (format) {
-            case JSON_MARKER_BASED: return parseToolCallWithJsonMarkers(llmOutputText);
-            case OPENAI_JSON: return parseToolCallWithOpenAIJson(llmOutputText);
-            default: log.warn("Unsupported/unhandled toolCallOutputFormat: {} for step '{}'", format, config.getName());
-                return parseToolCallWithJsonMarkers(llmOutputText);
+                config.getToolCallOutputFormat() : LLMStepConfig.ToolCallOutputFormat.OPENAI_JSON;
+        if (format == LLMStepConfig.ToolCallOutputFormat.GGUF_NATIVE_FUNCTIONARY_V2) {
+            throw new IllegalStateException("GGUF_NATIVE_FUNCTIONARY_V2 requires a model-owned "
+                    + "Functionary chat adapter; this raw DL4J runner cannot parse it");
         }
-    }
 
-    private PipelineToolCallRequest parseToolCallWithJsonMarkers(String text) {
-        int startIndex = text.indexOf(TOOL_CALL_MARKER_START);
-        int endIndex = text.indexOf(TOOL_CALL_MARKER_END, startIndex);
-        if (startIndex != -1 && endIndex != -1 && startIndex < endIndex) {
-            String jsonPayload = text.substring(startIndex + TOOL_CALL_MARKER_START.length(), endIndex).trim();
-            return deserializeToolCallRequest(jsonPayload);
+        List<String> declaredNames = config.getToolDefinitions() == null
+                ? List.of()
+                : config.getToolDefinitions().stream()
+                .map(PipelineToolDefinition::getName)
+                .toList();
+        ToolCallParser.ParseResult parsed =
+                StrictToolCallParser.parseJson(llmOutputText, declaredNames);
+        if (parsed.getToolCalls().size() != 1 || !parsed.getErrors().isEmpty()) {
+            return null;
         }
-        return null;
-    }
-
-    private PipelineToolCallRequest parseToolCallWithOpenAIJson(String text) {
+        ChatTemplate.ToolCall call = parsed.getToolCalls().get(0);
+        if (config.getToolChoice() == LLMStepConfig.ToolChoiceMode.SPECIFIC_TOOL
+                && !call.getName().equals(config.getSpecificToolNameForCall())) {
+            log.warn("LLM (step '{}') called tool '{}' but was required to call '{}'. Ignoring.",
+                    config.getName(), call.getName(), config.getSpecificToolNameForCall());
+            return null;
+        }
         try {
-            return deserializeToolCallRequest(text.trim());
-        } catch (Exception e) { return null; }
-    }
-
-    private PipelineToolCallRequest deserializeToolCallRequest(String jsonPayload) {
-        try {
-            Map<String, Object> parsed = objectMapper.readValue(jsonPayload, new TypeReference<Map<String, Object>>() {});
-            String toolName = (String) parsed.get("toolName");
-            Object argsObject = parsed.get("arguments");
-            Map<String, Object> argumentsMap;
-
-            if (argsObject instanceof String) {
-                argumentsMap = objectMapper.readValue((String) argsObject, new TypeReference<Map<String, Object>>() {});
-            } else if (argsObject instanceof Map) {
-                argumentsMap = (Map<String, Object>) argsObject;
-            } else { return null; }
-
-            if (toolName != null && argumentsMap != null) {
-                if (config.getToolDefinitions() == null || config.getToolDefinitions().stream().noneMatch(td -> td.getName().equals(toolName))) {
-                    log.warn("LLM (step '{}') attempted to call undefined tool: {}", config.getName(), toolName); return null;
-                }
-                if (config.getToolChoice() == LLMStepConfig.ToolChoiceMode.SPECIFIC_TOOL &&
-                        !toolName.equals(config.getSpecificToolNameForCall())) {
-                    log.warn("LLM (step '{}') called tool '{}' but was required to call '{}'. Ignoring.", config.getName(), toolName, config.getSpecificToolNameForCall()); return null;
-                }
-
-                String argumentsJsonString = objectMapper.writeValueAsString(argumentsMap);
-                String callId = UUID.randomUUID().toString();
-
-                return PipelineToolCallRequest.builder()
-                        .id(callId)
-                        .name(toolName)
-                        .arguments(argumentsJsonString)
-                        .build();
-            }
+            return PipelineToolCallRequest.builder()
+                    .id(call.getId() == null ? UUID.randomUUID().toString() : call.getId())
+                    .name(call.getName())
+                    .arguments(objectMapper.writeValueAsString(call.getArguments()))
+                    .build();
         } catch (Exception e) {
-            log.error("Failed to deserialize tool call JSON payload for step '{}': '{}'", config.getName(), jsonPayload, e);
+            log.error("Failed to serialize parsed tool-call arguments for step '{}'",
+                    config.getName(), e);
+            return null;
         }
-        return null;
     }
 
     @Override

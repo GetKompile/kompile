@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.ModelContextResolver;
@@ -64,10 +65,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class AgenticChatLoop {
 
-    private static final Set<String> READ_ONLY_TOOLS = Set.of(
-            "read", "grep", "glob", "list", "todoread", "webfetch",
-            "transcript_search", "rag_search", "graph_search");
-
     private final String baseUrl; // null for direct mode
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -108,10 +105,13 @@ public class AgenticChatLoop {
     // Cancel signal - set by ChatRepl when user presses Escape
     private volatile AtomicBoolean cancelSignal;
 
+    // Optional production crawl/run controller. It is null for ordinary chat.
+    private volatile AgentRunController runController;
+
     // Pending attachments for the next chat turn (consumed on first direct-mode call)
     private volatile List<DirectLlmClient.AttachmentInput> pendingAttachments;
 
-    // Callback fired once when the first output (step indicator or text chunk) is printed.
+    // Callback fired once when the first model text or tool call is printed.
     // Used by ChatRepl to stop the generating spinner.
     private volatile Runnable onFirstOutput;
 
@@ -185,9 +185,9 @@ public class AgenticChatLoop {
                     notification = r.red("[process:" + entry.getId() + "] exited with code " + code
                             + " (took " + durationStr + ") — \"" + desc + "\"");
                 }
-                System.out.println();
-                System.out.println(notification);
-                System.out.println();
+                emitLine("");
+                emitLine(notification);
+                emitLine("");
             });
         }
 
@@ -250,6 +250,11 @@ public class AgenticChatLoop {
         }
     }
 
+    /** Print without damaging an active JLine input buffer. */
+    private void emitLine(String line) {
+        ChatCompleter.printAbove(line);
+    }
+
     /**
      * Sets the cancel signal for interrupting in-progress operations.
      * The signal is checked between agentic steps and during LLM streaming.
@@ -259,6 +264,15 @@ public class AgenticChatLoop {
         if (directLlmClient != null) {
             directLlmClient.setCancelSignal(cancelSignal);
         }
+    }
+
+    /** Attach a cooperative controller for a production crawl run. */
+    public void setRunController(AgentRunController controller) {
+        this.runController = controller;
+    }
+
+    public AgentRunController getRunController() {
+        return runController;
     }
 
     /**
@@ -409,6 +423,47 @@ public class AgenticChatLoop {
     }
 
     /**
+     * Rebuild the direct client's wire history after a provider switch.
+     * Provider-specific tool-call envelopes cannot safely cross API formats, so
+     * replay the canonical text transcript while retaining this loop's complete
+     * conversation and the outer ChatHistory/session unchanged.
+     *
+     * @return number of provider-neutral messages replayed
+     */
+    public int rebuildDirectHistoryForProviderSwitch() {
+        if (directLlmClient == null) {
+            return 0;
+        }
+
+        directLlmClient.clearHistory();
+        int replayed = 0;
+        for (CompactionService.ConversationEntry entry : conversationHistory) {
+            if (entry == null || entry.content == null || entry.content.isBlank()) {
+                continue;
+            }
+            switch (entry.type) {
+                case SYSTEM -> {
+                    directLlmClient.addToHistory(
+                            "user", "[Conversation summary]\n" + entry.content);
+                    directLlmClient.addToHistory(
+                            "assistant", "Understood. I will continue from that conversation summary.");
+                    replayed += 2;
+                }
+                case USER, ASSISTANT -> {
+                    directLlmClient.addToHistory(entry.role, entry.content);
+                    replayed++;
+                }
+                case TOOL_CALL, TOOL_RESULT -> {
+                    // Tool protocol envelopes are provider-specific. The durable
+                    // transcript and canonical compaction history remain intact.
+                }
+            }
+        }
+        lastReportedInputTokens = 0L;
+        return replayed;
+    }
+
+    /**
      * Current estimated token count of the tracked conversation history.
      * Uses the heuristic char/4 estimate from CompactionService.
      */
@@ -551,7 +606,7 @@ public class AgenticChatLoop {
         int tokensBefore = compactionService.estimateTokens(conversationHistory);
         ForceCompactResult forced = forceCompact(null);
         if (forced.isSuccess()) {
-            System.out.println(renderer.renderCompactionNotice(
+            emitLine(renderer.renderCompactionNotice(
                     forced.getTokensBefore(), forced.getTokensAfter()));
             lastReportedInputTokens = 0L;
             return;
@@ -584,7 +639,7 @@ public class AgenticChatLoop {
         if (sessionMetrics != null) {
             sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
         }
-        System.out.println(renderer.renderCompactionNotice(tokensBefore, tokensAfter));
+        emitLine(renderer.renderCompactionNotice(tokensBefore, tokensAfter));
         lastReportedInputTokens = 0L;
     }
 
@@ -688,34 +743,34 @@ public class AgenticChatLoop {
             plannerAgent = agentRegistry.getDefault();
         }
 
-        System.out.println(renderer.bold(renderer.cyan("  ╭─ Planning Mode ─────────────────────────────────────╮")));
-        System.out.println(renderer.cyan("  │") + renderer.dim("  Analyzing task with read-only tools...              ") + renderer.cyan("│"));
-        System.out.println(renderer.cyan("  │") + renderer.dim("  Call exit_plan_mode when plan is ready.             ") + renderer.cyan("│"));
-        System.out.println(renderer.bold(renderer.cyan("  ╰───────────────────────────────────────────────────────╯")));
-        System.out.println();
+        emitLine(renderer.bold(renderer.cyan("  ╭─ Planning Mode ─────────────────────────────────────╮")));
+        emitLine(renderer.cyan("  │") + renderer.dim("  Analyzing task with read-only tools...              ") + renderer.cyan("│"));
+        emitLine(renderer.cyan("  │") + renderer.dim("  Call exit_plan_mode when plan is ready.             ") + renderer.cyan("│"));
+        emitLine(renderer.bold(renderer.cyan("  ╰───────────────────────────────────────────────────────╯")));
+        emitLine("");
 
         String planResponse = chatInternal(message, sessionId, "planner", serverAgent, ragEnabled);
 
         // Show the checklist after planning
         List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
         if (!todos.isEmpty()) {
-            System.out.println();
-            System.out.println(renderer.bold(renderer.cyan("  ── Plan Checklist ──")));
-            System.out.println(renderer.renderTodoList(todos));
-            System.out.println();
+            emitLine("");
+            emitLine(renderer.bold(renderer.cyan("  ── Plan Checklist ──")));
+            emitLine(renderer.renderTodoList(todos));
+            emitLine("");
         }
 
         // Check if plan was approved via exit_plan_mode tool
         if (exitPlanModeTool.isPlanApproved()) {
-            System.out.println(renderer.bold(renderer.yellow("  Plan ready for approval.")));
-            System.out.println(renderer.dim("  The agent will now proceed with execution."));
-            System.out.println();
+            emitLine(renderer.bold(renderer.yellow("  Plan ready for approval.")));
+            emitLine(renderer.dim("  The agent will now proceed with execution."));
+            emitLine("");
 
             // Phase 2: Execution pass with coder agent
-            System.out.println(renderer.bold(renderer.green("  ╭─ Execution Mode ────────────────────────────────────╮")));
-            System.out.println(renderer.green("  │") + renderer.dim("  Executing plan with full tool access...             ") + renderer.green("│"));
-            System.out.println(renderer.bold(renderer.green("  ╰───────────────────────────────────────────────────────╯")));
-            System.out.println();
+            emitLine(renderer.bold(renderer.green("  ╭─ Execution Mode ────────────────────────────────────╮")));
+            emitLine(renderer.green("  │") + renderer.dim("  Executing plan with full tool access...             ") + renderer.green("│"));
+            emitLine(renderer.bold(renderer.green("  ╰───────────────────────────────────────────────────────╯")));
+            emitLine("");
 
             String executionPrompt = "Execute the plan you just created. "
                     + "Update each task status as you complete it using todowrite. "
@@ -740,7 +795,9 @@ public class AgenticChatLoop {
         ToolContext toolContext = new ToolContext(
                 sessionId, agent, permissionService, workingDirectory, toolRegistry);
 
-        ArrayNode toolDefs = toolRegistry.buildToolDefinitions(agent);
+        ArrayNode toolDefs = isDirectMode()
+                ? toolRegistry.buildDirectToolDefinitions(agent)
+                : toolRegistry.buildToolDefinitions(agent);
 
         // Compose system prompt: agent prompt + AGENTS.md content + result store info
         String systemPrompt = buildSystemPrompt(agent);
@@ -761,17 +818,22 @@ public class AgenticChatLoop {
         conversationHistory.add(CompactionService.ConversationEntry.user(message));
 
         while (step < maxSteps) {
-            // Check cancellation before each step
+            // Check cancellation and external crawl controls before each step.
             if (isCancelled()) {
-                System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
                 fullResponse.append("\n[Cancelled by user]");
                 break;
             }
 
-            step++;
+            int nextStep = step + 1;
+            if (runController != null && !runController.beforeStep(nextStep)) {
+                fullResponse.append("\n[Agent run is " + runController.state().name().toLowerCase() + "]");
+                break;
+            }
+            step = nextStep;
             if (sessionMetrics != null) sessionMetrics.recordAgenticStep();
-            fireFirstOutput();
-            System.out.println(renderer.renderAgentTurnStart(step, maxSteps));
+            ChatCompleter.setActivity("Thinking");
+            emitLine(renderer.renderAgentTurnStart(step, maxSteps));
 
             // Check compaction (model-aware budget; also honors the provider-reported
             // prompt size of the previous call, which sees system prompt + tool defs)
@@ -779,7 +841,7 @@ public class AgenticChatLoop {
                 CompactionService.CompactionResult compResult =
                         compactionService.compact(conversationHistory);
                 if (compResult.isCompacted()) {
-                    System.out.println(renderer.renderCompactionNotice(
+                    emitLine(renderer.renderCompactionNotice(
                             compResult.getTokensBefore(), compResult.getTokensAfter()));
                     if (sessionMetrics != null) {
                         sessionMetrics.recordCompaction(compResult.getTokensBefore(), compResult.getTokensAfter());
@@ -813,7 +875,7 @@ public class AgenticChatLoop {
                 if (!result.text.isEmpty()) {
                     fullResponse.append(result.text);
                 }
-                System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
                 fullResponse.append("\n[Cancelled by user]");
                 break;
             }
@@ -831,15 +893,15 @@ public class AgenticChatLoop {
                         inlineEnforcer.evaluate(currentMessage, result.text, inlineEnforcerPolicy, step);
                 if (decision.isStop()) {
                     // Hard stop — reject and notify
-                    System.out.println("\n" + renderer.red("[enforcer] BLOCKED: "
+                    emitLine("\n" + renderer.red("[enforcer] BLOCKED: "
                             + String.join("; ", decision.getViolations())));
                     fullResponse.append("\n[Blocked by enforcer]");
                     break;
                 } else if (!decision.isCompliant() && step < maxSteps) {
                     // Violation with correction — feed the correction prompt back
-                    System.out.println("\n" + renderer.yellow("[enforcer] violation: "
+                    emitLine("\n" + renderer.yellow("[enforcer] violation: "
                             + String.join("; ", decision.getViolations())));
-                    System.out.println(renderer.yellow("[enforcer] sending correction (attempt "
+                    emitLine(renderer.yellow("[enforcer] sending correction (attempt "
                             + step + "/" + inlineEnforcerMaxCorrections + ")"));
                     if (step <= inlineEnforcerMaxCorrections) {
                         currentMessage = decision.getCorrectionPrompt();
@@ -847,39 +909,55 @@ public class AgenticChatLoop {
                         conversationHistory.add(CompactionService.ConversationEntry.user(currentMessage));
                         continue;
                     } else {
-                        System.out.println(renderer.red("[enforcer] max corrections exceeded, accepting"));
+                        emitLine(renderer.red("[enforcer] max corrections exceeded, accepting"));
                     }
                 }
             }
 
             // If no tool calls, we're done
             if (result.toolCalls.isEmpty()) {
+                if (runController != null) runController.afterStep();
                 break;
             }
 
             // Execute tool calls with proper rendering
-            System.out.println();
+            emitLine("");
             List<ToolCallResult> toolResults = new ArrayList<>();
-
-            // Track read-only tools for context grouping
-            Map<String, Integer> readOnlyToolCounts = new LinkedHashMap<>();
-            List<ToolCallResult> readOnlyResults = new ArrayList<>();
 
             for (ToolCallRequest call : result.toolCalls) {
                 // Check cancellation before each tool
                 if (isCancelled()) {
-                    System.out.println("\n" + renderer.yellow("  ⊘ Cancelled — skipping remaining tools"));
+                    emitLine("\n" + renderer.yellow("  ⊘ Cancelled — skipping remaining tools"));
                     fullResponse.append("\n[Cancelled by user — tools skipped]");
                     break;
                 }
 
                 String normalizedToolName = TerminalRenderer.stripMcpPrefix(call.name);
-                boolean isReadOnly = READ_ONLY_TOOLS.contains(normalizedToolName);
 
-                // Start spinner for long-running tools
+                if (runController != null) {
+                    AgentRunController.Decision decision = runController.beforeTool(call.name, call.arguments);
+                    if (!decision.allowed()) {
+                        String denied = "Tool call held: " + decision.reason();
+                        fireFirstOutput();
+                        emitLine(renderer.renderToolCallDenied(call.name, decision.reason()));
+                        toolResults.add(new ToolCallResult(call.id, call.name, denied, true));
+                        if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
+                        continue;
+                    }
+                }
+
+                // Every tool is visible inline. The previous read-only grouping hid
+                // read/grep/glob calls until the entire batch had completed.
+                fireFirstOutput();
+                ChatCompleter.setActivity("Working: "
+                        + TerminalRenderer.prettifyToolName(call.name));
+                emitLine(renderer.renderToolCallStart(call.name, getToolDescription(call)));
+
+                // JLine owns the cursor while the asynchronous REPL accepts queued
+                // input. In that mode the bottom status bar is the activity spinner;
+                // a carriage-return spinner would erase the user's draft.
                 TerminalRenderer.SpinnerHandle spinner = null;
-                if (!isReadOnly) {
-                    System.out.println(renderer.renderToolCallStart(call.name, getToolDescription(call)));
+                if (!ChatCompleter.hasLineReader()) {
                     spinner = renderer.startSpinner(call.name);
                 }
 
@@ -888,7 +966,7 @@ public class AgenticChatLoop {
                     if (tool == null) {
                         if (spinner != null) spinner.stop();
                         String errMsg = "Unknown tool: " + call.name;
-                        System.out.println(renderer.renderToolCallComplete(call.name,
+                        emitLine(renderer.renderToolCallComplete(call.name,
                                 ToolResult.error(errMsg)));
                         toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
                         if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
@@ -909,20 +987,13 @@ public class AgenticChatLoop {
 
                     if (spinner != null) spinner.stop();
 
-                    if (isReadOnly && !toolResult.isError()) {
-                        // Group read-only tools by normalized name so MCP-prefixed variants aggregate together.
-                        readOnlyToolCounts.merge(normalizedToolName, 1, Integer::sum);
-                        readOnlyResults.add(new ToolCallResult(call.id, call.name,
-                                toolResult.getOutput(), false));
-                    } else {
-                        System.out.println(renderer.renderToolCallComplete(call.name, toolResult));
-                    }
+                    emitLine(renderer.renderToolCallComplete(call.name, toolResult));
 
                     // Render inline todo updates after todowrite calls
                     if ("todowrite".equals(call.name) && !toolResult.isError()) {
                         List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(toolContext.getSessionId());
                         if (!todos.isEmpty()) {
-                            System.out.println(renderer.renderTodoList(todos));
+                            emitLine(renderer.renderTodoList(todos));
                         }
                     }
 
@@ -975,9 +1046,9 @@ public class AgenticChatLoop {
                     if (spinner != null) spinner.stop();
 
                     if (e.isPermissionDenied()) {
-                        System.out.println(renderer.renderToolCallDenied(call.name, e.getMessage()));
+                        emitLine(renderer.renderToolCallDenied(call.name, e.getMessage()));
                     } else {
-                        System.out.println(renderer.renderToolCallComplete(call.name,
+                        emitLine(renderer.renderToolCallComplete(call.name,
                                 ToolResult.error(e.getMessage())));
                     }
 
@@ -988,15 +1059,12 @@ public class AgenticChatLoop {
                 }
             }
 
-            // Render context group for read-only tools
-            if (!readOnlyToolCounts.isEmpty()) {
-                System.out.println(renderer.renderContextGroup(readOnlyToolCounts));
-            }
-
             // Stop the loop if exit_plan_mode was called
             if (exitPlanModeTool != null && exitPlanModeTool.isPlanApproved()) {
                 break;
             }
+
+            if (runController != null) runController.afterStep();
 
             // Set up next iteration with tool results
             pendingToolResults = toolResults;
@@ -1004,7 +1072,7 @@ public class AgenticChatLoop {
         }
 
         if (step >= maxSteps) {
-            System.out.println(renderer.renderMaxStepsWarning(maxSteps));
+            emitLine(renderer.renderMaxStepsWarning(maxSteps));
             fullResponse.append("\n[Agent reached maximum steps (").append(maxSteps).append(")]");
         }
 
@@ -1059,14 +1127,14 @@ public class AgenticChatLoop {
         lastRenderedSidePanelVersion = snapshot.version();
 
         if (!snapshot.visible()) {
-            System.out.println(renderer.dim("  Side panel hidden"));
+            emitLine(renderer.dim("  Side panel hidden"));
             return;
         }
 
         String title = snapshot.title() != null && !snapshot.title().isBlank()
                 ? snapshot.title() : "Side Panel";
         String content = boundedSidePanelContent(snapshot.content());
-        System.out.println(asciiRenderer.panel(title, content));
+        emitLine(asciiRenderer.panel(title, content));
     }
 
     private String boundedSidePanelContent(String content) {
@@ -1112,10 +1180,15 @@ public class AgenticChatLoop {
         List<DirectLlmClient.AttachmentInput> attachments = this.pendingAttachments;
         this.pendingAttachments = null;
 
-        StreamingMarkdownRenderer markdownRenderer = new StreamingMarkdownRenderer(asciiRenderer);
+        StreamingMarkdownRenderer markdownRenderer =
+                new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
         java.util.function.Consumer<String> previousConsumer = directLlmClient.getOutputConsumer();
         DirectLlmClient.StreamResult directResult;
-        directLlmClient.setOutputConsumer(markdownRenderer::accept);
+        directLlmClient.setOutputConsumer(chunk -> {
+            fireFirstOutput();
+            ChatCompleter.setActivity("Responding");
+            markdownRenderer.accept(chunk);
+        });
         try {
             directResult = directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride, attachments);
         } finally {
@@ -1155,7 +1228,8 @@ public class AgenticChatLoop {
                                            ArrayNode toolDefs, List<ToolCallResult> toolResults) {
         StreamResult result = new StreamResult();
 
-        StreamingMarkdownRenderer markdownRenderer = new StreamingMarkdownRenderer(asciiRenderer);
+        StreamingMarkdownRenderer markdownRenderer =
+                new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
 
         try {
             ObjectNode request = objectMapper.createObjectNode();
@@ -1166,6 +1240,17 @@ public class AgenticChatLoop {
             request.put("enableRag", ragEnabled);
             request.put("skipPermissions", true);
             request.put("timeoutSeconds", 300);
+            // Agy-backed server agents need the CLI project context to create
+            // prompt files and resolve their project-scoped configuration.
+            if (workingDirectory != null) {
+                request.put("workingDirectory", workingDirectory.toAbsolutePath().toString());
+            }
+            // Current Gemini CLI versions load MCP from project .gemini/settings.json
+            // and reject the legacy --mcp-server flag. The crawl wrapper provisions
+            // that project transport; other agents continue using server-side injection.
+            boolean geminiServerAgent = serverAgent != null
+                    && serverAgent.toLowerCase(Locale.ROOT).contains("gemini");
+            request.put("injectMcpTools", !geminiServerAgent);
 
             if (toolDefs != null && toolDefs.size() > 0) {
                 request.set("tools", toolDefs);
@@ -1247,6 +1332,8 @@ public class AgenticChatLoop {
                     try { chunk = objectMapper.readValue(chunk, String.class); }
                     catch (Exception ignored) {}
                 }
+                fireFirstOutput();
+                ChatCompleter.setActivity("Responding");
                 markdownRenderer.accept(chunk);
                 result.text += chunk;
                 break;
@@ -1261,7 +1348,7 @@ public class AgenticChatLoop {
                     req.arguments = toolCall.path("arguments");
                     result.toolCalls.add(req);
                 } catch (Exception e) {
-                    System.err.println(renderer.red("  [Error parsing tool call: " + e.getMessage() + "]"));
+                    emitLine(renderer.red("  [Error parsing tool call: " + e.getMessage() + "]"));
                 }
                 break;
 
@@ -1271,7 +1358,7 @@ public class AgenticChatLoop {
                     JsonNode json = objectMapper.readTree(data);
                     String agent = json.path("agent").asText("");
                     if (!agent.isEmpty()) {
-                        System.out.println(renderer.dim("[Agent: " + agent + "]"));
+                        emitLine(renderer.dim("[Agent: " + agent + "]"));
                     }
                 } catch (Exception ignored) {}
                 break;
@@ -1281,7 +1368,7 @@ public class AgenticChatLoop {
                 try {
                     JsonNode sources = objectMapper.readTree(data);
                     if (sources.isArray() && sources.size() > 0) {
-                        System.out.println(renderer.dim("[Retrieved " + sources.size() + " documents]"));
+                        emitLine(renderer.dim("[Retrieved " + sources.size() + " documents]"));
                     }
                 } catch (Exception ignored) {}
                 break;
@@ -1292,7 +1379,7 @@ public class AgenticChatLoop {
                     JsonNode stats = objectMapper.readTree(data);
                     long durationMs = stats.path("durationMs").asLong(0);
                     if (durationMs > 0) {
-                        System.out.println(renderer.dim("  [completed in " + durationMs + "ms]"));
+                        emitLine(renderer.dim("  [completed in " + durationMs + "ms]"));
                     }
                 } catch (Exception ignored) {}
                 break;
@@ -1302,10 +1389,10 @@ public class AgenticChatLoop {
                 try {
                     JsonNode error = objectMapper.readTree(data);
                     String msg = error.path("message").asText(data);
-                    System.err.println(renderer.red("\n[Error: " + msg + "]"));
+                    emitLine(renderer.red("\n[Error: " + msg + "]"));
                     result.text += "\n[Error: " + msg + "]";
                 } catch (Exception e) {
-                    System.err.println(renderer.red("\n[Error: " + data + "]"));
+                    emitLine(renderer.red("\n[Error: " + data + "]"));
                 }
                 break;
 

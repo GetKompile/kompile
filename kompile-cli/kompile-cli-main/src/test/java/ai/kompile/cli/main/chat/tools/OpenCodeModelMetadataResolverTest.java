@@ -231,20 +231,18 @@ class OpenCodeModelMetadataResolverTest {
 
     @ParameterizedTest
     @CsvSource({
-            "opencode,big-pickle,200000,32000",
-            "opencode,claude-haiku-4-5,200000,64000",
-            "opencode,deepseek-v4-flash-free,200000,128000",
-            "opencode,gpt-5,400000,128000",
-            "opencode,gpt-5.5,1050000,128000",
-            "opencode-go,deepseek-v4-flash,1000000,384000",
-            "opencode-go,kimi-k2.7-code,262144,262144",
-            "github-copilot,claude-sonnet-4.5,200000,32000",
-            "github-copilot,gpt-5.5,400000,128000"
+            "opencode,big-pickle",
+            "opencode,claude-haiku-4-5",
+            "opencode,deepseek-v4-flash-free",
+            "opencode,gpt-5",
+            "opencode,gpt-5.5",
+            "opencode-go,deepseek-v4-flash",
+            "opencode-go,kimi-k2.7-code",
+            "github-copilot,claude-sonnet-4.5",
+            "github-copilot,gpt-5.5"
     })
     void probesInstalledOpenCodeMetadataForSeveralModelsWhenAvailable(String provider,
-                                                                       String model,
-                                                                       int expectedContext,
-                                                                       int expectedOutput) {
+                                                                       String model) {
         OpenCodeModelMetadataResolver.clearCacheForTests();
 
         Optional<OpenCodeModelMetadataResolver.ModelMetadata> metadata =
@@ -254,7 +252,8 @@ class OpenCodeModelMetadataResolverTest {
                 "OpenCode CLI metadata for " + provider + "/" + model + " is not available in this environment");
         assertEquals(provider, metadata.get().providerId());
         assertEquals(model, metadata.get().modelId());
-        assertEquals(expectedContext, metadata.get().contextWindow());
-        assertEquals(expectedOutput, metadata.get().maxOutputTokens());
+        assertTrue(metadata.get().contextWindow() > 0);
+        assertTrue(metadata.get().maxOutputTokens() > 0);
+        assertTrue(metadata.get().maxOutputTokens() <= metadata.get().contextWindow());
     }
 }

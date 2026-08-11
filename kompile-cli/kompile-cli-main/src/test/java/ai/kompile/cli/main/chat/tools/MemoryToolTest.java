@@ -93,6 +93,53 @@ class MemoryToolTest {
     }
 
     @Test
+    void recallUsesTokenSearchRankingAndTopK() throws Exception {
+        Path project = tempDir.resolve("project");
+        Path memoryDir = project.resolve(".kompile").resolve("memory");
+        Files.createDirectories(memoryDir);
+        Files.writeString(memoryDir.resolve("dsp-high.md"), """
+                ---
+                name: DSP graph attention retention
+                description: The complete lifecycle plan for graph memory retention
+                type: project
+                ---
+                The DSP graph attention plan covers capture, replay, and retention.
+                """);
+        Files.writeString(memoryDir.resolve("attention-low.md"), """
+                ---
+                name: Attention note
+                description: A general attention reminder
+                type: project
+                ---
+                Attention is configured here.
+                """);
+        Files.writeString(memoryDir.resolve("raw-not-typed.md"),
+                "DSP graph attention raw markdown should not appear in typed recall.");
+
+        MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
+        ObjectNode params = MAPPER.createObjectNode()
+                .put("query", "DSP graph attention")
+                .put("memoryType", "project")
+                .put("top_k", 2);
+
+        String output = tool.recallTypedMemory(memoryDir, params, "project").getOutput();
+
+        assertTrue(output.indexOf("## DSP graph attention retention")
+                < output.indexOf("## Attention note"));
+
+        params.put("top_k", 1);
+        String limited = tool.recallTypedMemory(memoryDir, params, "project").getOutput();
+        assertTrue(limited.contains("## DSP graph attention retention"));
+        assertTrue(!limited.contains("## Attention note"));
+
+        ObjectNode unfiltered = MAPPER.createObjectNode()
+                .put("query", "DSP graph attention")
+                .put("top_k", 10);
+        String typedOnly = tool.recallTypedMemory(memoryDir, unfiltered, "project").getOutput();
+        assertTrue(!typedOnly.contains("raw-not-typed.md"));
+    }
+
+    @Test
     void schemaAdvertisesDirectClaudeReadAction() {
         MemoryTool tool = new MemoryTool(tempDir.resolve(".claude"));
 
@@ -102,5 +149,7 @@ class MemoryToolTest {
         assertTrue(actionDescription.contains("read_claude"));
         assertTrue(tool.parameterSchema().path("properties").path("query")
                 .path("description").asText().contains("all provider memory"));
+        assertEquals("integer", tool.parameterSchema().path("properties").path("top_k")
+                .path("type").asText());
     }
 }

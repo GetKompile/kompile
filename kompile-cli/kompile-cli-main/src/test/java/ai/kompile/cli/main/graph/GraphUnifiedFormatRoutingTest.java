@@ -17,25 +17,28 @@ package ai.kompile.cli.main.graph;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** The {@code kgraph}/{@code unified} format routes graph export/import to {@code /api/graph/unified}. */
+/** The native {@code kgraph} format routes graph export/import to the canonical graph transport. */
 class GraphUnifiedFormatRoutingTest {
 
     @Test
     void exportRecognizesTheNativeFormat() {
         assertTrue(GraphExportCommand.isUnifiedFormat("kgraph"));
-        assertTrue(GraphExportCommand.isUnifiedFormat("unified"));
         assertTrue(GraphExportCommand.isUnifiedFormat("KGRAPH"));
         assertFalse(GraphExportCommand.isUnifiedFormat("json"));
         assertTrue(GraphExportCommand.SUPPORTED_FORMATS.contains("kgraph"));
+        assertEquals("/api/graph/unified/export?format=ascii&factSheetId=42",
+                GraphExportCommand.unifiedExportUrl("ascii", 42L, "summary", true));
+        assertEquals("/api/graph/unified/export?format=png&vectors=values&bundle=false",
+                GraphExportCommand.unifiedExportUrl("png", null, "values", false));
     }
 
     @Test
     void importRecognizesTheNativeFormat() {
         assertTrue(GraphImportCommand.isUnifiedFormat("kgraph"));
-        assertTrue(GraphImportCommand.isUnifiedFormat("unified"));
         assertFalse(GraphImportCommand.isUnifiedFormat("csv"));
         assertTrue(GraphImportCommand.SUPPORTED_FORMATS.contains("kgraph"));
     }

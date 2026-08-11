@@ -424,6 +424,19 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
     }
 
     @Override
+    public void replaceConversationHistory(String conversationId, List<Message> messages) {
+        if (chatMemory == null) {
+            return;
+        }
+        chatMemory.clear(conversationId);
+        if (messages != null && !messages.isEmpty()) {
+            chatMemory.add(conversationId, messages);
+        }
+        log.debug("Restored {} messages for conversation: {}",
+                messages == null ? 0 : messages.size(), conversationId);
+    }
+
+    @Override
     public boolean hasConversation(String conversationId) {
         if (chatMemory != null) {
             return chatMemory.exists(conversationId);

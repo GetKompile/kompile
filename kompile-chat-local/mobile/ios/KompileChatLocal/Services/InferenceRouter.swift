@@ -62,23 +62,25 @@ final class InferenceRouter: ObservableObject {
         recomputeRoute()
     }
 
-    func generate(messages: [ChatMessage], options: GenOptions) async throws -> String {
+    func generate(
+        messages: [ChatMessage],
+        toolsJson: String,
+        toolChoice: ChatToolChoice,
+        options: GenOptions
+    ) async throws -> StructuredChatResponse {
         guard activeRoute == .local else {
             throw InferenceError.noLocalModelLoaded
         }
-        let prompt: String
         do {
-            prompt = try await sdxService.renderChatPrompt(messages: messages)
-        } catch {
-            throw InferenceError.localFailed(
-                "Tokenizer chat-template rendering failed: \(error.localizedDescription)"
+            return try await sdxService.generateChat(
+                messages: messages,
+                toolsJson: toolsJson,
+                toolChoice: toolChoice,
+                options: options
             )
+        } catch {
+            throw InferenceError.localFailed(error.localizedDescription)
         }
-        let result = await sdxService.generate(prompt: prompt, options: options)
-        if result.hasPrefix("[SdxError]") {
-            throw InferenceError.localFailed(result)
-        }
-        return result
     }
 
     private func startModelLoadIfNeeded() {

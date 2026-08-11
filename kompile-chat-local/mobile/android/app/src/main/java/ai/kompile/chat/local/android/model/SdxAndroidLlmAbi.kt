@@ -87,6 +87,20 @@ internal object SdxAndroidLlmAbi {
         }
     }
 
+    fun sdxLlmParseChatResult(
+        runtime: Pointer,
+        model: Pointer,
+        requestJson: String,
+        rawText: String,
+        outJson: SdxPointerByReference
+    ): Int = withStrings(requestJson, rawText) { values ->
+        withOutput(outJson) { output ->
+            SdxLlmNative.sdxLlmParseChatResult(
+                runtime, model, values[0], values[1], output
+            )
+        }
+    }
+
     fun sdxLlmGenerateStreaming(
         runtime: Pointer,
         model: Pointer,

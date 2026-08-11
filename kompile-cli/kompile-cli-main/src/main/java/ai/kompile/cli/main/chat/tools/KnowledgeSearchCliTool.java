@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.tools.grounding.LocalProjectCrawlBackend;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -38,10 +39,12 @@ public class KnowledgeSearchCliTool implements CliTool {
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectCrawlBackend localBackend;
 
     public KnowledgeSearchCliTool(String baseUrl, ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
+        this.localBackend = new LocalProjectCrawlBackend(objectMapper);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -52,9 +55,9 @@ public class KnowledgeSearchCliTool implements CliTool {
 
     @Override
     public String description() {
-        return "Search all knowledge sources with a natural language question. " +
-                "Automatically searches indexed documents and knowledge graph in parallel. " +
-                "Returns relevant content with source attribution. " +
+        return "Search knowledge sources with a natural language question. " +
+                "Without a configured server this searches project-local crawl chunks; with a server it " +
+                "searches indexed documents and the knowledge graph in parallel. Returns relevant content with source attribution. " +
                 "Optionally use topic to narrow results to a specific subject area.";
     }
 
@@ -71,6 +74,14 @@ public class KnowledgeSearchCliTool implements CliTool {
         props.putObject("topic")
                 .put("type", "string")
                 .put("description", "Optional: filter results to a specific topic or source collection");
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Optional project-local knowledge-base id, name, or collection.");
+        props.putObject("limit")
+                .put("type", "integer")
+                .put("minimum", 1)
+                .put("maximum", 50)
+                .put("default", 10);
 
         schema.putArray("required").add("query");
         return schema;
@@ -88,14 +99,17 @@ public class KnowledgeSearchCliTool implements CliTool {
 
         String query = params.path("query").asText("");
         String topic = params.path("topic").asText(null);
+        String knowledgeBase = params.path("knowledgeBase").asText(null);
+        int limit = params.path("limit").asInt(10);
 
         if (query.isEmpty()) {
             return ToolResult.error("query is required");
         }
 
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("knowledge_search requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return localBackend.search(query,
+                    knowledgeBase != null && !knowledgeBase.isBlank() ? knowledgeBase : topic,
+                    limit, context.getWorkingDirectory());
         }
 
         try {
@@ -128,8 +142,9 @@ public class KnowledgeSearchCliTool implements CliTool {
             return formatResponse(query, result);
 
         } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl +
-                    ". Is it running? Start with: kompile run");
+            return localBackend.search(query,
+                    knowledgeBase != null && !knowledgeBase.isBlank() ? knowledgeBase : topic,
+                    limit, context.getWorkingDirectory());
         } catch (Exception e) {
             return ToolResult.error("Knowledge search error: " + e.getMessage());
         }

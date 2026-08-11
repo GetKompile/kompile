@@ -21,21 +21,31 @@ import ai.kompile.cli.common.chat.sources.ChatAdapterSupport;
 import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
 import ai.kompile.cli.common.chat.sources.SourceInfo;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 public class KompileAdapter implements ChatSourceAdapter {
 
     public static final String ID = "kompile";
+
+    private final Path conversationsDirectory;
+
+    public KompileAdapter() {
+        this(KompileHome.homeDirectory().toPath().resolve("conversations"));
+    }
+
+    public KompileAdapter(Path conversationsDirectory) {
+        this.conversationsDirectory = conversationsDirectory.toAbsolutePath().normalize();
+    }
 
     @Override
     public String id() {
@@ -48,7 +58,7 @@ public class KompileAdapter implements ChatSourceAdapter {
     }
 
     private Path conversationsDir() {
-        return KompileHome.homeDirectory().toPath().resolve("conversations");
+        return conversationsDirectory;
     }
 
     @Override
@@ -75,11 +85,11 @@ public class KompileAdapter implements ChatSourceAdapter {
             for (Path path : stream) {
                 String name = path.getFileName().toString();
                 String id = name.substring(0, name.length() - 4);
-                Header header = readHeader(path);
-                int count = countTurns(path);
+                KompileTranscriptFormat.Header header = KompileTranscriptFormat.readHeader(path);
+                int count = KompileTranscriptFormat.countTurns(path);
                 out.add(new ChatSessionSummary(
-                        id, ID, header.title, header.agent, count,
-                        ChatAdapterSupport.lastModified(path), header.workingDir));
+                        id, ID, header.title(), header.agent(), count,
+                        ChatAdapterSupport.lastModified(path), header.workingDirectory()));
             }
         }
         out.sort((a, b) -> Long.compare(b.lastModifiedMillis(), a.lastModifiedMillis()));
@@ -97,88 +107,15 @@ public class KompileAdapter implements ChatSourceAdapter {
         return parseTranscript(file);
     }
 
+    @Override
+    public Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {
+        String safe = ChatAdapterSupport.safeSessionId(sessionId)
+                .orElseThrow(() -> new IOException("Invalid session id: " + sessionId));
+        Path file = conversationsDir().resolve(safe + ".txt");
+        return KompileTranscriptFormat.resolveWorkingDirectory(file);
+    }
+
     static List<ChatTurn> parseTranscript(Path file) throws IOException {
-        List<ChatTurn> out = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            String line;
-            boolean inHeader = true;
-            String currentRole = null;
-            StringBuilder buffer = new StringBuilder();
-            while ((line = reader.readLine()) != null) {
-                if (inHeader) {
-                    if (line.isBlank()) {
-                        inHeader = false;
-                    }
-                    continue;
-                }
-                if (line.startsWith("[system]") || line.startsWith("[resumed")
-                        || line.startsWith("[tool:") || line.startsWith("[subagent:")
-                        || line.startsWith("[todo:") || line.startsWith("[agentic-step]")) {
-                    continue;
-                }
-                if (line.startsWith("> ")) {
-                    flush(out, currentRole, buffer);
-                    currentRole = "user";
-                    buffer.setLength(0);
-                    buffer.append(line.substring(2));
-                } else if (line.isBlank()) {
-                    if (currentRole != null && buffer.length() > 0) {
-                        flush(out, currentRole, buffer);
-                        currentRole = (currentRole.equals("user")) ? "assistant" : null;
-                        buffer.setLength(0);
-                    }
-                } else {
-                    if (currentRole == null) currentRole = "assistant";
-                    if (buffer.length() > 0) buffer.append('\n');
-                    buffer.append(line);
-                }
-            }
-            flush(out, currentRole, buffer);
-        }
-        return out;
-    }
-
-    private static void flush(List<ChatTurn> out, String role, StringBuilder buffer) {
-        if (role == null) return;
-        String text = buffer.toString().trim();
-        if (text.isEmpty()) return;
-        out.add(new ChatTurn(role, text));
-    }
-
-    private static Header readHeader(Path file) {
-        Header h = new Header();
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null && !line.isBlank()) {
-                if (line.startsWith("Started:")) h.title = line.substring("Started:".length()).trim();
-                else if (line.startsWith("Agent:")) h.agent = line.substring("Agent:".length()).trim();
-                else if (line.startsWith("CWD:")) h.workingDir = line.substring("CWD:".length()).trim();
-            }
-        } catch (IOException ignore) {
-        }
-        return h;
-    }
-
-    private static int countTurns(Path file) {
-        int count = 0;
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            String line;
-            boolean inHeader = true;
-            while ((line = reader.readLine()) != null) {
-                if (inHeader) {
-                    if (line.isBlank()) inHeader = false;
-                    continue;
-                }
-                if (line.startsWith("> ")) count++;
-            }
-        } catch (IOException ignore) {
-        }
-        return count * 2;
-    }
-
-    private static class Header {
-        String title = "(untitled)";
-        String agent = "";
-        String workingDir;
+        return KompileTranscriptFormat.readTurns(file);
     }
 }

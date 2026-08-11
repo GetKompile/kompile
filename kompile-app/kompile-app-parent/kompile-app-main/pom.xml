@@ -642,13 +642,6 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- KClaw agent -->
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-kclaw</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
         <!-- Unified knowledge search tool -->
         <dependency>
             <groupId>ai.kompile</groupId>

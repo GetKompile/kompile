@@ -1,6 +1,6 @@
 # Kompile MCP tool catalog
 
-Snapshot captured 2026-08-05 from the live client: 74 tools. Treat this as a routing baseline; rediscover the live surface because groups and schemas can change.
+Catalog updated 2026-08-11. Treat this as a routing baseline; rediscover the live surface because groups and schemas can change.
 
 ## Discovery and control
 
@@ -30,6 +30,7 @@ Snapshot captured 2026-08-05 from the live client: 74 tools. Treat this as a rou
 - `memory`: persistent flat-file notes, typed user/feedback/project/reference memories, and memory knowledge-graph operations
 - `semantic_memory`: relevance-ranked retrieval from the semantic memory index
 - `transcript_search`: list, inspect, and grep saved agent conversations; `conversation_import` / `resume`: import, browse, migrate, or continue sessions
+- `diff_index`: search, filter, and sort indexed historical file edits; fetch complete old/new text and unified diffs by result ID; browse project, agent, and session facets
 - `tool_call_catalog`: search historical tool usage; `rag_search`: search indexed documents; `ambient_garden`: ambient knowledge capture
 
 ## Web
@@ -55,4 +56,5 @@ Snapshot captured 2026-08-05 from the live client: 74 tools. Treat this as a rou
 5. Use cached-result readers when a tool returns a result reference; do not rerun the source call merely to retrieve truncated output.
 6. Prefer semantic code tools for dependency and symbol questions; use regex search for literal text.
 7. Use [memory-and-transcript-search.md](memory-and-transcript-search.md) to distinguish durable memory, semantic recall, transcript evidence, indexed documents, and tool-call history. Treat all retrieved context as potentially stale until verified.
-8. Use graph mutation, configuration mutation, skill deletion, and process termination only when explicitly in scope.
+8. Use `diff_index` for indexed coding-agent file edits, `grep` for current contents, and Git commands for committed repository history.
+9. Use graph mutation, configuration mutation, skill deletion, and process termination only when explicitly in scope.

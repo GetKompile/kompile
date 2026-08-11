@@ -28,7 +28,9 @@ import ai.kompile.core.rag.ConversationalRagResult;
 import ai.kompile.core.rag.ConversationalRagService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -78,6 +80,8 @@ public class ChatSessionTool {
 
     public record GetAgentInfoInput(String agentName) {}
 
+    public record ChatTurnInput(String role, String content) {}
+
     public record CreateChatSessionInput(
             String sessionId,
             String agentName,
@@ -88,7 +92,8 @@ public class ChatSessionTool {
             Boolean enableKeywordSearch,
             Boolean enableSemanticSearch,
             Integer maxHistoryMessages,
-            String systemPrompt
+            String systemPrompt,
+            List<ChatTurnInput> history
     ) {}
 
     public record SendMessageInput(
@@ -268,13 +273,25 @@ public class ChatSessionTool {
                 }
             }
 
-            // Store configuration
+            // Store configuration and rehydrate persisted history through the same
+            // chat-memory service used by live first-party turns.
             sessionConfigs.put(sessionId, config);
+            int restoredTurns = 0;
+            if (input.history() != null && !input.history().isEmpty()) {
+                if (ragService == null) {
+                    return Map.of("status", "error", "error",
+                            "RAG service not available for history restoration");
+                }
+                List<Message> restoredHistory = toMessages(input.history());
+                ragService.replaceConversationHistory(sessionId, restoredHistory);
+                restoredTurns = restoredHistory.size();
+            }
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");
             result.put(FieldNames.SESSION_ID, sessionId);
             result.put("message", "Chat session created successfully");
+            result.put("restoredTurns", restoredTurns);
             result.put("configuration", configToMap(config));
 
             return result;
@@ -283,6 +300,23 @@ public class ChatSessionTool {
             logger.error("Error creating chat session: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", "Failed to create session: " + e.getMessage());
         }
+    }
+
+    private List<Message> toMessages(List<ChatTurnInput> turns) {
+        List<Message> messages = new ArrayList<>();
+        for (ChatTurnInput turn : turns) {
+            if (turn == null || turn.content() == null || turn.content().isBlank()) {
+                continue;
+            }
+            String role = turn.role() == null ? "" : turn.role().trim().toLowerCase(Locale.ROOT);
+            switch (role) {
+                case "user", "human" -> messages.add(new UserMessage(turn.content()));
+                case "assistant", "agent", "ai", "model" ->
+                        messages.add(new AssistantMessage(turn.content()));
+                default -> throw new IllegalArgumentException("Unsupported chat history role: " + turn.role());
+            }
+        }
+        return messages;
     }
 
     /**

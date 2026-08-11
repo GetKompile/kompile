@@ -5,26 +5,29 @@ import java.util.List;
 import java.util.Queue;
 
 /**
- * Test helper: a {@link ChatModel} that returns pre-canned responses in order.
+ * Test helper: a {@link ChatModel} that returns pre-canned structured responses.
  */
 public final class ScriptedChatModel implements ChatModel {
 
-    private final Queue<String> responses;
+    private final Queue<ChatResponse> responses;
     private boolean available = true;
 
-    private ScriptedChatModel(Queue<String> responses) {
+    private ScriptedChatModel(Queue<ChatResponse> responses) {
         this.responses = responses;
     }
 
-    /**
-     * Create a scripted model that returns the given responses in order.
-     *
-     * @param responses responses to return on successive {@link #generate} calls
-     * @return scripted model
-     */
+    /** Create a scripted content-only model. */
     public static ScriptedChatModel of(String... responses) {
-        Queue<String> q = new ArrayDeque<>(List.of(responses));
-        return new ScriptedChatModel(q);
+        Queue<ChatResponse> values = new ArrayDeque<>();
+        for (String response : responses) {
+            values.add(ChatResponse.content(response));
+        }
+        return new ScriptedChatModel(values);
+    }
+
+    /** Create a scripted model with explicit structured responses. */
+    public static ScriptedChatModel ofResponses(ChatResponse... responses) {
+        return new ScriptedChatModel(new ArrayDeque<>(List.of(responses)));
     }
 
     /** Force {@link #isAvailable()} to return {@code false}. */
@@ -34,8 +37,8 @@ public final class ScriptedChatModel implements ChatModel {
     }
 
     @Override
-    public String generate(List<Message> messages, GenOptions opts) throws ChatException {
-        String next = responses.poll();
+    public ChatResponse generate(ChatRequest request, GenOptions opts) throws ChatException {
+        ChatResponse next = responses.poll();
         if (next == null) {
             throw new ChatException("ScriptedChatModel: no more scripted responses");
         }

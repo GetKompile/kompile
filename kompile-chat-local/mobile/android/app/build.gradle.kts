@@ -94,23 +94,16 @@ if (sdxArtifactMode.get() == "release-consumer") {
 }
 
 // ── Provider-independent SDX layers ───────────────────────────────────────────
-// Every provider AAR re-ships the same provider-independent Java beside its own
-// provider-coupled JavaCPP binding and native payload. Those AARs come out of
-// separate native builds, so a provider whose natives were not rebuilt also drags a
-// stale copy of the shared Java API along, breaking Kotlin compilation for that one
-// flavor with no hint that the AAR rather than the source is at fault.
-//
-// The shared layers are independent of the provider-coupled one: the
-// org/nd4j/dsp/runtime classes shipped in the AARs reference neither
-// org/nd4j/dsp/model nor the tokenizer package. Both shared layers are therefore
-// refreshed from canonical Maven artifacts, uniformly for every flavor, while each
-// AAR keeps its own binding, libjnisdx.so, and provider runtime byte for byte.
+// Provider AARs re-ship model and tokenizer facades beside provider-coupled
+// JavaCPP bindings and native payloads. Refresh only the genuinely shared layers.
+// org/nd4j/dsp/runtime directly calls the generated SdxNative transport, so those
+// classes must remain byte-for-byte paired with the provider's binding and
+// libjnisdx.so; replacing only that Java side causes device-only linkage failures.
 val sdxVersion = providers.gradleProperty("sdxVersion").orElse("1.0.0-SNAPSHOT")
 
 // Java packages that are identical across providers and safe to refresh in place.
 val sdxSharedPackages = setOf(
     "org/nd4j/dsp/model/",
-    "org/nd4j/dsp/runtime/Sdx",
     "org/eclipse/deeplearning4j/tokenizers/"
 )
 
@@ -382,16 +375,16 @@ dependencies {
     // ── Separate device-only JavaCPP provider AARs ────────────────────────────
     // Each APK resolves exactly one provider. The build script stages these paths
     // and both runtime verifiers reject BLAS, host, and alternate-backend leakage.
-    // Consumed after normalization so all four flavors compile against one shared
-    // SDX Java API regardless of when each provider's natives were last built.
+    // Consumed after normalization. Shared model/tokenizer facades are refreshed,
+    // while each provider's runtime facade stays paired with its JavaCPP/native ABI.
     add("vulkanImplementation", files(normalizedVulkanAar))
     add("hexagonImplementation", files(normalizedHexagonAar))
     add("tensorG3Implementation", files(normalizedTensorG3Aar))
     add("tensorG5Implementation", files(normalizedTensorG5Aar))
 
-    // Canonical provider-independent SDX artifacts. The nd4j-sdx jar contributes only
-    // the stable runtime facade here; each provider AAR keeps its own JavaCPP binding and native
-    // payload. Tokenizer Java is refreshed together with the matching arm64 libraries below.
+    // Canonical provider-independent SDX artifacts. Runtime classes from nd4j-sdx
+    // are deliberately not overlaid onto provider AARs because they call the provider's
+    // generated JavaCPP binding. Tokenizer Java and arm64 libraries refresh together.
     add("sdxSharedJava", "org.eclipse.deeplearning4j:nd4j-sdx-model:${sdxVersion.get()}")
     add("sdxSharedJava", "org.eclipse.deeplearning4j:nd4j-sdx:${sdxVersion.get()}")
     add("sdxSharedJava", "org.eclipse.deeplearning4j:tokenizers-native:${sdxVersion.get()}")

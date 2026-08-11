@@ -7,48 +7,11 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SameDiffLanguageModelOptionsTest {
-
-    @Test
-    void resolvesGeneralToolDefinitionDialectsFromModelOptions() {
-        assertEquals(
-                ChatTemplate.ToolDefinitionFormat.STANDARD,
-                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(Map.of()));
-        assertEquals(
-                ChatTemplate.ToolDefinitionFormat.STANDARD,
-                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
-                        Map.of("toolDefinitionFormat", "openai-function")));
-        assertEquals(
-                ChatTemplate.ToolDefinitionFormat.FLAT,
-                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
-                        Map.of("toolDefinitionFormat", "flat")));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
-                        Map.of("toolDefinitionFormat", "unknown")));
-    }
-
-    @Test
-    void resolvesExistingToolCallFormatOptionForTheGenerationPipeline() {
-        assertEquals(
-                ChatTemplate.ToolCallFormat.JSON,
-                SameDiffLanguageModelImpl.toolCallFormatOpt(Map.of()));
-        assertEquals(
-                ChatTemplate.ToolCallFormat.JSON,
-                SameDiffLanguageModelImpl.toolCallFormatOpt(
-                        Map.of("toolCallFormat", "openai-json")));
-        assertEquals(
-                ChatTemplate.ToolCallFormat.NATIVE,
-                SameDiffLanguageModelImpl.toolCallFormatOpt(
-                        Map.of("toolCallFormat", "model-native")));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> SameDiffLanguageModelImpl.toolCallFormatOpt(
-                        Map.of("toolCallFormat", "unknown")));
-    }
 
     @Test
     void propagatesModelSamplingProfileIncludingRepetitionPenaltyAndSeed() {
@@ -69,5 +32,38 @@ class SameDiffLanguageModelOptionsTest {
         assertEquals(1.05, sampling.getRepetitionPenalty());
         assertEquals(Long.valueOf(1234L), sampling.getSeed());
         assertEquals(512, sampling.getMaxNewTokens());
+    }
+
+    @Test
+    void resolvesStructuredToolFormatAliases() {
+        assertEquals(ChatTemplate.ToolDefinitionFormat.STANDARD,
+                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(Map.of()));
+        assertEquals(ChatTemplate.ToolDefinitionFormat.STANDARD,
+                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
+                        Map.of("toolDefinitionFormat", "openai-function")));
+        assertEquals(ChatTemplate.ToolDefinitionFormat.FLAT,
+                SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
+                        Map.of("toolDefinitionFormat", "flat")));
+
+        assertNull(SameDiffLanguageModelImpl.toolCallFormatOpt(Map.of()),
+                "the imported model must own the default tool-call protocol");
+        assertNull(SameDiffLanguageModelImpl.toolCallFormatOpt(
+                Map.of("toolCallFormat", "auto")));
+        assertEquals(ChatTemplate.ToolCallFormat.JSON,
+                SameDiffLanguageModelImpl.toolCallFormatOpt(
+                        Map.of("toolCallFormat", "openai-json")));
+        assertEquals(ChatTemplate.ToolCallFormat.NATIVE,
+                SameDiffLanguageModelImpl.toolCallFormatOpt(
+                        Map.of("toolCallFormat", "model-native")));
+    }
+
+    @Test
+    void rejectsUnknownStructuredToolFormats() {
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.toolDefinitionFormatOpt(
+                        Map.of("toolDefinitionFormat", "not-a-format")));
+        assertThrows(IllegalArgumentException.class,
+                () -> SameDiffLanguageModelImpl.toolCallFormatOpt(
+                        Map.of("toolCallFormat", "not-a-format")));
     }
 }

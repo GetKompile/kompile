@@ -12,7 +12,10 @@ package ai.kompile.knowledgegraph.io;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
+import ai.kompile.graph.reasoning.debug.UnifiedGraphDebugRenderer;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphBridge;
 import ai.kompile.knowledgegraph.io.format.CsvGraphExporter;
 import ai.kompile.knowledgegraph.io.format.CsvGraphImporter;
 import ai.kompile.knowledgegraph.io.format.CypherDumpExporter;
@@ -40,6 +43,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
@@ -65,12 +70,26 @@ public class GraphIOService {
     private final KnowledgeGraphService graphService;
     private final ObjectMapper mapper;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private UnifiedGraphBridge unifiedGraphBridge;
+
     public GraphIOService(KnowledgeGraphService graphService, ObjectMapper mapper) {
         this.graphService = graphService;
         this.mapper = mapper;
     }
 
     public ImportResult importGraph(String format, byte[] payload, byte[] secondary) throws Exception {
+        return importGraph(format, payload, secondary, null);
+    }
+
+    public ImportResult importGraph(String format, byte[] payload, byte[] secondary, Long factSheetId)
+            throws Exception {
+        if ("kgraph".equalsIgnoreCase(format)) {
+            requireUnifiedBridge();
+            UnifiedGraphBridge.ImportSummary summary = unifiedGraphBridge.importGraph(
+                    UnifiedGraph.load(new ByteArrayInputStream(payload)), factSheetId);
+            return new ImportResult("kgraph", summary.nodes(), 0, summary.edges(), 0, null);
+        }
         PortableGraph graph = switch (format.toLowerCase()) {
             case "json" -> new JsonGraphImporter(mapper).parse(payload);
             case "jsonld", "json-ld" -> new JsonLdGraphImporter(mapper).parse(payload);
@@ -84,6 +103,9 @@ public class GraphIOService {
     }
 
     public ExportResult exportGraph(String format, Long factSheetId) throws Exception {
+        if (isUnifiedFormat(format)) {
+            return serializeUnified(format, factSheetId);
+        }
         return serialize(format, collect(factSheetId, false));
     }
 
@@ -100,6 +122,9 @@ public class GraphIOService {
         if (namedGraphId == null) {
             return exportGraph(format, factSheetId);
         }
+        if (isUnifiedFormat(format)) {
+            return serializeUnified(format, factSheetId, namedGraphId);
+        }
         return serialize(format, collect(factSheetId, false, namedGraphId));
     }
 
@@ -109,7 +134,35 @@ public class GraphIOService {
      * graph exactly once.
      */
     public ExportResult exportGlobalGraph(String format) throws Exception {
+        if (isUnifiedFormat(format)) {
+            return serializeUnified(format, null);
+        }
         return serialize(format, collect(null, true));
+    }
+
+    private ExportResult serializeUnified(String format, Long factSheetId) throws Exception {
+        return serializeUnified(format, factSheetId, null);
+    }
+
+    private ExportResult serializeUnified(String format, Long factSheetId, String namedGraphId) throws Exception {
+        requireUnifiedBridge();
+        UnifiedGraph graph = unifiedGraphBridge.export(factSheetId, namedGraphId);
+        UnifiedGraphDebugRenderer.Options options = UnifiedGraphDebugRenderer.Options.defaults();
+        return switch (format.toLowerCase(java.util.Locale.ROOT)) {
+            case "kgraph" -> {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                graph.save(out);
+                yield new ExportResult("kgraph", graph.entityCount(), graph.relationCount(),
+                        out.toByteArray(), "application/octet-stream", "graph.kgraph");
+            }
+            case "ascii", "txt" -> new ExportResult("ascii", graph.entityCount(), graph.relationCount(),
+                    UnifiedGraphDebugRenderer.toAscii(graph, options)
+                            .getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                    "text/plain;charset=US-ASCII", "graph.txt");
+            case "png" -> new ExportResult("png", graph.entityCount(), graph.relationCount(),
+                    UnifiedGraphDebugRenderer.toPngBundle(graph, options), "application/zip", "graph-debug.png.zip");
+            default -> throw new IllegalArgumentException("Unknown unified export format: " + format);
+        };
     }
 
     private ExportResult serialize(String format, PortableGraph graph) throws Exception {
@@ -158,6 +211,19 @@ public class GraphIOService {
                     "graph.ttl");
             default -> throw new IllegalArgumentException("Unknown export format: " + format);
         };
+    }
+
+    private boolean isUnifiedFormat(String format) {
+        return "kgraph".equalsIgnoreCase(format)
+                || "ascii".equalsIgnoreCase(format)
+                || "txt".equalsIgnoreCase(format)
+                || "png".equalsIgnoreCase(format);
+    }
+
+    private void requireUnifiedBridge() {
+        if (unifiedGraphBridge == null) {
+            throw new IllegalStateException("Unified graph export/import is not available in this graph context");
+        }
     }
 
     /**

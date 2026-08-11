@@ -3,12 +3,14 @@ package ai.kompile.cli.mcp.stdio;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
 import ai.kompile.cli.main.chat.roles.RoleManager;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -52,7 +54,8 @@ public class StdioTaskTool {
         return "Spawn a subagent to handle a delegated task. " +
             "The subagent runs through the same managed terminal launcher used by interactive passthrough " +
             "with its own context window, then returns a summary.\n\n" +
-            "Available agents: codex (default), claude, opencode.\n" +
+            "Available agents: codex (default), claude, opencode. Roles customize the prompt and " +
+            "model defaults without disabling tools, edits, execution, or delegation.\n" +
             "Returns a concise summary. Full output is written to a file under .kompile/task-results/ " +
             "which can be read with the `read` tool if more detail is needed.\n" +
             "The subagent runs once and returns — it cannot send follow-up messages.";
@@ -82,7 +85,7 @@ public class StdioTaskTool {
         thinking.put("description", "Optional thinking/effort override. When omitted, exact-model/default thinking from the selected role is tried before project/user defaults. Native mapping: Codex reasoning effort, Claude effort, OpenCode variant.");
         var role = props.putObject("role");
         role.put("type", "string");
-        role.put("description", "Optional role to assign to the subagent. When omitted, the agent's persisted role assignment is used. Roles may define per-agent model and thinking defaults.");
+        role.put("description", "Optional role to assign to the subagent. When omitted, the agent's persisted role assignment is used. Roles may define prompt, model, and thinking defaults; all tools remain enabled.");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
@@ -103,12 +106,16 @@ public class StdioTaskTool {
             return ToolResult.error("Agent '" + requestedAgent
                 + "' is not available. Available agents: " + String.join(", ", SUPPORTED_AGENTS) + ".");
         }
+        if (roleName != null && !roleName.isBlank() && roleManager != null
+                && roleManager.getRole(roleName) == null) {
+            return ToolResult.error("Unknown role '" + roleName + "'; refusing to launch subagent.");
+        }
 
         String displayName = requestedAgent.substring(0, 1).toUpperCase(Locale.ROOT) + requestedAgent.substring(1);
         AgentConfig agentConfig = AgentConfig.builder(requestedAgent)
             .displayName(displayName)
             .description("External " + displayName + " agent")
-            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
+            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(true)
             .roleName(roleName)
             .modelOverride(model)
             .thinkingOverride(thinking)
@@ -121,9 +128,35 @@ public class StdioTaskTool {
             if (isAgentMissing(result)) {
                 return ToolResult.error(displayName + " is not available on PATH.");
             }
-            return ToolResult.success("task:" + requestedAgent, result,
-                Map.of("agent", requestedAgent, "description", desc, "mode", "managed-terminal",
-                       "fallbacksUsed", "0"));
+            String effectiveRoleName = roleName;
+            RoleConfig effectiveRole = roleName != null && !roleName.isBlank() && roleManager != null
+                    ? roleManager.getRole(roleName) : null;
+            if ((effectiveRoleName == null || effectiveRoleName.isBlank()) && roleManager != null) {
+                effectiveRoleName = roleManager.getAgentRole(requestedAgent);
+                effectiveRole = effectiveRoleName == null ? null : roleManager.getRole(effectiveRoleName);
+            }
+            AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
+                    requestedAgent, java.nio.file.Path.of("."), model, thinking,
+                    effectiveRole != null ? effectiveRole.getAgentDefaultsFor(requestedAgent) : null);
+            boolean architect = "architect".equalsIgnoreCase(effectiveRoleName);
+            String effectiveModel = selection.model();
+            String effectiveThinking = selection.thinking();
+            if (architect && effectiveModel == null) {
+                effectiveModel = "gpt-5.6-sol";
+            }
+            if (architect && effectiveThinking == null) {
+                effectiveThinking = "xhigh";
+            }
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("agent", requestedAgent);
+            metadata.put("description", desc);
+            metadata.put("mode", "managed-terminal");
+            metadata.put("role", effectiveRoleName == null ? "" : effectiveRoleName);
+            metadata.put("model", effectiveModel == null ? "" : effectiveModel);
+            metadata.put("thinking", effectiveThinking == null ? "" : effectiveThinking);
+            metadata.put("policy", "FULL_ACCESS");
+            metadata.put("fallbacksUsed", "0");
+            return ToolResult.success("task:" + requestedAgent, result, metadata);
         } catch (RateLimitException e) {
             System.err.println("\u001B[33m  \u26a0 " + displayName + " rate limited; provider fallback is disabled.\u001B[0m");
             return ToolResult.error(displayName + " is rate limited. No provider fallback was attempted.");

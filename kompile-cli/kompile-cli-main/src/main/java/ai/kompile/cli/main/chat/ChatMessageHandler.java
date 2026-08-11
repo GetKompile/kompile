@@ -65,6 +65,7 @@ public class ChatMessageHandler {
     private final MessageQueue messageQueue;
     private final AtomicBoolean cancelSignal;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
+    private final Object turnDispatchLock = new Object();
 
     // Mutable llmBusy flag — read/written by ChatRepl main loop as well
     // We access it via ChatRepl accessors to keep a single source of truth.
@@ -102,6 +103,9 @@ public class ChatMessageHandler {
         this.messageQueue = messageQueue;
         this.cancelSignal = cancelSignal;
         this.pendingAttachments = pendingAttachments;
+        ChatCompleter.setQueueSupplier(() -> this.messageQueue.getAll().stream()
+                .map(MessageQueue.QueuedMessage::getContent)
+                .collect(Collectors.toList()));
     }
 
     // ========================================================================
@@ -113,35 +117,88 @@ public class ChatMessageHandler {
      * Auto-queues the message if the LLM is already busy.
      */
     public void handleChatMessage(String message) {
-        // Auto-queue message if LLM is busy
-        if (repl.isLlmBusy()) {
-            MessageQueue.QueuedMessage msg = messageQueue.enqueue(message);
-            sessionMetrics.recordMessageQueued();
-            int queueSize = messageQueue.size();
-            System.out.println();
-            System.out.println(renderer.yellow("  ⏳ Queued ") + renderer.dim("(" + queueSize + " pending)"));
-            System.out.println(renderer.dim("     → ") + StringUtils.truncate(message, 60));
-            if (repl.isAutoDequeueEnabled()) {
-                System.out.println(renderer.dim("     Will auto-send when current task completes"));
-            } else {
-                System.out.println(renderer.dim("     Use /queue-send to send manually"));
-            }
-            System.out.println();
-            chatHistory.logUserMessage("(queued) " + message);
+        // Crawl/headless runs deliberately stay synchronous so callers do not
+        // tear down the transcript before the one requested turn completes.
+        if (repl.isForceAgentic()) {
+            handleAcceptedChatMessage(message);
             return;
         }
+
+        synchronized (turnDispatchLock) {
+            if (repl.isLlmBusy()) {
+                enqueueChatMessage(message);
+                return;
+            }
+
+            // Reserve the turn before starting the worker. Without this, a fast
+            // second Enter can race the worker and launch two model turns.
+            repl.setLlmBusy(true);
+            Thread dispatchThread = new Thread(
+                    () -> handleAcceptedChatMessage(message),
+                    "standard-chat-dispatch");
+            dispatchThread.setDaemon(true);
+            dispatchThread.start();
+        }
+    }
+
+    private void enqueueChatMessage(String message) {
+        messageQueue.enqueue(message);
+        sessionMetrics.recordMessageQueued();
+        int queueSize = messageQueue.size();
+        emitLine("");
+        emitLine(renderer.yellow("  ⏳ Queued ") + renderer.dim("(" + queueSize + " pending)"));
+        emitLine(renderer.dim("     → ") + StringUtils.truncate(message, 60));
+        if (repl.isAutoDequeueEnabled()) {
+            emitLine(renderer.dim("     Will auto-send when current task completes"));
+        } else {
+            emitLine(renderer.dim("     Use /queue-send to send manually"));
+        }
+        emitLine("");
+        chatHistory.logUserMessage("(queued) " + message);
+    }
+
+    private void handleAcceptedChatMessage(String message) {
 
         // Reset cancel signal for this new message
         cancelSignal.set(false);
 
         sessionMetrics.recordUserTurn(message);
-        chatHistory.logUserMessage(message);
+        if (!repl.isForceAgentic()) {
+            chatHistory.logUserMessage(message);
+        }
 
-        if (localMode) {
-            // In local mode, all messages go through the agentic loop
-            handleLocalChat(message);
-        } else {
-            handleServerChat(message);
+        try {
+            if (repl.isForceAgentic()) {
+                // Crawl profile: every ordinary message is an agentic control/reasoning turn.
+                runAgenticChat(message);
+            } else if (localMode) {
+                // In local mode, all messages go through the agentic loop
+                handleLocalChat(message);
+            } else {
+                handleServerChat(message);
+            }
+        } finally {
+            ChatCompleter.setActivity(null);
+            synchronized (turnDispatchLock) {
+                // completeTaskWithAutoDequeue may synchronously call back into
+                // handleChatMessage. The re-entrant lock keeps llmBusy reserved
+                // across that hand-off so a newly typed message cannot overtake it.
+                repl.completeTaskWithAutoDequeue();
+            }
+        }
+    }
+
+    private void emitLine(String line) {
+        ChatCompleter.printAbove(line);
+    }
+
+    private void startActivityIndicator() {
+        ChatCompleter.setActivity("Thinking");
+        // With an active LineReader the persistent status bar renders the
+        // foreground RUNNING task. A carriage-return spinner would overwrite
+        // the draft the user is typing for the queue.
+        if (!ChatCompleter.hasLineReader()) {
+            repl.printGeneratingIndicator();
         }
     }
 
@@ -165,10 +222,10 @@ public class ChatMessageHandler {
             agenticLoop.setPendingAttachments(attachments);
         }
 
-        System.out.println();
+        emitLine("");
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + StringUtils.truncate(message, 50));
-        repl.printGeneratingIndicator();
+        startActivityIndicator();
         agenticLoop.setOnFirstOutput(repl::stopGeneratingSpinner);
         long turnStart = System.currentTimeMillis();
 
@@ -178,16 +235,14 @@ public class ChatMessageHandler {
 
             repl.stopGeneratingSpinner();
             long turnDuration = System.currentTimeMillis() - turnStart;
-            System.out.println("\n");
+            emitLine("");
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             task.appendOutput(response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
-            repl.completeTaskWithAutoDequeue();
         } catch (Exception e) {
             repl.stopGeneratingSpinner();
-            System.err.println("\nError in chat: " + e.getMessage());
+            emitLine(renderer.red("Error in chat: " + e.getMessage()));
             task.setError(e);
-            repl.completeTaskWithAutoDequeue();
         }
     }
 
@@ -207,7 +262,7 @@ public class ChatMessageHandler {
 
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + StringUtils.truncate(message, 50));
-        repl.printGeneratingIndicator();
+        startActivityIndicator();
         try {
             ObjectNode args = objectMapper.createObjectNode();
             args.put("sessionId", sessionId);
@@ -226,35 +281,34 @@ public class ChatMessageHandler {
                 long timeMs = json.path("executionTimeMs").asLong(0);
 
                 if (answer != null) {
-                    System.out.println();
-                    System.out.println(asciiRenderer.renderMarkdown(answer));
+                    emitLine("");
+                    emitLine(asciiRenderer.renderMarkdown(answer));
                 } else {
                     answer = rawResponse;
-                    System.out.println();
-                    System.out.println(asciiRenderer.renderMarkdown(rawResponse));
+                    emitLine("");
+                    emitLine(asciiRenderer.renderMarkdown(rawResponse));
                 }
 
                 if (docsRetrieved > 0) {
-                    System.out.printf("  [%d docs retrieved, %dms]%n", docsRetrieved, timeMs);
+                    emitLine("  [" + docsRetrieved + " docs retrieved, " + timeMs + "ms]");
                     sessionMetrics.recordRagQuery(docsRetrieved);
                 }
-                System.out.println();
+                emitLine("");
 
                 String finalAnswer = answer != null ? answer : rawResponse;
                 sessionMetrics.recordAssistantTurn(finalAnswer, timeMs);
                 chatHistory.logAssistantMessage(finalAnswer, docsRetrieved, timeMs);
             } catch (Exception e) {
-                System.out.println();
-                System.out.println(asciiRenderer.renderMarkdown(rawResponse));
-                System.out.println();
+                emitLine("");
+                emitLine(asciiRenderer.renderMarkdown(rawResponse));
+                emitLine("");
                 chatHistory.logAssistantMessage(rawResponse, 0, 0);
             }
         } catch (Exception e) {
             repl.stopGeneratingSpinner();
-            System.err.println("Error sending message: " + e.getMessage());
+            emitLine(renderer.red("Error sending message: " + e.getMessage()));
             task.setError(e);
         }
-        repl.completeTaskWithAutoDequeue();
     }
 
     // ========================================================================
@@ -263,8 +317,8 @@ public class ChatMessageHandler {
 
     public void streamAgentChat(String message) {
         if (message.isBlank()) {
-            System.out.println("Usage: /ask <message>");
-            System.out.println("Sends a message to the configured agent with streaming output.");
+            emitLine("Usage: /ask <message>");
+            emitLine("Sends a message to the configured agent with streaming output.");
             return;
         }
 
@@ -310,17 +364,18 @@ public class ChatMessageHandler {
 
             if (response.statusCode() != 200) {
                 repl.stopGeneratingSpinner();
-                System.err.println("Agent stream failed: HTTP " + response.statusCode());
+                emitLine(renderer.red("Agent stream failed: HTTP " + response.statusCode()));
                 return;
             }
 
             repl.stopGeneratingSpinner();
-            System.out.println();
+            emitLine("");
 
             // Accumulate full response for transcript
             StringBuilder fullResponse = new StringBuilder();
             long[] durationMs = {0};
-            StreamingMarkdownRenderer streamingMd = new StreamingMarkdownRenderer(asciiRenderer);
+            StreamingMarkdownRenderer streamingMd =
+                    new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
 
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
                 String eventType = null;
@@ -330,7 +385,7 @@ public class ChatMessageHandler {
                 while ((line = reader.readLine()) != null) {
                     if (cancelSignal.get()) {
                         streamingMd.flush();
-                        System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                        emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
                         fullResponse.append("\n[Cancelled by user]");
                         break;
                     }
@@ -347,7 +402,7 @@ public class ChatMessageHandler {
             }
             streamingMd.flush();
 
-            System.out.println("\n");
+            emitLine("");
 
             String responseText = fullResponse.toString();
             chatHistory.logAgentResponse(repl.getAgentName(), responseText, durationMs[0]);
@@ -356,7 +411,7 @@ public class ChatMessageHandler {
 
         } catch (Exception e) {
             repl.stopGeneratingSpinner();
-            System.err.println("\nError in agent stream: " + e.getMessage());
+            emitLine(renderer.red("Error in agent stream: " + e.getMessage()));
             task.setError(e);
         }
         repl.completeTaskWithAutoDequeue();
@@ -367,17 +422,28 @@ public class ChatMessageHandler {
     // ========================================================================
 
     public void agenticChat(String message) {
+        try {
+            runAgenticChat(message);
+        } finally {
+            ChatCompleter.setActivity(null);
+            synchronized (turnDispatchLock) {
+                repl.completeTaskWithAutoDequeue();
+            }
+        }
+    }
+
+    private void runAgenticChat(String message) {
         if (message.isBlank()) {
-            System.out.println("Usage: /agent-chat <message>");
-            System.out.println("Sends a message through the agentic tool loop with local tool execution.");
-            System.out.println("Current local agent: " + repl.getLocalAgentName());
-            System.out.println("Available local agents: " + String.join(", ",
+            emitLine("Usage: /agent-chat <message>");
+            emitLine("Sends a message through the agentic tool loop with local tool execution.");
+            emitLine("Current local agent: " + repl.getLocalAgentName());
+            emitLine("Available local agents: " + String.join(", ",
                     repl.getAgentRegistry().getPrimaryAgents().stream()
                             .map(a -> a.getName()).toArray(String[]::new)));
             return;
         }
 
-        chatHistory.logUserMessage("/agent-chat " + message);
+        chatHistory.logUserMessage(repl.isForceAgentic() ? message : "/agent-chat " + message);
 
         // Build memory-enriched message if memory is enabled
         String enrichedMessage = message;
@@ -388,11 +454,11 @@ public class ChatMessageHandler {
             }
         }
 
-        System.out.println();
+        emitLine("");
 
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Agentic chat: " + StringUtils.truncate(message, 40));
-        repl.printGeneratingIndicator();
+        startActivityIndicator();
         agenticLoop.setOnFirstOutput(repl::stopGeneratingSpinner);
         long turnStart = System.currentTimeMillis();
         try {
@@ -401,17 +467,16 @@ public class ChatMessageHandler {
 
             repl.stopGeneratingSpinner();
             long turnDuration = System.currentTimeMillis() - turnStart;
-            System.out.println("\n");
+            emitLine("");
             chatHistory.logAgentResponse(repl.getLocalAgentName(), response, turnDuration);
             task.appendOutput(response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
 
         } catch (Exception e) {
             repl.stopGeneratingSpinner();
-            System.err.println("\nError in agentic chat: " + e.getMessage());
+            emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
             task.setError(e);
         }
-        repl.completeTaskWithAutoDequeue();
     }
 
     // ========================================================================
@@ -440,7 +505,7 @@ public class ChatMessageHandler {
                 try {
                     JsonNode json = objectMapper.readTree(data);
                     String agent = json.path("agent").asText("");
-                    System.out.println(renderer.dim("[Agent: " + agent + "]"));
+                    emitLine(renderer.dim("[Agent: " + agent + "]"));
                 } catch (Exception e) {
                     // ignore
                 }
@@ -451,7 +516,7 @@ public class ChatMessageHandler {
                 try {
                     JsonNode sources = objectMapper.readTree(data);
                     if (sources.isArray() && sources.size() > 0) {
-                        System.out.println(renderer.dim("[Retrieved " + sources.size() + " documents]"));
+                        emitLine(renderer.dim("[Retrieved " + sources.size() + " documents]"));
                     }
                 } catch (Exception e) {
                     // ignore
@@ -464,7 +529,7 @@ public class ChatMessageHandler {
                     JsonNode stats = objectMapper.readTree(data);
                     durationMs[0] = stats.path("durationMs").asLong(0);
                     if (durationMs[0] > 0) {
-                        System.out.println(renderer.dim("  [completed in " + durationMs[0] + "ms]"));
+                        emitLine(renderer.dim("  [completed in " + durationMs[0] + "ms]"));
                     }
                 } catch (Exception e) {
                     // ignore
@@ -475,9 +540,9 @@ public class ChatMessageHandler {
                 streamingMd.flush();
                 try {
                     JsonNode error = objectMapper.readTree(data);
-                    System.err.println("\nError: " + error.path("message").asText(data));
+                    emitLine(renderer.red("Error: " + error.path("message").asText(data)));
                 } catch (Exception e) {
-                    System.err.println("\nError: " + data);
+                    emitLine(renderer.red("Error: " + data));
                 }
                 break;
 
@@ -487,7 +552,7 @@ public class ChatMessageHandler {
 
             case "cancelled":
                 streamingMd.flush();
-                System.out.println("\n[Cancelled]");
+                emitLine("[Cancelled]");
                 break;
 
             default:
@@ -520,7 +585,8 @@ public class ChatMessageHandler {
                             att.path().toString(), att.mimeType(), false, null, text));
                 }
             } catch (Exception e) {
-                System.err.println("Warning: Could not read attachment " + att.path().getFileName() + ": " + e.getMessage());
+                emitLine(renderer.yellow("Warning: Could not read attachment "
+                        + att.path().getFileName() + ": " + e.getMessage()));
             }
         }
 

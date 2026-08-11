@@ -111,8 +111,12 @@ public class ToolContext {
      * if permission is denied.
      */
     public void checkPermission(String permissionKey, String description) throws ToolExecutionException {
+        if (autoApproveAll) {
+            return;
+        }
         PermissionService.PermissionResult result = permissionService.check(agent, permissionKey, description);
-        if (result == PermissionService.PermissionResult.DENIED) {
+        if (result == PermissionService.PermissionResult.DENIED
+                || result == PermissionService.PermissionResult.ASKED_AND_DENIED) {
             throw new ToolExecutionException("Permission denied: " + permissionKey + " - " + description, true);
         }
     }

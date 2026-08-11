@@ -350,19 +350,19 @@ class ChatSessionMetricsTest {
         }
 
         @Test
-        void recordEscape_nullType_countedButNotTyped() {
+        void recordEscape_nullType_normalizedToUnknown() {
             metrics.recordEscape(null);
 
             assertEquals(1, metrics.getEscapeCount());
-            assertTrue(metrics.getEscapesByType().isEmpty());
+            assertEquals(1, metrics.getEscapesByType().get("unknown").get());
         }
 
         @Test
-        void recordEscape_blankType_countedButNotTyped() {
+        void recordEscape_blankType_normalizedToUnknown() {
             metrics.recordEscape("  ");
 
             assertEquals(1, metrics.getEscapeCount());
-            assertTrue(metrics.getEscapesByType().isEmpty());
+            assertEquals(1, metrics.getEscapesByType().get("unknown").get());
         }
 
         @Test

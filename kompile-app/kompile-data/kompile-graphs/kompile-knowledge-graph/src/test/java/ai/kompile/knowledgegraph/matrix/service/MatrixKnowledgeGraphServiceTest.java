@@ -15,6 +15,7 @@
  */
 package ai.kompile.knowledgegraph.matrix.service;
 
+import ai.kompile.knowledgegraph.domain.EdgeProvenance;
 import ai.kompile.knowledgegraph.domain.EdgeType;
 import ai.kompile.knowledgegraph.domain.GraphEdge;
 import ai.kompile.knowledgegraph.domain.GraphNode;
@@ -33,6 +34,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.time.LocalDateTime;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -124,6 +126,97 @@ class MatrixKnowledgeGraphServiceTest {
         assertEquals(3, created.size());
         assertEquals("table_wb:B.xlsx/sheet:S1", created.get(0).getNodeId());
         assertEquals("entity_wb:B.xlsx/cell:S1!A2", created.get(2).getNodeId());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void createNodesBatchRestoresFirstClassArchiveStateWithoutLeakingInternalMetadata() {
+        Map<String, Object> archive = new LinkedHashMap<>();
+        archive.put("nodeId", "archived-node-id");
+        archive.put("externalId", "original-external");
+        archive.put("contentPreview", "preview");
+        archive.put("parentId", "parent-1");
+        archive.put("sourceNodeId", "source-1");
+        archive.put("vectorId", "vector-1");
+        archive.put("sourceType", "URL");
+        archive.put("pathOrUrl", "https://example.test/source");
+        archive.put("childCount", 3);
+        archive.put("edgeCount", 4);
+        archive.put("confidence", 0.82);
+        archive.put("namedGraphId", "named-a");
+        archive.put("stale", true);
+        archive.put("userPinned", true);
+        archive.put("occurredAt", "2024-02-03T04:05:06");
+        archive.put("createdAt", "2024-01-01T00:00:00");
+        archive.put("updatedAt", "2024-01-02T00:00:00");
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("visible", "yes");
+        metadata.put(KnowledgeGraphService.NODE_RESTORE_STATE_KEY, archive);
+
+        GraphNode restored = service.createNodesBatch(List.of(new KnowledgeGraphService.NodeSpec(
+                NodeLevel.ENTITY, "fallback-external", "Title", "Description", metadata)), 7L).get(0);
+
+        ArgumentCaptor<List<MatrixGraphNode>> captor = ArgumentCaptor.forClass(List.class);
+        verify(graphStore).addNodesBatch(eq("factsheet_7"), captor.capture());
+        MatrixGraphNode stored = captor.getValue().get(0);
+        assertEquals("archived-node-id", stored.getNodeId());
+        assertEquals("vector-1", stored.getEmbeddingId());
+        assertEquals(LocalDateTime.parse("2024-01-01T00:00:00").toInstant(java.time.ZoneOffset.UTC).toEpochMilli(),
+                stored.getCreatedAt());
+
+        assertEquals("archived-node-id", restored.getNodeId());
+        assertEquals("original-external", restored.getExternalId());
+        assertEquals("preview", restored.getContentPreview());
+        assertEquals("parent-1", restored.getParentId());
+        assertEquals("source-1", restored.getSourceNode().getNodeId());
+        assertEquals("named-a", restored.getNamedGraphId());
+        assertEquals(0.82, restored.getConfidence());
+        assertTrue(restored.getStale());
+        assertTrue(restored.getUserPinned());
+        assertEquals("yes", restored.getMetadata().get("visible"));
+        assertFalse(restored.getMetadata().containsKey(KnowledgeGraphService.NODE_RESTORE_STATE_KEY));
+        assertEquals(7L, restored.getFactSheetId(), "target fact-sheet scope remains authoritative");
+    }
+
+    @Test
+    void edgeReadsRehydrateCompleteArchiveStateWithoutLeakingInternalMetadata() {
+        Map<String, Object> archive = new LinkedHashMap<>();
+        archive.put("edgeId", "archived-edge-id");
+        archive.put("edgeType", "USER_DEFINED");
+        archive.put("relationType", "WORKS_AT");
+        archive.put("weight", 0.67);
+        archive.put("label", "employment");
+        archive.put("sharedEntitiesJson", "[\"Acme\"]");
+        archive.put("similarityScore", 0.73);
+        archive.put("confidence", 0.91);
+        archive.put("provenance", "document-9");
+        archive.put("provenanceType", "EXTRACTED");
+        archive.put("stale", true);
+        archive.put("userPinned", true);
+        archive.put("occurredAt", "2024-03-04T05:06:07");
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("visible", "edge-value");
+        metadata.put(KnowledgeGraphService.EDGE_RESTORE_STATE_KEY, archive);
+        when(graphStore.scanEdges("factsheet_7", 0, 1_000)).thenReturn(
+                new MatrixGraphStore.ScanPage<>(List.of(new MatrixGraphStore.StoredEdge(
+                        "n1", "n2", "USER_DEFINED", 0.5, false,
+                        "WORKS_AT", 0.4, "desc", metadata)), 1, false));
+
+        GraphEdge restored = service.getEdgesInFactSheet(7L).get(0);
+
+        assertEquals("archived-edge-id", restored.getEdgeId());
+        assertEquals("WORKS_AT", restored.getRelationType());
+        assertEquals(0.67, restored.getWeight());
+        assertEquals("employment", restored.getLabel());
+        assertEquals("[\"Acme\"]", restored.getSharedEntitiesJson());
+        assertEquals(0.73, restored.getSimilarityScore());
+        assertEquals(0.91, restored.getConfidence());
+        assertEquals("document-9", restored.getProvenance());
+        assertEquals(EdgeProvenance.EXTRACTED, restored.getProvenanceType());
+        assertTrue(restored.getStale());
+        assertTrue(restored.getUserPinned());
+        assertEquals("edge-value", restored.getMetadata().get("visible"));
+        assertFalse(restored.getMetadata().containsKey(KnowledgeGraphService.EDGE_RESTORE_STATE_KEY));
     }
 
     @Test
@@ -428,16 +521,31 @@ class MatrixKnowledgeGraphServiceTest {
 
     @Test
     void semanticEdgeExistsDistinguishesLabelsAndFactSheets() {
-        // The default KnowledgeGraphService.edgeExists(src, tgt, type, label, fsId) delegates to
-        // edgeExists(src, tgt), which calls graphStore.hasEdge(..., null). No compound-key lookup.
-        when(graphStore.hasEdge(DEFAULT_GRAPH_ID, "src", "tgt", null)).thenReturn(true);
+        when(graphStore.hasEdge("factsheet_42", "src", "tgt", "VERSION_OF"))
+                .thenReturn(true);
 
-        // All overloaded calls resolve to the same underlying store check
         assertTrue(service.edgeExists("src", "tgt", EdgeType.USER_DEFINED, "VERSION_OF", 42L));
-        assertTrue(service.edgeExists("src", "tgt", EdgeType.USER_DEFINED, "REFERENCES_DATA", 42L));
-        assertTrue(service.edgeExists("src", "tgt", EdgeType.USER_DEFINED, "VERSION_OF", 43L));
-        // An edge between "src2" and "tgt2" that was not stubbed should return false
+        assertFalse(service.edgeExists("src", "tgt", EdgeType.USER_DEFINED, "REFERENCES_DATA", 42L));
+        assertFalse(service.edgeExists("src", "tgt", EdgeType.USER_DEFINED, "VERSION_OF", 43L));
         assertFalse(service.edgeExists("src2", "tgt2", EdgeType.USER_DEFINED, "HYPERLINK_TO", 42L));
+    }
+
+    @Test
+    void createEdgesBatchPreservesParallelSemanticRelationsBetweenTheSameEndpoints() {
+        List<KnowledgeGraphService.EdgeSpec> specs = List.of(
+                new KnowledgeGraphService.EdgeSpec("src", "tgt", EdgeType.USER_DEFINED,
+                        0.8, "version", "VERSION_OF", null, null, 42L),
+                new KnowledgeGraphService.EdgeSpec("src", "tgt", EdgeType.USER_DEFINED,
+                        0.7, "reference", "REFERENCES_DATA", null, null, 42L));
+
+        assertEquals(2, service.createEdgesBatch(specs));
+
+        verify(graphStore).hasEdge("factsheet_42", "src", "tgt", "VERSION_OF");
+        verify(graphStore).hasEdge("factsheet_42", "src", "tgt", "REFERENCES_DATA");
+        verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"), eq(0.8),
+                eq("VERSION_OF"), anyBoolean(), eq("VERSION_OF"), isNull(), eq("version"));
+        verify(graphStore).addEdge(eq("factsheet_42"), eq("src"), eq("tgt"), eq(0.7),
+                eq("REFERENCES_DATA"), anyBoolean(), eq("REFERENCES_DATA"), isNull(), eq("reference"));
     }
 
     @Test

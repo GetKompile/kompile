@@ -166,4 +166,19 @@ class StreamingMarkdownRendererTest {
         assertTrue(output.contains("Line 2"), "Should contain second line: " + output);
         assertTrue(output.contains("Line 3"), "Should contain third line: " + output);
     }
+
+    @Test
+    void customLineSinkReceivesStreamingOutputForManagedReadline() {
+        TerminalRenderer term = new TerminalRenderer(false);
+        AsciiRenderer ascii = new AsciiRenderer(term, 80);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        StreamingMarkdownRenderer managed = new StreamingMarkdownRenderer(ascii, lines::add);
+
+        managed.accept("first line\npartial");
+        assertEquals(java.util.List.of("first line"), lines);
+
+        managed.flush();
+        assertEquals(java.util.List.of("first line", "partial"), lines,
+                "partial output must also use the managed line sink");
+    }
 }

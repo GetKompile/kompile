@@ -92,6 +92,7 @@ public final class PersonaSurfaces {
      */
     public static final Set<String> ADMIN = Set.of(
             "/api/a2a",
+            "/api/agent-bundles",
             "/api/agents/api-config",
             "/api/agents/cli-config",
             "/api/archives",

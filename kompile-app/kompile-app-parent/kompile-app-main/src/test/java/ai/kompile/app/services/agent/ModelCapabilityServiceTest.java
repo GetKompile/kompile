@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.services.agent;
 
+import ai.kompile.core.llm.ModelContextWindows;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -134,8 +135,8 @@ class ModelCapabilityServiceTest {
         var caps = service.getCapabilities("claude-sonnet-4");
         assertEquals("claude-sonnet-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        // ModelContextWindows catalog knows claude-sonnet-4 — returns the real context window.
-        assertEquals(200_000, caps.contextWindow());
+        // The service must reflect the current shared catalog rather than a stale fixed value.
+        assertEquals(ModelContextWindows.getContextWindow("claude-sonnet-4"), caps.contextWindow());
         // maxOutputTokens comes from the live CliModelCatalog (disk-based); assert it's reasonable.
         assertTrue(caps.maxOutputTokens() > 0, "maxOutputTokens must be positive for a known model");
     }
@@ -171,9 +172,8 @@ class ModelCapabilityServiceTest {
         // Original model ID preserved
         assertEquals("anthropic/claude-opus-4", caps.modelId());
         assertTrue(caps.supportsVision());
-        // ModelContextWindows catalog knows claude-opus-4 (via prefix match after stripping provider) —
-        // returns the real context window.
-        assertEquals(200_000, caps.contextWindow());
+        // OpenRouter-prefixed IDs must resolve through the same current shared catalog.
+        assertEquals(ModelContextWindows.getContextWindow("anthropic/claude-opus-4"), caps.contextWindow());
     }
 
     @Test

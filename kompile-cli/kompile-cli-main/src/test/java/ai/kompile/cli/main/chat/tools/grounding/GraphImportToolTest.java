@@ -28,7 +28,6 @@ import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -59,7 +58,7 @@ class GraphImportToolTest {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_import", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     @Test
@@ -88,14 +87,13 @@ class GraphImportToolTest {
     }
 
     @Test
-    void backendUnavailable_returnsError() throws Exception {
-        // null baseUrl → GroundingBackendClient.isAvailable() == false (checked before touching disk)
+    void nullBaseUrl_fallsBackToProjectLocalBackend() throws Exception {
         GraphImportTool tool = new GraphImportTool((String) null, om);
         ObjectNode params = om.createObjectNode();
-        params.put("path", "/tmp/whatever.kgraph");
+        params.put("path", "missing-local.kgraph");
         ToolResult result = tool.execute(params, ctx);
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"));
+        assertTrue(result.getOutput().contains("No .kgraph file"));
     }
 
     @Test

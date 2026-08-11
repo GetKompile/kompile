@@ -172,17 +172,15 @@ public class MessageQueueManager {
         System.out.println(renderer.cyan("Sending all " + total + " queued messages..."));
         System.out.println();
 
-        int count = 0;
-        while (!messageQueue.isEmpty()) {
-            count++;
-            backgroundTaskManager.advanceQueueChain();
-            MessageQueue.QueuedMessage msg = messageQueue.dequeue();
-            System.out.println(renderer.dim("→ [" + count + "/" + total + "] Sending: ") + StringUtils.truncate(msg.getContent(), 55));
-            messageHandler.handleChatMessage(msg.getContent());
-        }
-
-        backgroundTaskManager.endQueueChain();
-        System.out.println(renderer.green("✓ All " + total + " queued messages sent"));
+        // Start only the first turn. The asynchronous message handler keeps the
+        // REPL readable, and ChatRepl's normal auto-dequeue hand-off drains the
+        // remaining messages in order. Looping here would dequeue and immediately
+        // re-enqueue every item while the first turn is busy.
+        backgroundTaskManager.advanceQueueChain();
+        MessageQueue.QueuedMessage msg = messageQueue.dequeue();
+        System.out.println(renderer.dim("→ [1/" + total + "] Sending: ")
+                + StringUtils.truncate(msg.getContent(), 55));
+        messageHandler.handleChatMessage(msg.getContent());
     }
 
     /**

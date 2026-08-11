@@ -28,6 +28,12 @@ import java.util.concurrent.Callable;
                 AgentChannelCommand.class,
                 AgentSessionCommand.class,
                 AgentChatCommand.class,
+                AgentBundleValidateCommand.class,
+                AgentBundleInspectCommand.class,
+                AgentBundlePackCommand.class,
+                AgentBundleRunCommand.class,
+                AgentBundleToolsCommand.class,
+                AgentBundleServeCommand.class,
                 AgentMonitorCommand.class,
                 AgentLogsCommand.class,
                 SubprocessLogsCommand.class,
@@ -38,7 +44,7 @@ import java.util.concurrent.Callable;
         },
         mixinStandardHelpOptions = true,
         usageHelpAutoWidth = true,
-        description = "Agent and workflow management: workflow, task, defaults, channel, session, chat, monitor, logs, subprocess-logs, chat-import, process, process-discovery, rules.")
+        description = "Agent and workflow management: run, serve, validate, inspect, pack, tools, workflow, task, defaults, channel, session, chat, monitor, logs, subprocess-logs, chat-import, process, process-discovery, rules.")
 public class AgentCliMain implements Callable<Integer> {
 
     @Override

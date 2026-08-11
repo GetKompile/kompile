@@ -16,6 +16,9 @@
 
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
@@ -26,6 +29,7 @@ import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,7 +37,7 @@ import java.util.List;
 /**
  * Interactive setup wizard for kompile chat.
  * Presents session mode selection (Standard / Passthrough / Resume) FIRST,
- * then only asks for provider/API key details if Standard mode is chosen.
+ * then only asks for provider/credential details if Standard mode is chosen.
  * Passthrough mode delegates to CLI agents (claude, codex, gemini, etc.)
  * which handle their own authentication — no API key collection needed.
  * Uses numbered input for selection - bulletproof across all terminal types.
@@ -46,6 +50,51 @@ public class SetupWizard {
     private static final String CYAN = "\033[36m";
     private static final String GREEN = "\033[32m";
     private static final String YELLOW = "\033[33m";
+
+    enum StandardRuntime {
+        KOMPILE_LOCAL,
+        EXTERNAL_LOCAL,
+        DIRECT,
+        KOMPILE
+    }
+
+    enum AuthMethod {
+        NONE,
+        OAUTH,
+        API_KEY
+    }
+
+    record ProviderSelection(String vendor, String provider, AuthMethod authMethod) {}
+
+    /** Exact provider wire value plus the label shown in the setup wizard. */
+    record ThinkingOption(String value, String label) {}
+
+    private static final List<String> STANDARD_RUNTIME_OPTIONS = List.of(
+            "Kompile local model — start the packaged first-party serving subprocess (no full Kompile instance)",
+            "External local endpoint — Ollama or OpenAI-compatible (no Kompile instance)",
+            "Direct model provider — cloud API (no Kompile instance)",
+            "Kompile instance — connect to one or start the installed kompile-chat service"
+    );
+
+    private static final List<String> EXTERNAL_LOCAL_OPTIONS = List.of(
+            "Ollama",
+            "OpenAI-compatible endpoint"
+    );
+
+    private static final List<String> CODEX_56_SOL_TERRA_EFFORTS =
+            List.of("low", "medium", "high", "xhigh", "max", "ultra");
+    private static final List<String> CODEX_56_LUNA_EFFORTS =
+            List.of("low", "medium", "high", "xhigh", "max");
+    private static final List<String> CODEX_CLASSIC_EFFORTS =
+            List.of("low", "medium", "high", "xhigh");
+    private static final List<String> OPENAI_56_EFFORTS =
+            List.of("none", "low", "medium", "high", "xhigh", "max");
+    private static final List<String> OPENAI_REASONING_EFFORTS =
+            List.of("none", "low", "medium", "high", "xhigh");
+    private static final List<String> O_SERIES_EFFORTS =
+            List.of("low", "medium", "high");
+    private static final List<String> XAI_EFFORTS =
+            List.of("low", "medium", "high");
 
     /**
      * Run the interactive setup wizard.
@@ -161,24 +210,48 @@ public class SetupWizard {
                 }
             }
 
-            // Step 3: For standard mode, select LLM provider
+            // Step 3: For standard mode, select the runtime before provider details.
+            // This keeps instance connectivity separate from model/provider selection and
+            // makes the no-instance paths explicit in the normal wizard.
             String provider = null;
             String apiKey = null;
             String model = null;
+            String thinking = null;
             String baseUrl = null;
+            ProviderSelection providerSelection = null;
 
             if ("standard".equals(chatMode)) {
-                provider = selectProvider(reader);
-                if (provider == null) return null;
+                providerSelection = selectStandardProvider(reader);
+                if (providerSelection == null) return null;
+                provider = providerSelection.provider();
 
-                if (!"ollama".equals(provider) && !"kompile".equals(provider)) {
-                    apiKey = promptApiKey(reader, provider);
-                    if (apiKey == null) return null;
+                if (providerSelection.authMethod() == AuthMethod.OAUTH) {
+                    OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
+                    if (existing != null && existing.oauth()) {
+                        System.out.println(GREEN + "  ✓ Using existing OAuth credential for "
+                                + vendorLabel(providerSelection.vendor()) + RESET);
+                    } else if (!loginWithOAuth(reader, provider)) {
+                        return null;
+                    }
+                } else if (providerSelection.authMethod() == AuthMethod.API_KEY) {
+                    OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
+                    if (existing != null && !existing.oauth()) {
+                        System.out.println(GREEN + "  ✓ Using existing managed/environment API key for "
+                                + vendorLabel(providerSelection.vendor()) + RESET);
+                    } else {
+                        apiKey = promptApiKey(reader, provider);
+                        if (apiKey == null) return null;
+                    }
                 }
 
                 if (!"kompile".equals(provider)) {
                     model = selectModel(reader, provider);
                     if (model == null) return null;
+
+                    if (supportsThinkingSelection(provider, model)) {
+                        thinking = selectThinking(reader, provider, model);
+                        if (thinking == null) return null;
+                    }
                 }
 
                 baseUrl = promptBaseUrl(reader, provider);
@@ -186,6 +259,7 @@ public class SetupWizard {
 
             // Build and save config
             ChatConfig config = new ChatConfig(provider, apiKey, model, baseUrl);
+            config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
                 config.setPassthroughAgent(passthroughAgent);
@@ -209,8 +283,23 @@ public class SetupWizard {
                                 + (Boolean.TRUE.equals(enforcementChoice) ? "enabled" : "disabled") + RESET);
                     }
                 } else {
-                    System.out.println("  Provider: " + BOLD + provider + RESET);
-                    System.out.println("  Model:    " + BOLD + model + RESET);
+                    String displayedProvider = providerSelection == null
+                            ? provider
+                            : vendorLabel(providerSelection.vendor());
+                    System.out.println("  Provider: " + BOLD + displayedProvider + RESET);
+                    if (providerSelection != null
+                            && providerSelection.authMethod() != AuthMethod.NONE) {
+                        System.out.println("  Auth:     " + BOLD
+                                + authMethodLabel(providerSelection.authMethod()) + RESET);
+                    }
+                    if (model != null) {
+                        System.out.println("  Model:    " + BOLD + model + RESET);
+                    }
+                    if (supportsThinkingSelection(provider, model)) {
+                        System.out.println("  Thinking: " + BOLD
+                                + (config.getThinking() == null ? "provider/model default" : config.getThinking())
+                                + RESET);
+                    }
                     if (baseUrl != null) {
                         System.out.println("  Base URL: " + BOLD + baseUrl + RESET);
                     }
@@ -348,22 +437,286 @@ public class SetupWizard {
 
     // ── Provider selection ──────────────────────────────────────────────────
 
-    private static String selectProvider(LineReader reader) {
-        List<String> providers = new ArrayList<>();
-        for (String key : ChatConfig.PROVIDER_ORDER) {
-            providers.add(ChatConfig.PROVIDERS.get(key));
-        }
+    static List<String> standardRuntimeOptions() {
+        return STANDARD_RUNTIME_OPTIONS;
+    }
 
-        int selected = selectNumbered(reader, "Select LLM Provider:", providers);
+    static List<String> externalLocalOptions() {
+        return EXTERNAL_LOCAL_OPTIONS;
+    }
+
+    static List<String> directVendorOrder() {
+        List<String> vendorKeys = new ArrayList<>();
+        for (String key : ChatConfig.PROVIDER_ORDER) {
+            if (!"kompile".equals(key)
+                    && !"ollama".equals(key)
+                    && !"openai-codex".equals(key)) {
+                vendorKeys.add(key);
+            }
+        }
+        return List.copyOf(vendorKeys);
+    }
+
+    static List<String> authOptions(String vendor) {
+        List<String> options = new ArrayList<>();
+        for (AuthMethod method : authMethods(vendor)) {
+            options.add(authMethodLabel(method));
+        }
+        return List.copyOf(options);
+    }
+
+    static String resolveProviderForAuth(String vendor, AuthMethod authMethod) {
+        if (vendor == null || vendor.isBlank()) {
+            throw new IllegalArgumentException("Vendor is required");
+        }
+        return switch (authMethod) {
+            case NONE -> vendor;
+            case OAUTH -> {
+                String oauthProvider = oauthProviderForVendor(vendor);
+                if (oauthProvider == null) {
+                    throw new IllegalArgumentException(vendor + " does not support OAuth");
+                }
+                yield oauthProvider;
+            }
+            case API_KEY -> {
+                if (!supportsApiKey(vendor)) {
+                    throw new IllegalArgumentException(vendor + " does not support API-key authentication");
+                }
+                yield vendor;
+            }
+        };
+    }
+
+    private static ProviderSelection selectStandardProvider(LineReader reader) {
+        int selected = selectNumbered(reader, "Select Standard Chat Runtime:", standardRuntimeOptions());
         if (selected < 0) return null;
 
-        String selectedKey = ChatConfig.PROVIDER_ORDER[selected];
-        System.out.println("  → " + GREEN + ChatConfig.PROVIDERS.get(selectedKey) + RESET);
+        StandardRuntime runtime = StandardRuntime.values()[selected];
+        return switch (runtime) {
+            case KOMPILE_LOCAL -> {
+                System.out.println("  → " + GREEN
+                        + "Kompile local model — first-party serving subprocess" + RESET);
+                System.out.println();
+                yield new ProviderSelection("kompile-local", "kompile-local", AuthMethod.NONE);
+            }
+            case EXTERNAL_LOCAL -> selectExternalLocalProvider(reader);
+            case DIRECT -> selectProvider(reader, directVendorOrder());
+            case KOMPILE -> {
+                System.out.println("  → " + GREEN + "Kompile instance" + RESET);
+                System.out.println();
+                yield new ProviderSelection("kompile", "kompile", AuthMethod.NONE);
+            }
+        };
+    }
+
+    private static ProviderSelection selectExternalLocalProvider(LineReader reader) {
+        int selected = selectNumbered(reader, "Select External Local Endpoint:",
+                externalLocalOptions());
+        if (selected < 0) return null;
+        if (selected == 0) {
+            System.out.println("  → " + GREEN + "Ollama" + RESET);
+            System.out.println();
+            return new ProviderSelection("ollama", "ollama", AuthMethod.NONE);
+        }
+        System.out.println("  → " + GREEN + "OpenAI-compatible endpoint" + RESET);
         System.out.println();
-        return selectedKey;
+        return new ProviderSelection("custom", "custom", AuthMethod.NONE);
+    }
+
+    private static ProviderSelection selectProvider(LineReader reader, List<String> vendorKeys) {
+        List<String> vendors = new ArrayList<>();
+        for (String key : vendorKeys) {
+            vendors.add(vendorLabel(key));
+        }
+
+        int selected = selectNumbered(reader, "Select LLM Vendor:", vendors);
+        if (selected < 0) return null;
+
+        String vendor = vendorKeys.get(selected);
+        System.out.println("  → " + GREEN + vendorLabel(vendor) + RESET);
+        System.out.println();
+
+        AuthMethod authMethod = selectAuthMethod(reader, vendor);
+        if (authMethod == null) return null;
+        return new ProviderSelection(vendor, resolveProviderForAuth(vendor, authMethod), authMethod);
+    }
+
+    private static AuthMethod selectAuthMethod(LineReader reader, String vendor) {
+        List<AuthMethod> methods = authMethods(vendor);
+        if (methods.isEmpty()) {
+            throw new IllegalArgumentException("No authentication method is configured for " + vendor);
+        }
+
+        AuthMethod authMethod;
+        if (methods.size() == 1) {
+            authMethod = methods.get(0);
+            System.out.println("  Authentication: " + GREEN + authMethodLabel(authMethod) + RESET);
+            System.out.println();
+        } else {
+            int selected = selectNumbered(reader, "Select Authentication:", authOptions(vendor));
+            if (selected < 0) return null;
+            authMethod = methods.get(selected);
+            System.out.println("  → " + GREEN + authMethodLabel(authMethod) + RESET);
+            System.out.println();
+        }
+        return authMethod;
+    }
+
+    private static List<AuthMethod> authMethods(String vendor) {
+        List<AuthMethod> methods = new ArrayList<>();
+        if (oauthProviderForVendor(vendor) != null) {
+            methods.add(AuthMethod.OAUTH);
+        }
+        if (supportsApiKey(vendor)) {
+            methods.add(AuthMethod.API_KEY);
+        }
+        return List.copyOf(methods);
+    }
+
+    private static String oauthProviderForVendor(String vendor) {
+        if (vendor == null || vendor.isBlank()) {
+            return null;
+        }
+        if ("openai".equalsIgnoreCase(vendor)) {
+            return "openai-codex";
+        }
+        OAuthProviderRegistry registry = new OAuthProviderRegistry();
+        return registry.find(vendor).isPresent() ? vendor : null;
+    }
+
+    private static boolean supportsApiKey(String vendor) {
+        if (vendor == null || vendor.isBlank()
+                || "kompile".equalsIgnoreCase(vendor)
+                || "ollama".equalsIgnoreCase(vendor)) {
+            return false;
+        }
+        if ("openai".equalsIgnoreCase(vendor)) {
+            return true;
+        }
+        return !new OAuthProviderRegistry().isOAuthOnly(vendor);
+    }
+
+    private static String vendorLabel(String vendor) {
+        if ("openai".equalsIgnoreCase(vendor)) {
+            return "OpenAI";
+        }
+        return ChatConfig.PROVIDERS.getOrDefault(vendor, vendor);
+    }
+
+    private static String authMethodLabel(AuthMethod authMethod) {
+        return switch (authMethod) {
+            case OAUTH -> "OAuth / subscription sign-in";
+            case API_KEY -> "API key";
+            case NONE -> "None";
+        };
     }
 
     // ── Model selection ─────────────────────────────────────────────────────
+
+    static List<ThinkingOption> thinkingOptions(String provider, String model) {
+        if (provider == null || model == null || model.isBlank()) {
+            return List.of();
+        }
+
+        String normalizedProvider = provider.trim().toLowerCase(java.util.Locale.ROOT);
+        String normalizedModel = model.trim().toLowerCase(java.util.Locale.ROOT);
+        List<String> efforts;
+        String defaultEffort;
+
+        switch (normalizedProvider) {
+            case "openai-codex" -> {
+                if (normalizedModel.equals("gpt-5.6-sol")) {
+                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
+                    defaultEffort = "low";
+                } else if (normalizedModel.equals("gpt-5.6-terra")) {
+                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
+                    defaultEffort = "medium";
+                } else if (normalizedModel.equals("gpt-5.6-luna")) {
+                    efforts = CODEX_56_LUNA_EFFORTS;
+                    defaultEffort = "medium";
+                } else {
+                    efforts = CODEX_CLASSIC_EFFORTS;
+                    defaultEffort = "medium";
+                }
+            }
+            case "github-copilot" -> {
+                if (normalizedModel.equals("gpt-5.6-terra")) {
+                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
+                    defaultEffort = "medium";
+                } else if (normalizedModel.startsWith("gpt-5")) {
+                    efforts = CODEX_CLASSIC_EFFORTS;
+                    defaultEffort = "medium";
+                } else if (normalizedModel.startsWith("grok-")
+                        || normalizedModel.startsWith("mai-code-")) {
+                    efforts = XAI_EFFORTS;
+                    defaultEffort = "high";
+                } else {
+                    return List.of();
+                }
+            }
+            case "openai" -> {
+                if (normalizedModel.startsWith("gpt-5.6")) {
+                    efforts = OPENAI_56_EFFORTS;
+                    defaultEffort = "medium";
+                } else if (normalizedModel.startsWith("gpt-5")) {
+                    efforts = OPENAI_REASONING_EFFORTS;
+                    defaultEffort = "medium";
+                } else if (normalizedModel.matches("o[1-9].*")) {
+                    efforts = O_SERIES_EFFORTS;
+                    defaultEffort = "medium";
+                } else {
+                    return List.of();
+                }
+            }
+            case "xai" -> {
+                if (!normalizedModel.startsWith("grok-4")) {
+                    return List.of();
+                }
+                efforts = XAI_EFFORTS;
+                defaultEffort = "high";
+            }
+            default -> {
+                return List.of();
+            }
+        }
+
+        List<ThinkingOption> options = new ArrayList<>();
+        options.add(new ThinkingOption("",
+                "default — " + defaultEffort + " (recommended)"));
+        for (String effort : efforts) {
+            options.add(new ThinkingOption(effort, effort));
+        }
+        return List.copyOf(options);
+    }
+
+    static boolean supportsThinkingSelection(String provider, String model) {
+        return thinkingOptions(provider, model).size() > 1;
+    }
+
+    private static String selectThinking(LineReader reader, String provider, String model) {
+        List<ThinkingOption> options = thinkingOptions(provider, model);
+        List<String> labels = options.stream().map(ThinkingOption::label).toList();
+        int selected = selectNumbered(reader,
+                "Select " + reasoningVendorLabel(provider) + " Reasoning Effort:", labels);
+        if (selected < 0) return null;
+
+        String effort = options.get(selected).value();
+        System.out.println("  → " + GREEN
+                + (effort.isBlank() ? options.get(selected).label() : effort) + RESET);
+        System.out.println();
+        return effort;
+    }
+
+    private static String reasoningVendorLabel(String provider) {
+        if (provider == null) return "Model";
+        return switch (provider.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "openai-codex" -> "OpenAI Codex";
+            case "openai" -> "OpenAI";
+            case "github-copilot" -> "GitHub Copilot";
+            case "xai" -> "xAI";
+            default -> "Model";
+        };
+    }
 
     private static String selectModel(LineReader reader, String provider) {
         String[] defaults = ChatConfig.getDefaultModels(provider);
@@ -388,7 +741,10 @@ public class SetupWizard {
             System.out.println();
             return model;
         } else {
-            return promptManual(reader, "  Custom model name: ");
+            String prompt = "kompile-local".equals(provider)
+                    ? "  Local .gguf/.sdz model path: "
+                    : "  Custom model name: ";
+            return promptManual(reader, prompt);
         }
     }
 
@@ -416,6 +772,29 @@ public class SetupWizard {
 
     // ── API key prompt ──────────────────────────────────────────────────────
 
+    private static OAuthProviderFlow.RequestAuth resolveExistingCredential(String provider) {
+        ChatConfig probe = new ChatConfig(provider, null, "credential-probe", null);
+        return probe.resolveRequestAuth();
+    }
+
+    private static boolean loginWithOAuth(LineReader reader, String provider) {
+        try {
+            OAuthCredentialManager.create().login(
+                    provider,
+                    new OAuthProviderFlow.LoginOptions(null, false, null, null),
+                    new WizardOAuthInteraction(reader));
+            System.out.println(GREEN + "  ✓ OAuth credential saved for " + provider + RESET);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("  OAuth login was interrupted.");
+            return false;
+        } catch (Exception e) {
+            System.err.println("  OAuth login failed: " + e.getMessage());
+            return false;
+        }
+    }
+
     private static String promptApiKey(LineReader reader, String provider) {
         String envVar = getEnvVarName(provider);
         String envValue = envVar != null ? System.getenv(envVar) : null;
@@ -440,24 +819,37 @@ public class SetupWizard {
 
     // ── Base URL prompt ─────────────────────────────────────────────────────
 
+    static String valueOrDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private static String promptWithDefault(LineReader reader, String promptText, String defaultValue) {
+        try {
+            return valueOrDefault(reader.readLine(promptText), defaultValue);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private static String promptBaseUrl(LineReader reader, String provider) {
         String defaultUrl = ChatConfig.getDefaultBaseUrl(provider);
+
+        if ("kompile-local".equals(provider)) {
+            // The bootstrap assigns a private loopback endpoint for this session.
+            return null;
+        }
 
         if ("kompile".equals(provider)) {
             System.out.println();
             System.out.println(BOLD + "  Kompile App URL:" + RESET);
             System.out.println("  Default: " + DIM + defaultUrl + RESET);
             System.out.println("  " + DIM + "(The CLI will connect via MCP SSE to this instance)" + RESET);
-            String custom = promptManual(reader, "  URL (Enter to use default): ");
-            if (custom == null || custom.isBlank()) return null;
-            return custom.trim();
+            return promptWithDefault(reader, "  URL (Enter to use default): ", defaultUrl);
         }
 
         if ("ollama".equals(provider)) {
             System.out.println("  Default Ollama URL: " + DIM + defaultUrl + RESET);
-            String custom = promptManual(reader, "  Custom URL (Enter to use default): ");
-            if (custom == null || custom.isBlank()) return null;
-            return custom.trim();
+            return promptWithDefault(reader, "  Custom URL (Enter to use default): ", defaultUrl);
         }
 
         if ("custom".equals(provider)) {
@@ -479,6 +871,9 @@ public class SetupWizard {
             case "anthropic" -> "ANTHROPIC_API_KEY";
             case "gemini" -> "GOOGLE_API_KEY";
             case "openrouter" -> "OPENROUTER_API_KEY";
+            case "xai" -> "XAI_API_KEY";
+            case "github-copilot" -> "COPILOT_GITHUB_TOKEN";
+            case "radius" -> "RADIUS_API_KEY";
             case "deepseek" -> "DEEPSEEK_API_KEY";
             case "groq" -> "GROQ_API_KEY";
             default -> null;
@@ -488,5 +883,43 @@ public class SetupWizard {
     private static String maskKey(String key) {
         if (key == null || key.length() <= 8) return "****";
         return key.substring(0, 4) + "..." + key.substring(key.length() - 4);
+    }
+
+    private static final class WizardOAuthInteraction implements OAuthProviderFlow.Interaction {
+        private final LineReader reader;
+
+        private WizardOAuthInteraction(LineReader reader) {
+            this.reader = reader;
+        }
+
+        @Override
+        public void info(String message) {
+            System.out.println("  " + message);
+        }
+
+        @Override
+        public void authorizationUrl(URI url, String instructions) {
+            System.out.println("  " + instructions);
+            System.out.println("  " + url);
+        }
+
+        @Override
+        public void deviceCode(
+                String userCode,
+                URI verificationUri,
+                Integer intervalSeconds,
+                Integer expiresInSeconds) {
+            System.out.println("  Open " + verificationUri);
+            System.out.println("  Enter device code: " + userCode);
+        }
+
+        @Override
+        public String prompt(String message) throws IOException {
+            try {
+                return reader.readLine("  " + message + " ");
+            } catch (RuntimeException e) {
+                throw new IOException("Could not read OAuth input", e);
+            }
+        }
     }
 }

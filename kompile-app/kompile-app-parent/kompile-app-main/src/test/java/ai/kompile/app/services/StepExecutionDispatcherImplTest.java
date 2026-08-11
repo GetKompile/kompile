@@ -315,7 +315,7 @@ class StepExecutionDispatcherImplTest {
         String metaJson = objectMapper.writeValueAsString(Map.of("formulaGraph", formulaJson));
         GraphNode node = GraphNode.builder()
                 .nodeId("node-1").nodeType(NodeLevel.DOCUMENT).metadataJson(metaJson).build();
-        when(kgService.getNode("node-1")).thenReturn(Optional.of(node));
+        when(kgService.getNodesByIds(List.of("node-1"))).thenReturn(List.of(node));
 
         String result = dispatcher.resolveExcelGraphJson(List.of("node-1"));
         assertNotNull(result);
@@ -327,7 +327,7 @@ class StepExecutionDispatcherImplTest {
     void resolveExcelGraphJsonReturnsNullWhenNodeNotFound() throws Exception {
         KnowledgeGraphService kgService = mock(KnowledgeGraphService.class);
         setPrivateField(dispatcher, "knowledgeGraphService", kgService);
-        when(kgService.getNode(anyString())).thenReturn(Optional.empty());
+        when(kgService.getNodesByIds(List.of("missing-node"))).thenReturn(List.of());
 
         assertNull(dispatcher.resolveExcelGraphJson(List.of("missing-node")));
     }
@@ -349,15 +349,14 @@ class StepExecutionDispatcherImplTest {
 
         // Graph JSON with one entity — mock the KG lookup to find it
         String graphJson = "{\"entities\":[{\"id\":\"cell:A1\",\"type\":\"CELL\"}]}";
-        GraphNode cellNode = GraphNode.builder().nodeId("kg-cell-1").build();
-        when(kgService.getNodeByExternalId("cell:A1", NodeLevel.ENTITY))
-                .thenReturn(Optional.of(cellNode));
+        GraphNode cellNode = GraphNode.builder().nodeId("entity_cell:A1").build();
+        when(kgService.getNodesByExternalIds(anyList())).thenReturn(List.of(cellNode));
 
         DispatchResult result = dispatcher.executeExcelWithResult(graphJson, Map.of(), null, null);
 
         assertNotNull(result);
         assertEquals(42, result.getOutputs().get("total"));
-        assertTrue(result.getDiscoveredGraphNodeIds().contains("kg-cell-1"));
+        assertTrue(result.getDiscoveredGraphNodeIds().contains("entity_cell:A1"));
     }
 
     @Test
@@ -390,7 +389,7 @@ class StepExecutionDispatcherImplTest {
                 .outputs(Map.of("val", 1))
                 .build();
         when(excelExec.execute(any(), any(), any())).thenReturn(execResult);
-        when(kgService.getNodeByExternalId(anyString(), any()))
+        when(kgService.getNodesByExternalIds(anyList()))
                 .thenThrow(new RuntimeException("KG unavailable"));
 
         String graphJson = "{\"entities\":[{\"id\":\"cell:B2\",\"type\":\"CELL\"}]}";
@@ -413,7 +412,7 @@ class StepExecutionDispatcherImplTest {
         String metaJson = objectMapper.writeValueAsString(Map.of("tableGraph", tableGraphJson));
         GraphNode node = GraphNode.builder()
                 .nodeId("node-html-table").nodeType(NodeLevel.DOCUMENT).metadataJson(metaJson).build();
-        when(kgService.getNode("node-html-table")).thenReturn(Optional.of(node));
+        when(kgService.getNodesByIds(List.of("node-html-table"))).thenReturn(List.of(node));
 
         String result = dispatcher.resolveExcelGraphJson(List.of("node-html-table"));
         assertNotNull(result);
@@ -433,7 +432,7 @@ class StepExecutionDispatcherImplTest {
                 Map.of("formulaGraph", formulaJson, "tableGraph", tableJson));
         GraphNode node = GraphNode.builder()
                 .nodeId("node-1").nodeType(NodeLevel.DOCUMENT).metadataJson(metaJson).build();
-        when(kgService.getNode("node-1")).thenReturn(Optional.of(node));
+        when(kgService.getNodesByIds(List.of("node-1"))).thenReturn(List.of(node));
 
         String result = dispatcher.resolveExcelGraphJson(List.of("node-1"));
         assertNotNull(result);
@@ -461,9 +460,9 @@ class StepExecutionDispatcherImplTest {
         GraphEdge edge = GraphEdge.builder()
                 .edgeId("edge-1").sourceNode(docNode).targetNode(tableNode).build();
 
-        when(kgService.getNode("table-node-1")).thenReturn(Optional.of(tableNode));
+        when(kgService.getNodesByIds(List.of("table-node-1"))).thenReturn(List.of(tableNode));
         when(kgService.getEdgesForNode("table-node-1")).thenReturn(List.of(edge));
-        when(kgService.getNode("doc-node-1")).thenReturn(Optional.of(docNode));
+        when(kgService.getNodesByIds(List.of("doc-node-1"))).thenReturn(List.of(docNode));
 
         String result = dispatcher.resolveExcelGraphJson(List.of("table-node-1"));
         assertNotNull(result);
@@ -481,7 +480,7 @@ class StepExecutionDispatcherImplTest {
         GraphNode tableNode = GraphNode.builder()
                 .nodeId("tbl-1").nodeType(NodeLevel.TABLE).metadataJson(tableMeta).build();
 
-        when(kgService.getNode("tbl-1")).thenReturn(Optional.of(tableNode));
+        when(kgService.getNodesByIds(List.of("tbl-1"))).thenReturn(List.of(tableNode));
         when(kgService.getEdgesForNode("tbl-1")).thenReturn(List.of());
 
         // Should not throw — should recognize entity_subtype:table and attempt parent walk

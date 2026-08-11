@@ -151,12 +151,11 @@ public class DirectSubagentRunnerStdio {
         RoleConfig role = null;
         if (roleName != null && !roleName.isBlank()) {
             role = resolveRole(roleName);
-            if (role != null) {
-                effectivePrompt = buildRolePrompt(role) + "\n\n---\n\n" + prompt;
-                System.err.println(DIM + "  Role: " + roleName + RESET);
-            } else {
-                System.err.println(DIM + "  Warning: role '" + roleName + "' not found, using prompt as-is" + RESET);
+            if (role == null) {
+                throw new IllegalArgumentException("Unknown role '" + roleName + "'; refusing to launch subagent");
             }
+            effectivePrompt = buildRolePrompt(role) + "\n\n---\n\n" + prompt;
+            System.err.println(DIM + "  Role: " + roleName + RESET);
         }
 
         AgentLaunchDefaults.Selection launchDefaults = AgentLaunchDefaults.resolve(
@@ -165,8 +164,10 @@ public class DirectSubagentRunnerStdio {
                 agent.getModelOverride(),
                 agent.getThinkingOverride(),
                 role != null ? role.getAgentDefaultsFor(agentName) : null);
-
         System.err.println(GREEN + "Spawning managed subagent: " + agentName + RESET);
+        System.err.println(DIM + "  Role: " + (roleName == null ? "(none)" : roleName)
+                + ", model: " + launchDefaults.model() + ", thinking: " + launchDefaults.thinking()
+                + ", policy: FULL_ACCESS" + RESET);
         System.err.println(DIM + "  Prompt: " + effectivePrompt.substring(0, Math.min(80, effectivePrompt.length())) + "..." + RESET);
         System.err.flush();
 
@@ -183,7 +184,8 @@ public class DirectSubagentRunnerStdio {
 
     String executeManagedSubagent(String agentName, String effectivePrompt,
                                   int currentDepth, boolean injectMcpTools) throws Exception {
-        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools, null, null);
+        return executeManagedSubagent(agentName, effectivePrompt, currentDepth, injectMcpTools,
+                null, null);
     }
 
     String executeManagedSubagent(String agentName, String effectivePrompt,
@@ -219,6 +221,7 @@ public class DirectSubagentRunnerStdio {
 
         SubprocessAgentRunner runner = createManagedRunner(agentName, injectMcpTools);
         runner.setLaunchOverrides(modelOverride, thinkingOverride);
+        runner.setSkipPermissions(true);
         Map<String, String> env = new LinkedHashMap<>(extraEnvironment);
         env.put("KOMPILE_SUBAGENT_DEPTH", String.valueOf(currentDepth + 1));
         runner.setExtraEnvironment(env);
@@ -267,7 +270,12 @@ public class DirectSubagentRunnerStdio {
             throw new RateLimitException(agentName, output);
         }
 
-        String header = String.format("Subagent '%s' completed in %.1fs", agentName, elapsed / 1000.0);
+        String header = String.format(
+                "Subagent '%s' completed in %.1fs%n%nDispatch: model=%s, thinking=%s, policy=%s",
+                agentName, elapsed / 1000.0,
+                modelOverride == null || modelOverride.isBlank() ? "(native/default)" : modelOverride,
+                thinkingOverride == null || thinkingOverride.isBlank() ? "(native/default)" : thinkingOverride,
+                "FULL_ACCESS");
         System.err.println(DIM + "  Full output (" + output.length() + " chars) written to: "
                 + captureFile.toAbsolutePath() + RESET);
         System.err.flush();

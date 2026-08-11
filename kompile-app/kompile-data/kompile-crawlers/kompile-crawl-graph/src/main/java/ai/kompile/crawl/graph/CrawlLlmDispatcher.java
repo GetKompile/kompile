@@ -27,6 +27,7 @@ import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
 import ai.kompile.core.crawl.graph.ResourceGovernorAdapter;
 import ai.kompile.core.crawl.graph.TokenBudgetTracker;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.core.llm.chat.LLMChat;
 import com.fasterxml.jackson.databind.JsonNode;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -35,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import jakarta.annotation.PreDestroy;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -86,6 +88,8 @@ class CrawlLlmDispatcher {
     }
 
     private final ThreadLocal<LlmCallScope> activeCallScope = new ThreadLocal<>();
+    private final ThreadLocal<Throwable> lastCallFailure =
+            new ThreadLocal<>();
 
     // Shared single-thread executor for wrapping blocking LLM calls with timeouts.
     // Using a cached pool so threads are created on demand and reclaimed after idle.
@@ -95,8 +99,48 @@ class CrawlLlmDispatcher {
         return t;
     });
 
+    /**
+     * A timeout interrupts the wrapper future, but a native CUDA generation may
+     * continue until its next cooperative check. Keep that work serialized so
+     * a timed-out request cannot launch another GPU generation on top of it.
+     */
+    private final Semaphore localGenerationPermit = new Semaphore(1, true);
+
     @Autowired(required = false)
     private LLMChat llmChat;
+
+    /** Optional capability that preserves model-owned chat templates and native tool parsing. */
+    @Autowired(required = false)
+    private StructuredChatLanguageModel structuredChatLanguageModel;
+
+    CrawlLlmDispatcher() {
+    }
+
+    CrawlLlmDispatcher(LLMChat llmChat) {
+        this.llmChat =
+                java.util.Objects.requireNonNull(
+                        llmChat,
+                        "llmChat"
+        );
+    }
+
+    CrawlLlmDispatcher(StructuredChatLanguageModel structuredChatLanguageModel) {
+        this.structuredChatLanguageModel = java.util.Objects.requireNonNull(
+                structuredChatLanguageModel, "structuredChatLanguageModel");
+    }
+
+    CrawlLlmDispatcher(LLMChat llmChat,
+                       StructuredChatLanguageModel structuredChatLanguageModel) {
+        this(llmChat);
+        this.structuredChatLanguageModel = java.util.Objects.requireNonNull(
+                structuredChatLanguageModel, "structuredChatLanguageModel");
+    }
+
+    @PreDestroy
+    void shutdownLlmTimeoutExecutor() {
+        llmTimeoutExecutor.shutdownNow();
+        localGenerationPermit.drainPermits();
+    }
 
     /**
      * Optional quota-free local extraction lane: the LLM serving subprocess. A {@code LOCAL_MODEL}
@@ -185,6 +229,11 @@ class CrawlLlmDispatcher {
         return llmChat != null;
     }
 
+    boolean hasStructuredChatBackend() {
+        return structuredChatLanguageModel != null
+                || (localServingBackend != null && localServingBackend.supportsStructuredChat());
+    }
+
     /**
      * Returns true when this dispatcher has a wired {@link LlmTranscriptLogger} and will therefore
      * persist a transcript entry for every call that flows through
@@ -198,7 +247,132 @@ class CrawlLlmDispatcher {
         return transcriptLogger != null;
     }
 
+    Throwable lastCallFailure() {
+        return lastCallFailure.get();
+    }
+
+
     // ---- Main dispatch method ----
+
+    /**
+     * Dispatch a structured request without ever flattening it into the raw prompt route.
+     * Selection is capability-based; failure stays on this lane and is surfaced to the caller.
+     */
+    StructuredChatLanguageModel.Response promptStructuredWithCapacityFallback(
+            StructuredChatLanguageModel.Request request,
+            String taskType,
+            UnifiedCrawlJob job,
+            LlmCallScope scope) {
+        lastCallFailure.remove();
+        LlmCallScope previous = activeCallScope.get();
+        if (scope == null) {
+            activeCallScope.remove();
+        } else {
+            activeCallScope.set(scope);
+        }
+        try {
+            return callStructuredWithTimeout(request, taskType, job);
+        } finally {
+            if (previous == null) {
+                activeCallScope.remove();
+            } else {
+                activeCallScope.set(previous);
+            }
+        }
+    }
+
+    private StructuredChatLanguageModel.Response callStructuredWithTimeout(
+            StructuredChatLanguageModel.Request request,
+            String taskType,
+            UnifiedCrawlJob job) {
+        java.util.Objects.requireNonNull(request, "request");
+        java.util.Objects.requireNonNull(job, "job");
+        String requestedModel = requestedGraphModel(job);
+        String requestedProvider = requestedGraphProvider(job);
+        boolean explicitServing = "serving".equalsIgnoreCase(requestedProvider);
+        boolean useServing = explicitServing || structuredChatLanguageModel == null;
+        if (useServing) {
+            if (localServingBackend == null || !localServingBackend.supportsStructuredChat()) {
+                throw new IllegalStateException("Structured chat was requested, but the serving backend "
+                        + "does not expose the model-owned chat/tool protocol");
+            }
+            if (!localServingBackend.isAvailable()) {
+                throw new IllegalStateException("Structured serving backend is unavailable");
+            }
+            if (requestedModel != null && !localServingBackend.matchesModel(requestedModel)) {
+                throw new IllegalStateException("Requested serving model is no longer active: "
+                        + requestedModel);
+            }
+        }
+
+        String renderedRequest = structuredRequestText(request);
+        String backendId = useServing ? servingBackendId(requestedModel) : "structured-local";
+        long startNanos = System.nanoTime();
+        if (!localGenerationPermit.tryAcquire()) {
+            throw new IllegalStateException("Structured generation is still unwinding after a previous timeout");
+        }
+        CompletableFuture<StructuredChatLanguageModel.Response> future;
+        try {
+            future = CompletableFuture.supplyAsync(() -> {
+                try {
+                    int maxNewTokens = requestedGraphMaxTokens(job);
+                    if (useServing) {
+                        return requestedModel == null
+                                ? localServingBackend.generateChat(request, maxNewTokens)
+                                : localServingBackend.generateChatForModel(
+                                        requestedModel, request, maxNewTokens);
+                    }
+                    return structuredChatLanguageModel.generateChat(request, maxNewTokens);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                } finally {
+                    localGenerationPermit.release();
+                }
+            }, llmTimeoutExecutor);
+        } catch (RejectedExecutionException e) {
+            localGenerationPermit.release();
+            throw e;
+        }
+        try {
+            StructuredChatLanguageModel.Response response = future.get(
+                    llmCallTimeoutSeconds, TimeUnit.SECONDS);
+            if (response == null) {
+                throw new IllegalStateException("Structured model returned no response");
+            }
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            recordTokenUsage(job, backendId, renderedRequest, response.rawText());
+            boolean usable = !response.toolCalls().isEmpty() || !response.content().isBlank()
+                    || !response.parseErrors().isEmpty();
+            recordLlmCall(job, backendId, taskType, latencyMs, renderedRequest,
+                    response.rawText(), usable, false, false, false,
+                    usable ? null : "BAD_RESPONSE",
+                    usable ? null : "Structured model returned no content, calls, or parser diagnostics");
+            return response;
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            lastCallFailure.set(e);
+            throw new IllegalStateException("Structured model timed out after "
+                    + llmCallTimeoutSeconds + "s", e);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            lastCallFailure.set(e);
+            throw new IllegalStateException("Structured model call interrupted", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() instanceof CompletionException
+                    && e.getCause().getCause() != null ? e.getCause().getCause() : e.getCause();
+            lastCallFailure.set(cause == null ? e : cause);
+            throw new IllegalStateException("Structured model call failed: "
+                    + (cause == null ? e.getMessage() : cause.getMessage()),
+                    cause == null ? e : cause);
+        }
+    }
+
+    private static String structuredRequestText(StructuredChatLanguageModel.Request request) {
+        return request.messages().stream()
+                .map(message -> message.role() + ": " + message.content())
+                .collect(Collectors.joining("\n"));
+    }
 
     /**
      * Dispatch with decomposed-pass observability while keeping the routing task type unchanged.
@@ -207,6 +381,7 @@ class CrawlLlmDispatcher {
      */
     String promptWithCapacityFallback(String prompt, String taskType, UnifiedCrawlJob job,
                                       LlmCallScope scope) {
+        lastCallFailure.remove();
         LlmCallScope previous = activeCallScope.get();
         if (scope == null) {
             activeCallScope.remove();
@@ -463,15 +638,30 @@ class CrawlLlmDispatcher {
         long startNanos = System.nanoTime();
         String backendId = servingBackendId(requiredModelId);
         int maxNewTokens = requestedGraphMaxTokens(job);
-        CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
-            try {
-                return requiredModelId != null
-                        ? localServingBackend.generateForModel(requiredModelId, prompt, maxNewTokens)
-                        : localServingBackend.generate(prompt, maxNewTokens);
-            } catch (Exception e) {
-                throw new CompletionException(e);
-            }
-        }, llmTimeoutExecutor);
+        if (!localGenerationPermit.tryAcquire()) {
+            String message = "Local serving generation is still unwinding after a previous timeout";
+            log.warn("[Job {}] {}", job.getJobId(), message);
+            recordLlmCall(job, backendId, taskType, 0L, prompt, null,
+                    false, false, false, false, "RESOURCE_BUSY", message);
+            return null;
+        }
+        CompletableFuture<String> future;
+        try {
+            future = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return requiredModelId != null
+                            ? localServingBackend.generateForModel(requiredModelId, prompt, maxNewTokens)
+                            : localServingBackend.generate(prompt, maxNewTokens);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                } finally {
+                    localGenerationPermit.release();
+                }
+            }, llmTimeoutExecutor);
+        } catch (RejectedExecutionException ree) {
+            localGenerationPermit.release();
+            throw ree;
+        }
 
         try {
             String response = future.get(llmCallTimeoutSeconds, TimeUnit.SECONDS);
@@ -533,8 +723,16 @@ class CrawlLlmDispatcher {
         int timeoutSec = llmCallTimeoutSeconds;
         final String[] sessionHolder = new String[1];
         final AgentCallContext.ModelDecision[] decisionHolder = new AgentCallContext.ModelDecision[1];
+        CompletableFuture<String> future = null;
+        if (!localGenerationPermit.tryAcquire()) {
+            String message = "LLM generation is still unwinding after a previous timeout";
+            log.warn("[Job {}] {}", job.getJobId(), message);
+            recordLlmCall(job, backendId, taskType, 0L, prompt, null,
+                    false, false, false, false, "RESOURCE_BUSY", message);
+            return null;
+        }
         try {
-            CompletableFuture<String> future = CompletableFuture.supplyAsync(
+            future = CompletableFuture.supplyAsync(
                     () -> {
                         try {
                             return llmChat.prompt(prompt).call().content();
@@ -545,6 +743,7 @@ class CrawlLlmDispatcher {
                             sessionHolder[0] = AgentCallContext.getSessionId();
                             decisionHolder[0] = AgentCallContext.getModelDecision();
                             AgentCallContext.clear();
+                            localGenerationPermit.release();
                         }
                     },
                     llmTimeoutExecutor);
@@ -566,6 +765,12 @@ class CrawlLlmDispatcher {
             }
             return response;
         } catch (TimeoutException te) {
+            // Interrupt the worker as soon as the caller times out. Native model calls may not
+            // stop synchronously, but cancelling here prevents a timed-out future from being
+            // treated as an active extraction and lets cooperative backends release resources.
+            if (future != null) {
+                future.cancel(true);
+            }
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             log.warn("[Job {}] Default LLM '{}' timed out after {}s", job.getJobId(), backendId, timeoutSec);
             recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
@@ -575,6 +780,7 @@ class CrawlLlmDispatcher {
         } catch (ExecutionException ee) {
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            lastCallFailure.set(cause);
             String msg = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
             String errorCat = categorizeError(msg);
             boolean rateLimited = "RATE_LIMITED".equals(errorCat);
@@ -583,11 +789,17 @@ class CrawlLlmDispatcher {
                     false, false, rateLimited, false, errorCat, msg);
             return null;
         } catch (InterruptedException ie) {
+            if (future != null) {
+                future.cancel(true);
+            }
             Thread.currentThread().interrupt();
             long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
             recordLlmCall(job, backendId, taskType, latencyMs, prompt, null,
                     false, false, false, false, "UNKNOWN", "Interrupted");
             return null;
+        } catch (RejectedExecutionException ree) {
+            localGenerationPermit.release();
+            throw ree;
         }
     }
 

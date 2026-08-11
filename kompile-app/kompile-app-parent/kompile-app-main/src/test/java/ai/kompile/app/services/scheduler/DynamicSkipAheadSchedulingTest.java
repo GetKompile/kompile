@@ -79,7 +79,8 @@ class DynamicSkipAheadSchedulingTest {
 
         when(gpuResourceManager.findBestDevice(anyString())).thenReturn(Optional.of(TEST_GPU));
         when(gpuResourceManager.canFit(anyString(), any())).thenReturn(true);
-        when(modelLifecycleManager.acquireGpuForJob(anyString(), anyString(), anyString()))
+        when(modelLifecycleManager.acquireGpuForJob(
+                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
                 .thenReturn(TEST_GPU);
 
         scheduler = new ResourceAwareJobScheduler(
@@ -464,7 +465,8 @@ class DynamicSkipAheadSchedulingTest {
             when(gpuResourceManager.canFit(anyString(), any()))
                     .thenAnswer(inv -> !gpuInUse.get());
             when(gpuResourceManager.findEvictionCandidates(anyString(), any())).thenReturn(List.of());
-            when(modelLifecycleManager.acquireGpuForJob(anyString(), anyString(), anyString()))
+            when(modelLifecycleManager.acquireGpuForJob(
+                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
                     .thenAnswer(inv -> {
                         gpuInUse.set(true);
                         return TEST_GPU;

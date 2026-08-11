@@ -55,8 +55,9 @@ class ChatHistoryTest {
     class TranscriptWriting {
 
         @Test
-        void openCreatesFileWithHeader() throws IOException {
+        void firstWriteCreatesFileWithHeader() throws IOException {
             history.open("http://localhost:8080", "claude", true);
+            history.logSystem("session opened");
             history.close();
 
             String content = history.readTranscript();
@@ -66,6 +67,7 @@ class ChatHistoryTest {
             assertTrue(content.contains("Server:  http://localhost:8080"));
             assertTrue(content.contains("Agent:   claude"));
             assertTrue(content.contains("RAG:     enabled"));
+            assertTrue(content.contains("CWD:     " + System.getProperty("user.dir")));
         }
 
         @Test
@@ -194,6 +196,19 @@ class ChatHistoryTest {
             assertEquals("Kompile is an AI platform.", turns.get(1).content());
             assertEquals("user", turns.get(2).role());
             assertEquals("assistant", turns.get(3).role());
+        }
+
+        @Test
+        void preservesMultilineAndMultiParagraphTurns() throws IOException {
+            history.open("http://localhost:8080", "claude", false);
+            history.logUserMessage("first line\n\nthird line");
+            history.logAssistantMessage("first paragraph\n\nsecond paragraph", 0, 50);
+            history.close();
+
+            List<ChatHistory.Turn> turns = history.readTurns();
+            assertEquals(2, turns.size());
+            assertEquals("first line\n\nthird line", turns.get(0).content());
+            assertEquals("first paragraph\n\nsecond paragraph", turns.get(1).content());
         }
 
         @Test

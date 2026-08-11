@@ -359,6 +359,7 @@ class CrawlSourceLoadingService {
         List<CrawlItem> discoveredItems = Collections.synchronizedList(new ArrayList<>());
         CompletableFuture<Void> crawlDone = new CompletableFuture<>();
         String sourceTypeName = source.getSourceType() != null ? source.getSourceType().name() : "UNKNOWN";
+        int crawlErrorsBeforeDiscovery = job.getErrorCount().get();
 
         CrawlJob crawlJob = crawlerService.startCrawl(config, new CrawlEventListener() {
             @Override
@@ -443,13 +444,44 @@ class CrawlSourceLoadingService {
         Long factSheetId = job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
         boolean incrementalEnabled = crawlIncrementalByContentHash && !crawlForceFullRecrawl
                 && documentHashStore != null;
+        String sourceScopeId = sourceScopeId(source);
 
-        // Tracks which items were actually loaded (not skipped) so we can record their
-        // hashes AFTER successful downstream processing.  We attach a metadata marker
-        // to each loaded Document so the hash can be persisted when the file completes.
-        // The actual recordHash call happens immediately after a successful load below
-        // (optimistic: we assume the downstream pipeline will succeed; if extraction
-        // fails the hash is not recorded and the file will be re-processed next time).
+        // Reconcile local-file tombstones after a complete, error-free discovery pass.
+        // Existing-but-excluded files are intentionally retained; only paths confirmed
+        // absent on disk are removed. Remote discovery is not authoritative enough to
+        // infer deletion (a transient network/robots/depth change must not erase graph data).
+        if (incrementalEnabled
+                && isLocalSourceType(source.getSourceType())
+                && job.getErrorCount().get() == crawlErrorsBeforeDiscovery) {
+            Set<String> liveSources = discoveredItems.stream()
+                    .map(CrawlItem::getUrl)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
+            List<String> missingSources = documentHashStore.findMissingSources(
+                    factSheetId, sourceScopeId, liveSources);
+            int stagedDeletes = 0;
+            for (String missingSource : missingSources) {
+                Path missingPath = toFilePath(missingSource);
+                if (missingPath == null || Files.exists(missingPath)) {
+                    continue;
+                }
+                if (purgeNodesForSource(job, factSheetId, missingSource)) {
+                    documentHashStore.stageDeletion(factSheetId, missingSource, job.getJobId());
+                    stagedDeletes++;
+                }
+            }
+            if (stagedDeletes > 0) {
+                log.info("[Job {}] Staged {} deleted source(s) for incremental manifest commit",
+                        job.getJobId(), stagedDeletes);
+                documentTracker.recordEvent(job, "LOADING", "INFO",
+                        "Removed " + stagedDeletes + " deleted source(s) from the knowledge graph",
+                        source.getLabel());
+            }
+        }
+
+        // Items actually loaded (not skipped) stage their hashes in memory. The durable
+        // manifest is published only by DocumentHashStore's GraphBuildCompletedEvent
+        // listener, after graph persistence has succeeded.
         List<Document> collectedDocs = new ArrayList<>();
         for (CrawlItem item : discoveredItems) {
             if (isCancelled(job)) return collectedDocs;
@@ -539,11 +571,11 @@ class CrawlSourceLoadingService {
                             log.info("[Job {}] Loaded file: {} - {} document(s) (total: {})",
                                     job.getJobId(), shortName, docsFromFile, newTotal);
 
-                            // ── INCREMENTAL: record hash after successful load ─────
+                            // ── INCREMENTAL: stage hash; graph completion commits it ──
                             if (incrementalEnabled && docsFromFile > 0) {
                                 if (itemFreshHash != null) {
-                                    documentHashStore.recordHash(factSheetId, itemUrl,
-                                            itemFreshHash, job.getJobId());
+                                    documentHashStore.stageHash(factSheetId, itemUrl,
+                                            itemFreshHash, job.getJobId(), sourceScopeId);
                                 }
                                 job.getFilesReprocessed().incrementAndGet();
                             }
@@ -808,6 +840,24 @@ class CrawlSourceLoadingService {
         return null;
     }
 
+    /** Stable grouping identity for deletion reconciliation across repeated crawls. */
+    static String sourceScopeId(UnifiedCrawlSource source) {
+        if (source == null) {
+            return null;
+        }
+        String type = source.getSourceType() != null ? source.getSourceType().name() : "AUTO";
+        String seed = source.getPathOrUrl();
+        if (seed == null || seed.isBlank()) {
+            return type + ":";
+        }
+        return type + ":" + seed.trim().replace('\\', '/');
+    }
+
+    private static boolean isLocalSourceType(DocumentSourceDescriptor.SourceType sourceType) {
+        return sourceType == DocumentSourceDescriptor.SourceType.FILE
+                || sourceType == DocumentSourceDescriptor.SourceType.DIRECTORY;
+    }
+
     /**
      * Purge graph nodes whose provenance {@code _sourceDocumentId} matches the given
      * source URL.  Called before re-processing a CHANGED file so that the re-extraction
@@ -820,9 +870,9 @@ class CrawlSourceLoadingService {
      * @param factSheetId fact-sheet scope; when non-null only nodes in that sheet are scanned
      * @param sourceUrl   the canonical source path/URL (the {@code _sourceDocumentId} value)
      */
-    private void purgeNodesForSource(UnifiedCrawlJob job, Long factSheetId, String sourceUrl) {
+    private boolean purgeNodesForSource(UnifiedCrawlJob job, Long factSheetId, String sourceUrl) {
         if (knowledgeGraphService == null || sourceUrl == null) {
-            return;
+            return false;
         }
         try {
             List<GraphNode> candidates;
@@ -854,9 +904,11 @@ class CrawlSourceLoadingService {
                         "Purged " + purged + " stale node(s) for changed source",
                         CrawlDocumentTracker.shortName(sourceUrl));
             }
+            return true;
         } catch (Exception e) {
             log.warn("[Job {}] Could not purge nodes for changed source '{}': {}",
                     job.getJobId(), sourceUrl, e.getMessage());
+            return false;
         }
     }
 

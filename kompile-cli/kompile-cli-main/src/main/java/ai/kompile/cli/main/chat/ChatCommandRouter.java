@@ -18,6 +18,8 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.AgentRunController;
+import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
@@ -148,6 +150,7 @@ public class ChatCommandRouter {
                 return true;
 
             case "/setup":
+            case "/provider":
                 runSetup();
                 return true;
 
@@ -254,15 +257,24 @@ public class ChatCommandRouter {
 
             case "/ask":
                 if (localMode) {
-                    // In local mode, /ask goes through the agentic loop too
-                    messageHandler.agenticChat(rest);
+                    // Use the same asynchronous direct-chat dispatcher so input
+                    // remains available for queued follow-up messages.
+                    messageHandler.handleChatMessage(rest);
                 } else {
                     messageHandler.streamAgentChat(rest);
                 }
                 return true;
 
             case "/agent-chat":
-                messageHandler.agenticChat(rest);
+                if (localMode) {
+                    messageHandler.handleChatMessage(rest);
+                } else {
+                    messageHandler.agenticChat(rest);
+                }
+                return true;
+
+            case "/crawl":
+                handleCrawlControl(rest);
                 return true;
 
             case "/conversations":
@@ -448,6 +460,50 @@ public class ChatCommandRouter {
     }
 
     // ========================================================================
+    // Crawl run controls
+    // ========================================================================
+
+    private void handleCrawlControl(String args) {
+        AgentRunController controller = repl.getRunController();
+        if (controller == null) {
+            System.out.println(renderer.dim("/crawl is available only in the production crawl profile."));
+            return;
+        }
+        String op = args.isBlank() ? "status" : args.trim().split("\\s+")[0].toLowerCase(Locale.ROOT);
+        CrawlRunStore store = repl.getCrawlRunStore();
+        switch (op) {
+            case "pause" -> { controller.pause(); if (store != null) store.event("paused", "operator"); }
+            case "resume", "continue" -> { controller.resume(); if (store != null) store.event("resumed", "operator"); }
+            case "step" -> { controller.stepOnce(); if (store != null) store.event("step_requested", "operator"); }
+            case "approve", "allow" -> { controller.approveOnce(); if (store != null) store.event("approved", "next mutation"); }
+            case "stop", "cancel" -> { controller.stop(); if (store != null) store.event("stopped", "operator"); }
+            case "events" -> {
+                if (store == null) { System.out.println(renderer.dim("No crawl run store is attached.")); return; }
+                try { store.readEvents().forEach(System.out::println); }
+                catch (Exception e) { System.out.println(renderer.yellow("Unable to read crawl events: " + e.getMessage())); }
+                return;
+            }
+            case "help" -> {
+                System.out.println("/crawl pause|resume|step|approve|stop|status|events");
+                return;
+            }
+            case "status" -> { /* render below */ }
+            default -> {
+                System.out.println(renderer.yellow("Unknown /crawl control: " + op));
+                System.out.println(renderer.dim("Use /crawl pause|resume|step|approve|stop|status|events"));
+                return;
+            }
+        }
+        AgentRunController.Snapshot snapshot = controller.snapshot();
+        System.out.println(renderer.cyan("  Crawl run: " + snapshot.state())
+                + renderer.dim(" mode=" + snapshot.mode()
+                + " steps=" + snapshot.completedSteps() + "/" + snapshot.maxSteps()
+                + " tools=" + snapshot.toolCalls() + "/" + snapshot.maxToolCalls()
+                + " approval=" + snapshot.approvalPending()));
+        if (store != null) store.checkpoint(controller, "operator_" + op);
+    }
+
+    // ========================================================================
     // Help
     // ========================================================================
 
@@ -475,7 +531,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
-            body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
+            body.append("  ").append(renderer.cyan("/provider")).append("           Switch provider/model and keep this conversation\n");
+            body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure provider/runtime\n");
             body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]       Enforcer config (init/show/rules/run/delete)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
@@ -608,6 +665,14 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
         }
 
+        if (repl.isForceAgentic()) {
+            body.append("\\n").append(renderer.bold(renderer.cyan("Crawl controls"))).append("\\n");
+            body.append("  ").append(renderer.cyan("/crawl status")).append("       Show run state and budgets\\n");
+            body.append("  ").append(renderer.cyan("/crawl pause|resume")).append(" Pause/resume at safe points\\n");
+            body.append("  ").append(renderer.cyan("/crawl step")).append("         Permit one agent step\\n");
+            body.append("  ").append(renderer.cyan("/crawl approve")).append("      Approve one mutation\\n");
+            body.append("  ").append(renderer.cyan("/crawl stop")).append("         Stop the run\\n");
+        }
         System.out.println(ascii.panel("Help", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
         System.out.println();
         System.out.println(renderer.dim("  Conversations saved to ~/.kompile/conversations/"));
@@ -621,14 +686,18 @@ public class ChatCommandRouter {
 
     private void runSetup() {
         ChatConfig newConfig = SetupWizard.run();
-        if (newConfig != null) {
-            repl.updateChatConfig(newConfig);
-            System.out.println(renderer.green("Configuration updated. New messages will use the updated settings."));
-            if (localMode) {
-                System.out.println(renderer.dim("Note: restart the chat to fully apply the new configuration."));
-            }
-        } else {
+        if (newConfig == null) {
             System.out.println("Setup cancelled.");
+            return;
+        }
+        if (repl.updateChatConfig(newConfig)) {
+            System.out.println(renderer.green(
+                    "Provider updated in this session. Existing transcript and conversation context were retained."));
+            System.out.println(renderer.dim(
+                    "  New messages will use " + newConfig.getProvider() + "/" + newConfig.getModel() + "."));
+        } else {
+            System.out.println(renderer.dim(
+                    "Configuration saved for the next session; this runtime change cannot be applied in-place."));
         }
     }
 
@@ -1357,30 +1426,58 @@ public class ChatCommandRouter {
     // ========================================================================
 
     private void handlePermissions(String rest) {
-        if (rest.isBlank()) {
-            List<String> permHeaders = List.of("Tool", "Level", "Description");
-            List<List<String>> permRows = List.of(
-                    List.of("read", renderer.green("allow"), "File reading"),
-                    List.of("grep", renderer.green("allow"), "Content search"),
-                    List.of("glob", renderer.green("allow"), "File search"),
-                    List.of("list", renderer.green("allow"), "Directory listing"),
-                    List.of("edit", renderer.yellow("ask"), "File modification"),
-                    List.of("bash", renderer.yellow("ask"), "Shell execution"),
-                    List.of("webfetch", renderer.green("allow"), "URL fetching"),
-                    List.of("task", renderer.green("allow"), "Subagent spawning")
-            );
+        if (rest.isBlank() || "list".equalsIgnoreCase(rest.trim())) {
+            AgentConfig agent = agentRegistry.get(repl.getLocalAgentName());
+            if (agent == null) {
+                agent = agentRegistry.getDefault();
+            }
+
+            Map<String, String> descriptions = new TreeMap<>();
+            for (CliTool tool : toolRegistry.all()) {
+                String permissionKey = tool.permissionKey();
+                if (permissionKey == null || permissionKey.isBlank()) {
+                    continue;
+                }
+                String description = tool.description() == null
+                        ? ""
+                        : tool.description().replaceAll("\\s+", " ").trim();
+                if (description.length() > 64) {
+                    description = description.substring(0, 61) + "...";
+                }
+                descriptions.putIfAbsent(permissionKey, description);
+            }
+            descriptions.putIfAbsent("external_directory", "Access paths outside the working directory");
+
+            List<String> permHeaders = List.of("Permission key", "Level", "Description");
+            List<List<String>> permRows = new ArrayList<>();
+            for (Map.Entry<String, String> entry : descriptions.entrySet()) {
+                PermissionService.PermissionLevel level =
+                        permissionService.getEffectiveLevel(agent, entry.getKey());
+                String renderedLevel = switch (level) {
+                    case ALLOW -> renderer.green("allow");
+                    case DENY -> renderer.red("deny");
+                    case ASK -> renderer.yellow("ask");
+                };
+                permRows.add(List.of(entry.getKey(), renderedLevel, entry.getValue()));
+            }
+
             System.out.println(ascii.sectionHeader("Tool Permissions"));
             System.out.println(ascii.table(permHeaders, permRows));
             System.out.println();
             System.out.println(renderer.dim("  /permissions <key> <allow|deny|ask>"));
-            System.out.println(renderer.dim("  /permissions allow-all"));
+            System.out.println(renderer.dim("  /permissions allow-all   /permissions reset"));
             return;
         }
 
         String[] parts = rest.trim().split("\\s+", 2);
-        if ("allow-all".equals(parts[0])) {
+        if ("allow-all".equalsIgnoreCase(parts[0])) {
             permissionService.allowAll();
-            System.out.println("All permissions set to allow for this session.");
+            System.out.println("All current and future tool permissions are allowed for this session.");
+            return;
+        }
+        if ("reset".equalsIgnoreCase(parts[0])) {
+            permissionService.resetSessionOverrides();
+            System.out.println("Permission choices reset to agent and tool defaults.");
             return;
         }
 
@@ -1390,11 +1487,12 @@ public class ChatCommandRouter {
         }
 
         String key = parts[0];
-        String level = parts[1].toUpperCase();
+        String level = parts[1].trim().toUpperCase(Locale.ROOT);
         try {
             PermissionService.PermissionLevel pl = PermissionService.PermissionLevel.valueOf(level);
             permissionService.setUserOverride(key, pl);
-            System.out.println("Set " + key + " = " + level.toLowerCase());
+            System.out.println("Set " + key + " = " + level.toLowerCase(Locale.ROOT)
+                    + " for this session.");
         } catch (IllegalArgumentException e) {
             System.err.println("Invalid level: " + parts[1] + ". Use allow, deny, or ask.");
         }

@@ -308,9 +308,19 @@ public class PiAdapter implements ChatSourceAdapter {
             if (!"session".equals(header.path("type").asText(""))) return null;
             String sessionId = header.path("id").asText("");
             if (sessionId.isBlank()) return null;
+            List<ChatTurn> turns = parseJsonl(path);
+            String title = "(untitled)";
+            for (ChatTurn turn : turns) {
+                if ("user".equals(turn.role()) && turn.content() != null && !turn.content().isBlank()) {
+                    title = turn.content().trim();
+                    if (title.length() > 80) title = title.substring(0, 77) + "...";
+                    break;
+                }
+            }
+            String cwd = header.path("cwd").asText(null);
             long lastMod = ChatAdapterSupport.lastModified(path);
-            return new ChatSessionSummary(sessionId, id(), "(untitled)", id(),
-                    0, lastMod);
+            return new ChatSessionSummary(sessionId, id(), title, id(),
+                    turns.size(), lastMod, cwd);
         } catch (Exception e) {
             return null;
         }

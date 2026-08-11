@@ -345,10 +345,8 @@ public class MatrixKgEmbeddingGraphAdapter implements KgEmbeddingGraphAdapter {
         // Relations are edge TYPES with no per-node home. A prior attempt attached them to a CUSTOM
         // "sentinel" node, but that pollutes the live graph (the node surfaces in node stats,
         // browsing, retrieval and would project as a stray atom). Until relation embeddings have a
-        // clean live-path home — a per-fact-sheet JSON store mirroring the existing
-        // MebnWeightPersistenceAdapter (data/graph/reasoning/<fs>/...json), NOT a graph node and NOT
-        // the binary GraphEmbeddingSidecar (which is the git-portability export, not a live store) —
-        // relation embeddings are not persisted here. Entity warm-start is unaffected; relations
+        // clean live-path home — a per-fact-sheet native graph section. Relation embeddings are
+        // not persisted here yet. Entity warm-start is unaffected; relations
         // simply cold-start (today's behaviour) rather than via a polluting workaround. The warm-start
         // plumbing (loadRelationEmbeddings → launcher relations:{} → importRelationEmbeddings) stays
         // wired so the follow-up only needs to fill the store + reader. See loadRelationEmbeddings().

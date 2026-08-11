@@ -88,8 +88,9 @@ public class CodeEntity {
     @Column(length = 4000)
     private String metadataJson;
 
-    /** The knowledge graph node ID this entity is stored as */
-    private UUID graphNodeId;
+    /** The knowledge graph node ID this entity is stored as (matrix IDs are deterministic strings). */
+    @Column(length = 4096)
+    private String graphNodeId;
 
     @Column(nullable = false)
     private Instant indexedAt;

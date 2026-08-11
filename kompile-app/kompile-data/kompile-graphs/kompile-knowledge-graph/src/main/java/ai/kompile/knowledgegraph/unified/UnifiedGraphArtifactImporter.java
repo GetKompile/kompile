@@ -13,6 +13,11 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 @FunctionalInterface
 public interface UnifiedGraphArtifactImporter {
 
+    /** Whether the returned count represents embeddings actually applied to the live store. */
+    default boolean reportsAppliedEmbeddings() {
+        return false;
+    }
+
     /**
      * Restore supported artifacts from {@code graph}.
      *

@@ -2,6 +2,7 @@
   "resources": {
     "includes": [
       {"pattern": "cli-agents\\.json"},
+      {"pattern": "pi-mcp-adapter/.*"},
       {"pattern": "templates/.*"},
       {"pattern": "ai/kompile/pipelines/steps/.*/.*\\.schema\\.json"},
       {"pattern": "META-INF/services/org\\.apache\\.sshd\\..*"},

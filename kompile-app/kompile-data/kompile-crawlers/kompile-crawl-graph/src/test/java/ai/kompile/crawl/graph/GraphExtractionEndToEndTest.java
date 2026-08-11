@@ -18,6 +18,7 @@ package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.*;
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.maintenance.GraphMaintenanceService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.llm.chat.LLMChat;
@@ -78,6 +79,7 @@ class GraphExtractionEndToEndTest {
     @MockBean private CrawlSourceLoadingService sourceLoadingService;
     @MockBean private LLMChat llmChat;
     @MockBean private KnowledgeGraphService knowledgeGraphService;
+    @MockBean private GraphMaintenanceService graphMaintenanceService;
 
     // Plain (non-bean) mocks for the LLM call chain and the loader the source service bridges to.
     private final DocumentLoader loader = mock(DocumentLoader.class);
@@ -463,6 +465,12 @@ class GraphExtractionEndToEndTest {
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
                         .entityResolution(true)
+                        .validationPolicy(
+                                validationPolicyWithout(
+                                        GraphExtractionValidationPolicy
+                                                .ENTITY_NAME_TYPE_CONSISTENCY
+                                )
+                        )
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
                 .build());
@@ -550,7 +558,32 @@ class GraphExtractionEndToEndTest {
                 List.of(relation("e1", "e1", "CALLS", "Calls itself", 0.85))
         ));
 
-        UnifiedCrawlJob job = startJobWithGraph(null);
+        UnifiedCrawlJob job =
+                service.startJob(
+                        UnifiedCrawlRequest.builder()
+                                .name("self-referencing relationship")
+                                .sources(
+                                        List.of(
+                                                fileSource("docs")
+                                        )
+                                )
+                                .graphExtraction(
+                                        GraphExtractionConfig.builder()
+                                                .validationPolicy(
+                                                        validationPolicyWithout(
+                                                                GraphExtractionValidationPolicy
+                                                                        .RELATION_SELF_LOOP
+                                                        )
+                                                )
+                                                .build()
+                                )
+                                .vectorIndex(
+                                        VectorIndexConfig.builder()
+                                                .enabled(false)
+                                                .build()
+                                )
+                                .build()
+                );
         awaitCompletion(job);
 
         assertEquals(1, job.getEntitiesExtracted().get());
@@ -829,6 +862,27 @@ class GraphExtractionEndToEndTest {
     // ──────────────────────────────────────────────────────────────────
     // HELPERS
     // ──────────────────────────────────────────────────────────────────
+
+    private static GraphExtractionValidationPolicy validationPolicyWithout(
+            String validatorId) {
+
+        List<String> enabled =
+                new ArrayList<>(
+                        GraphExtractionValidationPolicy
+                                .defaultValidatorIds()
+                );
+
+        if (!enabled.remove(validatorId)) {
+            throw new IllegalArgumentException(
+                    "Validator is not enabled by default: "
+                            + validatorId
+            );
+        }
+
+        return GraphExtractionValidationPolicy.builder()
+                .enabledValidators(enabled)
+                .build();
+    }
 
     private UnifiedCrawlJob startJobWithGraph(List<String> entityTypes) {
         GraphExtractionConfig.GraphExtractionConfigBuilder gc = GraphExtractionConfig.builder();

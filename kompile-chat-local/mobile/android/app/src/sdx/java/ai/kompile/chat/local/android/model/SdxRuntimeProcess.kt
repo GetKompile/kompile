@@ -27,6 +27,7 @@ import ai.kompile.chat.local.android.diagnostics.NativeOperationExitEvidence
 import ai.kompile.chat.local.android.diagnostics.NativeOperationJournal
 import ai.kompile.chat.local.android.diagnostics.NativeOperationKind
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
+import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.graph.reasoning.unified.MiniJson
 import java.io.File
 import java.util.UUID
@@ -302,6 +303,19 @@ private fun executeJournaledRequest(
     }
     val remoteFailure = decodeRemoteFailure(reply.bundle, processName, processId)
     if (remoteFailure != null) {
+        val attempt = operation.snapshot()
+        SmokeDecodeTraceLog(context).recordFailure(
+            "ipc_remote_failure",
+            attempt.attemptId,
+            remoteFailure,
+            mapOf(
+                "method" to method,
+                "remote_pid" to processId,
+                "checkpoint" to attempt.checkpoint.name,
+                "remote_failure_class" to reply.bundle.getString(KEY_FAILURE_CLASS).orEmpty(),
+                "remote_failure_message" to reply.bundle.getString(KEY_FAILURE_MESSAGE).orEmpty()
+            )
+        )
         throw recoverRuntimeFailure(
             context,
             processName,
@@ -530,6 +544,8 @@ private class SdxRuntimeConnection private constructor(
     ): RuntimeReply {
         awaitConnected()
         val requestId = UUID.randomUUID().toString()
+        val attemptId = data.getString(KEY_OPERATION_ATTEMPT_ID)
+        val trace = SmokeDecodeTraceLog(context)
         val request = requireFrameworkOnlyRuntimeWireBundle(
             Bundle(data).apply { putString(KEY_REQUEST_ID, requestId) },
             "SDX runtime request"
@@ -545,6 +561,17 @@ private class SdxRuntimeConnection private constructor(
                 this.data = request
                 replyTo = replyMessenger
             })
+            if (!attemptId.isNullOrBlank()) {
+                trace.record(
+                    "ipc_request_sent",
+                    attemptId,
+                    mapOf(
+                        "method" to method,
+                        "timeout_ms" to timeoutMillis,
+                        "remote_pid" to remotePid
+                    )
+                )
+            }
             val deadline = SystemClock.elapsedRealtime() + timeoutMillis
             while (true) {
                 if (pendingReply.completed.await(SERVICE_POLL_MILLIS, TimeUnit.MILLISECONDS)) break
@@ -556,6 +583,17 @@ private class SdxRuntimeConnection private constructor(
                     )
                 }
                 if (SystemClock.elapsedRealtime() >= deadline) {
+                    if (!attemptId.isNullOrBlank()) {
+                        trace.record(
+                            "ipc_timeout",
+                            attemptId,
+                            mapOf(
+                                "method" to method,
+                                "timeout_ms" to timeoutMillis,
+                                "watched_pid" to watchedPid
+                            )
+                        )
+                    }
                     if (watchedPid > 0 && isProcessAlive(watchedPid)) Process.killProcess(watchedPid)
                     throw ChatException(
                         "The app-private SDX runtime did not finish IPC method $method within " +
@@ -567,6 +605,21 @@ private class SdxRuntimeConnection private constructor(
             connectionFailure.get()?.let { throw it.asException() }
             val response = pendingReply.response
                 ?: throw ChatException("The SDX runtime service completed without a response bundle.")
+            if (!attemptId.isNullOrBlank()) {
+                val success = response.getBoolean(KEY_SUCCESS, false)
+                val responseFields = linkedMapOf<String, Any?>(
+                    "method" to method,
+                    "success" to success,
+                    "callback_failure" to (pendingReply.callbackFailure.get() != null)
+                )
+                if (!success) {
+                    responseFields["failure_class"] = response.getString(KEY_FAILURE_CLASS).orEmpty()
+                    responseFields["failure_message"] = response.getString(KEY_FAILURE_MESSAGE).orEmpty()
+                    responseFields["failure_stack_chars"] =
+                        response.getString(KEY_FAILURE_STACK).orEmpty().length
+                }
+                trace.record("ipc_response_received", attemptId, responseFields)
+            }
             return RuntimeReply(
                 requireFrameworkOnlyRuntimeWireBundle(response, "SDX runtime response"),
                 pendingReply.callbackFailure.get()
@@ -575,7 +628,15 @@ private class SdxRuntimeConnection private constructor(
             Thread.currentThread().interrupt()
             throw ChatException("Waiting for the SDX runtime process was interrupted.", interrupted)
         } catch (failure: RemoteException) {
+            if (!attemptId.isNullOrBlank()) {
+                trace.recordFailure("ipc_failed", attemptId, failure, mapOf("method" to method))
+            }
             throw ChatException("The SDX runtime Binder request failed.", failure)
+        } catch (failure: Throwable) {
+            if (!attemptId.isNullOrBlank()) {
+                trace.recordFailure("ipc_failed", attemptId, failure, mapOf("method" to method))
+            }
+            throw failure
         } finally {
             pending.remove(requestId)
         }
@@ -788,41 +849,112 @@ class SdxRuntimeService : Service() {
     }
 
     private fun openSession(extras: Bundle): Bundle {
-        check(activeSession == null) { "The SDX runtime process already owns a model session." }
-        val operation = resumeOperation(extras)
-        val created = SdxPlatformRuntimeOwner.open(
-            context = applicationContext,
-            modelPath = extras.requireString(KEY_MODEL_PATH),
-            diagnosticModelPath = extras.requireString(KEY_DIAGNOSTIC_MODEL_PATH),
-            routeName = extras.requireString(KEY_ROUTE_NAME),
-            modelIdPrefix = extras.requireString(KEY_MODEL_ID_PREFIX),
-            loadTransaction = operation
+        val attemptId = extras.requireString(KEY_OPERATION_ATTEMPT_ID)
+        val trace = SmokeDecodeTraceLog(applicationContext)
+        trace.record(
+            "runtime_open_request",
+            attemptId,
+            mapOf("pid" to Process.myPid(), "active_session" to (activeSession != null))
         )
-        val id = UUID.randomUUID().toString()
-        activeSession = created
-        activeSessionId = id
-        return Bundle().apply {
-            putBoolean(KEY_SUCCESS, true)
-            putInt(KEY_PID, Process.myPid())
-            putString(KEY_SESSION_ID, id)
-            putString(KEY_ROUTE_NAME, created.routeName)
-            putString(KEY_MODEL_ID, created.modelId)
+        check(activeSession == null) { "The SDX runtime process already owns a model session." }
+        val operation = try {
+            resumeOperation(extras)
+        } catch (failure: Throwable) {
+            trace.recordFailure(
+                "runtime_open_failed",
+                attemptId,
+                failure,
+                mapOf("pid" to Process.myPid(), "checkpoint" to "RESUME_OPERATION")
+            )
+            throw failure
+        }
+        trace.record(
+            "runtime_open_enter",
+            attemptId,
+            mapOf("pid" to Process.myPid(), "checkpoint" to operation.snapshot().checkpoint.name)
+        )
+        return try {
+            val created = SdxPlatformRuntimeOwner.open(
+                context = applicationContext,
+                modelPath = extras.requireString(KEY_MODEL_PATH),
+                diagnosticModelPath = extras.requireString(KEY_DIAGNOSTIC_MODEL_PATH),
+                routeName = extras.requireString(KEY_ROUTE_NAME),
+                modelIdPrefix = extras.requireString(KEY_MODEL_ID_PREFIX),
+                loadTransaction = operation
+            )
+            val id = UUID.randomUUID().toString()
+            activeSession = created
+            activeSessionId = id
+            trace.record(
+                "runtime_open_return",
+                attemptId,
+                mapOf(
+                    "pid" to Process.myPid(),
+                    "checkpoint" to operation.snapshot().checkpoint.name,
+                    "route" to created.routeName
+                )
+            )
+            Bundle().apply {
+                putBoolean(KEY_SUCCESS, true)
+                putInt(KEY_PID, Process.myPid())
+                putString(KEY_SESSION_ID, id)
+                putString(KEY_ROUTE_NAME, created.routeName)
+                putString(KEY_MODEL_ID, created.modelId)
+            }
+        } catch (failure: Throwable) {
+            trace.recordFailure(
+                "runtime_open_failed",
+                attemptId,
+                failure,
+                mapOf(
+                    "pid" to Process.myPid(),
+                    "checkpoint" to operation.snapshot().checkpoint.name
+                )
+            )
+            throw failure
         }
     }
 
     private fun generate(extras: Bundle, replyTo: Messenger, requestId: String): Bundle {
-        val session = requireSession(extras)
-        val operation = resumeOperation(extras)
-        val result = session.generate(
-            decodeSdxRuntimeMessages(extras.requireString(KEY_MESSAGES_JSON)),
-            decodeSdxRuntimeGenerationOptions(extras.requireString(KEY_OPTIONS_JSON)),
-            Consumer { chunk -> sendChunk(replyTo, requestId, chunk) },
-            operation
+        val attemptId = extras.requireString(KEY_OPERATION_ATTEMPT_ID)
+        val trace = SmokeDecodeTraceLog(applicationContext)
+        trace.record(
+            "runtime_generate_request",
+            attemptId,
+            mapOf("request_id" to requestId, "pid" to Process.myPid())
         )
-        return Bundle().apply {
-            putBoolean(KEY_SUCCESS, true)
-            putInt(KEY_PID, Process.myPid())
-            putString(KEY_GENERATED_TEXT, result)
+        return try {
+            val session = requireSession(extras)
+            val operation = resumeOperation(extras)
+            trace.record(
+                "runtime_generate_enter",
+                attemptId,
+                mapOf("pid" to Process.myPid(), "checkpoint" to operation.snapshot().checkpoint.name)
+            )
+            val heartbeat = trace.startHeartbeat(attemptId, "session.generate")
+            try {
+                val result = session.generate(
+                    decodeSdxRuntimeMessages(extras.requireString(KEY_MESSAGES_JSON)),
+                    decodeSdxRuntimeGenerationOptions(extras.requireString(KEY_OPTIONS_JSON)),
+                    Consumer { chunk -> sendChunk(replyTo, requestId, chunk) },
+                    operation
+                )
+                trace.record(
+                    "runtime_generate_return",
+                    attemptId,
+                    mapOf("result_chars" to result.length, "pid" to Process.myPid())
+                )
+                Bundle().apply {
+                    putBoolean(KEY_SUCCESS, true)
+                    putInt(KEY_PID, Process.myPid())
+                    putString(KEY_GENERATED_TEXT, result)
+                }
+            } finally {
+                heartbeat.close()
+            }
+        } catch (failure: Throwable) {
+            trace.recordFailure("runtime_generate_failed", attemptId, failure, mapOf("pid" to Process.myPid()))
+            throw failure
         }
     }
 

@@ -203,6 +203,91 @@ final class SdxLlmService: ObservableObject {
         #endif
     }
 
+    /// Run one model-owned structured chat turn.
+    func generateChat(
+        messages: [ChatMessage],
+        toolsJson: String,
+        toolChoice: ChatToolChoice,
+        options: GenOptions
+    ) async throws -> StructuredChatResponse {
+        #if canImport(SdxLlm)
+        let toolsData = Data(toolsJson.utf8)
+        guard let tools = try JSONSerialization.jsonObject(with: toolsData) as? [[String: Any]] else {
+            throw SdxServiceError.operation("Graph tool catalog must be a JSON array.")
+        }
+        let encodedMessages: [[String: Any]] = try messages.map { message in
+            var value: [String: Any] = [
+                "role": message.role.rawValue,
+                "content": message.content
+            ]
+            if let callsJson = message.toolCallsJson {
+                guard let calls = try JSONSerialization.jsonObject(
+                    with: Data(callsJson.utf8)
+                ) as? [[String: Any]] else {
+                    throw SdxServiceError.operation(
+                        "Assistant tool-call history is not a JSON array."
+                    )
+                }
+                value["tool_calls"] = calls
+            }
+            if let id = message.toolCallId { value["tool_call_id"] = id }
+            if let name = message.toolName { value["name"] = name }
+            return value
+        }
+        let request: [String: Any] = [
+            "messages": encodedMessages,
+            "tools": toolChoice == .none ? [] : tools,
+            "tool_choice": toolChoice.rawValue,
+            "add_generation_prompt": true
+        ]
+        let requestData = try JSONSerialization.data(withJSONObject: request)
+        guard let requestJson = String(data: requestData, encoding: .utf8) else {
+            throw SdxServiceError.operation("Could not encode structured chat request.")
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            inferenceThread.async { [weak self] in
+                guard let self,
+                      let rt = self.runtime,
+                      let model = self.modelHandle else {
+                    continuation.resume(
+                        throwing: SdxServiceError.unavailable("Model is not loaded.")
+                    )
+                    return
+                }
+                var out: UnsafeMutablePointer<CChar>?
+                let status = sdxLlmGenerateChat(
+                    rt,
+                    model,
+                    requestJson,
+                    options.toOptionsJson(),
+                    &out
+                )
+                guard status == 0, let pointer = out else {
+                    if let pointer = out { sdxLlmFree(rt, pointer) }
+                    continuation.resume(
+                        throwing: SdxServiceError.operation(self.lastError(rt: rt))
+                    )
+                    return
+                }
+                let structuredJson = String(cString: pointer)
+                sdxLlmFree(rt, pointer)
+                do {
+                    continuation.resume(
+                        returning: try StructuredChatResponse.decode(structuredJson)
+                    )
+                } catch {
+                    continuation.resume(
+                        throwing: SdxServiceError.operation(error.localizedDescription)
+                    )
+                }
+            }
+        }
+        #else
+        throw SdxServiceError.unavailable("SdxLlm xcframework is not linked.")
+        #endif
+    }
+
     /// Render conversation history with the tokenizer-owned chat template.
     func renderChatPrompt(messages: [ChatMessage]) async throws -> String {
         #if canImport(SdxLlm)
@@ -415,6 +500,12 @@ private final class SdxAffineExecutor {
             }
         }
     }
+}
+
+enum ChatToolChoice: String {
+    case auto
+    case required
+    case none
 }
 
 enum SdxServiceError: LocalizedError {

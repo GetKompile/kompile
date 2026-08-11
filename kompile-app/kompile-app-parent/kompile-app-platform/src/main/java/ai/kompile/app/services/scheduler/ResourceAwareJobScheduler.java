@@ -383,7 +383,10 @@ public class ResourceAwareJobScheduler implements SmartLifecycle {
                     String serviceType = job.getResourceProfile().serviceType();
                     GpuDevice device = modelLifecycleManager.acquireGpuForJob(
                             jobId, serviceType,
-                            String.format("Phase %s of %s", phaseName, job.getDescription()));
+                            String.format("Phase %s of %s", phaseName, job.getDescription()),
+                            job.isLongLivedGpuHold()
+                                    ? ModelLifecycleManager.HoldLifetime.LONG_LIVED
+                                    : ModelLifecycleManager.HoldLifetime.BOUNDED);
                     job.setGpuHeld(true);
                     job.setState(ScheduledJob.JobState.RUNNING);
                     log.info("Job '{}' GPU re-acquired on device '{}' for phase '{}'",

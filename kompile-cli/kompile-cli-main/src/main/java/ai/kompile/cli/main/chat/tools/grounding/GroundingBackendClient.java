@@ -16,10 +16,14 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.converter.ByteArrayHttpMessageConverter;
+import org.springframework.http.converter.FormHttpMessageConverter;
+import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -51,7 +55,7 @@ class GroundingBackendClient {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(5_000);
         factory.setReadTimeout(35_000);
-        this.restTemplate = new RestTemplate(factory);
+        this.restTemplate = createNativeSafeRestTemplate(factory);
         this.injected = false;
     }
 
@@ -113,7 +117,7 @@ class GroundingBackendClient {
             SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
             factory.setConnectTimeout(5_000);
             factory.setReadTimeout((int) readTimeout.toMillis());
-            rt = new RestTemplate(factory);
+            rt = createNativeSafeRestTemplate(factory);
         }
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -140,7 +144,7 @@ class GroundingBackendClient {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("file", new FileSystemResource(file));
         if (factSheetId != null) {
-            body.add("factSheetId", factSheetId);
+            body.add("factSheetId", factSheetId.toString());
         }
         ResponseEntity<String> resp = restTemplate.postForEntity(
                 baseUrl + path, new HttpEntity<>(body, headers), String.class);
@@ -167,6 +171,16 @@ class GroundingBackendClient {
                 resp.getBody() != null ? resp.getBody() : "");
     }
 
+    /** DELETE {@code baseUrl + path}, preserving the response for tool-led destructive controls. */
+    GroundingResponse delete(String path) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+        ResponseEntity<String> resp = restTemplate.exchange(
+                baseUrl + path, HttpMethod.DELETE, new HttpEntity<>(headers), String.class);
+        return new GroundingResponse(resp.getStatusCode().value(),
+                resp.getBody() != null ? resp.getBody() : "");
+    }
+
     /**
      * GET {@code baseUrl + path} returning the raw response body as a byte array — used by
      * {@code graph_export} to download a {@code .kgraph} binary from
@@ -187,6 +201,25 @@ class GroundingBackendClient {
     /** Visible for testing — allows a {@code MockRestServiceServer} to bind. */
     RestTemplate getRestTemplate() {
         return restTemplate;
+    }
+
+    /**
+     * Build only the converters used by this string/byte/multipart client.
+     *
+     * <p>The default {@link RestTemplate} converter set asks Spring to discover every
+     * optional Jackson module on the classpath. In a native image that reflective
+     * discovery attempts to instantiate {@code jackson-module-kotlin} and can abort MCP
+     * tool initialization before the server publishes any tools. These endpoints already
+     * exchange serialized JSON strings, so a Jackson converter is neither needed nor
+     * desirable here.</p>
+     */
+    private static RestTemplate createNativeSafeRestTemplate(SimpleClientHttpRequestFactory factory) {
+        RestTemplate template = new RestTemplate(List.of(
+                new ByteArrayHttpMessageConverter(),
+                new StringHttpMessageConverter(StandardCharsets.UTF_8),
+                new FormHttpMessageConverter()));
+        template.setRequestFactory(factory);
+        return template;
     }
 
     private static String normalise(String url) {

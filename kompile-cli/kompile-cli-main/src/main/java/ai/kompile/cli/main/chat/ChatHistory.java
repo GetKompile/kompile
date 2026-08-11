@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -82,6 +84,8 @@ public class ChatHistory {
     private String pendingServerUrl;
     private String pendingAgentName;
     private boolean pendingRagEnabled;
+    private Path pendingWorkingDirectory;
+    private boolean writeFailureReported;
     private final List<String> harvestedSourceIds = new ArrayList<>();
 
     public ChatHistory(String sessionId) {
@@ -95,11 +99,21 @@ public class ChatHistory {
      * The file is created lazily on the first actual content write,
      * preventing empty stub files from accumulating.
      */
-    public void open(String serverUrl, String agentName, boolean ragEnabled) throws IOException {
+    public synchronized void open(String serverUrl, String agentName, boolean ragEnabled) throws IOException {
+        open(serverUrl, agentName, ragEnabled, Path.of(System.getProperty("user.dir")));
+    }
+
+    /**
+     * Opens a transcript with an explicit project directory for scoped app sync.
+     */
+    public synchronized void open(String serverUrl, String agentName, boolean ragEnabled,
+                     Path workingDirectory) throws IOException {
         this.opened = true;
         this.pendingServerUrl = serverUrl;
         this.pendingAgentName = agentName;
         this.pendingRagEnabled = ragEnabled;
+        this.pendingWorkingDirectory = workingDirectory == null
+                ? null : workingDirectory.toAbsolutePath().normalize();
     }
 
     /**
@@ -124,6 +138,7 @@ public class ChatHistory {
                 writer.println("Server:  " + (pendingServerUrl != null ? pendingServerUrl : ""));
                 writer.println("Agent:   " + (pendingAgentName != null ? pendingAgentName : ""));
                 writer.println("RAG:     " + (pendingRagEnabled ? "enabled" : "disabled"));
+                writer.println("CWD:     " + (pendingWorkingDirectory != null ? pendingWorkingDirectory : ""));
                 writer.println();
                 writer.println(SEPARATOR);
                 writer.println();
@@ -132,57 +147,61 @@ public class ChatHistory {
             } else {
                 writer.println();
                 writer.println("[resumed " + TIMESTAMP_FMT.format(Instant.now()) + "]");
+                if (pendingWorkingDirectory != null) {
+                    writer.println("CWD:     " + pendingWorkingDirectory);
+                }
                 writer.println();
             }
         } catch (IOException e) {
-            // Best effort — writer stays null, subsequent writes are no-ops
+            if (!writeFailureReported) {
+                System.err.println("Warning: Could not write chat transcript "
+                        + transcriptFile + ": " + e.getMessage());
+                writeFailureReported = true;
+            }
         }
     }
 
     /**
      * Logs a user message.
      */
-    public void logUserMessage(String message) {
+    public synchronized void logUserMessage(String message) {
         ensureWriter();
         if (writer != null) {
-            writer.println("> " + message);
-            writer.println();
+            KompileTranscriptFormat.writeTurn(writer, "user", message);
         }
     }
 
     /**
      * Logs an assistant response from inline RAG chat.
      */
-    public void logAssistantMessage(String answer, int docsRetrieved, long timeMs) {
+    public synchronized void logAssistantMessage(String answer, int docsRetrieved, long timeMs) {
         ensureWriter();
         if (writer != null) {
-            writer.println(answer);
+            KompileTranscriptFormat.writeTurn(writer, "assistant", answer);
             if (docsRetrieved > 0) {
-                writer.printf("  [%d docs retrieved, %dms]%n", docsRetrieved, timeMs);
+                writer.printf("  [%d docs retrieved, %dms]%n%n", docsRetrieved, timeMs);
             }
-            writer.println();
         }
     }
 
     /**
      * Logs an agent streaming response (from /ask).
      */
-    public void logAgentResponse(String agentName, String fullResponse, long durationMs) {
+    public synchronized void logAgentResponse(String agentName, String fullResponse, long durationMs) {
         ensureWriter();
         if (writer != null) {
             writer.println("[agent:" + agentName + "]");
-            writer.println(fullResponse);
+            KompileTranscriptFormat.writeTurn(writer, "assistant", fullResponse);
             if (durationMs > 0) {
-                writer.printf("  [completed in %dms]%n", durationMs);
+                writer.printf("  [completed in %dms]%n%n", durationMs);
             }
-            writer.println();
         }
     }
 
     /**
      * Logs a system event (slash commands, config changes, etc.).
      */
-    public void logSystem(String event) {
+    public synchronized void logSystem(String event) {
         ensureWriter();
         if (writer != null) {
             writer.println("[system] " + event);
@@ -193,7 +212,7 @@ public class ChatHistory {
     /**
      * Logs a tool call execution.
      */
-    public void logToolCall(String toolName, boolean isError, long durationMs) {
+    public synchronized void logToolCall(String toolName, boolean isError, long durationMs) {
         ensureWriter();
         if (writer != null) {
             String status = isError ? "error" : "ok";
@@ -204,7 +223,7 @@ public class ChatHistory {
     /**
      * Logs a subagent invocation.
      */
-    public void logSubagent(String agentType, String description, long durationMs, boolean isError) {
+    public synchronized void logSubagent(String agentType, String description, long durationMs, boolean isError) {
         ensureWriter();
         if (writer != null) {
             String status = isError ? "error" : "complete";
@@ -215,7 +234,7 @@ public class ChatHistory {
     /**
      * Logs a todo task event.
      */
-    public void logTodoEvent(String action, String taskId, String subject) {
+    public synchronized void logTodoEvent(String action, String taskId, String subject) {
         ensureWriter();
         if (writer != null) {
             writer.printf("[todo:%s] #%s %s%n", action, taskId, subject);
@@ -225,7 +244,7 @@ public class ChatHistory {
     /**
      * Logs an agentic chat loop step.
      */
-    public void logAgenticStep(int step, int maxSteps, int toolCallCount) {
+    public synchronized void logAgenticStep(int step, int maxSteps, int toolCallCount) {
         ensureWriter();
         if (writer != null) {
             writer.printf("[agentic-step] %d/%d (%d tool calls)%n", step, maxSteps, toolCallCount);
@@ -236,7 +255,7 @@ public class ChatHistory {
      * Records that this session harvested content from an external agent session.
      * Written as a header-level metadata line so the resume tool can deduplicate.
      */
-    public void logHarvestedSource(String externalSessionId) {
+    public synchronized void logHarvestedSource(String externalSessionId) {
         if (externalSessionId == null || externalSessionId.isEmpty()) return;
         if (harvestedSourceIds.contains(externalSessionId)) return;
         harvestedSourceIds.add(externalSessionId);
@@ -262,74 +281,13 @@ public class ChatHistory {
      */
     public List<Turn> readTurns() throws IOException {
         List<Turn> turns = new ArrayList<>();
-        if (!Files.exists(transcriptFile)) {
-            return turns;
+        for (ChatTurn turn : KompileTranscriptFormat.readTurns(transcriptFile)) {
+            turns.add(new Turn(turn.role(), turn.content()));
         }
-
-        List<String> lines = Files.readAllLines(transcriptFile, StandardCharsets.UTF_8);
-        StringBuilder currentContent = new StringBuilder();
-        String currentRole = null;
-
-        for (String line : lines) {
-            // Skip header lines
-            if (line.startsWith("────") || line.startsWith("Started:") ||
-                    line.startsWith("Server:") || line.startsWith("Agent:") ||
-                    line.startsWith("RAG:") || line.equals(SEPARATOR)) {
-                continue;
-            }
-
-            // Skip system events and resume markers
-            if (line.startsWith("[system]") || line.startsWith("[resumed")) {
-                continue;
-            }
-
-            if (line.startsWith("> ")) {
-                // Flush previous turn
-                if (currentRole != null && currentContent.length() > 0) {
-                    turns.add(new Turn(currentRole, currentContent.toString().trim()));
-                }
-                currentRole = "user";
-                currentContent.setLength(0);
-                currentContent.append(line.substring(2));
-            } else if (currentRole != null && currentRole.equals("user") && line.isEmpty()) {
-                // End of user message, start assistant
-                if (currentContent.length() > 0) {
-                    turns.add(new Turn("user", currentContent.toString().trim()));
-                    currentContent.setLength(0);
-                    currentRole = "assistant";
-                }
-            } else if (currentRole != null && currentRole.equals("assistant")) {
-                if (line.startsWith("  [") && (line.contains("docs retrieved") || line.contains("completed in"))) {
-                    // Metadata line - skip it from content
-                    continue;
-                }
-                if (line.startsWith("[agent:")) {
-                    // Agent prefix - skip
-                    continue;
-                }
-                if (line.isEmpty() && currentContent.length() > 0) {
-                    // End of assistant message
-                    turns.add(new Turn("assistant", currentContent.toString().trim()));
-                    currentContent.setLength(0);
-                    currentRole = null;
-                } else {
-                    if (currentContent.length() > 0) {
-                        currentContent.append("\n");
-                    }
-                    currentContent.append(line);
-                }
-            }
-        }
-
-        // Flush final turn
-        if (currentRole != null && currentContent.length() > 0) {
-            turns.add(new Turn(currentRole, currentContent.toString().trim()));
-        }
-
         return turns;
     }
 
-    public void close() {
+    public synchronized void close() {
         if (writer != null) {
             writer.close();
             writer = null;

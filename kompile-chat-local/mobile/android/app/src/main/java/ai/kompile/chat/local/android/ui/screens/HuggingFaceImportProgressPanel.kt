@@ -63,6 +63,7 @@ internal fun HuggingFaceImportProgressPanel(
     onCancelStep: (HuggingFaceImportStep) -> Boolean,
     onRetryStep: (HuggingFaceImportStep) -> Boolean,
     onOpenAppStorageSettings: () -> Unit,
+    onCopySmokeDecodeTrace: () -> Unit,
     diagnostics: List<ImportDiagnostic> = emptyList(),
     modifier: Modifier = Modifier
 ) {
@@ -79,6 +80,7 @@ internal fun HuggingFaceImportProgressPanel(
             onCopy = {
                 clipboard.setText(AnnotatedString(huggingFaceFailureCopyText(state)))
             },
+            onCopySmokeDecodeTrace = onCopySmokeDecodeTrace,
             onRetry = { onRetryStep(state.step) },
             onOpenAppStorageSettings = onOpenAppStorageSettings,
             modifier = modifier.bringIntoViewRequester(failureBringIntoView)
@@ -297,6 +299,7 @@ internal fun HuggingFaceImportProgressPanel(
 private fun HuggingFaceFailurePanel(
     state: HuggingFaceImportUiState.Failed,
     onCopy: () -> Unit,
+    onCopySmokeDecodeTrace: () -> Unit,
     onRetry: () -> Unit,
     onOpenAppStorageSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -354,6 +357,14 @@ private fun HuggingFaceFailurePanel(
                     .testTag("hugging_face_copy_error")
             ) {
                 Text("Copy full error")
+            }
+            OutlinedButton(
+                onClick = onCopySmokeDecodeTrace,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("hugging_face_copy_smoke_decode_trace")
+            ) {
+                Text("Copy smoke-decode trace")
             }
             OutlinedButton(
                 onClick = { expanded = !expanded },

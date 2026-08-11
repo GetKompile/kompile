@@ -1,0 +1,86 @@
+<section class="agent-bundles">
+  <mat-card>
+    <mat-card-header>
+      <mat-card-title>Packaged agents</mat-card-title>
+      <mat-card-subtitle>Import a .kagent bundle, start it, and watch native, tool, and MCP activity live.</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="import-row">
+        <input type="file" accept=".kagent,.zip" (change)="fileChanged($event)">
+        <button mat-raised-button color="primary" [disabled]="!selectedFile || uploading" (click)="importBundle()">
+          <mat-icon>upload</mat-icon> Import bundle
+        </button>
+        <button mat-button (click)="loadBundles(); loadRuns()"><mat-icon>refresh</mat-icon> Refresh</button>
+      </div>
+      <div class="error" *ngIf="error">{{ error }}</div>
+      <div class="bundle-list" *ngIf="bundles.length; else emptyBundles">
+        <button class="bundle" *ngFor="let bundle of bundles"
+                [class.selected]="selectedBundle?.id === bundle.id" (click)="selectedBundle = bundle">
+          <span class="bundle-name">{{ bundle.name }}</span>
+          <span class="bundle-meta">{{ bundle.engine }} · {{ bundle.filename }} · {{ bundle.entries.length }} entries</span>
+        </button>
+      </div>
+      <ng-template #emptyBundles><p class="muted">No managed bundles yet.</p></ng-template>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card class="run-card" *ngIf="selectedBundle">
+    <mat-card-header>
+      <mat-card-title>Run {{ selectedBundle.name }}</mat-card-title>
+      <mat-card-subtitle>{{ selectedBundle.digest }}</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <textarea [(ngModel)]="prompt" rows="3" placeholder="Ask the packaged agent to do something..."></textarea>
+      <div class="run-controls">
+        <mat-form-field appearance="outline">
+          <mat-label>Timeout (seconds)</mat-label>
+          <input matInput type="number" min="0" [(ngModel)]="timeoutSeconds">
+        </mat-form-field>
+        <button mat-raised-button color="accent" [disabled]="!prompt.trim()" (click)="startRun()">
+          <mat-icon>play_arrow</mat-icon> Start run
+        </button>
+        <button mat-stroked-button [disabled]="discoveringTools" (click)="discoverTools()">
+          <mat-icon>extension</mat-icon> Discover MCP tools
+        </button>
+      </div>
+      <div class="tool-list" *ngIf="mcpTools.length">
+        <strong>Discovered tools</strong>
+        <span *ngFor="let tool of mcpTools">{{ tool }}</span>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <div class="activity-grid">
+    <mat-card>
+      <mat-card-header><mat-card-title>Runs</mat-card-title></mat-card-header>
+      <mat-card-content>
+        <div class="run-list" *ngIf="runs.length; else emptyRuns">
+          <button class="run" *ngFor="let run of runs" [class.selected]="selectedRun?.runId === run.runId"
+                  (click)="selectRun(run)">
+            <span><strong>{{ run.state }}</strong> · {{ run.startedAt | date:'short' }}</span>
+            <small>{{ run.prompt }}</small>
+            <button mat-button color="warn" *ngIf="isActive(run)" (click)="$event.stopPropagation(); cancelRun(run)">Cancel</button>
+          </button>
+        </div>
+        <ng-template #emptyRuns><p class="muted">No runs yet.</p></ng-template>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="event-card">
+      <mat-card-header>
+        <mat-card-title>Activity</mat-card-title>
+        <mat-card-subtitle *ngIf="selectedRun">{{ selectedRun.runId }}</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="events" *ngIf="events.length; else emptyEvents">
+          <div class="event" *ngFor="let event of events" [class.tool]="event.type.includes('TOOL') || event.type.includes('MCP')">
+            <span class="event-type">{{ event.type }}</span>
+            <span class="event-text">{{ eventText(event) }}</span>
+            <span class="event-time">{{ event.timestamp | date:'mediumTime' }}</span>
+          </div>
+        </div>
+        <ng-template #emptyEvents><p class="muted">Select a run to view activity.</p></ng-template>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</section>

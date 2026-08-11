@@ -16,10 +16,13 @@
 package ai.kompile.knowledgegraph.io;
 
 import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.domain.NodeLevel;
 import ai.kompile.knowledgegraph.embedding.util.INDArrayConverter;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactContributor;
+import ai.kompile.knowledgegraph.unified.UnifiedGraphArtifactImporter;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,7 +61,8 @@ import java.util.function.Consumer;
  * Legacy "KGE1" files (first two sections, node entries without the {@code updatedAtEpochMilli} slot) are still read.</p>
  */
 @Service
-public class GraphEmbeddingSidecar {
+public class GraphEmbeddingSidecar
+        implements UnifiedGraphArtifactContributor, UnifiedGraphArtifactImporter {
 
     private static final Logger log = LoggerFactory.getLogger(GraphEmbeddingSidecar.class);
 
@@ -66,6 +70,12 @@ public class GraphEmbeddingSidecar {
     private static final int MAGIC_V1 = 0x4B474531;
     /** Current magic ("KGE2"): adds a live-store node-embedding section. */
     private static final int MAGIC_V2 = 0x4B474532;
+    public static final String ARTIFACT_NAME = "embeddings/graph-embedding-sidecar.kge2";
+    private static final int MAX_RECORDS =
+            Math.max(1, Integer.getInteger("kompile.graph.embeddingSidecar.maxRecords", 1_000_000));
+    private static final int MAX_VECTOR_BLOCK_BYTES =
+            Math.max(1, Integer.getInteger(
+                    "kompile.graph.embeddingSidecar.maxVectorBytes", 64 * 1024 * 1024));
 
     private final INDArrayConverter converter;
 
@@ -166,6 +176,24 @@ public class GraphEmbeddingSidecar {
         return bos.toByteArray();
     }
 
+    @Override
+    public void contribute(Long factSheetId, UnifiedGraph graph) {
+        byte[] data = export(factSheetId);
+        if (data != null && data.length > 0) {
+            graph.putArtifact(ARTIFACT_NAME, data);
+        }
+    }
+
+    @Override
+    public int importArtifacts(Long factSheetId, UnifiedGraph graph) {
+        return importInto(factSheetId, graph.artifact(ARTIFACT_NAME));
+    }
+
+    @Override
+    public boolean reportsAppliedEmbeddings() {
+        return true;
+    }
+
     /** Map each fact-sheet node that the live store has a text embedding for to its vector. */
     private Map<GraphNode, INDArray> collectLiveNodeEmbeddings(Long factSheetId) {
         Map<GraphNode, INDArray> result = new LinkedHashMap<>();
@@ -216,7 +244,7 @@ public class GraphEmbeddingSidecar {
             }
 
             // Section 1: structural-KGE node embeddings
-            int nodeCount = in.readInt();
+            int nodeCount = readCount(in, "structural node");
             for (int i = 0; i < nodeCount; i++) {
                 String typeName = in.readUTF();
                 String externalId = in.readUTF();
@@ -230,18 +258,18 @@ public class GraphEmbeddingSidecar {
                 if (vec == null) continue;
 
                 NodeLevel level = parseLevel(typeName);
-                graphService.getNodeByExternalIdInFactSheet(externalId, level, factSheetId)
-                        .ifPresent(node -> {
-                            KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
-                            Instant updAt = updatedAtMs >= 0 ? Instant.ofEpochMilli(updatedAtMs) : null;
-                            long ver = version >= 0 ? version : 0L;
-                            graphService.storeNodeKgEmbedding(node.getNodeId(), vec, algo, ver, updAt);
-                        });
-                applied++;
+                var node = graphService.getNodeByExternalIdInFactSheet(externalId, level, factSheetId);
+                if (node.isPresent()) {
+                    KGEmbeddingAlgorithm algo = parseAlgorithm(algoName);
+                    Instant updAt = updatedAtMs >= 0 ? Instant.ofEpochMilli(updatedAtMs) : null;
+                    long ver = version >= 0 ? version : 0L;
+                    graphService.storeNodeKgEmbedding(node.get().getNodeId(), vec, algo, ver, updAt);
+                    applied++;
+                }
             }
 
             // Section 2: edge-type relation embeddings
-            int edgeTypeCount = in.readInt();
+            int edgeTypeCount = readCount(in, "edge type");
             for (int i = 0; i < edgeTypeCount; i++) {
                 String edgeTypeName = in.readUTF();
                 String algoName = in.readUTF();
@@ -261,6 +289,9 @@ public class GraphEmbeddingSidecar {
             if (magic == MAGIC_V2) {
                 applied += importLiveNodeEmbeddings(factSheetId, in);
             }
+            if (in.available() != 0) {
+                throw new IOException("Trailing bytes in embedding sidecar");
+            }
         } catch (IOException e) {
             log.warn("Failed to read embedding sidecar for fact sheet {}: {}", factSheetId, e.getMessage());
         }
@@ -273,7 +304,7 @@ public class GraphEmbeddingSidecar {
      * stream even when no live store is wired, so the read stays well-framed.
      */
     private int importLiveNodeEmbeddings(Long factSheetId, DataInputStream in) throws IOException {
-        int liveCount = in.readInt();
+        int liveCount = readCount(in, "live node");
         Map<String, INDArray> byNodeId = new LinkedHashMap<>();
         for (int i = 0; i < liveCount; i++) {
             String typeName = in.readUTF();
@@ -302,9 +333,20 @@ public class GraphEmbeddingSidecar {
 
     private static byte[] readBlock(DataInputStream in) throws IOException {
         int len = in.readInt();
+        if (len < 0 || len > MAX_VECTOR_BLOCK_BYTES || len > in.available()) {
+            throw new IOException("Invalid embedding vector block length: " + len);
+        }
         byte[] block = new byte[len];
         in.readFully(block);
         return block;
+    }
+
+    private static int readCount(DataInputStream in, String section) throws IOException {
+        int count = in.readInt();
+        if (count < 0 || count > MAX_RECORDS) {
+            throw new IOException("Invalid " + section + " embedding count: " + count);
+        }
+        return count;
     }
 
     private static KGEmbeddingAlgorithm parseAlgorithm(String algoName) {
@@ -317,6 +359,9 @@ public class GraphEmbeddingSidecar {
     }
 
     private static NodeLevel parseLevel(String name) {
+        if (name == null || name.isBlank()) {
+            return NodeLevel.ENTITY;
+        }
         try {
             return NodeLevel.valueOf(name);
         } catch (IllegalArgumentException e) {

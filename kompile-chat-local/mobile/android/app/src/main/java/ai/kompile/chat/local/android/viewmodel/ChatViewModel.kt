@@ -27,6 +27,7 @@ import ai.kompile.chat.local.android.diagnostics.NativeOperationDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.NativeOperationKind
 import ai.kompile.chat.local.android.diagnostics.NativeOperationRecoveryTarget
 import ai.kompile.chat.local.android.diagnostics.RecoveredNativeOperation
+import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.chat.local.android.graph.AndroidNativeGraphBackend
 import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.graph.KgraphArtifactValidator
@@ -680,7 +681,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         model: AcceleratedChatModelAndroid
     ): ModelSmokeUiState {
         val route = model.routeName
+        val trace = SmokeDecodeTraceLog(getApplication<Application>())
         _modelSmokeState.value = ModelSmokeUiState.Running(route)
+        trace.record(
+            "smoke_started",
+            fields = mapOf(
+                "route" to route,
+                "max_tokens" to SMOKE_TEST_MAX_TOKENS,
+                "trace_location" to trace.locationDescription()
+            )
+        )
         try {
             val startedAtNs = System.nanoTime()
             val answer = model.generate(
@@ -702,9 +712,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 answer.take(SMOKE_TEST_PREVIEW_CHARS)
             )
             _modelSmokeState.value = passed
+            trace.record(
+                "smoke_passed",
+                fields = mapOf(
+                    "route" to route,
+                    "elapsed_ms" to elapsedMs,
+                    "answer_chars" to answer.length,
+                    "preview_chars" to SMOKE_TEST_PREVIEW_CHARS
+                )
+            )
             Log.i(TAG, "Model smoke decode passed on $route in ${elapsedMs}ms")
             return passed
         } catch (failure: Throwable) {
+            trace.recordFailure(
+                "smoke_failed",
+                attemptId = null,
+                failure = failure,
+                fields = mapOf("route" to route)
+            )
             Log.e(TAG, "Model smoke decode failed on $route", failure)
             val failed = ModelSmokeUiState.Failed(
                 route,

@@ -37,8 +37,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Handles injection of kompile MCP tools into spawned agents.
  *
- * <p>Supports all passthrough agents: Qwen Code, Claude Code, Codex, Gemini CLI, OpenCode.
- * Each agent reads MCP server configs from its own settings file.</p>
+ * <p>Supports all passthrough agents: Qwen Code, Claude Code, Codex, Gemini CLI, OpenCode,
+ * and Pi Coding Agent. Each agent reads MCP server configs from its own settings file.</p>
  *
  * <p>Two MCP server modes are supported:
  * <ul>
@@ -89,7 +89,7 @@ public class McpToolInjection {
      * Call {@link #removeTools(Path)} with the returned path to restore the original.</p>
      *
      * @param agentWorkingDir the working directory where the agent will run
-     * @param agentName       the agent name (claude, codex, qwen, gemini, opencode)
+     * @param agentName       the agent name (claude, codex, qwen, gemini, opencode, pi)
      * @param sseUrl          the kompile-app SSE URL (e.g. http://localhost:8080/mcp/sse), or null for stdio mode
      * @return the path to the settings file that was written, or null if unsupported
      */
@@ -131,10 +131,23 @@ public class McpToolInjection {
             return registerAndReturn(injectForAgy(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("opencode")) {
             return registerAndReturn(injectForOpenCode(normalizedWd, launcher, sseUrl));
+        } else if (PiMcpAdapterProvisioner.isPiAgent(agent)) {
+            return registerAndReturn(injectForPi(normalizedWd, launcher, sseUrl));
         } else {
             // Default: Qwen Code format
             return registerAndReturn(injectForQwen(normalizedWd, launcher, sseUrl));
         }
+    }
+
+    /**
+     * Return provider-global launch options required by agents whose MCP
+     * integration is an extension rather than a built-in config reader.
+     */
+    public static List<String> commandLineOverrides(Path workingDir, String agentName) throws IOException {
+        if (PiMcpAdapterProvisioner.isPiAgent(agentName)) {
+            return PiMcpAdapterProvisioner.launchArguments();
+        }
+        return List.of();
     }
 
     /** Helper to register shutdown hook and return the settings file path. */
@@ -401,6 +414,9 @@ public class McpToolInjection {
         if (agent.contains("opencode")) {
             return isCrushFormat() ? workingDir.resolve("opencode.json") : workingDir.resolve(".opencode.json");
         }
+        if (PiMcpAdapterProvisioner.isPiAgent(agent)) {
+            return workingDir.resolve(".pi").resolve("mcp.json");
+        }
         return workingDir.resolve(".qwen").resolve("settings.json"); // default: qwen
     }
 
@@ -520,6 +536,55 @@ public class McpToolInjection {
         Files.createDirectories(agyDir);
         Path settingsFile = agyDir.resolve("settings.json");
         return writeConfig(settingsFile, workingDir, launcher, sseUrl);
+    }
+
+    // ── Pi Coding Agent ────────────────────────────────────────────────────
+
+    private static Path injectForPi(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
+                                    String sseUrl) throws IOException {
+        Path piDir = workingDir.resolve(".pi");
+        Files.createDirectories(piDir);
+        return writePiConfig(piDir.resolve("mcp.json"), workingDir, launcher, sseUrl);
+    }
+
+    private static Path writePiConfig(Path settingsFile, Path workingDir,
+                                      McpToolInjectionSupport.CliLauncher launcher,
+                                      String sseUrl) throws IOException {
+        backupIfExists(settingsFile);
+        ObjectNode root;
+        if (Files.exists(settingsFile)) {
+            try {
+                JsonNode parsed = OM.readTree(Files.readString(settingsFile));
+                root = parsed != null && parsed.isObject() ? (ObjectNode) parsed : OM.createObjectNode();
+            } catch (Exception e) {
+                System.err.println("[MCP] Warning: Could not parse existing Pi MCP config, creating new: " + e.getMessage());
+                root = OM.createObjectNode();
+            }
+        } else {
+            root = OM.createObjectNode();
+        }
+
+        ObjectNode servers = root.has("mcpServers") && root.get("mcpServers").isObject()
+                ? (ObjectNode) root.get("mcpServers") : root.putObject("mcpServers");
+        ObjectNode kompile = servers.putObject("kompile");
+        kompile.put("lifecycle", "eager");
+        kompile.put("directTools", true);
+        kompile.put("toolPrefix", "mcp");
+        if (sseUrl != null && !sseUrl.isBlank()) {
+            kompile.put("url", sseUrl);
+        } else {
+            if (launcher == null) {
+                throw new IOException("Pi MCP stdio launcher is unavailable");
+            }
+            kompile.put("command", launcher.command());
+            ArrayNode args = kompile.putArray("args");
+            for (String arg : launcher.buildArgs(workingDir)) {
+                args.add(arg);
+            }
+        }
+        Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+        System.err.println("[MCP] Injected kompile MCP tools into Pi config " + settingsFile);
+        return settingsFile;
     }
 
     // ── OpenCode ───────────────────────────────────────────────────────────
@@ -820,6 +885,7 @@ public class McpToolInjection {
             projectDir.resolve(".qwen/settings.json"),
             projectDir.resolve(".opencode.json"),
             projectDir.resolve("opencode.json"),
+            projectDir.resolve(".pi").resolve("mcp.json"),
             Path.of(System.getProperty("user.home"), ".config", "opencode", "opencode.json"),
             Path.of(System.getProperty("user.home"), ".opencode", "opencode.json"),
             Path.of(System.getProperty("user.home"), ".opencode.json"),

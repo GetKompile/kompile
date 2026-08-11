@@ -26,6 +26,7 @@ import ai.kompile.cli.main.chat.tui.StatusBar;
 import ai.kompile.cli.main.chat.tui.VirtualTerminal;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.condition.OS;
 
 import java.util.*;
@@ -49,6 +50,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * All tests use <b>real agent binaries</b>. No mocking.
  */
 @DisabledOnOs(OS.WINDOWS)
+@EnabledIfEnvironmentVariable(
+        named = "KOMPILE_LIVE_AGENT_TESTS", matches = "(?i:true)")
 class TuiAgentResponseTest {
 
     private static final String WORK_DIR = System.getProperty("user.dir");

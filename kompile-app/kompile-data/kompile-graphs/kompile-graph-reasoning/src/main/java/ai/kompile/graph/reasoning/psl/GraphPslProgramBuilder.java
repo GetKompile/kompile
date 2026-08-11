@@ -20,7 +20,10 @@ import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -45,12 +48,14 @@ public class GraphPslProgramBuilder {
 
     public static final String STATE = "State";
     public static final String LINK = "Link";
+    public static final String CONFLICT = "Conflict";
     public static final String PRIOR = "Prior";
 
     private double minEdgeWeight = 0.05;
     private double propagationWeight = 2.0;
     private double abductionWeight = 1.0;
     private double priorWeight = 1.0;
+    private double conflictWeight = 2.0;
     private boolean includeAbduction = true;
     private boolean includeDefaultRules = true;
 
@@ -62,6 +67,7 @@ public class GraphPslProgramBuilder {
     public GraphPslProgramBuilder propagationWeight(double w) { this.propagationWeight = w; return this; }
     public GraphPslProgramBuilder abductionWeight(double w) { this.abductionWeight = w; return this; }
     public GraphPslProgramBuilder priorWeight(double w) { this.priorWeight = w; return this; }
+    public GraphPslProgramBuilder conflictWeight(double w) { this.conflictWeight = w; return this; }
     public GraphPslProgramBuilder includeAbduction(boolean b) { this.includeAbduction = b; return this; }
 
     /** When false, only the atoms are populated and no default rules are added (caller supplies rules). */
@@ -78,26 +84,41 @@ public class GraphPslProgramBuilder {
             return program;
         }
 
+        List<GraphEntity> entities = new ArrayList<>(graph.entities());
+        entities.sort(Comparator.comparing(GraphEntity::id));
+
         int i = 0;
-        for (GraphEntity entity : graph.entities()) {
+        for (GraphEntity entity : entities) {
             String constant = "n" + (i++);
             constantToEntityId.put(constant, entity.id());
             entityIdToConstant.put(entity.id(), constant);
             constantToLabel.put(constant, entity.label().isEmpty() ? entity.id() : entity.label());
 
-            double prior = NoisyOrCpt.estimatePrior(entity.weight(), graph.outgoing(entity.id()).size());
+            double prior = NoisyOrCpt.estimatePrior(entity.confidence(), effectiveOutDegree(graph, entity.id()));
             program.observe(PRIOR, prior, constant);
             program.target(STATE, constant);
         }
 
+        Map<String, Double> links = new LinkedHashMap<>();
+        Map<String, Double> conflicts = new LinkedHashMap<>();
         for (GraphRelation relation : graph.relations()) {
             String cs = entityIdToConstant.get(relation.sourceId());
             String ct = entityIdToConstant.get(relation.targetId());
-            if (cs == null || ct == null || relation.weight() < minEdgeWeight) {
+            double strength = clamp01(relation.weight() * relation.confidence());
+            if (cs == null || ct == null || strength < minEdgeWeight
+                    || isIdentitySeparationType(relation.type())) {
                 continue;
             }
-            program.observe(LINK, relation.weight(), cs, ct);
+            Map<String, Double> target = isConflictType(relation.type()) ? conflicts : links;
+            mergeMax(target, cs, ct, strength);
+            if (!relation.directed() || isSymmetricType(relation.type())) {
+                mergeMax(target, ct, cs, strength);
+            }
         }
+        links.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> program.observe(LINK, entry.getValue(), parseSource(entry.getKey()), parseTarget(entry.getKey())));
+        conflicts.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> program.observe(CONFLICT, entry.getValue(), parseSource(entry.getKey()), parseTarget(entry.getKey())));
 
         if (includeDefaultRules) {
             addDefaultRules(program);
@@ -114,8 +135,71 @@ public class GraphPslProgramBuilder {
             program.addRule(PslRule.parse(abductionWeight + ": " + STATE + "(Y) & " + LINK
                     + "(X, Y) -> " + STATE + "(X) ^2"));
         }
+        // Contradictory evidence is an explicit penalty, not a positive link with a different label.
+        program.addRule(PslRule.parse(conflictWeight + ": " + STATE + "(Y) & " + CONFLICT
+                + "(X, Y) -> ^2"));
         // Soft-equality anchor of each entity's state to its structural prior.
         program.addRule(PslRule.parse(priorWeight + ": " + PRIOR + "(N) -> " + STATE + "(N) ^2"));
         program.addRule(PslRule.parse(priorWeight + ": " + STATE + "(N) -> " + PRIOR + "(N) ^2"));
+    }
+
+    private int effectiveOutDegree(ReasoningGraph graph, String entityId) {
+        int degree = 0;
+        for (GraphRelation relation : graph.relations()) {
+            if (isIdentitySeparationType(relation.type())) {
+                continue;
+            }
+            boolean incident = entityId.equals(relation.sourceId())
+                    || ((!relation.directed() || isSymmetricType(relation.type()))
+                    && entityId.equals(relation.targetId()));
+            if (incident && clamp01(relation.weight() * relation.confidence()) >= minEdgeWeight) {
+                degree++;
+            }
+        }
+        return degree;
+    }
+
+    private static void mergeMax(Map<String, Double> values, String source, String target, double value) {
+        values.merge(source + "\u0000" + target, value, Math::max);
+    }
+
+    private static String parseSource(String key) {
+        return key.substring(0, key.indexOf('\u0000'));
+    }
+
+    private static String parseTarget(String key) {
+        return key.substring(key.indexOf('\u0000') + 1);
+    }
+
+    private static boolean isConflictType(String type) {
+        String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("CONTRADICTS")
+                || normalized.equals("CONFLICTS")
+                || normalized.equals("REFUTES")
+                || normalized.equals("DISAGREES")
+                || normalized.equals("OPPOSES");
+    }
+
+    private static boolean isIdentitySeparationType(String type) {
+        String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("NOT_SAME_AS")
+                || normalized.equals("NOT_SAME")
+                || normalized.equals("DIFFERENT_FROM");
+    }
+
+    private static boolean isSymmetricType(String type) {
+        String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("SAME_AS")
+                || normalized.equals("EQUIVALENT_TO")
+                || normalized.equals("SIMILAR_TO")
+                || normalized.equals("COREFERS_TO")
+                || normalized.equals("SAME_ENTITY");
+    }
+
+    private static double clamp01(double value) {
+        if (Double.isNaN(value)) {
+            return 0.0;
+        }
+        return Math.max(0.0, Math.min(1.0, value));
     }
 }

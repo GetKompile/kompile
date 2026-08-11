@@ -6,6 +6,7 @@
 package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.core.crawl.graph.GraphExtractionConfig.DecomposedPromptTier;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig.ExtractionTarget;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.graphrag.GraphConstructor.ConceptHint;
 import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
@@ -25,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -284,7 +286,7 @@ class ToolDrivenExtractionExecutorTest {
     }
 
     @Test
-    void malformedStructuredResponseParseErrorsWithRecoverableCallExecutes() {
+    void malformedStructuredResponseParseErrorsNeverExecuteRecoveredCall() {
         CrawlExtractionToolBackend backend = retryBackend("invalid-structured-response");
 
         ToolDrivenExtractionExecutor.Result result = new ToolDrivenExtractionExecutor().extractStructured(
@@ -306,11 +308,63 @@ class ToolDrivenExtractionExecutorTest {
                                 List.of("Recovered declared JSON tool call without explicit envelope")),
                 testProfile());
 
-        assertTrue(result.usable(), () -> result.notes().toString());
-        assertEquals(1, result.extraction().entities().size());
-        assertEquals(0, result.extraction().relations().size());
+        assertFalse(result.usable(), () -> result.notes().toString());
+        assertEquals(0, result.toolCalls(),
+                "a parser-diagnosed response must never reach the mutation backend");
         assertTrue(result.notes().stream().anyMatch(
                 note -> note.contains("parser returned malformed tool-call diagnostics")));
+    }
+
+    @Test
+    void entityOnlyNativeModeUsesOneDirectSubmissionContract() {
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "entity-chunk",
+                "entity-document",
+                "lfm",
+                "entity-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                null,
+                new CrawlCorpusSnapshot("entity-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.ENTITIES_ONLY);
+        AtomicReference<ToolDrivenExtractionExecutor.StructuredRequest> observed =
+                new AtomicReference<>();
+
+        ToolDrivenExtractionExecutor.Result result =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "M. Chen and J. Park reviewed the forecast.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            observed.set(request);
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<native-submit>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "submit-1", "submit_entities",
+                                                    Map.of("names", List.of("M. Chen", "J. Park")))),
+                                    List.of());
+                        },
+                        testProfile());
+
+        assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(2, result.extraction().entities().size());
+        assertEquals(0, result.extraction().relations().size());
+        assertEquals(List.of("submit_entities"), result.toolsUsed());
+        assertTrue(result.extraction().entities().stream()
+                .allMatch(entity -> "ENTITY".equals(entity.type())));
+
+        ToolDrivenExtractionExecutor.StructuredRequest request = observed.get();
+        assertEquals(1, request.tools().size());
+        assertEquals("submit_entities", request.tools().get(0).name());
+        assertTrue(request.messages().get(0).content().contains("Call submit_entities directly"));
+        assertTrue(request.messages().get(0).content().contains("ontology typing"));
+        assertEquals(List.of("names"), ((List<?>) request.tools().get(0).parameters()
+                .get("required")));
+        assertFalse(request.tools().get(0).parameters().toString().contains("relations"));
     }
 
     @Test
@@ -363,11 +417,7 @@ class ToolDrivenExtractionExecutorTest {
                                         "I should use a tool.", "I should use a tool.",
                                         List.of(), List.of());
                                 case 1 -> new ToolDrivenExtractionExecutor.StructuredResponse(
-                                        "<native-two-calls>", "", List.of(
-                                                new ToolDrivenExtractionExecutor.ToolRequest(
-                                                        "corpus-1", "unified_corpus",
-                                                        Map.of("action", "SEARCH",
-                                                                "query", "Project Orchid", "limit", 2)),
+                                        "<native-graph-call>", "", List.of(
                                                 new ToolDrivenExtractionExecutor.ToolRequest(
                                                         "graph-1", "graph_reasoning_query",
                                                         Map.of("operation", "CAPABILITIES"))),
@@ -407,12 +457,11 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(result.usable(), () -> result.notes().toString());
         assertEquals(2, result.extraction().entities().size());
         assertEquals(1, result.extraction().relations().size());
-        assertEquals(List.of(
-                "unified_corpus", "graph_reasoning_query", "submit_graph_delta"),
+        assertEquals(List.of("graph_reasoning_query", "submit_graph_delta"),
                 result.toolsUsed());
 
         ToolDrivenExtractionExecutor.StructuredRequest initial = requests.get(0);
-        assertEquals(List.of("submit_graph_delta", "graph_reasoning_query", "unified_corpus"),
+        assertEquals(List.of("submit_graph_delta", "graph_reasoning_query"),
                 initial.tools().stream().map(ExtractionToolBackend.ToolDefinition::name).toList());
         assertEquals(List.of("system", "user"),
                 initial.messages().stream()
@@ -434,8 +483,10 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(systemPrompt.contains("after the graph has facts"));
         assertTrue(systemPrompt.contains("graph_reasoning_query"));
         assertTrue(systemPrompt.contains("unified_corpus"));
+        assertTrue(systemPrompt.contains("Do not perform cross-document lookup"));
+        assertTrue(systemPrompt.contains("one unified logical corpus"));
         assertTrue(systemPrompt.contains("not evidence"));
-        assertTrue(systemPrompt.length() < 800,
+        assertTrue(systemPrompt.length() < 1_000,
                 () -> "the core tool prompt should stay small-model legible: "
                         + systemPrompt.length());
         assertFalse(systemPrompt.contains("Both values are"),
@@ -448,9 +499,15 @@ class ToolDrivenExtractionExecutorTest {
         assertFalse(initial.messages().get(1).content().contains("concepts:"));
         assertFalse(initial.messages().get(1).content().contains("Mira [PERSON]"));
         assertFalse(initial.messages().get(1).content().contains("Project Orchid [PROJECT]"));
-        assertTrue(initial.messages().get(1).content().endsWith(
+        String initialUser = initial.messages().get(1).content();
+        assertTrue(initialUser.contains(
                 "Mira reviewed Project Orchid.\nEND SOURCE SHARD\n"));
-        assertFalse(initial.messages().get(1).content().contains("NEXT ACTION:"));
+        assertTrue(initialUser.endsWith(ToolDrivenExtractionExecutor.TOOL_USE_REQUIREMENT));
+        assertTrue(initialUser.contains("model-owned chat template defines the wire format"));
+        assertFalse(initialUser.contains("<|tool_call_start|>"));
+        assertFalse(initialUser.contains("<|tool_call_end|>"));
+        assertFalse(initialUser.contains("<|python_tag|>"));
+        assertFalse(initialUser.contains("NEXT ACTION:"));
 
         assertTrue(requests.stream().allMatch(request -> request.messages().stream()
                         .map(ToolDrivenExtractionExecutor.ChatMessage::role).toList()
@@ -460,8 +517,13 @@ class ToolDrivenExtractionExecutorTest {
                 .contains("CURRENT EXPLICIT TOOL STATE"));
         assertTrue(requests.get(1).messages().get(1).content()
                 .contains("No executable function call"));
+        assertFalse(requests.get(1).messages().get(1).content()
+                .contains("top-level JSON tool envelope"));
+        assertTrue(requests.stream().allMatch(request -> request.messages().get(1).content()
+                .endsWith(ToolDrivenExtractionExecutor.TOOL_USE_REQUIREMENT)));
         String finalState = requests.get(2).messages().get(1).content();
-        assertTrue(finalState.contains("Function: unified_corpus"));
+        assertFalse(finalState.contains("Function: unified_corpus"),
+                "the unified-document structured workflow must not replay cross-document state");
         assertTrue(finalState.contains("Function: graph_reasoning_query"));
         assertTrue(finalState.contains("Project Orchid"));
         assertTrue(requests.stream().noneMatch(request -> request.messages().stream()
@@ -596,7 +658,7 @@ class ToolDrivenExtractionExecutorTest {
                         },
                         new DecomposedExtractionExecutor.PromptProfile(
                                 DecomposedPromptTier.STANDARD,
-                                3_072,
+                                2_048,
                                 4_096,
                                 512,
                                 3.5,
@@ -604,13 +666,15 @@ class ToolDrivenExtractionExecutorTest {
 
         assertTrue(result.usable(), () -> result.notes().toString());
         assertEquals(1, requests.size(), "a fitting compact contract must reach the model");
-        assertEquals(3, requests.get(0).tools().size(),
-                "context reduction must preserve corpus, graph, and submit tools");
+        assertEquals(2, requests.get(0).tools().size(),
+                "the unified-document workflow needs graph navigation and submission only");
+        assertTrue(requests.get(0).tools().stream().noneMatch(tool ->
+                CrawlExtractionToolBackend.UNIFIED_CORPUS.equals(tool.name())));
         assertFalse(requests.get(0).messages().get(1).content().contains("entityDefinitions"),
                 "compact presentation should omit verbose schema definitions");
-        assertFalse(result.notes().stream().anyMatch(note -> note.contains(
+        assertTrue(result.notes().stream().anyMatch(note -> note.contains(
                         "native tool presentation reduced from STANDARD to COMPACT")),
-                () -> "removing schema descriptions should keep the label-only context within the initial tier: "
+                () -> "the short model context should deliberately select compact native tools: "
                         + result.notes());
     }
 
@@ -1082,7 +1146,8 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(validationState.contains("Tool or validator result"));
         assertTrue(validationState.contains("description"));
         String protocolRetry = requests.get(2).messages().get(1).content();
-        assertTrue(protocolRetry.contains("No executable function call"));
+        assertTrue(protocolRetry.contains(
+                "No executable function call was returned by the model-owned chat tool interface"));
         assertTrue(protocolRetry.contains("Tool or validator result"),
                 "a malformed repair response must not erase the prior validator state");
         assertTrue(protocolRetry.contains(

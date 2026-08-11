@@ -93,14 +93,24 @@ public class TraceHumanizer {
      * available. Strips path/namespace prefixes, replaces underscores with spaces, and never
      * returns a raw UUID (UUIDs are shortened to their first block with an ellipsis).
      *
-     * @param raw a node id, external id, or atom argument; null/blank returns ""
-     * @return a display-safe label (never null)
+     * @param raw a node id, external id, or atom argument; null/blank returns as-is
+     * @return a display-safe label, or the original null/blank input
      */
     public static String cleanLabel(String raw) {
         if (raw == null || raw.isBlank()) {
-            return "";
+            return raw;
         }
         String label = raw.trim();
+        if (label.length() >= 2
+                && ((label.startsWith("\"") && label.endsWith("\""))
+                || (label.startsWith("'") && label.endsWith("'")))) {
+            label = label.substring(1, label.length() - 1).trim();
+        }
+
+        Matcher atom = ATOM_PAT.matcher(label);
+        if (atom.matches() && indexOfTopLevelComma(atom.group(2)) < 0) {
+            return cleanLabel(atom.group(2));
+        }
         if (UUID_PAT.matcher(label).matches()) {
             return label.substring(0, 8) + "…";
         }
@@ -115,7 +125,11 @@ public class TraceHumanizer {
         if (UUID_PAT.matcher(label).matches()) {
             return label.substring(0, 8) + "…";
         }
-        return label.replace('_', ' ').trim();
+        label = label.replace('_', ' ').replaceAll("\\s+", " ").trim();
+        if (label.isEmpty()) {
+            return label;
+        }
+        return Character.toUpperCase(label.charAt(0)) + label.substring(1);
     }
 
     /**

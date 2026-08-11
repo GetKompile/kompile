@@ -43,7 +43,6 @@ import ai.kompile.process.workflow.ProcessPhase;
 import ai.kompile.process.workflow.ProcessStatus;
 import ai.kompile.process.workflow.ProcessStep;
 import ai.kompile.process.workflow.StepType;
-import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.utils.HashUtils;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -195,7 +194,7 @@ public class ProcessEngineServiceImpl implements ProcessEngineService {
     }
 
     public ProcessEngineServiceImpl() {
-        this.objectMapper = JsonUtils.newStandardMapper()
+        this.objectMapper = new ObjectMapper()
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
 

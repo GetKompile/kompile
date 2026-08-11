@@ -56,7 +56,7 @@ public class StagingModelArtifactBackend implements ModelArtifactBackend {
 
     @Override
     public boolean supports(ModelArtifactType type) {
-        return ModelArtifactType.SAMEDIFF_CHECKPOINT == type;
+        return ModelArtifactType.SAMEDIFF_CHECKPOINT == type && stagingUrl != null && !stagingUrl.isBlank();
     }
 
     @Override

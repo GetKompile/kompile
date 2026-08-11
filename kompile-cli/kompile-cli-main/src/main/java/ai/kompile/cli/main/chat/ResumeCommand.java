@@ -16,6 +16,9 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
+import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import ai.kompile.cli.main.chat.tools.CrossAgentResumeCompactor;
@@ -73,7 +76,7 @@ public class ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--target-session-id", "-t"}, description = "UUID to use as the target session ID when resuming (instead of generating a new one)")
     private String targetSessionId;
 
-    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (kompile/claude/codex/qwen/opencode/gemini)", defaultValue = "claude")
+    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (kompile/claude/codex/qwen/opencode/gemini/pi)", defaultValue = "claude")
     private String agent;
 
     @CommandLine.Option(names = {"--search", "-q"}, description = "Search conversations by keyword")
@@ -82,7 +85,7 @@ public class ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--filter-agent"}, description = "Filter conversations by agent name")
     private String filterAgent;
 
-    @CommandLine.Option(names = {"--filter-source"}, description = "Filter conversations by source (kompile, claude-code, opencode, etc.)")
+    @CommandLine.Option(names = {"--filter-source"}, description = "Filter conversations by source (kompile, claude-code, opencode, pi, etc.)")
     private String filterSource;
 
     @CommandLine.Option(names = {"--migrate", "-m"}, description = "Migrate conversation to format (kompile/openai/anthropic/markdown/jsonl)")
@@ -165,21 +168,42 @@ public class ResumeCommand implements Callable<Integer> {
         try {
             List<ChatHistory.ConversationSummary> conversations =
                     ChatHistory.listResumableConversations();
-            if (conversations.isEmpty()) {
+            List<ChatSessionSummary> piConversations = listPiConversations();
+            if (conversations.isEmpty() && piConversations.isEmpty()) {
                 System.out.println("No saved conversations found.");
                 return 0;
             }
 
             System.out.println("Saved conversations:");
             System.out.println();
+            int printed = 0;
             for (ChatHistory.ConversationSummary c : conversations) {
                 if (filterAgent != null && !filterAgent.isBlank()
                         && !filterAgent.equalsIgnoreCase(c.agent())) {
                     continue;
                 }
+                if (filterSource != null && !filterSource.isBlank()
+                        && !"kompile".equalsIgnoreCase(filterSource)) {
+                    continue;
+                }
                 System.out.printf("  %-24s  %-20s  agent=%-8s  %s%n",
                         c.sessionId(), c.started(), c.agent(),
                         c.title().isEmpty() ? "(empty)" : c.title());
+                printed++;
+            }
+            for (ChatSessionSummary c : piConversations) {
+                if (filterAgent != null && !filterAgent.isBlank()
+                        && !"pi".equalsIgnoreCase(filterAgent)
+                        && !"pi-cli".equalsIgnoreCase(filterAgent)) {
+                    continue;
+                }
+                String title = c.title() == null || c.title().isBlank() ? "(untitled)" : c.title();
+                System.out.printf("  %-24s  %-20s  agent=%-8s  %s (%d messages)%n",
+                        c.sessionId(), String.valueOf(c.lastModifiedMillis()), "pi", title, c.messageCount());
+                printed++;
+            }
+            if (printed == 0) {
+                System.out.println("No conversations matched the requested filters.");
             }
             System.out.println();
             System.out.println("Resume with: kompile resume --session-id <session-id>");
@@ -187,6 +211,21 @@ public class ResumeCommand implements Callable<Integer> {
         } catch (Exception e) {
             System.err.println("Error listing conversations: " + e.getMessage());
             return 1;
+        }
+    }
+
+    private List<ChatSessionSummary> listPiConversations() {
+        if (filterSource != null && !filterSource.isBlank()
+                && !"pi".equalsIgnoreCase(filterSource)
+                && !"pi-cli".equalsIgnoreCase(filterSource)) {
+            return List.of();
+        }
+        try {
+            ChatSourceAdapter adapter = ChatSourceRegistry.getInstance().find("pi").orElse(null);
+            return adapter == null ? List.of() : adapter.list();
+        } catch (IOException e) {
+            System.err.println("Warning: Could not list Pi sessions: " + e.getMessage());
+            return List.of();
         }
     }
 
@@ -199,6 +238,23 @@ public class ResumeCommand implements Callable<Integer> {
                     System.getProperty("user.home"), ".kompile", "conversations", sessionId + ".txt");
             
             if (!Files.exists(transcriptPath)) {
+                ai.kompile.cli.main.chat.format.ConversationReader reader =
+                        new ai.kompile.cli.main.chat.format.ConversationReader();
+                for (String source : List.of("pi", "claude-code", "codex", "qwen", "opencode", "gemini")) {
+                    try {
+                        List<ChatHistory.Turn> turns = reader.readExternalSession(source, sessionId);
+                        if (turns == null || turns.isEmpty()) continue;
+                        System.out.println("Conversation: " + sessionId + " (source=" + source + ")");
+                        for (ChatHistory.Turn turn : turns) {
+                            System.out.println(turn.role().toUpperCase(Locale.ROOT) + ":");
+                            System.out.println(turn.content());
+                            System.out.println();
+                        }
+                        return 0;
+                    } catch (Exception ignored) {
+                        // Try the next registered external source.
+                    }
+                }
                 System.err.println("Conversation not found: " + sessionId);
                 return 1;
             }
@@ -305,7 +361,7 @@ public class ResumeCommand implements Callable<Integer> {
                 }
 
                 Exception lastExternalError = null;
-                for (String externalSource : List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
+                for (String externalSource : List.of("claude-code", "codex", "qwen", "opencode", "gemini", "pi")) {
                     try {
                         List<ChatHistory.Turn> externalTurns =
                                 reader.readExternalSession(externalSource, sessionId);
@@ -342,6 +398,12 @@ public class ResumeCommand implements Callable<Integer> {
                         ? targetSessionId
                         : sessionId;
                 return resumeOpenCodeDirect(nativeId);
+            }
+            if ("pi".equalsIgnoreCase(agent) && "pi".equalsIgnoreCase(source)) {
+                String nativeId = (targetSessionId != null && !targetSessionId.isBlank())
+                        ? targetSessionId
+                        : sessionId;
+                return resumePiDirect(nativeId, workingDirectory);
             }
 
             System.out.println("✓ Resuming conversation: " + sessionId);
@@ -399,7 +461,7 @@ public class ResumeCommand implements Callable<Integer> {
             }
 
             // Build the agent command AFTER injection so --mcp-config can reference the written file
-            List<String> agentCommand = buildAgentCommand(agent, exportResult, injectTools);
+            List<String> agentCommand = buildAgentCommand(agent, exportResult, injectedSettingsFile != null);
 
             System.out.println();
             System.out.println("Launching agent with native session resume...");
@@ -445,6 +507,72 @@ public class ResumeCommand implements Callable<Integer> {
         } catch (Exception e) {
             System.err.println("Error resuming conversation: " + e.getMessage());
             e.printStackTrace();
+            return 1;
+        }
+    }
+
+    /**
+     * Directly resume an existing Pi session by UUID without exporting. Pi's
+     * {@code --resume} flag opens a picker; deterministic resume uses
+     * {@code --session <id>} instead.
+     */
+    private int resumePiDirect(String piSessionId, Path sessionWorkingDirectory) {
+        Path workingDir = sessionWorkingDirectory != null
+                ? sessionWorkingDirectory.toAbsolutePath().normalize()
+                : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        Path injectedSettingsFile = null;
+        try {
+            if (injectTools) {
+                try {
+                    String sseUrl = resolveMcpUrl();
+                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                            workingDir, "pi", sseUrl);
+                    if (injectedSettingsFile != null) {
+                        System.out.println(GREEN + "Kompile tools injected" + RESET
+                                + DIM + " (" + injectedSettingsFile + ")" + RESET);
+                    }
+                } catch (IOException e) {
+                    System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+                }
+            }
+
+            List<String> cmd = new ArrayList<>();
+            cmd.add("pi");
+            if (injectTools) {
+                cmd.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                        workingDir, "pi"));
+            }
+            cmd.add("--session");
+            cmd.add(piSessionId);
+
+            System.out.println();
+            System.out.println("Launching Pi with session resume...");
+            System.out.println(DIM + "  Command: " + String.join(" ", cmd) + RESET);
+            System.out.println(DIM + "  Working dir: " + workingDir + RESET);
+            System.out.println();
+
+            int exitCode;
+            try {
+                ProcessBuilder pb = new ProcessBuilder(cmd);
+                pb.directory(workingDir.toFile());
+                pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+                pb.inheritIO();
+                Process process = pb.start();
+                try {
+                    exitCode = process.waitFor();
+                } catch (InterruptedException ie) {
+                    process.destroy();
+                    try { process.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+                    if (process.isAlive()) process.destroyForcibly();
+                    exitCode = 130;
+                    Thread.currentThread().interrupt();
+                }
+            } finally {
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            }
+            return exitCode;
+        } catch (Exception e) {
+            System.err.println("Error resuming Pi session: " + e.getMessage());
             return 1;
         }
     }
@@ -547,7 +675,7 @@ public class ResumeCommand implements Callable<Integer> {
         // Map source identifier to agent binary name
         String agentName = switch (sourceAgent.toLowerCase(Locale.ROOT)) {
             case "claude-code" -> "claude";
-            case "codex", "qwen", "opencode", "gemini" -> sourceAgent.toLowerCase(Locale.ROOT);
+            case "codex", "qwen", "opencode", "gemini", "pi", "pi-cli" -> sourceAgent.toLowerCase(Locale.ROOT).equals("pi-cli") ? "pi" : sourceAgent.toLowerCase(Locale.ROOT);
             default -> "claude";
         };
 
@@ -589,6 +717,15 @@ public class ResumeCommand implements Callable<Integer> {
         }
 
         cmd.add(resumeParts[0]);
+        if (toolsInjected && ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
+            try {
+                cmd.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                        exportResult.getWorkingDirectory() != null
+                                ? exportResult.getWorkingDirectory() : Path.of(System.getProperty("user.dir")), agent));
+            } catch (IOException e) {
+                System.err.println("Warning: Could not provision Pi MCP adapter: " + e.getMessage());
+            }
+        }
         if (name.contains("codex") && exportResult.getWorkingDirectory() != null) {
             cmd.add("-C");
             cmd.add(exportResult.getWorkingDirectory().toString());
@@ -628,8 +765,8 @@ public class ResumeCommand implements Callable<Integer> {
                     + "wait a moment and retry /mcp.");
         }
 
-        // MCP tools are auto-discovered from .mcp.json / .qwen/settings.json / etc.
-        // written by McpToolInjection.injectTools() — no extra flags needed.
+        // MCP tools are auto-discovered from the provider config. Pi additionally
+        // receives the bundled extension path immediately after its executable.
 
         return cmd;
     }

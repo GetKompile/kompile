@@ -5,6 +5,7 @@
  */
 package ai.kompile.knowledgegraph.unified;
 
+import ai.kompile.graph.reasoning.debug.UnifiedGraphDebugRenderer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,15 +34,46 @@ public class UnifiedGraphIOController {
         this.bridge = bridge;
     }
 
-    @GetMapping(value = "/export", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @GetMapping(value = "/export")
     public ResponseEntity<byte[]> exportGraph(
-            @RequestParam(value = "factSheetId", required = false) Long factSheetId) throws IOException {
-        byte[] payload = bridge.exportBytes(factSheetId);
+            @RequestParam(value = "factSheetId", required = false) Long factSheetId,
+            @RequestParam(value = "format", defaultValue = "kgraph") String format,
+            @RequestParam(value = "vectors", defaultValue = "summary") String vectors,
+            @RequestParam(value = "bundle", defaultValue = "true") boolean bundle) throws IOException {
+        String normalized = format == null ? "kgraph" : format.toLowerCase(java.util.Locale.ROOT);
+        UnifiedGraphDebugRenderer.Options options = UnifiedGraphDebugRenderer.Options.defaults()
+                .withVectorValues("values".equalsIgnoreCase(vectors));
+        byte[] payload;
+        String contentType;
+        String extension;
+        switch (normalized) {
+            case "kgraph" -> {
+                payload = bridge.exportBytes(factSheetId);
+                contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+                extension = "kgraph";
+            }
+            case "ascii", "txt" -> {
+                var graph = bridge.export(factSheetId);
+                payload = UnifiedGraphDebugRenderer.toAscii(graph, options)
+                        .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                contentType = "text/plain;charset=US-ASCII";
+                extension = "txt";
+            }
+            case "png" -> {
+                var graph = bridge.export(factSheetId);
+                payload = bundle ? UnifiedGraphDebugRenderer.toPngBundle(graph, options)
+                        : UnifiedGraphDebugRenderer.toPng(graph, options);
+                contentType = bundle ? "application/zip" : "image/png";
+                extension = bundle ? "png.zip" : "png";
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unsupported unified graph export format: " + format + " (use kgraph, ascii or png)");
+        }
         String scope = factSheetId == null ? "global" : factSheetId.toString();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"kompile-graph-" + scope + ".kgraph\"")
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        "attachment; filename=\"kompile-graph-" + scope + "." + extension + "\"")
+                .contentType(MediaType.parseMediaType(contentType))
                 .contentLength(payload.length)
                 .body(payload);
     }

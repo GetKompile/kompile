@@ -12,14 +12,34 @@ import java.util.function.Consumer;
 public interface ChatModel {
 
     /**
-     * Generate a response for the given conversation history.
-     *
-     * @param messages ordered conversation turns (system, user, assistant, tool_result)
-     * @param opts     generation options (temperature, tokens, etc.)
-     * @return the model's generated text, trimmed of leading/trailing whitespace
-     * @throws ChatException if the model is unavailable or generation fails
+     * Generate one structured response. Each backend is responsible for applying
+     * the imported/provider model protocol before returning this result.
      */
-    String generate(List<Message> messages, GenOptions opts) throws ChatException;
+    default ChatResponse generate(ChatRequest request, GenOptions opts) throws ChatException {
+        if (request.toolChoice() != ChatRequest.ToolChoice.NONE
+                || !request.parseTools().isEmpty()) {
+            throw new ChatException(
+                    "This backend does not implement structured tool-capable chat");
+        }
+        return ChatResponse.content(generate(request.messages(), opts));
+    }
+
+    /**
+     * Compatibility path for content-only callers. It still uses structured chat;
+     * it never invokes a Kompile-side output parser.
+     */
+    default String generate(List<Message> messages, GenOptions opts) throws ChatException {
+        ChatResponse result = generate(
+                new ChatRequest(messages, "[]", ChatRequest.ToolChoice.NONE), opts);
+        if (!result.isProtocolValid()) {
+            throw new ChatException("Model protocol failure: "
+                    + String.join("; ", result.protocolErrors()));
+        }
+        if (!result.toolCalls().isEmpty()) {
+            throw new ChatException("Content-only generation unexpectedly returned tool calls");
+        }
+        return result.content();
+    }
 
     /**
      * Return {@code true} if this model is currently usable — the native library is

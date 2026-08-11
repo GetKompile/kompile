@@ -55,7 +55,8 @@ class ResourceAwareJobSchedulerTest {
 
         when(gpuResourceManager.findBestDevice(anyString())).thenReturn(Optional.of(TEST_GPU));
         when(gpuResourceManager.canFit(anyString(), any())).thenReturn(true);
-        when(modelLifecycleManager.acquireGpuForJob(anyString(), anyString(), anyString()))
+        when(modelLifecycleManager.acquireGpuForJob(
+                anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
                 .thenReturn(TEST_GPU);
 
         scheduler = new ResourceAwareJobScheduler(
@@ -145,7 +146,8 @@ class ResourceAwareJobSchedulerTest {
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             future.get(5, TimeUnit.SECONDS);
 
-            verify(modelLifecycleManager).acquireGpuForJob(eq("j1"), anyString(), anyString());
+            verify(modelLifecycleManager).acquireGpuForJob(
+                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED));
             verify(modelLifecycleManager).releaseGpuForJob("j1");
         }
 
@@ -455,8 +457,9 @@ class ResourceAwareJobSchedulerTest {
             // Re-acquire GPU
             scheduler.reportPhaseTransition("j1", "VECTOR_INDEXING", true, 5 * GB);
 
-            // acquireGpuForJob called twice: initial + re-acquire
-            verify(modelLifecycleManager, atLeast(2)).acquireGpuForJob(eq("j1"), anyString(), anyString());
+            // acquireGpuForJob called twice: initial + re-acquire, both with explicit lifetime
+            verify(modelLifecycleManager, atLeast(2)).acquireGpuForJob(
+                    eq("j1"), anyString(), anyString(), eq(ModelLifecycleManager.HoldLifetime.BOUNDED));
 
             doneLatch.countDown();
         }
@@ -561,7 +564,8 @@ class ResourceAwareJobSchedulerTest {
 
         @Test
         void gpuAcquisitionFailureFailsJob() throws Exception {
-            when(modelLifecycleManager.acquireGpuForJob(anyString(), anyString(), anyString()))
+            when(modelLifecycleManager.acquireGpuForJob(
+                    anyString(), anyString(), anyString(), any(ModelLifecycleManager.HoldLifetime.class)))
                     .thenThrow(new IllegalStateException("No GPU available"));
 
             ScheduledJob job = buildGpuJob("j1", "ingest", ctx -> fail("Should not execute"));

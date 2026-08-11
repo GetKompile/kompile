@@ -46,7 +46,15 @@ DL4J_ROOT="${DL4J_ROOT:-$REPO_ROOT/../deeplearning4j}"
 VARIANT=""
 VULKAN_AAR="${SDX_VULKAN_AAR:-$DL4J_ROOT/libnd4j/build/mobile/vulkan/dist/sdx-runtime-android-arm64-vulkan.aar}"
 HEXAGON_AAR="${SDX_HEXAGON_AAR:-$DL4J_ROOT/libnd4j/build/mobile/hexagon/dist/sdx-runtime-android-arm64-hexagon.aar}"
-TENSOR_G3_AAR="${SDX_TENSOR_G3_AAR:-$DL4J_ROOT/libnd4j/build/mobile/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar}"
+TENSOR_G3_CANONICAL_AAR="$DL4J_ROOT/libnd4j/build/mobile/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar"
+TENSOR_G3_NATIVE_AAR="$DL4J_ROOT/libnd4j/build/mobile/tensor-g3/native/sdx-runtime-sdk/dist/sdx-runtime-android-arm64-tensor-g3.aar"
+TENSOR_G3_NATIVE_RECEIPT="$TENSOR_G3_NATIVE_AAR.build-receipt"
+TENSOR_G3_AAR="${SDX_TENSOR_G3_AAR:-}"
+if [[ -n "$TENSOR_G3_AAR" ]]; then
+  TENSOR_G3_AAR_SOURCE="environment"
+else
+  TENSOR_G3_AAR_SOURCE="unresolved"
+fi
 TENSOR_G5_AAR="${SDX_TENSOR_G5_AAR:-$DL4J_ROOT/libnd4j/build/mobile/google-tensor-g5/dist/sdx-chat-runtime-android-arm64-google-tensor-g5.aar}"
 GRAPH_MODULE="$REPO_ROOT/kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local"
 GRAPH_LIBRARY="${KOMPILE_GRAPH_ANDROID_SO:-$GRAPH_MODULE/target/android-aot/jni/arm64-v8a/libkompile_reasoning_android.so}"
@@ -58,6 +66,11 @@ JNI_OUTPUT_DIR="$SCRIPT_DIR/app/src/main/jniLibs/arm64-v8a"
 ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 ANDROID_NDK_ARG="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}}"
 JAVA_HOME_ARG="${JAVA_HOME:-}"
+if [[ -n "$JAVA_HOME_ARG" ]]; then
+  JAVA_HOME_SOURCE="JAVA_HOME"
+else
+  JAVA_HOME_SOURCE="unresolved"
+fi
 MAVEN="${MAVEN:-$REPO_ROOT/mvnw}"
 SKIP_MAVEN=0
 MAVEN_ARTIFACTS=0
@@ -76,6 +89,111 @@ RAM_GRADLE_BUILD="${KOMPILE_ANDROID_RAM_GRADLE_BUILD:-0}"
 CLEANUP_ONLY=0
 TEMPORARY_FILES=()
 TEMPORARY_DIRECTORIES=()
+
+resolve_java_home() {
+  local java_bin java_real
+
+  if [[ -n "$JAVA_HOME_ARG" ]]; then
+    return 0
+  fi
+  java_bin="$(command -v java 2>/dev/null || true)"
+  if [[ -z "$java_bin" ]]; then
+    return 0
+  fi
+  java_real="$(readlink -f -- "$java_bin" 2>/dev/null || true)"
+  if [[ -z "$java_real" ]]; then
+    java_real="$java_bin"
+  fi
+  JAVA_HOME_ARG="$(cd "$(dirname "$java_real")/.." && pwd -P)"
+  JAVA_HOME_SOURCE="PATH"
+}
+
+validate_java_17() {
+  local java_settings java_specification_version=""
+  local line
+
+  [[ -x "$JAVA_HOME_ARG/bin/java" && -x "$JAVA_HOME_ARG/bin/javac" ]] || {
+    echo "JDK 17 not found; pass --java-home, set JAVA_HOME, or put a JDK 17 java on PATH (resolved source=$JAVA_HOME_SOURCE path=$JAVA_HOME_ARG)" >&2
+    return 1
+  }
+  java_settings="$("$JAVA_HOME_ARG/bin/java" -XshowSettings:properties -version 2>&1)" || {
+    echo "Could not execute resolved JDK: $JAVA_HOME_ARG/bin/java" >&2
+    return 1
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      *"java.specification.version ="*)
+        java_specification_version="${line##*= }"
+        break
+        ;;
+    esac
+  done <<<"$java_settings"
+  [[ "$java_specification_version" == "17" ]] || {
+    echo "JDK 17 is required; resolved source=$JAVA_HOME_SOURCE path=$JAVA_HOME_ARG java.specification.version=${java_specification_version:-unknown}" >&2
+    return 1
+  }
+}
+
+verify_tensor_g3_native_receipt() {
+  local receipt_format=""
+  local receipt_variant=""
+  local receipt_artifact=""
+  local receipt_sha256=""
+  local key value
+  local canonical_artifact actual_sha256
+
+  [[ -s "$TENSOR_G3_NATIVE_RECEIPT" ]] || {
+    echo "Tensor G3 native fallback exists but has no build receipt: $TENSOR_G3_NATIVE_RECEIPT" >&2
+    return 1
+  }
+  while IFS='=' read -r key value; do
+    case "$key" in
+      format) receipt_format="$value" ;;
+      variant) receipt_variant="$value" ;;
+      artifact) receipt_artifact="$value" ;;
+      sha256) receipt_sha256="$value" ;;
+    esac
+  done <"$TENSOR_G3_NATIVE_RECEIPT"
+
+  canonical_artifact="$(realpath -e -- "$TENSOR_G3_NATIVE_AAR")" || return 1
+  [[ "$receipt_format" == "1" &&
+     "$receipt_variant" == "tensor-g3" &&
+     "$receipt_artifact" == "$canonical_artifact" &&
+     "$receipt_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "Tensor G3 native fallback receipt is invalid: $TENSOR_G3_NATIVE_RECEIPT" >&2
+    return 1
+  }
+  actual_sha256="$(sha256sum "$canonical_artifact" | cut -d ' ' -f 1)"
+  [[ "$actual_sha256" == "$receipt_sha256" ]] || {
+    echo "Tensor G3 native fallback changed after its receipt was written: $canonical_artifact" >&2
+    return 1
+  }
+}
+
+resolve_tensor_g3_aar() {
+  if [[ "$VARIANT" != "all" && "$VARIANT" != "tensor-g3" ]]; then
+    return 0
+  fi
+  if [[ "$RELEASE_CONSUMER" == "1" ]]; then
+    TENSOR_G3_AAR_SOURCE="release-manifest"
+  elif [[ -n "$TENSOR_G3_AAR" ]]; then
+    :
+  elif [[ -s "$TENSOR_G3_CANONICAL_AAR" ]]; then
+    TENSOR_G3_AAR="$TENSOR_G3_CANONICAL_AAR"
+    TENSOR_G3_AAR_SOURCE="canonical-published"
+  elif [[ -s "$TENSOR_G3_NATIVE_AAR" ]]; then
+    verify_tensor_g3_native_receipt || {
+      echo "Run build-android-accelerator.sh to publish the canonical Tensor G3 AAR, or pass an explicit --tensor-g3-aar." >&2
+      return 1
+    }
+    TENSOR_G3_AAR="$TENSOR_G3_NATIVE_AAR"
+    TENSOR_G3_AAR_SOURCE="receipt-backed-native"
+  else
+    TENSOR_G3_AAR="$TENSOR_G3_CANONICAL_AAR"
+    TENSOR_G3_AAR_SOURCE="missing"
+  fi
+  echo "Tensor G3 AAR input: source=$TENSOR_G3_AAR_SOURCE path=$TENSOR_G3_AAR"
+}
 
 remove_owned_build_directory() {
   local candidate="$1"
@@ -205,7 +323,7 @@ while [[ $# -gt 0 ]]; do
     --variant) VARIANT="${2:?missing value for --variant}"; shift 2 ;;
     --vulkan-aar) VULKAN_AAR="${2:?missing value for --vulkan-aar}"; AAR_OVERRIDE=1; shift 2 ;;
     --hexagon-aar) HEXAGON_AAR="${2:?missing value for --hexagon-aar}"; AAR_OVERRIDE=1; shift 2 ;;
-    --tensor-g3-aar) TENSOR_G3_AAR="${2:?missing value for --tensor-g3-aar}"; AAR_OVERRIDE=1; shift 2 ;;
+    --tensor-g3-aar) TENSOR_G3_AAR="${2:?missing value for --tensor-g3-aar}"; TENSOR_G3_AAR_SOURCE="command-line"; AAR_OVERRIDE=1; shift 2 ;;
     --tensor-g5-aar|--tensor-aar) TENSOR_G5_AAR="${2:?missing value for $1}"; AAR_OVERRIDE=1; shift 2 ;;
     --graph-library) GRAPH_LIBRARY="${2:?missing value for --graph-library}"; shift 2 ;;
     --sdx-llm-sdk) SDX_LLM_SDK="${2:?missing value for --sdx-llm-sdk}"; shift 2 ;;
@@ -215,7 +333,7 @@ while [[ $# -gt 0 ]]; do
     --jni-output) JNI_OUTPUT_DIR="${2:?missing value for --jni-output}"; shift 2 ;;
     --android-sdk) ANDROID_SDK="${2:?missing value for --android-sdk}"; shift 2 ;;
     --android-ndk) ANDROID_NDK_ARG="${2:?missing value for --android-ndk}"; shift 2 ;;
-    --java-home) JAVA_HOME_ARG="${2:?missing value for --java-home}"; shift 2 ;;
+    --java-home) JAVA_HOME_ARG="${2:?missing value for --java-home}"; JAVA_HOME_SOURCE="command-line"; shift 2 ;;
     --maven) MAVEN="${2:?missing value for --maven}"; shift 2 ;;
     --skip-maven) SKIP_MAVEN=1; shift ;;
     --maven-artifacts) MAVEN_ARTIFACTS=1; SKIP_MAVEN=1; shift ;;
@@ -293,7 +411,8 @@ fi
 
 [[ -d "$ANDROID_SDK" ]] || { echo "Android SDK not found: $ANDROID_SDK" >&2; exit 1; }
 [[ -d "$ANDROID_NDK_ARG" ]] || { echo "Android NDK not found: $ANDROID_NDK_ARG" >&2; exit 1; }
-[[ -x "$JAVA_HOME_ARG/bin/java" ]] || { echo "JDK not found: $JAVA_HOME_ARG" >&2; exit 1; }
+resolve_java_home
+validate_java_17
 if [[ "$SKIP_MAVEN" != "1" ]]; then
   command -v "$MAVEN" >/dev/null 2>&1 || [[ -x "$MAVEN" ]] || {
     echo "Maven executable not found: $MAVEN" >&2
@@ -368,7 +487,9 @@ if [[ "$RELEASE_CONSUMER" == "1" ]]; then
   [[ "$VARIANT" != "all" && "$VARIANT" != "tensor-g3" ]] || resolve_release_aar tensorG3 TENSOR_G3_AAR
   [[ "$VARIANT" != "all" && "$VARIANT" != "tensor-g5" ]] || resolve_release_aar tensorG5 TENSOR_G5_AAR
 fi
+resolve_tensor_g3_aar
 
+echo "Android packaging JDK: source=$JAVA_HOME_SOURCE path=$JAVA_HOME_ARG"
 export JAVA_HOME="$JAVA_HOME_ARG"
 export PATH="$JAVA_HOME/bin:$PATH"
 export ANDROID_HOME="$ANDROID_SDK"
@@ -439,7 +560,6 @@ done
 if [[ "$VARIANT" == "all" || "$VARIANT" == "vulkan" ]]; then
   [[ -s "$VULKAN_AAR" ]] || { echo "Vulkan AAR not found: $VULKAN_AAR" >&2; exit 1; }
   "$DL4J_ROOT/libnd4j/tools/mobile/verify-android-accelerator-aar.sh" \
-    --provider-payload-only \
     --aar "$VULKAN_AAR" \
     --variant vulkan \
     --native-library nd4jvulkan \
@@ -452,7 +572,6 @@ fi
 if [[ "$VARIANT" == "all" || "$VARIANT" == "hexagon" ]]; then
   [[ -s "$HEXAGON_AAR" ]] || { echo "Hexagon AAR not found: $HEXAGON_AAR" >&2; exit 1; }
   "$DL4J_ROOT/libnd4j/tools/mobile/verify-android-accelerator-aar.sh" \
-    --provider-payload-only \
     --aar "$HEXAGON_AAR" \
     --variant hexagon \
     --native-library nd4jhexagon \
@@ -463,13 +582,11 @@ fi
 if [[ "$VARIANT" == "all" || "$VARIANT" == "tensor-g3" ]]; then
   [[ -s "$TENSOR_G3_AAR" ]] || { echo "Tensor G3 AAR not found: $TENSOR_G3_AAR" >&2; exit 1; }
   "$DL4J_ROOT/libnd4j/tools/mobile/verify-android-accelerator-aar.sh" \
-    --provider-payload-only \
     --aar "$TENSOR_G3_AAR" \
     --variant tensor-g3 \
     --native-library nd4jnnapi \
     --accelerator NNAPI_ACCELERATOR_ONLY \
     --gpu-target AUTO \
-    --device-ready \
     --android-ndk "$ANDROID_NDK_ARG"
 fi
 
@@ -483,8 +600,11 @@ fi
 if [[ "$SKIP_MAVEN" != "1" ]]; then
   "$MAVEN" -o -f "$REPO_ROOT/pom.xml" -pl :kompile-graph-reasoning-local -am \
     install -DskipTests
+  # The core module is small and supplies the APK's public chat wire classes. Recreate it from
+  # source so Maven cannot republish stale IDE/ECJ error bytecode solely because target/classes is
+  # newer than its sources. This does not clean the graph AOT or native accelerator artifacts.
   "$MAVEN" -o -f "$REPO_ROOT/kompile-chat-local/pom.xml" \
-    -pl :kompile-chat-local-core -am install -DskipTests
+    -pl :kompile-chat-local-core -am clean install -DskipTests
 fi
 
 verify_apk() {

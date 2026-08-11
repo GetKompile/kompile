@@ -21,7 +21,6 @@ import ai.kompile.ocr.OcrResult;
 import ai.kompile.ocr.structured.ExtractedField;
 import ai.kompile.ocr.structured.FieldType;
 import com.fasterxml.jackson.databind.JsonNode;
-import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -99,7 +98,7 @@ public class LlmPostProcessor implements OcrPostProcessor {
     @Autowired
     public LlmPostProcessor(ChatModel chatModel) {
         this.chatModel = chatModel;
-        this.objectMapper = JsonUtils.standardMapper();
+        this.objectMapper = new ObjectMapper();
     }
 
     @Override

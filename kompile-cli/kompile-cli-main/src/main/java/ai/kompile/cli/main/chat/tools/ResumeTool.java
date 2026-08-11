@@ -748,6 +748,7 @@ public class ResumeTool implements CliTool {
         loadExternalConversations("codex", "codex");
         loadExternalConversations("qwen", "qwen");
         loadExternalConversations("gemini", "gemini");
+        loadExternalConversations("pi", "pi");
 
         // Deduplicate by canonical source/session identity. For harvested Kompile wrappers,
         // use the underlying native ID so repeated harvests collapse deterministically.
@@ -858,7 +859,7 @@ public class ResumeTool implements CliTool {
             return false;
         }
         return switch (normalizedAgent) {
-            case "claude", "codex", "gemini", "opencode", "qwen" -> true;
+            case "claude", "codex", "gemini", "opencode", "qwen", "pi" -> true;
             default -> false;
         };
     }
@@ -873,6 +874,25 @@ public class ResumeTool implements CliTool {
                 || normalized.startsWith("managed-")
                 || normalized.startsWith("enforcer-")
                 || normalized.startsWith("cli-");
+    }
+
+    /**
+     * Distinguish literal standard-chat transcripts from old cli-* passthrough
+     * wrappers. Standard chats have no underlying native-agent session and their
+     * recorded agent is a Kompile role (for example coder), not a CLI vendor.
+     */
+    static boolean isStandardKompileChatSession(String sessionId, String source,
+                                                 String agent, String nativeSessionId) {
+        if (sessionId == null || !sessionId.toLowerCase(Locale.ROOT).startsWith("cli-")
+                || !"kompile".equalsIgnoreCase(source)
+                || (nativeSessionId != null && !nativeSessionId.isBlank())) {
+            return false;
+        }
+        String normalizedAgent = agent == null ? "" : agent.trim().toLowerCase(Locale.ROOT);
+        return switch (normalizedAgent) {
+            case "claude", "codex", "gemini", "opencode", "qwen", "pi" -> false;
+            default -> true;
+        };
     }
 
     static boolean isResumableKompileSession(String sessionId) {
@@ -962,6 +982,7 @@ public class ResumeTool implements CliTool {
         if (lower.contains("gemini")) return "gemini";
         if (lower.contains("qwen")) return "qwen";
         if (lower.contains("opencode") || lower.contains("open-code")) return "opencode";
+        if (lower.equals("pi-cli") || lower.equals("pi") || lower.contains("pi-coding-agent")) return "pi";
         return lower;
     }
 
@@ -972,7 +993,7 @@ public class ResumeTool implements CliTool {
      */
     private void loadExternalConversations(String source, String agentName) {
         try {
-            if (Set.of("claude-code", "opencode", "codex").contains(source)) {
+            if (Set.of("claude-code", "opencode", "codex", "pi").contains(source)) {
                 loadAdapterConversations(source, agentName);
                 return;
             }
@@ -2105,9 +2126,15 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
 
             if (choice.trim().equals("1")) {
-                // Option 1: Resume normally — same agent, use native resume directly.
-                // For kompile-stored sessions the source is just "kompile"; the agent that
-                // actually ran the conversation is recorded on the summary (Agent: header).
+                String nativeSessionId = resolveUnderlyingNativeSessionId(sessionId, convoAgent);
+                if (isStandardKompileChatSession(sessionId, conversation.source(),
+                        convoAgent, nativeSessionId)) {
+                    launchStandardChatResume(sessionId);
+                    return;
+                }
+
+                // Native/passthrough session: resume with the same underlying CLI agent.
+                // For kompile-stored wrappers the original agent is recorded on the summary.
                 String sourceAgent = "kompile".equals(conversation.source()) && isKnownAgent(convoAgent)
                         ? convoAgent
                         : determineAgentFromSource(conversation.source());
@@ -2196,6 +2223,9 @@ public class ResumeTool implements CliTool {
                 return "qwen";
             case "opencode":
                 return "opencode";
+            case "pi":
+            case "pi-cli":
+                return "pi";
             default:
                 return "claude";
         }
@@ -2208,7 +2238,7 @@ public class ResumeTool implements CliTool {
     private boolean isKnownAgent(String agent) {
         if (agent == null) return false;
         return switch (agent) {
-            case "claude", "codex", "gemini", "qwen", "opencode" -> true;
+            case "claude", "codex", "gemini", "qwen", "opencode", "pi" -> true;
             default -> false;
         };
     }
@@ -2235,6 +2265,7 @@ public class ResumeTool implements CliTool {
             case "qwen" -> "qwen";
             case "opencode" -> "opencode";
             case "gemini" -> "gemini";
+            case "pi", "pi-cli" -> "pi";
             default -> null;
         };
         if (source == null) return null;
@@ -2309,6 +2340,11 @@ public class ResumeTool implements CliTool {
                 }
                 case "opencode" -> {
                     agentCommand.add("opencode");
+                    agentCommand.add("--session");
+                    agentCommand.add(nativeSessionId);
+                }
+                case "pi", "pi-cli" -> {
+                    agentCommand.add("pi");
                     agentCommand.add("--session");
                     agentCommand.add(nativeSessionId);
                 }
@@ -2424,6 +2460,46 @@ public class ResumeTool implements CliTool {
                 try { lineReader.readLine(); } catch (Exception ignored) {}
             } else {
                 System.err.println("Error launching agent: " + errorMsg);
+            }
+        }
+    }
+
+    /** Resume a literal Kompile standard-chat transcript in the standard REPL. */
+    private void launchStandardChatResume(String sessionId) {
+        boolean terminalClosed = false;
+        try {
+            terminal.writer().println(GREEN + "Resuming Kompile standard chat "
+                    + sessionId + "..." + RESET);
+            terminal.writer().flush();
+            terminal.close();
+            terminalClosed = true;
+
+            int exitCode = new picocli.CommandLine(new ai.kompile.cli.main.chat.ChatCommand())
+                    .execute("--resume", sessionId, "--mode", "standard");
+
+            Terminal newTerminal = TerminalBuilder.builder().system(true).build();
+            LineReader newLineReader = LineReaderBuilder.builder().terminal(newTerminal).build();
+            this.terminal = newTerminal;
+            this.lineReader = newLineReader;
+            terminalClosed = false;
+
+            newTerminal.writer().println();
+            newTerminal.writer().println(GREEN + "✓ Standard chat ended (exit code: "
+                    + exitCode + ")" + RESET);
+            newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
+            newTerminal.writer().flush();
+            try {
+                newLineReader.readLine();
+            } catch (UserInterruptException | EndOfFileException ignored) {
+            }
+        } catch (Exception e) {
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
+            if (restored) {
+                terminal.writer().println(RED + "Error resuming standard chat: " + errorMsg + RESET);
+                terminal.writer().flush();
+            } else {
+                System.err.println("Error resuming standard chat: " + errorMsg);
             }
         }
     }
@@ -2694,7 +2770,7 @@ public class ResumeTool implements CliTool {
         }
 
         IOException lastError = null;
-        for (String source : List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
+        for (String source : List.of("claude-code", "codex", "qwen", "opencode", "gemini", "pi")) {
             try {
                 List<ChatHistory.Turn> turns = reader.readExternalSession(source, sessionId);
                 if (turns == null || turns.isEmpty()) {
@@ -3316,6 +3392,19 @@ public class ResumeTool implements CliTool {
         // Add executable
         agentCommand.add(resumeParts[0]);
 
+        // Pi loads MCP support as an extension rather than from the working-directory
+        // config alone. Keep the extension argument before --session/other resume args.
+        if (ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
+            try {
+                agentCommand.addAll(ai.kompile.cli.main.chat.mcp.McpToolInjection.commandLineOverrides(
+                        exportResult.getWorkingDirectory() != null
+                                ? exportResult.getWorkingDirectory()
+                                : Path.of(System.getProperty("user.dir")), agent));
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Could not provision Pi MCP adapter", e);
+            }
+        }
+
         // For agents where bypass flags must come before the subcommand,
         // insert them here (after executable, before remaining parts)
         String agentKey = agent.toLowerCase();
@@ -3370,8 +3459,14 @@ public class ResumeTool implements CliTool {
             agentCommand.addAll(1, overrides);
             return null;
         }
-        return ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+        Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
                 workingDirectory, agent, sseUrl);
+        if (ai.kompile.cli.main.chat.mcp.PiMcpAdapterProvisioner.isPiAgent(agent)) {
+            List<String> overrides = ai.kompile.cli.main.chat.mcp.McpToolInjection
+                    .commandLineOverrides(workingDirectory, agent);
+            agentCommand.addAll(1, overrides);
+        }
+        return settingsFile;
     }
 
     private String resolveResumeMcpSseUrl(String agent) {

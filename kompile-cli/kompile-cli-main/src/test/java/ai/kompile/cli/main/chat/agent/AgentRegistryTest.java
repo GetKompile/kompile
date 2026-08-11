@@ -25,6 +25,7 @@ class AgentRegistryTest {
     @Test
     void testDefaultAgentsRegistered() {
         assertNotNull(registry.get("coder"));
+        assertNotNull(registry.get("crawler"));
         assertNotNull(registry.get("planner"));
         assertNotNull(registry.get("general"));
         assertNotNull(registry.get("explore-quick"));
@@ -59,6 +60,39 @@ class AgentRegistryTest {
         AgentConfig coder = registry.get("coder");
         assertNotNull(coder.getSystemPrompt());
         assertFalse(coder.getSystemPrompt().isEmpty());
+    }
+
+    // ========================================================================
+    // Crawler agent
+    // ========================================================================
+
+    @Test
+    void testCrawlerAgentOwnsIncrementalKnowledgeBaseLifecycle() {
+        AgentConfig crawler = registry.get("crawler");
+
+        assertAll(
+                () -> assertTrue(crawler.getEnabledTools().contains("crawl_discover")),
+                () -> assertTrue(crawler.getEnabledTools().contains("crawl_documents")),
+                () -> assertTrue(crawler.getEnabledTools().contains("crawl_source")),
+                () -> assertTrue(crawler.getEnabledTools().contains("crawl_control")),
+                () -> assertTrue(crawler.getEnabledTools().contains("local_code_index")),
+                () -> assertTrue(crawler.getEnabledTools().contains("code_graph")),
+                () -> assertTrue(crawler.getEnabledTools().contains("knowledge_graph")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_embeddings")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_reason")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_reasoning_query")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_import")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_export")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_search")),
+                () -> assertTrue(crawler.getEnabledTools().contains("graph_centrality")),
+                () -> assertTrue(crawler.getEnabledTools().contains("ask_graph_assert")),
+                () -> assertTrue(crawler.getEnabledTools().contains("ask_graph_retract")),
+                () -> assertTrue(crawler.getEnabledTools().contains("ask_graph_query")));
+        assertTrue(crawler.getSystemPrompt().contains("incremental"));
+        assertTrue(crawler.getSystemPrompt().contains("code_graph"));
+        assertTrue(crawler.getSystemPrompt().contains("TransE/RotatE"));
+        assertTrue(crawler.getSystemPrompt().contains("learned models"));
+        assertTrue(crawler.getSystemPrompt().contains(".kgraph"));
     }
 
     // ========================================================================

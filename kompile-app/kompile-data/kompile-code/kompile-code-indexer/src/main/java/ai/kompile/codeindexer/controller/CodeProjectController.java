@@ -113,6 +113,7 @@ public class CodeProjectController {
                 .includePatterns((String) request.get("includePatterns"))
                 .excludePatterns((String) request.get("excludePatterns"))
                 .autoIndex(Boolean.TRUE.equals(request.get("autoIndex")))
+                .factSheetId(longValue(request.get("factSheetId")))
                 .build();
 
         project = projectRepository.save(project);
@@ -155,6 +156,7 @@ public class CodeProjectController {
                     if (request.containsKey("autoIndex")) project.setAutoIndex(Boolean.TRUE.equals(request.get("autoIndex")));
                     if (request.containsKey("includePatterns")) project.setIncludePatterns((String) request.get("includePatterns"));
                     if (request.containsKey("excludePatterns")) project.setExcludePatterns((String) request.get("excludePatterns"));
+                    if (request.containsKey("factSheetId")) project.setFactSheetId(longValue(request.get("factSheetId")));
                     projectRepository.save(project);
                     return ResponseEntity.ok(projectToDetail(project));
                 })
@@ -166,6 +168,7 @@ public class CodeProjectController {
     public ResponseEntity<?> deleteProject(@PathVariable String projectId) {
         return projectRepository.findByProjectId(projectId)
                 .<ResponseEntity<?>>map(project -> {
+                    indexer.pruneProjectGraph(projectId);
                     entityRepository.deleteByProjectId(projectId);
                     relationRepository.deleteByProjectId(projectId);
                     fingerprintRepository.deleteByProjectId(projectId);
@@ -206,6 +209,10 @@ public class CodeProjectController {
         Optional<CodeProject> existing = projectRepository.findByProjectId(projectId);
         if (existing.isPresent()) {
             CodeProject project = existing.get();
+            if (request.containsKey("factSheetId")) {
+                project.setFactSheetId(longValue(request.get("factSheetId")));
+                projectRepository.save(project);
+            }
             // Ensure the directory is registered
             ensureDirectoryRegistered(project.getProjectId(), directory);
             return ResponseEntity.ok(projectToDetail(project));
@@ -219,6 +226,7 @@ public class CodeProjectController {
                 .color("#4caf50")
                 .icon("code")
                 .autoIndex(Boolean.TRUE.equals(request.get("autoIndex")))
+                .factSheetId(longValue(request.get("factSheetId")))
                 .build();
         project = projectRepository.save(project);
 
@@ -404,12 +412,23 @@ public class CodeProjectController {
         map.put("lastIndexedAt", p.getLastIndexedAt() != null ? p.getLastIndexedAt().toString() : null);
         map.put("tags", p.getTags());
         map.put("autoIndex", p.getAutoIndex());
+        map.put("factSheetId", p.getFactSheetId());
 
         // Directory count
         long dirCount = directoryRepository.countByProjectId(p.getProjectId());
         map.put("directoryCount", dirCount);
 
         return map;
+    }
+
+    private Long longValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        return Long.valueOf(value.toString());
     }
 
     private Map<String, Object> projectToDetail(CodeProject p) {

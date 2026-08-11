@@ -49,7 +49,8 @@ class OAuthConnectionServiceTest {
         when(googleHandler.isConfigured()).thenReturn(true);
 
         List<OAuthProviderHandler> handlers = List.of(googleHandler);
-        service = new OAuthConnectionService(connectionRepository, encryptionService, handlers);
+        service = new OAuthConnectionService(
+                connectionRepository, stateRepository, encryptionService, handlers);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -442,7 +443,7 @@ class OAuthConnectionServiceTest {
         @DisplayName("should work with null handler list")
         void nullHandlers() {
             OAuthConnectionService svc = new OAuthConnectionService(
-                    connectionRepository, encryptionService, null);
+                    connectionRepository, stateRepository, encryptionService, null);
             assertTrue(svc.getAvailableProviders().isEmpty());
         }
 
@@ -450,7 +451,7 @@ class OAuthConnectionServiceTest {
         @DisplayName("should work with empty handler list")
         void emptyHandlers() {
             OAuthConnectionService svc = new OAuthConnectionService(
-                    connectionRepository, encryptionService, List.of());
+                    connectionRepository, stateRepository, encryptionService, List.of());
             assertTrue(svc.getAvailableProviders().isEmpty());
         }
     }

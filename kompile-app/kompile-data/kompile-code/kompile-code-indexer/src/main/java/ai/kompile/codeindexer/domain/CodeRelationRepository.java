@@ -54,6 +54,9 @@ public interface CodeRelationRepository extends JpaRepository<CodeRelation, UUID
     @Query("SELECT r FROM CodeRelation r WHERE r.projectId = :projectId AND r.targetFqn = :fqn")
     List<CodeRelation> findByProjectIdAndTargetFqn(@Param("projectId") String projectId, @Param("fqn") String fqn);
 
+    /** Find incoming relations whose targets were replaced by an incremental reindex. */
+    List<CodeRelation> findByProjectIdAndTargetFqnIn(String projectId, Set<String> targetFqns);
+
     /** Find all relations whose target FQN matches with a specific relation type. */
     @Query("SELECT r FROM CodeRelation r WHERE r.projectId = :projectId AND r.targetFqn = :fqn AND r.relationType = :type")
     List<CodeRelation> findByProjectIdAndTargetFqnAndRelationType(

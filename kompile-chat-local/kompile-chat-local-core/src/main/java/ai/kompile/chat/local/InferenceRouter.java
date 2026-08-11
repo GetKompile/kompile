@@ -71,6 +71,11 @@ public final class InferenceRouter {
         return active().generate(messages, opts);
     }
 
+    /** Route one provider-neutral structured chat request. */
+    public ChatResponse generate(ChatRequest request, GenOptions opts) throws ChatException {
+        return active().generate(request, opts);
+    }
+
     /**
      * Return {@code true} if the local SDX model is the active backend.
      *

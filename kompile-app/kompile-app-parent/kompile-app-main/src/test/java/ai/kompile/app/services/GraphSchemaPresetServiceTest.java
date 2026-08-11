@@ -59,7 +59,7 @@ class GraphSchemaPresetServiceTest {
         PresetEntry preset = service.getPreset("fpna-cpg-channel-v1").orElseThrow();
         GraphSchema schema = preset.schema;
 
-        assertEquals(2, preset.version);
+        assertEquals(3, preset.version);
         assertTrue(schema.getAllNodeLabels().containsAll(List.of(
                 "PERSON", "APPROVAL_ROLE", "ORGANIZATION", "SPREADSHEET", "SHEET",
                 "PROCESS", "KNOWLEDGE_GRAPH", "CURRENCY_REGISTRY", "FX_FORWARD_CURVE",

@@ -20,9 +20,11 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
+import ai.kompile.cli.main.chat.agent.AgentRunController;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
@@ -89,7 +91,18 @@ public final class HeadlessAgentRunner {
             OutputMode outputMode,
             Path workingDirectory,
             long timeoutMs,
-            Path outputLastMessage) {}
+            Path outputLastMessage,
+            String crawlBaseUrl,
+            AgentRunController runController) {
+
+        /** Backward-compatible options used by the general {@code kompile exec} command. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, null, null);
+        }
+    }
 
     /** Run outcome. {@code exitCode} 0 = ok, 124 = timed out, 1 = error. */
     public record Result(int exitCode, String text, String sessionId) {}
@@ -131,11 +144,19 @@ public final class HeadlessAgentRunner {
                 opts.sessionId(), opts.workingDirectory());
         TerminalRenderer renderer = new TerminalRenderer();
         ToolRegistry toolRegistry = ToolRegistryFactory.create(
-                mapper, "", agentRegistry, permissionService, renderer, processManager, config, null);
+                mapper, "", agentRegistry, permissionService, renderer, processManager,
+                config, null, opts.crawlBaseUrl());
+        // Offline describes the transport topology, not a reduced capability set.
+        // Load the same workspace MCP bundles (including Kompile stdio) as normal direct execution.
+        McpBundleToolLoader mcpBundleTools =
+                McpBundleToolLoader.load(opts.workingDirectory(), toolRegistry);
 
         AgenticChatLoop loop = new AgenticChatLoop(
                 null, mapper, toolRegistry, permissionService, agentRegistry,
                 opts.workingDirectory(), directClient, processManager);
+        if (opts.runController() != null) {
+            loop.setRunController(opts.runController());
+        }
 
         // ── Metrics (JSON mode also emits a tool event per call) ────────────
         final ToolEventCounter toolCounter = new ToolEventCounter();
@@ -204,6 +225,9 @@ public final class HeadlessAgentRunner {
             }
         } finally {
             System.setOut(realOut);
+            if (mcpBundleTools != null) {
+                mcpBundleTools.close();
+            }
         }
         if (response == null) {
             response = "";

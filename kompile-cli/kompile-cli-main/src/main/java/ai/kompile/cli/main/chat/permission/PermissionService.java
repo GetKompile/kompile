@@ -20,6 +20,10 @@ import ai.kompile.cli.main.chat.agent.AgentConfig;
 
 import java.io.Console;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.function.Consumer;
 
 /**
  * Three-tier permission system comparable to OpenCode's permission model.
@@ -38,14 +42,26 @@ public class PermissionService {
     }
 
     /** Permissions that have been permanently allowed for this session. */
-    private final Set<String> sessionAllowed = new HashSet<>();
+    private final Set<String> sessionAllowed = ConcurrentHashMap.newKeySet();
     /** Permissions that have been permanently denied for this session. */
-    private final Set<String> sessionDenied = new HashSet<>();
+    private final Set<String> sessionDenied = ConcurrentHashMap.newKeySet();
     /** When true, all permission checks return ALLOWED without prompting. */
     private volatile boolean autoApproveAll = false;
 
+    /**
+     * Prompt requests produced by background tool execution. The JLine thread owns
+     * terminal input, so it consumes the user's next line and completes the oldest
+     * request instead of letting a model thread read System.in concurrently.
+     */
+    private final Queue<PendingPrompt> pendingPrompts = new ConcurrentLinkedQueue<>();
+    private volatile Consumer<PermissionPrompt> promptListener;
+
     private final Map<String, PermissionLevel> defaults;
     private final Map<String, PermissionLevel> userOverrides;
+
+    public record PermissionPrompt(String permissionKey, String description) {}
+
+    private record PendingPrompt(PermissionPrompt prompt, CompletableFuture<String> response) {}
 
     public enum PermissionLevel {
         ALLOW, DENY, ASK
@@ -53,7 +69,7 @@ public class PermissionService {
 
     public PermissionService() {
         this.defaults = buildDefaults();
-        this.userOverrides = new HashMap<>();
+        this.userOverrides = new ConcurrentHashMap<>();
     }
 
     private static Map<String, PermissionLevel> buildDefaults() {
@@ -67,6 +83,8 @@ public class PermissionService {
         d.put("todowrite", PermissionLevel.ALLOW);
         d.put("webfetch", PermissionLevel.ALLOW);
         d.put("websearch", PermissionLevel.ALLOW);
+        d.put("crawl_discover", PermissionLevel.ALLOW);
+        d.put("knowledge_status", PermissionLevel.ALLOW);
 
         // File modification requires asking
         d.put("edit", PermissionLevel.ASK);
@@ -91,8 +109,61 @@ public class PermissionService {
     /**
      * Set a user-level permission override.
      */
-    public void setUserOverride(String key, PermissionLevel level) {
+    public synchronized void setUserOverride(String key, PermissionLevel level) {
+        autoApproveAll = false;
+        sessionAllowed.remove(key);
+        sessionDenied.remove(key);
         userOverrides.put(key, level);
+    }
+
+    /** Return the effective level shown by the interactive permission manager. */
+    public PermissionLevel getEffectiveLevel(AgentConfig agent, String permissionKey) {
+        if (autoApproveAll || sessionAllowed.contains(permissionKey)) {
+            return PermissionLevel.ALLOW;
+        }
+        if (sessionDenied.contains(permissionKey)) {
+            return PermissionLevel.DENY;
+        }
+        return resolve(agent, permissionKey);
+    }
+
+    /** Install the asynchronous REPL prompt bridge. Null restores console input. */
+    public void setPromptListener(Consumer<PermissionPrompt> promptListener) {
+        this.promptListener = promptListener;
+    }
+
+    /** True while a background tool is waiting for a permission answer. */
+    public boolean hasPendingPrompt() {
+        return !pendingPrompts.isEmpty();
+    }
+
+    /**
+     * Route one JLine input line to the oldest permission request. Returns false
+     * when no request is pending, allowing the line to continue as normal chat.
+     */
+    public boolean submitPromptResponse(String response) {
+        PendingPrompt pending = pendingPrompts.poll();
+        if (pending == null) {
+            return false;
+        }
+        pending.response().complete(response);
+        return true;
+    }
+
+    /** Unblock any tool threads when the REPL is shutting down. */
+    public void cancelPendingPrompts() {
+        PendingPrompt pending;
+        while ((pending = pendingPrompts.poll()) != null) {
+            pending.response().complete(null);
+        }
+    }
+
+    /** Clear all session permission choices and return to configured defaults. */
+    public synchronized void resetSessionOverrides() {
+        autoApproveAll = false;
+        sessionAllowed.clear();
+        sessionDenied.clear();
+        userOverrides.clear();
     }
 
     /**
@@ -161,62 +232,76 @@ public class PermissionService {
     }
 
     private PermissionResult askUser(String permissionKey, String description) {
+        Consumer<PermissionPrompt> listener = promptListener;
+        String input;
+        if (listener != null) {
+            CompletableFuture<String> response = new CompletableFuture<>();
+            PendingPrompt pending = new PendingPrompt(
+                    new PermissionPrompt(permissionKey, description), response);
+            pendingPrompts.add(pending);
+            try {
+                listener.accept(pending.prompt());
+                input = response.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                pendingPrompts.remove(pending);
+                return PermissionResult.DENIED;
+            } catch (Exception e) {
+                pendingPrompts.remove(pending);
+                return PermissionResult.DENIED;
+            }
+        } else {
+            input = readConsoleResponse(permissionKey, description);
+        }
+        return applyResponse(permissionKey, input);
+    }
+
+    private String readConsoleResponse(String permissionKey, String description) {
         System.out.println();
         System.out.println("Permission required: " + permissionKey);
         if (description != null && !description.isEmpty()) {
             System.out.println("  " + description);
         }
-        System.out.print("Allow? [y]es / [n]o / [a]lways / ne[v]er: ");
+        System.out.print("Allow? [y]es / [n]o / [a]llow session / ne[v]er this session: ");
         System.out.flush();
 
         Console console = System.console();
-        String input;
         if (console != null) {
-            input = console.readLine();
-        } else {
-            try {
-                // Fallback for non-console environments
-                byte[] buf = new byte[64];
-                int len = System.in.read(buf);
-                if (len <= 0) return PermissionResult.DENIED;
-                input = new String(buf, 0, len).trim();
-            } catch (Exception e) {
-                return PermissionResult.DENIED;
-            }
+            return console.readLine();
         }
+        try {
+            byte[] buf = new byte[64];
+            int len = System.in.read(buf);
+            return len <= 0 ? null : new String(buf, 0, len).trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
+    private PermissionResult applyResponse(String permissionKey, String input) {
         if (input == null) {
             return PermissionResult.DENIED;
         }
-
-        input = input.trim().toLowerCase();
-        switch (input) {
-            case "y":
-            case "yes":
-                return PermissionResult.ASKED_AND_ALLOWED;
-            case "a":
-            case "always":
+        return switch (input.trim().toLowerCase(Locale.ROOT)) {
+            case "y", "yes", "allow", "once", "allow-once" ->
+                    PermissionResult.ASKED_AND_ALLOWED;
+            case "a", "always", "allow-session", "session" -> {
                 sessionAllowed.add(permissionKey);
-                System.out.println("  (allowed for this session)");
-                return PermissionResult.ASKED_AND_ALLOWED;
-            case "v":
-            case "never":
+                yield PermissionResult.ASKED_AND_ALLOWED;
+            }
+            case "v", "never", "deny-session" -> {
                 sessionDenied.add(permissionKey);
-                System.out.println("  (denied for this session)");
-                return PermissionResult.DENIED;
-            case "n":
-            case "no":
-            default:
-                return PermissionResult.ASKED_AND_DENIED;
-        }
+                yield PermissionResult.DENIED;
+            }
+            case "n", "no", "deny", "deny-once" -> PermissionResult.ASKED_AND_DENIED;
+            default -> PermissionResult.ASKED_AND_DENIED;
+        };
     }
 
     /**
      * Allow all permissions without prompting (e.g. for --yes-all mode).
      */
     public void allowAll() {
-        for (String key : defaults.keySet()) {
-            sessionAllowed.add(key);
-        }
+        autoApproveAll = true;
     }
 }

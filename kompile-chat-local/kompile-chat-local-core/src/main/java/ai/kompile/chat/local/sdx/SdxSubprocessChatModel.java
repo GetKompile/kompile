@@ -2,15 +2,15 @@ package ai.kompile.chat.local.sdx;
 
 import ai.kompile.chat.local.ChatException;
 import ai.kompile.chat.local.ChatModel;
+import ai.kompile.chat.local.ChatRequest;
+import ai.kompile.chat.local.ChatResponse;
 import ai.kompile.chat.local.GenOptions;
-import ai.kompile.chat.local.Message;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -23,18 +23,16 @@ import java.util.concurrent.TimeUnit;
  * same ND4J native resources, causing an {@code ExceptionInInitializerError} on load).</p>
  *
  * <h2>Subprocess approach</h2>
- * <p>Each call to {@link #generate} writes the formatted prompt to a temp file, invokes:
+ * <p>Each call to {@link #generate} writes a structured request to a temp file, invokes:
  * <pre>
- *   sdx-llm generate \
+ *   sdx-llm chat \
  *     --model &lt;modelPath&gt; \
  *     --tokenizer &lt;tokenizerPath&gt; \
- *     --prompt-file &lt;tmpFile&gt; \
+ *     --request-file &lt;tmpFile&gt; \
  *     --max-new-tokens &lt;n&gt; \
- *     [--greedy | --temperature &lt;t&gt;] \
- *     --stats
+ *     [--greedy | --temperature &lt;t&gt;]
  * </pre>
- * then collects stdout (generated text + stats JSON on stderr) and returns the trimmed
- * output up to the first EOS marker ({@code <|im_end|>} or similar).</p>
+ * then consumes the canonical structured result emitted by SameDiff/SDX.</p>
  *
  * <h2>Library path</h2>
  * <p>The {@code sdx-llm} binary side-loads native libraries from {@code ../lib} relative
@@ -46,10 +44,8 @@ import java.util.concurrent.TimeUnit;
  * <h2>Model formats</h2>
  * <ul>
  *   <li>{@code .gguf fp16} — works.</li>
- *   <li>{@code .gguf q4_k_m} — works (Q5_0/Q5_1 dequantization fixed 2026-07-12;
- *       requires a sidecar {@code tokenizer.json} alongside the model file so that
- *       ChatML special tokens like {@code <|im_start|>} are tokenized atomically — the
- *       GGUF-embedded tokenizer path misses special tokens).</li>
+   *   <li>{@code .gguf q4_k_m} — supported through the same imported tokenizer metadata
+   *       and structured chat path as other GGUF variants.</li>
  *   <li>{@code .sdz} — pre-imported SDX native format; same results as GGUF equivalents.</li>
  * </ul>
  */
@@ -82,7 +78,7 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
         this.sdxLibDir = sdxLibDir;
         this.modelPath = modelPath;
         this.tokenizerPath = tokenizerPath;
-        this.template = SdxChatModel.ChatTemplate.sniff(new File(modelPath).getName());
+        this.template = SdxChatModel.ChatTemplate.MODEL_OWNED;
         this.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 120;
     }
 
@@ -114,50 +110,23 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
     }
 
     @Override
-    public String generate(List<Message> messages, GenOptions opts) throws ChatException {
+    public ChatResponse generate(ChatRequest request, GenOptions opts) throws ChatException {
         if (!isAvailable()) {
             throw new ChatException("SdxSubprocessChatModel not available: binary="
                     + sdxBinPath + ", model=" + modelPath);
         }
 
-        // Build prompt using the same template logic as the JNA model
-        String basePrompt = SdxChatModel.buildPrompt(messages, template);
-
-        // Determine whether to inject the tool-call JSON pre-fill.
-        // We inject ONLY when:
-        //   1. The last message is NOT a tool_result (would mean we want a synthesis/answer)
-        //   2. There is no tool_result anywhere in the history (if there IS one, we're in
-        //      the "answer after tool" phase and want free-text synthesis, not another JSON)
-        //   3. The history only contains system + user messages (i.e. first call, not synthesis)
-        //      Synthesis is triggered by the special "Please synthesize..." user message added
-        //      by ChatEngine after maxToolRounds hit — detect it by the synthesis marker.
-        // For templates that don't support structured completion, skip pre-fill.
-        boolean lastIsToolResult = !messages.isEmpty()
-                && "tool_result".equals(messages.get(messages.size() - 1).role());
-        boolean anyToolResult = messages.stream()
-                .anyMatch(m -> "tool_result".equals(m.role()));
-        boolean lastIsSynthesisRequest = !messages.isEmpty()
-                && messages.get(messages.size() - 1).content() != null
-                && messages.get(messages.size() - 1).content().startsWith("Please synthesize");
-        boolean hasPrefill = !lastIsToolResult
-                && !anyToolResult
-                && !lastIsSynthesisRequest
-                && (template == SdxChatModel.ChatTemplate.CHATML_IM
-                    || template == SdxChatModel.ChatTemplate.GENERIC_PIPE
-                    || template == SdxChatModel.ChatTemplate.PLAIN);
-        String prompt = hasPrefill ? basePrompt + SdxChatModel.TOOL_PREFILL : basePrompt;
-
-        // Write prompt to a temp file (avoids all shell quoting / newline-collapse issues)
-        Path promptFile;
+        // Write the provider-neutral request to a temp file.
+        Path requestFile;
         try {
-            promptFile = Files.createTempFile("sdx_prompt_", ".txt");
-            Files.writeString(promptFile, prompt, StandardCharsets.UTF_8);
+            requestFile = Files.createTempFile("sdx_chat_request_", ".json");
+            Files.writeString(requestFile, request.toJson(), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new ChatException("Failed to write prompt temp file: " + e.getMessage());
+            throw new ChatException("Failed to write chat request temp file: " + e.getMessage());
         }
 
         try {
-            List<String> cmd = buildCommand(promptFile, opts, hasPrefill);
+            List<String> cmd = buildCommand(requestFile, opts);
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.environment().put("LD_LIBRARY_PATH", resolveLibPath());
             pb.redirectErrorStream(false); // stdout = text; stderr = stats + logs
@@ -183,7 +152,7 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
             errDrain.setDaemon(true);
             errDrain.start();
 
-            // Read stdout (generated text)
+            // Read stdout (one canonical structured chat result)
             StringBuilder stdout = new StringBuilder();
             try (BufferedReader r = new BufferedReader(
                     new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
@@ -217,19 +186,11 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
                 throw new ChatException("sdx-llm exited with " + exit + ": " + errSummary);
             }
 
-            // Strip EOS tokens and trailing whitespace from output
-            String text = stripEosTokens(stdout.toString()).trim();
-
-            // Restore the pre-fill prefix so the caller sees the complete JSON object.
-            // The prompt ended with {"tool": " — sdx-llm continued from there.
-            if (hasPrefill && !text.startsWith("{")) {
-                text = SdxChatModel.TOOL_PREFILL + text;
-            }
-            return text;
+            return ChatResponse.fromStructuredJson(stdout.toString().trim());
 
         } finally {
             try {
-                Files.deleteIfExists(promptFile);
+                Files.deleteIfExists(requestFile);
             } catch (IOException ignored) {}
         }
     }
@@ -240,45 +201,26 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private List<String> buildCommand(Path promptFile, GenOptions opts, boolean toolCallMode) {
+    private List<String> buildCommand(Path requestFile, GenOptions opts) {
         List<String> cmd = new ArrayList<>();
         cmd.add(sdxBinPath);
-        cmd.add("generate");
+        cmd.add("chat");
         cmd.add("--model");
         cmd.add(modelPath);
         if (tokenizerPath != null) {
             cmd.add("--tokenizer");
             cmd.add(tokenizerPath);
         }
-        cmd.add("--prompt-file");
-        cmd.add(promptFile.toAbsolutePath().toString());
+        cmd.add("--request-file");
+        cmd.add(requestFile.toAbsolutePath().toString());
         cmd.add("--max-new-tokens");
-        // Tool call mode: cap at 256 — a tool-call JSON object is always short.
-        // Answer mode: use the caller's configured max (default 1024).
-        int maxTokens = toolCallMode ? Math.min(opts.maxTokens(), 256) : opts.maxTokens();
-        cmd.add(String.valueOf(Math.max(1, maxTokens)));
-        // Tool call mode: use low-temperature sampling (not greedy) to avoid degenerate
-        // repetition loops on 1–2B instruct models with structured JSON output.
-        // Greedy decode causes "1 1 1 1..." loops; T=0.2, top-k=10 gives consistent JSON.
-        // Answer mode: use the caller's configured temperature (default 0.7).
-        if (toolCallMode) {
-            cmd.add("--temperature");
-            cmd.add("0.2");
-            cmd.add("--top-k");
-            cmd.add("10");
-            cmd.add("--repetition-penalty");
-            cmd.add("1.1");
-        } else if (opts.temperature() < 1e-6) {
+        cmd.add(String.valueOf(Math.max(1, opts.maxTokens())));
+        if (opts.temperature() < 1e-6) {
             cmd.add("--greedy");
         } else {
             cmd.add("--temperature");
             cmd.add(String.valueOf(opts.temperature()));
-            if (opts.temperature() > 0.0) {
-                cmd.add("--repetition-penalty");
-                cmd.add("1.1");
-            }
         }
-        cmd.add("--stats");
         return cmd;
     }
 
@@ -304,19 +246,4 @@ public final class SdxSubprocessChatModel implements ChatModel, Closeable {
         return String.join(File.pathSeparator, parts);
     }
 
-    /**
-     * Strip EOS / turn-end tokens from generated text.
-     * The models emit {@code <|im_end|>} (ChatML), {@code </s>} (LLaMA-style), etc.
-     * Strip them so callers see only the assistant's answer text.
-     */
-    static String stripEosTokens(String text) {
-        if (text == null) return "";
-        // Remove known EOS markers
-        return text
-                .replace("<|im_end|>", "")
-                .replace("<|endoftext|>", "")
-                .replace("</s>", "")
-                .replace("<|eot_id|>", "")
-                .trim();
-    }
 }

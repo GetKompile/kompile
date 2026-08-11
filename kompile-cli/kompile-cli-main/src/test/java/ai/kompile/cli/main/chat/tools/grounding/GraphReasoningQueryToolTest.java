@@ -181,16 +181,17 @@ class GraphReasoningQueryToolTest {
     class BackendUnavailable {
 
         @Test
-        @DisplayName("null baseUrl → error before HTTP call")
-        void nullBaseUrl_returnsError() throws Exception {
+        @DisplayName("null baseUrl selects project-local graph backend")
+        void nullBaseUrl_usesProjectLocalBackend() throws Exception {
             GraphReasoningQueryTool tool = new GraphReasoningQueryTool((String) null, om);
             ObjectNode params = om.createObjectNode();
             params.put("operation", "CAPABILITIES");
 
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when backend unavailable");
-            assertTrue(result.getOutput().contains("kompile-app"),
-                    "Error must mention kompile-app; was: " + result.getOutput());
+            assertTrue(result.isError(), "Expected error when no local graph exists");
+            assertTrue(result.getOutput().contains("graph_reasoning_query local error"));
+            assertTrue(result.getOutput().contains("project-local"),
+                    "Error must mention the project-local graph; was: " + result.getOutput());
         }
 
         @Test

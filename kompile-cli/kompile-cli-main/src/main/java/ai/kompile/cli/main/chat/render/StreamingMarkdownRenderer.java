@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.render;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 /**
  * Incremental markdown renderer for streaming LLM output.
@@ -35,6 +36,7 @@ public class StreamingMarkdownRenderer {
 
     private final AsciiRenderer ascii;
     private final TerminalRenderer term;
+    private final Consumer<String> linePrinter;
 
     // Line buffer — accumulates tokens until a newline arrives
     private final StringBuilder lineBuffer = new StringBuilder();
@@ -57,8 +59,18 @@ public class StreamingMarkdownRenderer {
     private static final Pattern HR_PATTERN = Pattern.compile("^([-*_])\\1{2,}\\s*$");
 
     public StreamingMarkdownRenderer(AsciiRenderer ascii) {
+        this(ascii, line -> System.out.println(line));
+    }
+
+    /**
+     * Create a streaming renderer with a caller-owned complete-line sink.
+     * Interactive REPLs use this to route asynchronous model output through
+     * JLine's {@code printAbove} path without corrupting the active input buffer.
+     */
+    public StreamingMarkdownRenderer(AsciiRenderer ascii, Consumer<String> linePrinter) {
         this.ascii = ascii;
         this.term = ascii.getTerminalRenderer();
+        this.linePrinter = linePrinter != null ? linePrinter : line -> System.out.println(line);
     }
 
     /**
@@ -93,24 +105,22 @@ public class StreamingMarkdownRenderer {
                 // Unclosed code block — render what we have
                 if (codeBuffer.length() > 0) codeBuffer.append("\n");
                 codeBuffer.append(line);
-                System.out.println(ascii.renderCodeBlock(
+                printLine(ascii.renderCodeBlock(
                         codeBuffer.toString().stripTrailing(), codeBlockLang));
                 codeBuffer.setLength(0);
                 inCodeBlock = false;
                 codeBlockLang = null;
             } else {
                 // Partial line — render with inline formatting
-                System.out.print(renderInline(line));
+                printLine(renderInline(line));
             }
-            System.out.flush();
         } else if (inCodeBlock && codeBuffer.length() > 0) {
             // Unclosed code block at end of stream
-            System.out.println(ascii.renderCodeBlock(
+            printLine(ascii.renderCodeBlock(
                     codeBuffer.toString().stripTrailing(), codeBlockLang));
             codeBuffer.setLength(0);
             inCodeBlock = false;
             codeBlockLang = null;
-            System.out.flush();
         }
     }
 
@@ -131,9 +141,8 @@ public class StreamingMarkdownRenderer {
         if (line.startsWith("```")) {
             if (inCodeBlock) {
                 // End code block — render the entire block
-                System.out.println(ascii.renderCodeBlock(
+                printLine(ascii.renderCodeBlock(
                         codeBuffer.toString().stripTrailing(), codeBlockLang));
-                System.out.flush();
                 codeBuffer.setLength(0);
                 inCodeBlock = false;
                 codeBlockLang = null;
@@ -154,8 +163,7 @@ public class StreamingMarkdownRenderer {
 
         // Horizontal rule
         if (HR_PATTERN.matcher(line).matches()) {
-            System.out.println(ascii.horizontalRule());
-            System.out.flush();
+            printLine(ascii.horizontalRule());
             return;
         }
 
@@ -164,8 +172,7 @@ public class StreamingMarkdownRenderer {
         if (headingMatcher.matches()) {
             int level = headingMatcher.group(1).length();
             String text = headingMatcher.group(2);
-            System.out.println(renderHeading(text, level));
-            System.out.flush();
+            printLine(renderHeading(text, level));
             return;
         }
 
@@ -174,8 +181,7 @@ public class StreamingMarkdownRenderer {
         if (quoteMatcher.matches()) {
             String quoteText = quoteMatcher.group(1);
             String bar = term.dim(term.cyan("│"));
-            System.out.println(bar + " " + term.dim(renderInline(quoteText)));
-            System.out.flush();
+            printLine(bar + " " + term.dim(renderInline(quoteText)));
             return;
         }
 
@@ -188,8 +194,7 @@ public class StreamingMarkdownRenderer {
             String[] bullets = {"●", "○", "▪", "▫"};
             String sym = bullets[Math.min(depth, bullets.length - 1)];
             String bullet = term.dim("  " + indent) + term.cyan(sym) + " ";
-            System.out.println(bullet + renderInline(text));
-            System.out.flush();
+            printLine(bullet + renderInline(text));
             return;
         }
 
@@ -200,21 +205,22 @@ public class StreamingMarkdownRenderer {
             String number = olMatcher.group(2);
             String text = olMatcher.group(3);
             String bullet = term.dim("  " + indent) + term.cyan(number + ".") + " ";
-            System.out.println(bullet + renderInline(text));
-            System.out.flush();
+            printLine(bullet + renderInline(text));
             return;
         }
 
         // Empty line
         if (line.isEmpty()) {
-            System.out.println();
-            System.out.flush();
+            printLine("");
             return;
         }
 
         // Regular text — apply inline formatting
-        System.out.println(renderInline(line));
-        System.out.flush();
+        printLine(renderInline(line));
+    }
+
+    private void printLine(String line) {
+        linePrinter.accept(line == null ? "" : line);
     }
 
     // ── Inline formatting ────────────────────────────────────────────────

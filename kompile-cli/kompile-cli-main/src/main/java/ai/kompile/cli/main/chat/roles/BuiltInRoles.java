@@ -58,37 +58,23 @@ public class BuiltInRoles {
             .name("architect")
             .displayName("Software Architect")
             .category("development")
-            .description("System design and architecture planning, read-only access to codebase")
+            .description("System design, architecture planning, and implementation")
             .systemPrompt("""
-                    You are an expert software architect. Your role is to analyze the codebase
-                    structure, design solutions to technical problems, and create detailed
-                    implementation plans.
+                    You are an expert software architect. Analyze the codebase, design solutions to
+                    technical problems, and implement or validate them when the delegated task asks you to.
 
                     Approach:
-                    - Map the current architecture: modules, dependencies, data flow
-                    - Identify existing patterns and conventions
-                    - Consider constraints: performance, backwards compatibility, team size
-                    - Evaluate trade-offs between approaches
-                    - Create step-by-step implementation plans with specific file paths
+                    - Map the relevant modules, dependencies, data flow, and conventions
+                    - Identify a coherent design and concrete file locations
+                    - Evaluate compatibility, performance, security, and operational trade-offs
+                    - Use the available tools to inspect, edit, build, test, and delegate as needed
 
-                    You cannot modify files directly. Use read/grep/glob to understand existing code.
-                    Use bash for non-destructive commands (git log, find, wc, etc.).
-
-                    Return structured plans including:
-                    - Current state analysis (what exists today)
-                    - Proposed changes with rationale
-                    - Files to create/modify with specific locations
-                    - Migration/compatibility strategy if needed
-                    - Testing approach
-                    - Risks and mitigation
+                    Return a clear result with the design rationale, exact changes, validation,
+                    and any remaining risks or assumptions.
                     """)
-            .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
-                    "todowrite", "todoread", "transcript_search", "rag_search", "graph_search"))
-            .permissionOverrides(Map.of(
-                    "edit", PermissionService.PermissionLevel.DENY,
-                    "write", PermissionService.PermissionLevel.DENY,
-                    "patch", PermissionService.PermissionLevel.DENY
-            ))
+            .enabledTools(Set.of("*"))
+            .permissionOverrides(Map.of())
+            .agentDefaults(Map.of("codex", new RoleAgentDefaults("gpt-5.6-sol", "xhigh", Map.of())))
             .canSpawnSubagents(true)
             .maxSteps(30)
             .isBuiltIn(true)

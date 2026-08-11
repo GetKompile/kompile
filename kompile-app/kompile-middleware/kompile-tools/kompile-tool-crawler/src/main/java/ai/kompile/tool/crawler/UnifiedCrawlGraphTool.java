@@ -82,6 +82,15 @@ public class UnifiedCrawlGraphTool {
             Integer chunkOverlap
     ) {}
 
+    record EmbeddingTrainingInput(
+            Boolean enabled,
+            String algorithm,
+            Integer embeddingDim,
+            Integer epochs,
+            Integer batchSize,
+            Integer warmStartEpochs
+    ) {}
+
     record StartUnifiedCrawlInput(
             String name,
             List<SourceInput> sources,
@@ -90,8 +99,51 @@ public class UnifiedCrawlGraphTool {
             /** Step IDs to enable (e.g. "VECTOR_INDEXING", "GRAPH_EXTRACTION"); null/empty means all steps run. */
             List<String> enabledSteps,
             /** Step IDs whose pending inputs should be archived to disk instead of processed immediately. */
-            List<String> archivedSteps
-    ) {}
+            List<String> archivedSteps,
+            /** Existing fact-sheet/knowledge-base id to update. Mutually exclusive with factSheetName. */
+            Long factSheetId,
+            /** Existing fact-sheet/knowledge-base name to resolve. Mutually exclusive with factSheetId. */
+            String factSheetName,
+            /** Content-hash incremental mode override; null uses the project default. */
+            Boolean incrementalByContentHash,
+            /** Reprocess every discovered source even when its content hash is unchanged. */
+            Boolean forceFullRecrawl,
+            /** Destructive full replacement. Also forces a full recrawl to avoid an empty rebuilt graph. */
+            Boolean clearGraphBeforeRun,
+            /** Derive and bind the structural ontology after extraction. */
+            Boolean deriveOntology,
+            /** Optional per-crawl KGE training and warm-start controls. */
+            EmbeddingTrainingInput embeddingTraining
+    ) {
+        /** Source-compatible constructor for existing callers using the original tool contract. */
+        StartUnifiedCrawlInput(String name,
+                               List<SourceInput> sources,
+                               GraphConfigInput graphExtraction,
+                               IndexConfigInput vectorIndex,
+                               List<String> enabledSteps,
+                               List<String> archivedSteps) {
+            this(name, sources, graphExtraction, vectorIndex, enabledSteps, archivedSteps,
+                    null, null, null, null, null, null, null);
+        }
+
+        /** Source-compatible constructor for callers using the knowledge-base lifecycle contract. */
+        StartUnifiedCrawlInput(String name,
+                               List<SourceInput> sources,
+                               GraphConfigInput graphExtraction,
+                               IndexConfigInput vectorIndex,
+                               List<String> enabledSteps,
+                               List<String> archivedSteps,
+                               Long factSheetId,
+                               String factSheetName,
+                               Boolean incrementalByContentHash,
+                               Boolean forceFullRecrawl,
+                               Boolean clearGraphBeforeRun,
+                               Boolean deriveOntology) {
+            this(name, sources, graphExtraction, vectorIndex, enabledSteps, archivedSteps,
+                    factSheetId, factSheetName, incrementalByContentHash, forceFullRecrawl,
+                    clearGraphBeforeRun, deriveOntology, null);
+        }
+    }
 
     record StepInput(String jobId, String stepId) {}
 
@@ -99,14 +151,24 @@ public class UnifiedCrawlGraphTool {
 
     // ---- Tools ----
 
-    @Tool(name = "unified_crawl_graph", description = "Start a multi-source crawl that automatically builds a knowledge graph and vector index. "
+    @Tool(name = "unified_crawl_graph", description = "Start or incrementally update a fact-sheet knowledge graph from one or more crawl sources. "
             + "Accepts multiple sources (directories, emails, web URLs, Slack, etc.) and processes them into "
-            + "a unified graph with entities and relationships extracted via LLM. "
-            + "Returns the job ID for tracking progress.")
+            + "a unified graph with source provenance, entity resolution, and relationships extracted via LLM. "
+            + "Content hashes skip unchanged local files by default; changed files replace their prior graph contribution, "
+            + "and deleted local files are pruned after an authoritative crawl. Returns the job ID and follow-up "
+            + "graph_reasoning_query / graph_export actions for reasoning and portable .kgraph creation.")
     public Map<String, Object> startUnifiedCrawl(StartUnifiedCrawlInput input) {
         try {
             if (input.sources() == null || input.sources().isEmpty()) {
                 return Map.of("error", "At least one source is required");
+            }
+            if (input.factSheetId() != null && input.factSheetName() != null
+                    && !input.factSheetName().isBlank()) {
+                return Map.of("error", "Provide factSheetId or factSheetName, not both");
+            }
+            String embeddingError = validateEmbeddingTraining(input.embeddingTraining());
+            if (embeddingError != null) {
+                return Map.of("error", embeddingError);
             }
 
             List<UnifiedCrawlSource> sources = input.sources().stream()
@@ -118,6 +180,55 @@ public class UnifiedCrawlGraphTool {
                     .sources(sources)
                     .enabledSteps(input.enabledSteps() != null ? input.enabledSteps() : List.of())
                     .archivedSteps(input.archivedSteps() != null ? input.archivedSteps() : List.of());
+
+            if (input.factSheetId() != null) {
+                builder.factSheetId(input.factSheetId());
+            } else if (input.factSheetName() != null && !input.factSheetName().isBlank()) {
+                builder.factSheetName(input.factSheetName().trim());
+            }
+            if (input.deriveOntology() != null) {
+                builder.deriveOntology(input.deriveOntology());
+            }
+
+            if (input.incrementalByContentHash() != null
+                    || input.forceFullRecrawl() != null
+                    || Boolean.TRUE.equals(input.clearGraphBeforeRun())
+                    || input.embeddingTraining() != null) {
+                UnifiedCrawlRequest.RuntimeConfig.RuntimeConfigBuilder runtime =
+                        UnifiedCrawlRequest.RuntimeConfig.builder();
+                if (input.incrementalByContentHash() != null) {
+                    runtime.incrementalByContentHash(input.incrementalByContentHash());
+                }
+                if (input.forceFullRecrawl() != null) {
+                    runtime.forceFullRecrawl(input.forceFullRecrawl());
+                }
+                if (Boolean.TRUE.equals(input.clearGraphBeforeRun())) {
+                    runtime.clearGraphBeforeRun(true);
+                    runtime.forceFullRecrawl(true);
+                }
+                EmbeddingTrainingInput embedding = input.embeddingTraining();
+                if (embedding != null) {
+                    if (embedding.enabled() != null) {
+                        runtime.trainEmbeddingsAfterEnrichment(embedding.enabled());
+                    }
+                    if (embedding.algorithm() != null && !embedding.algorithm().isBlank()) {
+                        runtime.embeddingAlgorithm(embedding.algorithm().trim().toUpperCase(java.util.Locale.ROOT));
+                    }
+                    if (embedding.embeddingDim() != null) {
+                        runtime.embeddingDim(embedding.embeddingDim());
+                    }
+                    if (embedding.epochs() != null) {
+                        runtime.embeddingEpochs(embedding.epochs());
+                    }
+                    if (embedding.batchSize() != null) {
+                        runtime.embeddingBatchSize(embedding.batchSize());
+                    }
+                    if (embedding.warmStartEpochs() != null) {
+                        runtime.embeddingWarmStartEpochs(embedding.warmStartEpochs());
+                    }
+                }
+                builder.runtimeConfig(runtime.build());
+            }
 
             if (input.graphExtraction() != null) {
                 builder.graphExtraction(toGraphConfig(input.graphExtraction()));
@@ -133,13 +244,50 @@ public class UnifiedCrawlGraphTool {
             result.put("jobId", job.getJobId());
             result.put("status", job.getStatus().get().name());
             result.put("sourceCount", sources.size());
-            result.put("message", "Unified crawl-to-graph job started. Use unified_crawl_status to track progress.");
+            if (input.factSheetId() != null) {
+                result.put("factSheetId", input.factSheetId());
+            } else if (input.factSheetName() != null && !input.factSheetName().isBlank()) {
+                result.put("factSheetName", input.factSheetName().trim());
+            }
+            result.put("incrementalByContentHash",
+                    input.incrementalByContentHash() != null ? input.incrementalByContentHash() : "project-default");
+            result.put("nextActions", Map.of(
+                    "monitor", "unified_crawl_status(jobId=" + job.getJobId() + ")",
+                    "reason", "graph_reasoning_query(factSheetId=<target>, question=<question>)",
+                    "embeddings", "graph_embeddings(action=status|train|predict_*, factSheetId=<target>)",
+                    "mutate", "knowledge_graph / ask_graph_assert / ask_graph_retract",
+                    "export", "graph_export(factSheetId=<target>, format=kgraph, path=<file.kgraph>)"));
+            result.put("message", "Knowledge-base crawl started. Monitor it, then reason over the fact sheet or export it as .kgraph.");
             return result;
 
         } catch (Exception e) {
             log.error("Failed to start unified crawl", e);
             return Map.of("error", "Failed to start unified crawl: " + e.getMessage());
         }
+    }
+
+    private String validateEmbeddingTraining(EmbeddingTrainingInput input) {
+        if (input == null) {
+            return null;
+        }
+        if (input.algorithm() != null && !input.algorithm().isBlank()
+                && !"TRANSE".equalsIgnoreCase(input.algorithm())
+                && !"ROTATE".equalsIgnoreCase(input.algorithm())) {
+            return "embeddingTraining.algorithm must be TRANSE or ROTATE";
+        }
+        if (input.embeddingDim() != null && input.embeddingDim() <= 0) {
+            return "embeddingTraining.embeddingDim must be greater than zero";
+        }
+        if (input.epochs() != null && input.epochs() <= 0) {
+            return "embeddingTraining.epochs must be greater than zero";
+        }
+        if (input.batchSize() != null && input.batchSize() <= 0) {
+            return "embeddingTraining.batchSize must be greater than zero";
+        }
+        if (input.warmStartEpochs() != null && input.warmStartEpochs() < 0) {
+            return "embeddingTraining.warmStartEpochs must be zero or greater";
+        }
+        return null;
     }
 
     @Tool(name = "unified_crawl_status", description = "Get the status and progress of a unified crawl-to-graph job. "
@@ -159,7 +307,15 @@ public class UnifiedCrawlGraphTool {
                         result.put("documentsIndexed", snapshot.getDocumentsIndexed());
                         result.put("entitiesExtracted", snapshot.getEntitiesExtracted());
                         result.put("relationshipsExtracted", snapshot.getRelationshipsExtracted());
+                        result.put("filesSkippedUnchanged", snapshot.getFilesSkippedUnchanged());
+                        result.put("filesReprocessed", snapshot.getFilesReprocessed());
                         result.put("errorCount", snapshot.getErrorCount());
+                        UnifiedCrawlRequest request = job.getRequest();
+                        if (request != null && request.getFactSheetId() != null) {
+                            result.put("factSheetId", request.getFactSheetId());
+                        } else if (request != null && request.getFactSheetName() != null) {
+                            result.put("factSheetName", request.getFactSheetName());
+                        }
                         if (snapshot.getErrorMessage() != null) {
                             result.put("errorMessage", snapshot.getErrorMessage());
                         }
@@ -179,6 +335,11 @@ public class UnifiedCrawlGraphTool {
                             }
                         }
                         result.put("sources", sourceList);
+                        if (snapshot.getStatus() == UnifiedCrawlJob.Status.COMPLETED
+                                || snapshot.getStatus() == UnifiedCrawlJob.Status.COMPLETED_PENDING_EMBEDDING) {
+                            result.put("reasoningReady", true);
+                            result.put("nextActions", List.of("graph_reasoning_query", "graph_export(format=kgraph)"));
+                        }
                         return result;
                     })
                     .orElse(Map.of("error", "Job not found: " + input.jobId()));
@@ -200,6 +361,9 @@ public class UnifiedCrawlGraphTool {
                         m.put("entitiesExtracted", job.getEntitiesExtracted().get());
                         m.put("relationshipsExtracted", job.getRelationshipsExtracted().get());
                         m.put("sourceCount", job.getRequest() != null ? job.getRequest().getSources().size() : 0);
+                        if (job.getRequest() != null && job.getRequest().getFactSheetId() != null) {
+                            m.put("factSheetId", job.getRequest().getFactSheetId());
+                        }
                         return m;
                     })
                     .collect(Collectors.toList());

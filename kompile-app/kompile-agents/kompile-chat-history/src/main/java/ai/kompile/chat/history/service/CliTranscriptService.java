@@ -23,6 +23,8 @@ import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.KompileTranscriptFormat;
+import ai.kompile.cli.common.chat.sources.adapters.KompileAdapter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -37,7 +39,6 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Service for reading/writing CLI chat transcripts and discovering
@@ -78,13 +79,27 @@ public class CliTranscriptService {
         log.info("CLI transcript directory: {}", conversationsDir);
     }
 
+    private Collection<ChatSourceAdapter> configuredAdapters() {
+        return ChatSourceRegistry.getInstance().all().stream()
+                .map(adapter -> SOURCE_KOMPILE.equals(adapter.id())
+                        ? new KompileAdapter(conversationsDir) : adapter)
+                .toList();
+    }
+
+    private Optional<ChatSourceAdapter> configuredAdapter(String source) {
+        if (SOURCE_KOMPILE.equals(source)) {
+            return Optional.of(new KompileAdapter(conversationsDir));
+        }
+        return ChatSourceRegistry.getInstance().find(source);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // SOURCE DISCOVERY
     // ═══════════════════════════════════════════════════════════════════════════════
 
     public Map<String, SourceInfo> discoverSources() {
         Map<String, SourceInfo> out = new LinkedHashMap<>();
-        for (ChatSourceAdapter adapter : ChatSourceRegistry.getInstance().all()) {
+        for (ChatSourceAdapter adapter : configuredAdapters()) {
             try {
                 ai.kompile.cli.common.chat.sources.SourceInfo info = adapter.discover();
                 out.put(adapter.id(), new SourceInfo(info.path(), info.sessionCount(), info.available()));
@@ -114,10 +129,10 @@ public class CliTranscriptService {
         Path scope = workingDirectory == null ? null : workingDirectory.toAbsolutePath().normalize();
         Collection<ChatSourceAdapter> adapters;
         if (sourceFilter == null || sourceFilter.isEmpty() || sourceFilter.equals("all")) {
-            adapters = ChatSourceRegistry.getInstance().all();
+            adapters = configuredAdapters();
         } else {
-            ChatSourceAdapter a = ChatSourceRegistry.getInstance().find(sourceFilter).orElse(null);
-            adapters = a != null ? List.of(a) : Collections.emptyList();
+            ChatSourceAdapter adapter = configuredAdapter(sourceFilter).orElse(null);
+            adapters = adapter != null ? List.of(adapter) : Collections.emptyList();
         }
         for (ChatSourceAdapter adapter : adapters) {
             try {
@@ -148,7 +163,7 @@ public class CliTranscriptService {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     public CliTranscriptDetail readTranscript(String sessionId, String source) {
-        ChatSourceAdapter adapter = ChatSourceRegistry.getInstance().find(source).orElse(null);
+        ChatSourceAdapter adapter = configuredAdapter(source).orElse(null);
         if (adapter == null) {
             throw new IllegalArgumentException("Unknown source: " + source);
         }
@@ -190,33 +205,60 @@ public class CliTranscriptService {
 
         String importId = "imported-" + source + "-" + sanitizeId(sessionId);
         Optional<ChatSession> existing = chatHistoryService.getSession(importId);
-        if (existing.isPresent()) {
-            log.debug("Transcript already imported, skipping: {}", importId);
-            return existing.get();
-        }
 
         ChatSession session;
-        try {
-            session = chatHistoryService.createSessionWithId(importId, detail.title(), source, originalTimestampMillis);
-        } catch (Exception e) {
-            // Handle race condition: another thread may have inserted between our check and save
-            Optional<ChatSession> raceWinner = chatHistoryService.getSession(importId);
-            if (raceWinner.isPresent()) {
-                log.debug("Transcript imported by concurrent thread, skipping: {}", importId);
-                return raceWinner.get();
+        if (existing.isPresent()) {
+            session = existing.get();
+        } else {
+            try {
+                session = chatHistoryService.createSessionWithId(
+                        importId, detail.title(), source, originalTimestampMillis);
+            } catch (Exception e) {
+                // Handle race condition: another thread may have inserted between our check and save.
+                Optional<ChatSession> raceWinner = chatHistoryService.getSession(importId);
+                if (raceWinner.isEmpty()) {
+                    throw e;
+                }
+                session = raceWinner.get();
             }
-            throw e;
         }
 
-        for (ParsedTurn turn : detail.turns()) {
-            ChatMessage.MessageRole role = "user".equals(turn.role())
-                    ? ChatMessage.MessageRole.USER
-                    : ChatMessage.MessageRole.ASSISTANT;
+        List<ChatMessage> importedMessages = Optional.ofNullable(
+                chatHistoryService.getSessionMessages(importId)).orElseGet(List::of);
+        verifyImportedPrefix(importId, importedMessages, detail.turns());
+
+        for (int i = importedMessages.size(); i < detail.turns().size(); i++) {
+            ParsedTurn turn = detail.turns().get(i);
+            ChatMessage.MessageRole role = roleOf(turn);
             chatHistoryService.addMessage(session.getSessionId(), role, turn.content(), null);
         }
 
-        log.info("Imported {} messages from {} session {} as {}", detail.turns().size(), source, sessionId, importId);
+        int appended = detail.turns().size() - importedMessages.size();
+        log.info("Synchronized {} new messages ({} total) from {} session {} as {}",
+                appended, detail.turns().size(), source, sessionId, importId);
         return chatHistoryService.getSession(importId).orElse(session);
+    }
+
+    private void verifyImportedPrefix(String importId, List<ChatMessage> imported,
+                                      List<ParsedTurn> transcript) {
+        if (imported.size() > transcript.size()) {
+            throw new IllegalStateException("Transcript shrank after import: " + importId);
+        }
+        for (int i = 0; i < imported.size(); i++) {
+            ChatMessage existing = imported.get(i);
+            ParsedTurn expected = transcript.get(i);
+            if (existing.getRole() != roleOf(expected)
+                    || !Objects.equals(existing.getContent(), expected.content())) {
+                throw new IllegalStateException(
+                        "Transcript changed before imported offset " + i + ": " + importId);
+            }
+        }
+    }
+
+    private ChatMessage.MessageRole roleOf(ParsedTurn turn) {
+        return "user".equals(turn.role())
+                ? ChatMessage.MessageRole.USER
+                : ChatMessage.MessageRole.ASSISTANT;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -232,7 +274,13 @@ public class CliTranscriptService {
         return all.stream()
                 .filter(s -> {
                     String importId = "imported-" + s.source() + "-" + sanitizeId(s.sessionId());
-                    return !chatHistoryService.getSession(importId).isPresent();
+                    Optional<ChatSession> imported = chatHistoryService.getSession(importId);
+                    if (imported.isEmpty()) {
+                        return true;
+                    }
+                    List<ChatMessage> messages = Optional.ofNullable(
+                            chatHistoryService.getSessionMessages(importId)).orElseGet(List::of);
+                    return s.messageCount() > messages.size();
                 })
                 .toList();
     }
@@ -280,17 +328,16 @@ public class CliTranscriptService {
             writer.println("Server:  app-export");
             writer.println("Agent:   " + (session.getSource() != null ? session.getSource() : "app"));
             writer.println("RAG:     unknown");
+            writer.println("CWD:     " + Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize());
             writer.println();
             writer.println(SEPARATOR);
             writer.println();
 
             for (ChatMessage msg : messages) {
                 if (msg.getRole() == ChatMessage.MessageRole.USER) {
-                    writer.println("> " + msg.getContent());
-                    writer.println();
+                    KompileTranscriptFormat.writeTurn(writer, "user", msg.getContent());
                 } else if (msg.getRole() == ChatMessage.MessageRole.ASSISTANT) {
-                    writer.println(msg.getContent());
-                    writer.println();
+                    KompileTranscriptFormat.writeTurn(writer, "assistant", msg.getContent());
                 } else if (msg.getRole() == ChatMessage.MessageRole.SYSTEM) {
                     writer.println("[system] " + msg.getContent());
                     writer.println();

@@ -7,6 +7,7 @@ package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig.DecomposedPromptTier;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig.ExtractionTarget;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
@@ -31,8 +32,11 @@ import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import ai.kompile.knowledgegraph.unified.GraphReasoningQueryService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.ai.document.Document;
 
+import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -43,6 +47,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
@@ -53,11 +58,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     public static final String UNIFIED_CORPUS = "unified_corpus";
     public static final String GRAPH_REASONING_QUERY = "graph_reasoning_query";
     public static final String SUBMIT_GRAPH_DELTA = "submit_graph_delta";
+    public static final String SUBMIT_ENTITIES = "submit_entities";
 
     private static final int MAX_CORPUS_RESULTS = 8;
     private static final int MAX_CORPUS_PAGE_CHARS = 4_000;
     private static final int MAX_GRAPH_TOP_K = 20;
     private static final int MAX_GRAPH_DEPTH = 8;
+    private static final int MAX_ENTITY_NAMES_PER_CALL = 32;
+    private static final int MAX_ENTITY_NAME_CHARS = 160;
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper();
 
     private final String chunkId;
@@ -74,6 +82,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private final String vectorStoreInitializationError;
     private final Supplier<UnifiedGraph> graphSupplier;
     private final GraphReasoningQueryService reasoningService;
+    private final ExtractionTarget extractionTarget;
 
     private volatile ExtractionResult accepted;
     private volatile ExtractionTaskContext activeTaskContext;
@@ -91,7 +100,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             Supplier<UnifiedGraph> graphSupplier,
             GraphReasoningQueryService reasoningService) {
         this(chunkId, documentId, model, graphId, parentGraphId, policy, schema, corpus,
-                vectorStore, null, graphSupplier, reasoningService);
+                vectorStore, null, graphSupplier, reasoningService, ExtractionTarget.FULL_GRAPH);
     }
 
     public CrawlExtractionToolBackend(
@@ -107,6 +116,25 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             String vectorStoreInitializationError,
             Supplier<UnifiedGraph> graphSupplier,
             GraphReasoningQueryService reasoningService) {
+        this(chunkId, documentId, model, graphId, parentGraphId, policy, schema, corpus,
+                vectorStore, vectorStoreInitializationError, graphSupplier, reasoningService,
+                ExtractionTarget.FULL_GRAPH);
+    }
+
+    public CrawlExtractionToolBackend(
+            String chunkId,
+            String documentId,
+            String model,
+            String graphId,
+            String parentGraphId,
+            GraphExtractionValidationPolicy policy,
+            GraphSchema schema,
+            CrawlCorpusSnapshot corpus,
+            VectorStore vectorStore,
+            String vectorStoreInitializationError,
+            Supplier<UnifiedGraph> graphSupplier,
+            GraphReasoningQueryService reasoningService,
+            ExtractionTarget extractionTarget) {
         this.chunkId = chunkId;
         this.documentId = documentId;
         this.model = model;
@@ -118,6 +146,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         this.vectorStoreInitializationError = vectorStoreInitializationError;
         this.graphSupplier = graphSupplier;
         this.reasoningService = reasoningService;
+        this.extractionTarget = extractionTarget == null
+                ? ExtractionTarget.FULL_GRAPH : extractionTarget;
 
         Map<String, CrawlCorpusPassage> complete = new LinkedHashMap<>();
         int incomplete = 0;
@@ -141,6 +171,11 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     }
 
     @Override
+    public ExtractionTarget extractionTarget() {
+        return extractionTarget;
+    }
+
+    @Override
     public String catalogJson() {
         return catalogJson(DecomposedPromptTier.STANDARD);
     }
@@ -158,8 +193,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Map<String, Object> catalog = new LinkedHashMap<>();
         catalog.put("version", "tiered-compact-v7");
         Map<String, Object> callShape = new LinkedHashMap<>();
-        callShape.put("tool", SUBMIT_GRAPH_DELTA);
-        callShape.put("args", Map.of("entities", List.of(), "relations", List.of()));
+        callShape.put("tool", entitiesOnly() ? SUBMIT_ENTITIES : SUBMIT_GRAPH_DELTA);
+        callShape.put("args", entitiesOnly()
+                ? Map.of("names", List.of("<SOURCE NAME>"))
+                : Map.of("entities", List.of(), "relations", List.of()));
         catalog.put("callShape", callShape);
 
         boolean emptyGraph = graph.entityCount() == 0;
@@ -168,11 +205,23 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         state.put("graphRelations", graph.relationCount());
         state.put("completeCorpusPassages", passagesById.size());
         state.put("graphState", emptyGraph ? "EMPTY" : "POPULATED");
-        state.put("recommendedTool", emptyGraph ? SUBMIT_GRAPH_DELTA : GRAPH_REASONING_QUERY);
-        state.put("next", emptyGraph
-                ? "fill callShape arrays from the source and submit"
-                : "query graph only for ambiguity, then submit source-supported additions");
+        state.put("extractionTarget", extractionTarget.name());
+        state.put("recommendedTool", entitiesOnly()
+                ? SUBMIT_ENTITIES
+                : emptyGraph ? SUBMIT_GRAPH_DELTA : GRAPH_REASONING_QUERY);
+        state.put("next", entitiesOnly()
+                ? "fill callShape.names with exact source names and submit"
+                : emptyGraph
+                        ? "fill callShape arrays from the source and submit"
+                        : "query graph only for ambiguity, then submit source-supported additions");
         catalog.put("state", state);
+        if (entitiesOnly()) {
+            catalog.put(SUBMIT_ENTITIES, Map.of(
+                    "purpose", "submit every distinct entity name explicitly present in SOURCE",
+                    "argument", "names",
+                    "unlimited", true));
+            return json(catalog);
+        }
 
         Map<String, Object> submit = new LinkedHashMap<>();
         submit.put("purpose", "finish by proposing all source-supported graph additions");
@@ -191,7 +240,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             relationFields.addAll(List.of("properties", "occurredAt"));
         }
         submit.put("entityFields", List.copyOf(entityFields));
-        submit.put("relationFields", List.copyOf(relationFields));
+        if (!entitiesOnly()) {
+            submit.put("relationFields", List.copyOf(relationFields));
+        }
         submit.put("unlimited", true);
         catalog.put(SUBMIT_GRAPH_DELTA, submit);
 
@@ -239,28 +290,47 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         state.put("graphRelations", graph.relationCount());
         state.put("completeCorpusPassages", passagesById.size());
         state.put("graphState", emptyGraph ? "EMPTY" : "POPULATED");
-        state.put("recommendedFirstTool", emptyGraph
-                ? SUBMIT_GRAPH_DELTA : GRAPH_REASONING_QUERY);
-        state.put("submitArgumentKeys", List.of("entities", "relations"));
-        state.put("entityRequiredFields", requiredEntityFields());
-        state.put("relationRequiredFields", requiredRelationFields());
-        Map<String, Object> vocabulary = schemaVocabulary(graph, tier, taskContext);
-        if (!vocabulary.isEmpty()) {
-            state.put("graphSchema", vocabulary);
+        state.put("extractionTarget", extractionTarget.name());
+        state.put("recommendedFirstTool", entitiesOnly()
+                ? SUBMIT_ENTITIES
+                : emptyGraph ? SUBMIT_GRAPH_DELTA : GRAPH_REASONING_QUERY);
+        state.put("submitArgumentKeys", entitiesOnly()
+                ? List.of("names") : List.of("entities", "relations"));
+        if (!entitiesOnly()) {
+            state.put("entityRequiredFields", requiredEntityFields());
+            state.put("relationRequiredFields", requiredRelationFields());
+            Map<String, Object> vocabulary = schemaVocabulary(graph, tier, taskContext);
+            if (!vocabulary.isEmpty()) {
+                state.put("graphSchema", vocabulary);
+            }
         }
-        state.put("guidance", emptyGraph
-                ? "Extract all source-supported additions and submit them."
-                : "Query existing graph state when identity or relation choice is ambiguous.");
+        state.put("guidance", entitiesOnly()
+                ? "Call submit_entities with exact names copied from SOURCE; typing is a later phase."
+                : emptyGraph
+                        ? "Extract all source-supported additions and submit them."
+                        : "Query existing graph state when identity or relation choice is ambiguous.");
         return json(state);
     }
 
     @Override
     public List<ToolDefinition> toolDefinitions(DecomposedPromptTier configuredTier) {
         DecomposedPromptTier tier = effectiveTier(configuredTier);
+        if (entitiesOnly()) {
+            Map<String, Object> parameters = objectSchema(
+                    Map.of("names", entityNamesSchema(
+                            "Every distinct entity name explicitly present in SOURCE, once each.")),
+                    List.of("names"));
+            return List.of(new ToolDefinition(
+                    SUBMIT_ENTITIES,
+                    "Submit every distinct entity name explicitly present in SOURCE. The engine owns "
+                            + "stable ids, provisional records, graph admission, and later ontology typing.",
+                    parameters));
+        }
         int inlineEnumLimit = inlineSchemaEnumLimit(tier);
         Map<String, Object> entityProperties = new LinkedHashMap<>();
-        entityProperties.put("id", stringSchema(
-                "Stable entity identifier. Create one for every source-supported entity and "
+        entityProperties.put("id", stringSchema(entitiesOnly()
+                ? "Stable identifier for this source-supported entity."
+                : "Stable entity identifier. Create one for every source-supported entity and "
                         + "reuse it exactly in relations[].source and relations[].target."));
         entityProperties.put("name", stringSchema(
                 "Exact name stated in SOURCE or a retrieved passage; never copy a value that "
@@ -307,42 +377,58 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
         Map<String, Object> relation = objectSchema(relationProperties, requiredRelationFields());
         Map<String, Object> submitProperties = new LinkedHashMap<>();
-        submitProperties.put("entities", arraySchema(entity,
-                "Every source-supported entity. Include an entity object for every relation endpoint "
+        submitProperties.put("entities", arraySchema(entity, entitiesOnly()
+                ? "Every distinct entity explicitly present in SOURCE."
+                : "Every source-supported entity. Include an entity object for every relation endpoint "
                         + "that is not already an entity in the current graph."));
-        submitProperties.put("relations", arraySchema(relation,
-                "Every directed relation explicitly stated in SOURCE or a retrieved passage, "
-                        + "between submitted or existing graph entity ids."));
+        if (!entitiesOnly()) {
+            submitProperties.put("relations", arraySchema(relation,
+                    "Every directed relation explicitly stated in SOURCE or a retrieved passage, "
+                            + "between submitted or existing graph entity ids."));
+        }
         Map<String, Object> submitParameters = objectSchema(
-                submitProperties, List.of("entities", "relations"));
+                submitProperties, entitiesOnly()
+                        ? List.of("entities") : List.of("entities", "relations"));
 
-        Map<String, Object> graphParameters = objectSchema(Map.ofEntries(
-                Map.entry("operation", Map.of(
-                        "type", "string",
-                        "enum", GraphReasoningQueryService.queryRequestOperations(),
-                        "description", GraphReasoningQueryService.queryRequestOperationGuide())),
-                Map.entry("entityId", stringSchema(
-                        "Existing graph entity id or a name/phrase for ranked resolution.")),
-                Map.entry("targetId", stringSchema(
-                        "Optional target entity id or name/phrase for ranked resolution.")),
-                Map.entry("direction", Map.of(
-                        "type", "string",
-                        "enum", java.util.Arrays.stream(GraphQueryEngine.Direction.values())
-                                .map(Enum::name).toList())),
-                Map.entry("relationTypes", arraySchema(stringSchema("Relation type filter."))),
-                Map.entry("maxDepth", integerSchema(1, MAX_GRAPH_DEPTH,
-                        "Maximum graph traversal depth.")),
-                Map.entry("topK", integerSchema(1, MAX_GRAPH_TOP_K,
-                        "Maximum ranked results.")),
-                Map.entry("structural", Map.of(
-                        "type", "string",
-                        "enum", List.of("PSL", "BAYESIAN"),
-                        "description", "Optional structural reasoner for RANK or SIMILAR; defaults to PSL.")),
-                Map.entry("queryText", stringSchema(
-                        "Natural-language identity, relation, or fact query.")),
-                Map.entry("question", stringSchema(
-                        "Question to answer from graph reasoning state."))),
-                List.of("operation"));
+        Map<String, Object> graphParameters = tier == DecomposedPromptTier.COMPACT
+                ? objectSchema(Map.ofEntries(
+                        Map.entry("operation", Map.of(
+                                "type", "string",
+                                "enum", GraphReasoningQueryService.queryRequestOperations(),
+                                "description", "Graph query operation.")),
+                        Map.entry("entityId", stringSchema("Existing entity id or name.")),
+                        Map.entry("targetId", stringSchema("Optional target entity id or name.")),
+                        Map.entry("relationTypes", arraySchema(stringSchema("Relation type filter."))),
+                        Map.entry("topK", integerSchema(1, MAX_GRAPH_TOP_K, "Maximum results.")),
+                        Map.entry("queryText", stringSchema("Identity, relation, or fact query."))),
+                        List.of("operation"))
+                : objectSchema(Map.ofEntries(
+                        Map.entry("operation", Map.of(
+                                "type", "string",
+                                "enum", GraphReasoningQueryService.queryRequestOperations(),
+                                "description", GraphReasoningQueryService.queryRequestOperationGuide())),
+                        Map.entry("entityId", stringSchema(
+                                "Existing graph entity id or a name/phrase for ranked resolution.")),
+                        Map.entry("targetId", stringSchema(
+                                "Optional target entity id or name/phrase for ranked resolution.")),
+                        Map.entry("direction", Map.of(
+                                "type", "string",
+                                "enum", java.util.Arrays.stream(GraphQueryEngine.Direction.values())
+                                        .map(Enum::name).toList())),
+                        Map.entry("relationTypes", arraySchema(stringSchema("Relation type filter."))),
+                        Map.entry("maxDepth", integerSchema(1, MAX_GRAPH_DEPTH,
+                                "Maximum graph traversal depth.")),
+                        Map.entry("topK", integerSchema(1, MAX_GRAPH_TOP_K,
+                                "Maximum ranked results.")),
+                        Map.entry("structural", Map.of(
+                                "type", "string",
+                                "enum", List.of("PSL", "BAYESIAN"),
+                                "description", "Optional structural reasoner for RANK or SIMILAR; defaults to PSL.")),
+                        Map.entry("queryText", stringSchema(
+                                "Natural-language identity, relation, or fact query.")),
+                        Map.entry("question", stringSchema(
+                                "Question to answer from graph reasoning state."))),
+                        List.of("operation"));
 
         Map<String, Object> corpusParameters = objectSchema(Map.ofEntries(
                 Map.entry("action", Map.of(
@@ -363,10 +449,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
         ToolDefinition submit = new ToolDefinition(
                 SUBMIT_GRAPH_DELTA,
-                "Validate and stage every source-supported entity and relation addition. "
-                        + "Arguments use exactly the top-level keys entities and relations. "
-                        + "Metadata and graph mutation remain engine-owned; validation feedback "
-                        + "must be corrected and resubmitted.",
+                entitiesOnly()
+                        ? "Validate and stage every source-supported entity. Arguments use exactly "
+                                + "the top-level key entities; do not submit relations. Metadata and "
+                                + "graph mutation remain engine-owned."
+                        : "Validate and stage every source-supported entity and relation addition. "
+                                + "Arguments use exactly the top-level keys entities and relations. "
+                                + "Metadata and graph mutation remain engine-owned; validation feedback "
+                                + "must be corrected and resubmitted.",
                 submitParameters);
         ToolDefinition graph = new ToolDefinition(
                 GRAPH_REASONING_QUERY,
@@ -380,10 +470,16 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                         + "current source shard does not contain enough cross-source context.",
                 corpusParameters);
 
+        if (entitiesOnly()) {
+            return List.of(submit);
+        }
         boolean emptyGraph = graphSnapshot().entityCount() == 0;
+        // The structured crawl sees every source window as one logical document and carries prior
+        // facts in the evolving graph. Keep the unified-corpus component executable for legacy/raw
+        // workflows, but do not advertise a redundant cross-document tool in this native protocol.
         return emptyGraph
-                ? List.of(submit, graph, corpusTool)
-                : List.of(graph, submit, corpusTool);
+                ? List.of(submit, graph)
+                : List.of(graph, submit);
     }
 
     private static Map<String, Object> objectSchema(
@@ -411,6 +507,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             case RICH -> 16;
             case EXPANDED -> 32;
         };
+    }
+
+    private boolean entitiesOnly() {
+        return extractionTarget == ExtractionTarget.ENTITIES_ONLY;
     }
 
     private boolean requiresDescriptions() {
@@ -481,11 +581,24 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 taskContext, allEntityTypes, allRelationTypes, allRelationPatterns);
         Map<String, Object> vocabulary = new LinkedHashMap<>();
         // Initial context is vocabulary, not a source of candidate facts. Keep every
-        // authoritative label and pattern, but leave descriptions, aliases, and examples
-        // behind the SCHEMA operation.
+        // authoritative label, but leave descriptions, aliases, examples, and (at the compact
+        // tier) the long endpoint-signature list behind the deterministic SCHEMA operation.
         vocabulary.put("entityTypes", allEntityTypes);
         vocabulary.put("relationTypes", allRelationTypes);
-        vocabulary.put("relationPatterns", allRelationPatterns);
+        if (tier == DecomposedPromptTier.COMPACT) {
+            vocabulary.put("relationPatterns",
+                    focus.active() ? focus.relationPatterns() : List.of());
+            vocabulary.put("compact", true);
+            vocabulary.put("fullCounts", Map.of(
+                    "entityTypes", allEntityTypes.size(),
+                    "relationTypes", allRelationTypes.size(),
+                    "relationPatterns", allRelationPatterns.size()));
+            vocabulary.put("detailedDefinitionsAvailableVia", Map.of(
+                    "tool", GRAPH_REASONING_QUERY,
+                    "operation", "SCHEMA"));
+        } else {
+            vocabulary.put("relationPatterns", allRelationPatterns);
+        }
         vocabulary.put("authoritative",
                 standardizedEntityTypes || standardizedRelationTypes);
         if (focus.active()) {
@@ -495,15 +608,18 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     "entityTypes", focus.entityTypes(),
                     "relationTypes", focus.relationTypes(),
                     "relationPatterns", focus.relationPatterns()));
-            vocabulary.put("fullCounts", Map.of(
-                    "entityTypes", allEntityTypes.size(),
-                    "relationTypes", allRelationTypes.size(),
-                    "relationPatterns", allRelationPatterns.size()));
-            vocabulary.put("detailedDefinitionsAvailableVia", Map.of(
-                    "tool", GRAPH_REASONING_QUERY,
-                    "operation", "SCHEMA"));
+            if (tier != DecomposedPromptTier.COMPACT) {
+                vocabulary.put("fullCounts", Map.of(
+                        "entityTypes", allEntityTypes.size(),
+                        "relationTypes", allRelationTypes.size(),
+                        "relationPatterns", allRelationPatterns.size()));
+                vocabulary.put("detailedDefinitionsAvailableVia", Map.of(
+                        "tool", GRAPH_REASONING_QUERY,
+                        "operation", "SCHEMA"));
+            }
         }
-        vocabulary.put("truncated", false);
+        vocabulary.put("truncated", tier == DecomposedPromptTier.COMPACT
+                && !allRelationPatterns.isEmpty() && !focus.active());
         return vocabulary;
     }
 
@@ -712,6 +828,20 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         return Map.of("type", "array", "items", items);
     }
 
+    private static Map<String, Object> entityNamesSchema(String description) {
+        Map<String, Object> item = new LinkedHashMap<>(
+                stringSchema("One exact entity name copied from SOURCE."));
+        item.put("maxLength", MAX_ENTITY_NAME_CHARS);
+
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("type", "array");
+        value.put("description", description);
+        value.put("items", item);
+        value.put("maxItems", MAX_ENTITY_NAMES_PER_CALL);
+        value.put("uniqueItems", true);
+        return value;
+    }
+
     private static Map<String, Object> arraySchema(
             Map<String, Object> items, String description) {
         Map<String, Object> value = new LinkedHashMap<>();
@@ -764,11 +894,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             case UNIFIED_CORPUS -> corpus(args);
             case GRAPH_REASONING_QUERY -> graphQuery(args);
             case SUBMIT_GRAPH_DELTA -> submit(args);
+            case SUBMIT_ENTITIES -> submitEntities(args);
             default -> ToolExecution.continuing(json(Map.of(
                     "ok", false,
                     "error", "unknown_tool",
                     "tool", toolName == null ? "" : toolName,
-                    "available", List.of(UNIFIED_CORPUS, GRAPH_REASONING_QUERY, SUBMIT_GRAPH_DELTA))));
+                    "available", entitiesOnly()
+                            ? List.of(SUBMIT_ENTITIES)
+                            : List.of(UNIFIED_CORPUS, GRAPH_REASONING_QUERY, SUBMIT_GRAPH_DELTA))));
         };
     }
 
@@ -955,13 +1088,115 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
     }
 
+    private ToolExecution submitEntities(JsonNode args) {
+        if (!entitiesOnly()) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "entity_only_tool_unavailable")));
+        }
+        if (args == null || !args.isObject()) {
+            return invalidEntitySubmission("Arguments must be an object containing names.");
+        }
+        List<String> unexpected = new ArrayList<>();
+        args.fieldNames().forEachRemaining(key -> {
+            if (!"names".equals(key)) {
+                unexpected.add(key);
+            }
+        });
+        if (!unexpected.isEmpty()) {
+            return invalidEntitySubmission("Unexpected argument keys: " + unexpected);
+        }
+        JsonNode names = args.get("names");
+        if (names == null || !names.isArray()) {
+            return invalidEntitySubmission(
+                    "names must be an array of exact SOURCE-name strings.");
+        }
+
+        Map<String, String> distinctNames = new LinkedHashMap<>();
+        for (JsonNode value : names) {
+            if (!value.isTextual()) {
+                return invalidEntitySubmission(
+                        "Every names entry must be an exact SOURCE-name string.");
+            }
+            String name = value.asText().strip();
+            if (!name.isEmpty()) {
+                distinctNames.putIfAbsent(canonicalEntityName(name), name);
+            }
+        }
+
+        List<ExtractedEntity> entities = distinctNames.values().stream()
+                .map(name -> new ExtractedEntity(
+                        stableEntityId(name),
+                        name,
+                        "ENTITY",
+                        List.of(),
+                        null,
+                        null,
+                        Map.of("ontologyStatus", "DEFERRED")))
+                .toList();
+        ExtractionMetadata metadata = ExtractionMetadata.forChunkInGraph(
+                chunkId, documentId, model, graphId, parentGraphId);
+        ExtractionResult staged = new ExtractionResult(
+                GraphExtractionSchema.SCHEMA_VERSION, entities, List.of(), metadata);
+        ValidationResult validation = GraphExtractionValidator.validate(
+                staged, policy, null, Map.of());
+        if (!validation.valid()) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "engine_entity_normalization_failed",
+                    "errors", validation.errors(),
+                    "warnings", validation.warnings())));
+        }
+
+        accepted = mergeAndValidateAccepted(metadata, entities, List.of());
+        return ToolExecution.terminal(json(Map.of(
+                "ok", true,
+                "accepted", true,
+                "entities", entities.size(),
+                "relations", 0,
+                "idsAndTypesOwnedByEngine", true,
+                "ontologyTypingDeferred", true)));
+    }
+
+    private ToolExecution invalidEntitySubmission(String detail) {
+        return ToolExecution.continuing(json(Map.of(
+                "ok", false,
+                "error", "invalid_entity_submission",
+                "detail", detail,
+                "requiredShape", Map.of(
+                        "names", List.of("<exact SOURCE name>")))));
+    }
+
+    private static String canonicalEntityName(String name) {
+        return Normalizer.normalize(name, Normalizer.Form.NFKC)
+                .strip()
+                .toLowerCase(Locale.ROOT);
+    }
+
+    private static String stableEntityId(String name) {
+        String canonical = canonicalEntityName(name);
+        String slug = Normalizer.normalize(canonical, Normalizer.Form.NFKD)
+                .replaceAll("\\p{M}+", "")
+                .replaceAll("[^\\p{L}\\p{N}]+", "-")
+                .replaceAll("^-+|-+$", "");
+        if (slug.isEmpty()) {
+            slug = "entity";
+        } else if (slug.length() > 48) {
+            slug = slug.substring(0, 48).replaceAll("-+$", "");
+        }
+        String fingerprint = UUID.nameUUIDFromBytes(
+                canonical.getBytes(StandardCharsets.UTF_8)).toString().substring(0, 8);
+        return slug + "-" + fingerprint;
+    }
+
     private ToolExecution submit(JsonNode args) {
-        JsonNode delta = args.has("delta") && args.get("delta").isObject()
+        JsonNode submitted = args.has("delta") && args.get("delta").isObject()
                 ? args.get("delta") : args;
-        ToolExecution shapeError = validateSubmitShape(delta);
+        ToolExecution shapeError = validateSubmitShape(submitted);
         if (shapeError != null) {
             return shapeError;
         }
+        JsonNode delta = entitiesOnly() ? withEmptyRelations(submitted) : submitted;
         final ExtractionResult parsed;
         try {
             parsed = MAPPER.treeToValue(delta, ExtractionResult.class);
@@ -1010,20 +1245,32 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
         List<String> keys = new ArrayList<>();
         delta.fieldNames().forEachRemaining(keys::add);
+        Set<String> allowed = entitiesOnly()
+                ? Set.of("entities") : Set.of("entities", "relations");
         List<String> unexpected = keys.stream()
-                .filter(key -> !Set.of("entities", "relations").contains(key))
+                .filter(key -> !allowed.contains(key))
                 .sorted()
                 .toList();
         if (!unexpected.isEmpty()) {
             return invalidSubmission("invalid_graph_delta_shape",
                     "Unexpected top-level argument keys: " + unexpected, delta);
         }
-        if (!delta.has("entities") || !delta.get("entities").isArray()
-                || !delta.has("relations") || !delta.get("relations").isArray()) {
+        if (!delta.has("entities") || !delta.get("entities").isArray()) {
+            return invalidSubmission("invalid_graph_delta_shape",
+                    "entities must be an array.", delta);
+        }
+        if (!entitiesOnly()
+                && (!delta.has("relations") || !delta.get("relations").isArray())) {
             return invalidSubmission("invalid_graph_delta_shape",
                     "Both entities and relations must be arrays.", delta);
         }
         return null;
+    }
+
+    private static JsonNode withEmptyRelations(JsonNode submitted) {
+        ObjectNode normalized = ((ObjectNode) submitted).deepCopy();
+        normalized.putArray("relations");
+        return normalized;
     }
 
     private ToolExecution invalidSubmission(String code, String detail, JsonNode received) {
@@ -1045,9 +1292,12 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
     private Map<String, Object> submitContract() {
         Map<String, Object> contract = new LinkedHashMap<>();
-        contract.put("topLevel", List.of("entities", "relations"));
+        contract.put("topLevel", entitiesOnly()
+                ? List.of("entities") : List.of("entities", "relations"));
         contract.put("entityRequired", requiredEntityFields());
-        contract.put("relationRequired", requiredRelationFields());
+        if (!entitiesOnly()) {
+            contract.put("relationRequired", requiredRelationFields());
+        }
         Map<String, Object> entityTemplate = new LinkedHashMap<>();
         entityTemplate.put("id", "<stable-entity-id>");
         entityTemplate.put("name", "<source-supported-name>");
@@ -1062,14 +1312,18 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         if (requiresDescriptions()) {
             relationTemplate.put("description", "<source-supported-description>");
         }
-        contract.put("argumentTemplate", Map.of(
-                "entities", List.of(entityTemplate),
-                "relations", List.of(relationTemplate)));
-        contract.put("fieldDomains", Map.of(
-                "entities[].type", "graphSchema.entityTypes",
-                "relations[].type", "graphSchema.relationTypes",
-                "relations[].source", "submitted or existing entity id",
-                "relations[].target", "submitted or existing entity id"));
+        contract.put("argumentTemplate", entitiesOnly()
+                ? Map.of("entities", List.of(entityTemplate))
+                : Map.of(
+                        "entities", List.of(entityTemplate),
+                        "relations", List.of(relationTemplate)));
+        contract.put("fieldDomains", entitiesOnly()
+                ? Map.of("entities[].type", "graphSchema.entityTypes")
+                : Map.of(
+                        "entities[].type", "graphSchema.entityTypes",
+                        "relations[].type", "graphSchema.relationTypes",
+                        "relations[].source", "submitted or existing entity id",
+                        "relations[].target", "submitted or existing entity id"));
         contract.put("schemaContext",
                 "CURRENT GRAPH AND CORPUS STATE.graphSchema in the original request");
         contract.put("proposalCount", "unlimited");
@@ -1266,7 +1520,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         ExtractionResult merged = new ExtractionResult(GraphExtractionSchema.SCHEMA_VERSION,
                 mergedEntities, mergedRelations, metadata);
         ValidationResult validation = GraphExtractionValidator.validate(
-                merged, policy, schema, knownEntityTypes());
+                merged,
+                policy,
+                entitiesOnly() ? null : schema,
+                entitiesOnly() ? Map.of() : knownEntityTypes());
         if (!validation.valid()) {
             throw new IllegalStateException("merged accepted result failed validation: "
                     + String.join("; ", validation.errors()));

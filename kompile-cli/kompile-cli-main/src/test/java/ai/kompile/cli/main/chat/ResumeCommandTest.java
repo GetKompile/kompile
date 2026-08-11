@@ -25,6 +25,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -75,6 +76,36 @@ class ResumeCommandTest {
             assertFalse(args.contains("--all"));
         } finally {
             System.clearProperty(property);
+        }
+    }
+
+    @Test
+    void piResumeLoadsBundledExtensionAfterExecutable() throws Exception {
+        String previousAdapter = System.getProperty("kompile.pi.adapter.path");
+        Path adapter = tempDir.resolve("pi-adapter");
+        Files.createDirectories(adapter);
+        try {
+            System.setProperty("kompile.pi.adapter.path", adapter.toString());
+            ConversationExporter.ExportResult exportResult = new ConversationExporter.ExportResult(
+                    "resume-session",
+                    "pi",
+                    tempDir.resolve("session.jsonl"),
+                    "pi --session resume-session",
+                    tempDir);
+
+            List<String> args = buildAgentCommand("pi", exportResult, true);
+
+            assertEquals("pi", args.get(0));
+            assertEquals("-e", args.get(1));
+            assertEquals(adapter.toString(), args.get(2));
+            assertTrue(args.contains("--session"));
+            assertFalse(args.contains("--resume"));
+        } finally {
+            if (previousAdapter == null) {
+                System.clearProperty("kompile.pi.adapter.path");
+            } else {
+                System.setProperty("kompile.pi.adapter.path", previousAdapter);
+            }
         }
     }
 
@@ -169,6 +200,11 @@ class ResumeCommandTest {
     }
 
     private List<String> buildAgentCommand(String agent, ConversationExporter.ExportResult exportResult) throws Exception {
+        return buildAgentCommand(agent, exportResult, false);
+    }
+
+    private List<String> buildAgentCommand(String agent, ConversationExporter.ExportResult exportResult,
+                                           boolean toolsInjected) throws Exception {
         ResumeCommand command = new ResumeCommand();
         Method buildAgentCommand = ResumeCommand.class.getDeclaredMethod(
                 "buildAgentCommand",
@@ -178,7 +214,7 @@ class ResumeCommandTest {
         buildAgentCommand.setAccessible(true);
 
         @SuppressWarnings("unchecked")
-        List<String> args = (List<String>) buildAgentCommand.invoke(command, agent, exportResult, false);
+        List<String> args = (List<String>) buildAgentCommand.invoke(command, agent, exportResult, toolsInjected);
         return args;
     }
 }

@@ -317,15 +317,31 @@ public class DiffIndexService {
     // ── Search ──────────────────────────────────────────────────────────────
 
     /**
-     * Search diff entries with filters.
+     * Search diff entries with filters, preserving the historical newest-first default.
      */
     public List<DiffIndexEntry> search(String agent, String projectDirectory,
                                         String filePath, String contentQuery,
                                         String source, String since, String until,
                                         Integer limit) {
+        return search(agent, projectDirectory, filePath, contentQuery, source,
+                since, until, limit, null, null);
+    }
+
+    /**
+     * Search diff entries with filters and configurable ordering.
+     *
+     * @param sortBy timestamp, file_path, project, agent, source, lines_added,
+     *               lines_removed, or total_changes (default timestamp)
+     * @param sortDir asc or desc (default desc)
+     */
+    public List<DiffIndexEntry> search(String agent, String projectDirectory,
+                                        String filePath, String contentQuery,
+                                        String source, String since, String until,
+                                        Integer limit, String sortBy, String sortDir) {
         int max = limit != null && limit > 0 ? limit : 50;
         Long sinceMs = toEpochMillis(since);
         Long untilMs = toEpochMillis(until);
+        Comparator<DiffIndexEntry> ordering = sortComparator(sortBy, sortDir);
 
         return entries.values().stream()
                 .filter(e -> agent == null || agent.equals(e.getAgent()))
@@ -335,9 +351,60 @@ public class DiffIndexService {
                 .filter(e -> contentQuery == null || matchesContent(e, contentQuery))
                 .filter(e -> sinceMs == null || afterOrEqual(e.getTimestamp(), sinceMs))
                 .filter(e -> untilMs == null || beforeOrEqual(e.getTimestamp(), untilMs))
-                .sorted(Comparator.comparing(DiffIndexEntry::getTimestamp).reversed())
+                .sorted(ordering)
                 .limit(max)
                 .collect(Collectors.toList());
+    }
+
+    private static Comparator<DiffIndexEntry> sortComparator(String sortBy, String sortDir) {
+        String field = normalizeSortField(sortBy);
+        boolean ascending = "asc".equalsIgnoreCase(sortDir);
+
+        Comparator<String> textValues = Comparator.nullsLast(ascending
+                ? String.CASE_INSENSITIVE_ORDER
+                : String.CASE_INSENSITIVE_ORDER.reversed());
+        Comparator<Long> timestampValues = Comparator.nullsLast(ascending
+                ? Comparator.<Long>naturalOrder()
+                : Comparator.<Long>reverseOrder());
+
+        Comparator<DiffIndexEntry> comparator = switch (field) {
+            case "file_path" -> Comparator.comparing(DiffIndexEntry::getFilePath, textValues);
+            case "project" -> Comparator.comparing(DiffIndexEntry::getProjectDirectory, textValues);
+            case "agent" -> Comparator.comparing(DiffIndexEntry::getAgent, textValues);
+            case "source" -> Comparator.comparing(DiffIndexEntry::getSource, textValues);
+            case "lines_added" -> numericComparator(DiffIndexEntry::getLinesAdded, ascending);
+            case "lines_removed" -> numericComparator(DiffIndexEntry::getLinesRemoved, ascending);
+            case "total_changes" -> numericComparator(
+                    e -> Long.sum(e.getLinesAdded(), e.getLinesRemoved()), ascending);
+            default -> Comparator.comparing(
+                    e -> toEpochMillis(e.getTimestamp()), timestampValues);
+        };
+
+        return comparator.thenComparing(
+                DiffIndexEntry::getId, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+    }
+
+    private static Comparator<DiffIndexEntry> numericComparator(
+            java.util.function.ToLongFunction<DiffIndexEntry> value, boolean ascending) {
+        Comparator<DiffIndexEntry> comparator = Comparator.comparingLong(value);
+        return ascending ? comparator : comparator.reversed();
+    }
+
+    private static String normalizeSortField(String sortBy) {
+        if (sortBy == null || sortBy.isBlank()) {
+            return "timestamp";
+        }
+        return switch (sortBy.trim().toLowerCase(Locale.ROOT).replace('-', '_')) {
+            case "time", "date" -> "timestamp";
+            case "file", "path", "filepath", "file_path" -> "file_path";
+            case "project_directory", "projectdirectory", "project" -> "project";
+            case "linesadded", "lines_added" -> "lines_added";
+            case "linesremoved", "lines_removed" -> "lines_removed";
+            case "changes", "change_size", "totalchanges", "total_changes" -> "total_changes";
+            case "agent" -> "agent";
+            case "source" -> "source";
+            default -> "timestamp";
+        };
     }
 
     /** Keep entries whose (best-effort parsed) timestamp is >= the bound; unparseable timestamps pass. */

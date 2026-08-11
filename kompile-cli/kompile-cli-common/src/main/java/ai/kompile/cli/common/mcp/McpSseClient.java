@@ -170,6 +170,43 @@ public class McpSseClient implements AutoCloseable {
     }
 
     /**
+     * Completes the MCP handshake by notifying the server that initialization
+     * is complete. MCP servers may hold tools/call requests until this
+     * notification arrives.
+     */
+    public void notifyInitialized() throws IOException, InterruptedException {
+        sendNotification("notifications/initialized", null);
+    }
+
+    /**
+     * Sends a JSON-RPC notification that does not expect an SSE response.
+     */
+    private void sendNotification(String method, JsonNode params) throws IOException, InterruptedException {
+        if (!connected || messageEndpointUrl == null) {
+            throw new IOException("Not connected to MCP server");
+        }
+
+        ObjectNode notification = objectMapper.createObjectNode();
+        notification.put("jsonrpc", "2.0");
+        notification.put("method", method);
+        if (params != null) {
+            notification.set("params", params);
+        }
+
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+                .uri(URI.create(messageEndpointUrl))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(notification)))
+                .timeout(Duration.ofSeconds(30))
+                .build();
+        HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        if (httpResponse.statusCode() >= 400) {
+            throw new IOException("MCP notification failed: HTTP " + httpResponse.statusCode()
+                    + " " + httpResponse.body());
+        }
+    }
+
+    /**
      * Lists all available MCP tools.
      */
     public List<ToolInfo> listTools() throws IOException, InterruptedException {

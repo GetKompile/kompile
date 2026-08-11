@@ -36,16 +36,19 @@ public class GraphImportTool implements CliTool {
 
     private final GroundingBackendClient client;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     public GraphImportTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = new GroundingBackendClient(baseUrl);
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
     GraphImportTool(GroundingBackendClient client, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = client;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
     }
 
     @Override
@@ -90,7 +93,7 @@ public class GraphImportTool implements CliTool {
             return ToolResult.error("path is required");
         }
         if (!client.isAvailable()) {
-            return ToolResult.error("graph_import requires kompile-graph-service or a compatible kompile-app.");
+            return localBackend.importGraph(params, context);
         }
 
         Path file = Path.of(path);

@@ -73,7 +73,15 @@ public class LLMStepConfig implements StepConfig {
     }
 
     public enum ToolCallOutputFormat {
-        JSON_MARKER_BASED, OPENAI_JSON, GGUF_NATIVE_FUNCTIONARY_V2
+        /**
+         * Legacy serialized name retained for configuration migration. It now
+         * means the same strict, whole-envelope JSON protocol as OPENAI_JSON;
+         * marker extraction is no longer supported.
+         */
+        @Deprecated
+        JSON_MARKER_BASED,
+        OPENAI_JSON,
+        GGUF_NATIVE_FUNCTIONARY_V2
     }
 
     @JsonCreator
@@ -146,7 +154,7 @@ public class LLMStepConfig implements StepConfig {
         this.specificToolNameForCall = specificToolNameForCall;
         if (specificToolNameForCall != null) this.internalParameters.put("specificToolNameForCall", specificToolNameForCall);
 
-        this.toolCallOutputFormat = toolCallOutputFormat != null ? toolCallOutputFormat : ToolCallOutputFormat.JSON_MARKER_BASED;
+        this.toolCallOutputFormat = toolCallOutputFormat != null ? toolCallOutputFormat : ToolCallOutputFormat.OPENAI_JSON;
         this.internalParameters.put("toolCallOutputFormat", this.toolCallOutputFormat.name()); // Store enum as string
 
         this.generationParameters = generationParameters != null ? generationParameters : Collections.emptyMap();
@@ -314,7 +322,7 @@ public class LLMStepConfig implements StepConfig {
         private List<PipelineToolDefinition> toolDefinitions = new ArrayList<>();
         private ToolChoiceMode toolChoice = ToolChoiceMode.AUTO;
         private String specificToolNameForCall;
-        private ToolCallOutputFormat toolCallOutputFormat = ToolCallOutputFormat.JSON_MARKER_BASED;
+        private ToolCallOutputFormat toolCallOutputFormat = ToolCallOutputFormat.OPENAI_JSON;
         private Map<String, Object> generationParameters = new HashMap<>();
         private String conversationContextName = "llm_conversation_context";
         private Data additionalParameters = Data.empty();

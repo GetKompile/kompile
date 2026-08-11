@@ -42,6 +42,11 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-utils</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-steps-nd4j-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>info.picocli</groupId>

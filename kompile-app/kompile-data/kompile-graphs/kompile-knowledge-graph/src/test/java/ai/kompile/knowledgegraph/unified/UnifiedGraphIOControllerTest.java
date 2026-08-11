@@ -5,6 +5,7 @@
  */
 package ai.kompile.knowledgegraph.unified;
 
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +17,8 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -75,6 +78,50 @@ class UnifiedGraphIOControllerTest {
                 .andExpect(jsonPath("$.graphBuildEventPublished").value(true));
 
         verify(bridge).importBytes(any(byte[].class), isNull());
+    }
+
+    @Test
+    void asciiExportUsesSharedDebugRenderer() throws Exception {
+        UnifiedGraph graph = new UnifiedGraph()
+                .graphId("factsheet_42")
+                .addEntity("node-1", "Person", "Alice")
+                .meta("schema", "observed");
+        when(bridge.export(42L)).thenReturn(graph);
+
+        mockMvc.perform(get(UnifiedGraphIOController.BASE_PATH + "/export")
+                        .param("factSheetId", "42")
+                        .param("format", "ascii"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("text/plain;charset=US-ASCII"))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"kompile-graph-42.txt\""))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("node-1")));
+
+        verify(bridge).export(42L);
+    }
+
+    @Test
+    void pngExportReturnsNativePngWhenBundlingDisabled() throws Exception {
+        when(bridge.export(42L)).thenReturn(new UnifiedGraph().addEntity("node-1", "Person", "Alice"));
+
+        var response = mockMvc.perform(get(UnifiedGraphIOController.BASE_PATH + "/export")
+                        .param("factSheetId", "42")
+                        .param("format", "png")
+                        .param("bundle", "false"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.IMAGE_PNG))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"kompile-graph-42.png\""))
+                .andReturn()
+                .getResponse();
+
+        byte[] png = response.getContentAsByteArray();
+        assertTrue(png.length > 8);
+        assertEquals((byte) 0x89, png[0]);
+        assertEquals((byte) 'P', png[1]);
+        assertEquals((byte) 'N', png[2]);
+        assertEquals((byte) 'G', png[3]);
+        verify(bridge).export(42L);
     }
 
     @Test

@@ -31,6 +31,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -359,6 +360,27 @@ class CrawlLlmDispatcherCapabilityFilterTest {
         assertNull(response);
         assertEquals(0, generateCalls.get());
         verifyNoInteractions(defaultLlm);
+    }
+
+    @Test
+    void localGenerationAdmissionPreventsStackingAfterTimeout() {
+        CrawlLlmDispatcher dispatcher = new CrawlLlmDispatcher();
+        AtomicInteger generateCalls = new AtomicInteger();
+        ReflectionTestUtils.setField(dispatcher, "localServingBackend",
+                servingBackend(true, generateCalls));
+        Semaphore permit = (Semaphore) ReflectionTestUtils.getField(dispatcher, "localGenerationPermit");
+        assertNotNull(permit);
+        assertTrue(permit.tryAcquire(), "test must reserve the in-flight generation permit");
+        try {
+            assertNull(dispatcher.promptWithCapacityFallback(
+                    "extract while the previous native call unwinds", "llm",
+                    jobForModel(LOCAL_MODEL, "serving")));
+            assertEquals(0, generateCalls.get(),
+                    "a timed-out native generation must not be stacked with a second GPU call");
+        } finally {
+            permit.release();
+            dispatcher.shutdownLlmTimeoutExecutor();
+        }
     }
 
     private static UnifiedCrawlJob jobForModel(String modelName, String provider) {

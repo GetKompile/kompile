@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.tools.grounding.LocalProjectCrawlBackend;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -36,10 +37,12 @@ public class KnowledgeStatusCliTool implements CliTool {
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectCrawlBackend localBackend;
 
     public KnowledgeStatusCliTool(String baseUrl, ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
+        this.localBackend = new LocalProjectCrawlBackend(objectMapper);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -51,7 +54,8 @@ public class KnowledgeStatusCliTool implements CliTool {
     @Override
     public String description() {
         return "Check what knowledge backends are available and how much data is indexed. " +
-                "Returns backend names, document count, and graph entity count. " +
+                "Reports project-local crawl knowledge bases when no server is configured, or remote " +
+                "document and graph backends when connected. Returns backend names, document count, and graph entity count. " +
                 "Call this to verify knowledge search will work.";
     }
 
@@ -59,7 +63,9 @@ public class KnowledgeStatusCliTool implements CliTool {
     public JsonNode parameterSchema() {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
-        schema.putObject("properties");
+        schema.putObject("properties").putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Optional project-local knowledge-base id, name, or collection.");
         return schema;
     }
 
@@ -73,9 +79,9 @@ public class KnowledgeStatusCliTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Check knowledge base status");
 
+        String knowledgeBase = params.path("knowledgeBase").asText(null);
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("knowledge_status requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return localBackend.status(knowledgeBase, context.getWorkingDirectory());
         }
 
         try {
@@ -96,8 +102,7 @@ public class KnowledgeStatusCliTool implements CliTool {
             return formatStatus(result);
 
         } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl +
-                    ". Is it running? Start with: kompile run");
+            return localBackend.status(knowledgeBase, context.getWorkingDirectory());
         } catch (Exception e) {
             return ToolResult.error("Knowledge status error: " + e.getMessage());
         }

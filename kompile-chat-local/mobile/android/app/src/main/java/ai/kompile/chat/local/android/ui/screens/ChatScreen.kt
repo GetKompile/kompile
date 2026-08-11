@@ -65,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -77,6 +78,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.R
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
+import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
 import ai.kompile.chat.local.android.viewmodel.EngineNotice
 import ai.kompile.chat.local.android.viewmodel.GraphUiState
@@ -105,6 +107,11 @@ fun ChatScreen(
     val modelState by vm.modelState.collectAsState()
     val graphState by vm.graphState.collectAsState()
     val diagnostics by vm.importDiagnostics.collectAsState()
+    val clipboard = LocalClipboardManager.current
+    val traceContext = LocalContext.current
+    val copySmokeDecodeTrace = {
+        clipboard.setText(AnnotatedString(SmokeDecodeTraceLog(traceContext).readContents()))
+    }
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -222,6 +229,7 @@ fun ChatScreen(
                     onCancelStep = vm::cancelHuggingFaceStep,
                     onRetryStep = vm::retryHuggingFaceStep,
                     onOpenAppStorageSettings = { vm.openAppStorageSettings() },
+                    onCopySmokeDecodeTrace = copySmokeDecodeTrace,
                     diagnostics = diagnostics,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                 )
@@ -247,6 +255,7 @@ fun ChatScreen(
                     ),
                     exactStackTrace = exactStackTrace != null,
                     onDismiss = vm::clearError,
+                    onCopySmokeDecodeTrace = copySmokeDecodeTrace,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                 )
             }
@@ -263,6 +272,7 @@ fun ChatScreen(
                     onImportProject = { projectPicker.launch("*/*") },
                     onPrepareProject = onOpenSettings,
                     onOpenSettings = onOpenSettings,
+                    onCopySmokeDecodeTrace = copySmokeDecodeTrace,
                     modifier = Modifier.weight(1f)
                 )
             } else {
@@ -335,6 +345,7 @@ private fun CopyableRuntimeError(
     clipboardText: String,
     exactStackTrace: Boolean,
     onDismiss: () -> Unit,
+    onCopySmokeDecodeTrace: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -376,6 +387,12 @@ private fun CopyableRuntimeError(
                     }
                 }
             }
+            OutlinedButton(
+                onClick = onCopySmokeDecodeTrace,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Copy smoke-decode trace")
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -408,6 +425,7 @@ internal fun CopyableStartupError(
     message: String,
     diagnostics: List<ImportDiagnostic>,
     exactStackTrace: String? = null,
+    onCopySmokeDecodeTrace: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -463,6 +481,14 @@ internal fun CopyableStartupError(
         ) {
             Text("Copy error details")
         }
+        onCopySmokeDecodeTrace?.let { copyTrace ->
+            OutlinedButton(
+                onClick = copyTrace,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Copy smoke-decode trace")
+            }
+        }
         Text(
             if (exactStackTrace != null) {
                 "The complete untruncated stack trace is available above and through Copy error details."
@@ -486,6 +512,7 @@ internal fun StartupStatePanel(
     onImportProject: () -> Unit,
     onPrepareProject: () -> Unit,
     onOpenSettings: () -> Unit,
+    onCopySmokeDecodeTrace: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -526,7 +553,8 @@ internal fun StartupStatePanel(
                         CopyableStartupError(
                             importError,
                             diagnostics,
-                            exactStackTrace = importErrorStackTrace
+                            exactStackTrace = importErrorStackTrace,
+                            onCopySmokeDecodeTrace = onCopySmokeDecodeTrace
                         )
                     }
                     Spacer(Modifier.height(16.dp))
@@ -566,7 +594,8 @@ internal fun StartupStatePanel(
                     CopyableStartupError(
                         modelState.message,
                         diagnostics,
-                        exactStackTrace = modelState.stackTrace
+                        exactStackTrace = modelState.stackTrace,
+                        onCopySmokeDecodeTrace = onCopySmokeDecodeTrace
                     )
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onImportModel) { Text("Choose another model (.sdz)") }
@@ -592,7 +621,8 @@ internal fun StartupStatePanel(
                     CopyableStartupError(
                         graphState.message,
                         diagnostics,
-                        exactStackTrace = graphState.stackTrace
+                        exactStackTrace = graphState.stackTrace,
+                        onCopySmokeDecodeTrace = onCopySmokeDecodeTrace
                     )
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onOpenSettings) { Text("Open settings") }

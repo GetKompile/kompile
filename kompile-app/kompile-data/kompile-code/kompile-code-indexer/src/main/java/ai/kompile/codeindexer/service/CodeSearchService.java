@@ -17,6 +17,7 @@
 package ai.kompile.codeindexer.service;
 
 import ai.kompile.codeindexer.domain.*;
+import ai.kompile.knowledgegraph.domain.GraphNode;
 import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,16 +98,28 @@ public class CodeSearchService {
         Optional<CodeEntity> entity = findByFqn(projectId, fqn);
         if (entity.isEmpty() || entity.get().getGraphNodeId() == null) return List.of();
 
-        UUID nodeId = entity.get().getGraphNodeId();
-        var connected = knowledgeGraphService.getConnectedNodes(nodeId.toString(), maxDepth);
+        String nodeId = entity.get().getGraphNodeId();
+        var connected = knowledgeGraphService.getConnectedNodes(nodeId, maxDepth);
 
         // Map graph nodes back to code entities
         return connected.stream()
                 .map(node -> entityRepository.findByProjectIdAndFullyQualifiedName(
-                        projectId, node.getExternalId()))
+                        projectId, codeEntityFqn(projectId, node)))
                 .filter(Optional::isPresent)
                 .map(Optional::get)
                 .collect(Collectors.toList());
+    }
+
+    private String codeEntityFqn(String projectId, GraphNode node) {
+        Object metadataFqn = node.getMetadata().get("fullyQualifiedName");
+        if (metadataFqn != null && !metadataFqn.toString().isBlank()) {
+            return metadataFqn.toString();
+        }
+        String externalId = node.getExternalId();
+        String projectPrefix = "code:" + projectId + ":";
+        return externalId != null && externalId.startsWith(projectPrefix)
+                ? externalId.substring(projectPrefix.length())
+                : externalId;
     }
 
     /**

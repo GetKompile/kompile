@@ -35,7 +35,7 @@ import java.util.concurrent.Callable;
 public class GraphImportCommand implements Callable<Integer> {
 
     static final Set<String> SUPPORTED_FORMATS =
-            Set.of("json", "jsonld", "json-ld", "csv", "cypher", "kgraph", "unified");
+            Set.of("json", "jsonld", "json-ld", "csv", "cypher", "kgraph");
 
     @CommandLine.Mixin
     private AppClientMixin app;
@@ -105,7 +105,7 @@ public class GraphImportCommand implements Callable<Integer> {
         }
     }
 
-    /** Import the full native {@code .kgraph} into a fact sheet via {@code /api/graph/unified/import}. */
+    /** Import the full native {@code .kgraph} into a fact sheet via the canonical graph transport. */
     private Integer importUnified(KompileHttpClient client) throws Exception {
         Map<String, Path> files = new LinkedHashMap<>();
         files.put("file", filePath);
@@ -126,6 +126,6 @@ public class GraphImportCommand implements Callable<Integer> {
     }
 
     static boolean isUnifiedFormat(String format) {
-        return "kgraph".equalsIgnoreCase(format) || "unified".equalsIgnoreCase(format);
+        return "kgraph".equalsIgnoreCase(format);
     }
 }

@@ -137,16 +137,27 @@ public class VlmTestSubprocessMain {
             try (AnnotationConfigApplicationContext context = createContext(vlmArgs)) {
                 OcrPipelineService ocrService = context.getBean(OcrPipelineService.class);
 
-                // Load VLM models only - skip traditional OCR (dbnet/crnn) which aren't needed
-                reporter.reportProgress("INIT", 15, "Models", "Loading VLM models");
-                ocrService.initializeVlmOnly();
+                Map<String, String> processingOptions = vlmArgs.options() != null
+                        ? vlmArgs.options() : Map.of();
+                String requestedPipelineType = processingOptions.getOrDefault("pipelineType", "VLM")
+                        .trim().toUpperCase(Locale.ROOT);
+                boolean useVlm = "VLM".equals(requestedPipelineType)
+                        || booleanOption(processingOptions, "useVlm",
+                        "TABLE_AWARE".equals(requestedPipelineType)
+                                && booleanOption(processingOptions, "modelBacked", false));
+
+                reporter.reportProgress("INIT", 15, "Models",
+                        useVlm ? "Loading VLM models" : "Loading OCR models");
+                if (useVlm) ocrService.initializeVlmOnly();
+                else ocrService.initialize();
                 long modelLoadTime = System.currentTimeMillis() - modelLoadStart;
 
                 // Trim GPU memory pools after VLM model loading to release
                 // reserved-but-unused memory from DSP plan compilation and model weight loading.
                 trimGpuMemoryPools("post-vlm-model-init");
 
-                reporter.reportProgress("INIT", 20, "Ready", "VLM pipeline ready");
+                reporter.reportProgress("INIT", 20, "Ready",
+                        (useVlm ? "VLM" : "OCR") + " pipeline ready");
 
                 // Check watchdog after model loading (heavy memory operation)
                 checkWatchdogOrExit(memoryWatchdog, reporter, "VLM model loading");
@@ -178,11 +189,12 @@ public class VlmTestSubprocessMain {
                 final SubprocessProgressReporter finalReporter = reporter;
                 final int[] pageCount = {0};
 
-                reporter.reportProgress("VLM_PROCESSING", 25, "Processing", "Starting VLM processing");
+                reporter.reportProgress("VLM_PROCESSING", 25, "Processing",
+                        "Starting " + requestedPipelineType + " processing");
 
                 // Build full OcrPipelineConfig from subprocess args
-                OcrPipelineConfig pipelineConfig = OcrPipelineConfig.builder()
-                        .useVlm(true)
+                OcrPipelineConfig.OcrPipelineConfigBuilder pipelineConfigBuilder = OcrPipelineConfig.builder()
+                        .useVlm(useVlm)
                         .vlmModelId(modelId)
                         .vlmOutputFormat(finalFormat)
                         .maxNewTokens(vlmArgs.maxNewTokens())
@@ -195,11 +207,27 @@ public class VlmTestSubprocessMain {
                         .kvCacheStrategy(vlmArgs.kvCacheStrategy())
                         .maxKvLen(vlmArgs.maxKvLen())
                         .maxPages(vlmArgs.maxPages())
+                        .detectionModelId(processingOptions.get("detectionModelId"))
+                        .recognitionModelId(processingOptions.get("recognitionModelId"))
+                        .tableModelId(processingOptions.get("tableModelId"))
+                        .layoutModelId(processingOptions.get("layoutModelId"))
+                        .enableTableExtraction("TABLE_AWARE".equals(requestedPipelineType)
+                                || booleanOption(processingOptions, "preserveTables", true))
+                        .enableLayoutAnalysis(booleanOption(processingOptions, "enableLayoutAnalysis", false))
+                        .enableLlmPostProcessing(booleanOption(processingOptions, "enableLlmPostProcessing", false))
+                        .detectionConfidenceThreshold(doubleOption(
+                                processingOptions, "detectionConfidenceThreshold", 0.5))
+                        .recognitionConfidenceThreshold(doubleOption(
+                                processingOptions, "recognitionConfidenceThreshold", 0.0))
+                        .maxImageDimension(intOption(processingOptions, "maxImageDimension", 2048))
+                        .maxTiles(intOption(processingOptions, "maxTiles", -1))
                         .sourceId(vlmArgs.filePath())
-                        .includeAuditTrail(true)
-                        .build();
+                        .includeAuditTrail(true);
+                List<String> languages = stringListOption(processingOptions, "languages");
+                if (!languages.isEmpty()) pipelineConfigBuilder.languages(languages);
+                OcrPipelineConfig pipelineConfig = pipelineConfigBuilder.build();
 
-                List<ParsedDocument> results = ocrService.processPdfWithVlm(
+                List<ParsedDocument> results = ocrService.processPdfWithPipelineConfig(
                         inputFile, pipelineConfig,
                         progress -> {
                             int pct = 25 + (int) (progress.overallProgress() * 0.7);
@@ -764,6 +792,42 @@ public class VlmTestSubprocessMain {
 
         context.refresh();
         return context;
+    }
+
+    private static boolean booleanOption(Map<String, String> options, String key, boolean fallback) {
+        String value = options.get(key);
+        return value == null || value.isBlank() ? fallback : Boolean.parseBoolean(value);
+    }
+
+    private static int intOption(Map<String, String> options, String key, int fallback) {
+        try {
+            return Integer.parseInt(options.getOrDefault(key, String.valueOf(fallback)));
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static double doubleOption(Map<String, String> options, String key, double fallback) {
+        try {
+            return Double.parseDouble(options.getOrDefault(key, String.valueOf(fallback)));
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static List<String> stringListOption(Map<String, String> options, String key) {
+        String value = options.get(key);
+        if (value == null || value.isBlank()) return List.of();
+        try {
+            if (value.trim().startsWith("[")) {
+                return OBJECT_MAPPER.readValue(value,
+                        OBJECT_MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
+            }
+        } catch (Exception ignored) {
+            // Fall through to comma-separated values.
+        }
+        return Arrays.stream(value.split(","))
+                .map(String::trim).filter(item -> !item.isBlank()).toList();
     }
 
     private static void cleanupNd4j() {

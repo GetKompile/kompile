@@ -2742,21 +2742,19 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             // ── Phase 10: LEARNING (KGE training) — inline tracked crawl step ─────
                             // Mandate: crawl stays RUNNING until KGE finishes; progress (epoch/loss)
                             // surfaces in the crawl UI via CrawlProgressEvent.
-                            if (kgeAfterEnrichment && kgeEmbeddingJobService != null && factSheetId != null) {
+                            KgeTrainingPlan kgePlan = resolveKgeTrainingPlan(job.getRequest());
+                            if (kgePlan.enabled() && kgeEmbeddingJobService != null && factSheetId != null) {
                                 final long kgeFactSheetId = factSheetId;
                                 final String kgeCrawlJobId = job.getJobId();
-                                final int effectiveBatchSize = kgeBatchSize > 0 ? kgeBatchSize
-                                        : KGEmbeddingConfig.TRANSE_DEFAULTS.batchSize();
-                                final KGEmbeddingConfig kgeCfg =
-                                        KGEmbeddingConfig.TRANSE_DEFAULTS
-                                                .toBuilder()
-                                                .batchSize(effectiveBatchSize)
-                                                .build();
+                                final KGEmbeddingConfig kgeCfg = kgePlan.config();
 
-                                String batchDecision = "kge-training batch-size=" + effectiveBatchSize
-                                        + " (crawlKgeBatchSize=" + kgeBatchSize + ")";
-                                recordEvent(job, "LEARNING", "INFO", "KGE batch-size decision", batchDecision);
-                                publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, batchDecision);
+                                String trainingDecision = "kge-training algorithm=" + kgePlan.algorithm()
+                                        + " dim=" + kgeCfg.embeddingDim()
+                                        + " epochs=" + kgeCfg.epochs()
+                                        + " warmStartEpochs=" + kgeCfg.warmStartEpochs()
+                                        + " batchSize=" + kgeCfg.batchSize();
+                                recordEvent(job, "LEARNING", "INFO", "KGE training decision", trainingDecision);
+                                publishProgressEvent(job, CrawlProgressEvent.EventType.DECISION, trainingDecision);
 
                                 if (resourceGovernorAdapter != null && resourceGovernorAdapter.shouldThrottleHeavyMemory()) {
                                     String oomReason = resourceGovernorAdapter.memoryPressureReason();
@@ -2803,7 +2801,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                                 kgeEmbeddingJobService.trainSynchronously(
                                                         kgeCrawlJobId,
                                                         kgeFactSheetId,
-                                                        KGEmbeddingAlgorithm.TRANSE,
+                                                        kgePlan.algorithm(),
                                                         kgeCfg,
                                                         kgeCallback);
                                         if (kgeJob.getStatus().name().equals("COMPLETED")) {
@@ -2866,7 +2864,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                             } else {
                                 skipPipelineStep(job, "LEARNING",
                                         "KGE training skipped: kgeAfterEnrichment="
-                                                + kgeAfterEnrichment
+                                                + kgePlan.enabled()
                                                 + ", service=" + (kgeEmbeddingJobService != null ? "present" : "absent")
                                                 + ", factSheetId=" + factSheetId);
                             }
@@ -3704,6 +3702,42 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
     private Long jobFactSheetId(UnifiedCrawlJob job) {
         return job != null && job.getRequest() != null ? job.getRequest().getFactSheetId() : null;
+    }
+
+    private KgeTrainingPlan resolveKgeTrainingPlan(UnifiedCrawlRequest request) {
+        UnifiedCrawlRequest.RuntimeConfig runtime = request != null ? request.getRuntimeConfig() : null;
+        boolean enabled = runtime != null && runtime.getTrainEmbeddingsAfterEnrichment() != null
+                ? runtime.getTrainEmbeddingsAfterEnrichment()
+                : kgeAfterEnrichment;
+        KGEmbeddingAlgorithm algorithm = KGEmbeddingAlgorithm.TRANSE;
+        if (runtime != null && runtime.getEmbeddingAlgorithm() != null
+                && "ROTATE".equalsIgnoreCase(runtime.getEmbeddingAlgorithm().trim())) {
+            algorithm = KGEmbeddingAlgorithm.ROTATE;
+        }
+
+        KGEmbeddingConfig.Builder config = KGEmbeddingConfig.defaultsFor(algorithm).toBuilder();
+        if (runtime != null && runtime.getEmbeddingDim() != null && runtime.getEmbeddingDim() > 0) {
+            config.embeddingDim(runtime.getEmbeddingDim());
+        }
+        if (runtime != null && runtime.getEmbeddingEpochs() != null && runtime.getEmbeddingEpochs() > 0) {
+            config.epochs(runtime.getEmbeddingEpochs());
+        }
+        if (runtime != null && runtime.getEmbeddingWarmStartEpochs() != null
+                && runtime.getEmbeddingWarmStartEpochs() >= 0) {
+            config.warmStartEpochs(runtime.getEmbeddingWarmStartEpochs());
+        }
+        int requestedBatchSize = runtime != null && runtime.getEmbeddingBatchSize() != null
+                ? runtime.getEmbeddingBatchSize()
+                : kgeBatchSize;
+        if (requestedBatchSize > 0) {
+            config.batchSize(requestedBatchSize);
+        }
+        return new KgeTrainingPlan(enabled, algorithm, config.build());
+    }
+
+    private record KgeTrainingPlan(boolean enabled,
+                                   KGEmbeddingAlgorithm algorithm,
+                                   KGEmbeddingConfig config) {
     }
 
     private boolean isCancelled(UnifiedCrawlJob job) {

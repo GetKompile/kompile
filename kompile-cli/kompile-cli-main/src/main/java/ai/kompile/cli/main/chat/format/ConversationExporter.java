@@ -68,7 +68,7 @@ public class ConversationExporter {
 
     /** Supported export targets */
     public static final List<String> SUPPORTED_AGENTS = List.of(
-            "kompile", "claude-code", "codex", "qwen", "opencode", "gemini"
+            "kompile", "claude-code", "codex", "qwen", "opencode", "gemini", "pi"
     );
 
     /**
@@ -135,6 +135,9 @@ public class ConversationExporter {
                 return exportToOpenCode(turns, effectiveSessionId, providerId, modelId, effectiveWorkingDirectory);
             case "gemini":
                 return exportToGemini(turns, effectiveSessionId, effectiveWorkingDirectory);
+            case "pi":
+            case "pi-cli":
+                return exportToPi(turns, effectiveSessionId, effectiveWorkingDirectory);
             default:
                 throw new IOException("Unsupported agent: " + agent +
                         ". Supported: " + String.join(", ", SUPPORTED_AGENTS));
@@ -187,6 +190,7 @@ public class ConversationExporter {
                 yield new ResolvedTargetModel(pm.providerId(), pm.modelId());
             }
             case "gemini" -> new ResolvedTargetModel("google", "gemini-2.5-pro");
+            case "pi", "pi-cli" -> new ResolvedTargetModel("openai", "gpt-4o");
             default -> new ResolvedTargetModel(null, null);
         };
     }
@@ -1388,6 +1392,70 @@ public class ConversationExporter {
                 ? "gemini --resume " + sessionIndex
                 : "gemini --resume latest";
         return new ExportResult(sessionId, "gemini", sessionFile, resumeCommand, workingDirectory);
+    }
+
+    // ─── Pi Export ───────────────────────────────────────────────────────
+
+    /**
+     * Exports to Pi's version-3 JSONL session format. Pi uses a project-encoded
+     * directory and resumes deterministically with {@code --session <id>}.
+     */
+    private static ExportResult exportToPi(List<ChatHistory.Turn> turns,
+                                           String sessionId,
+                                           Path workingDirectory) throws IOException {
+        String homeDir = System.getProperty("user.home");
+        String cwd = workingDirectory.toString();
+        String stripped = cwd.replaceFirst("^[/\\\\]", "");
+        String encoded = stripped.replaceAll("[/\\\\:]", "-");
+        Path projectDir = Paths.get(homeDir, ".pi", "agent", "sessions", "--" + encoded + "--");
+        Files.createDirectories(projectDir);
+
+        Instant now = Instant.now();
+        String timestamp = now.toString().replace(':', '-').replace('.', '-');
+        Path sessionFile = projectDir.resolve(timestamp + "_" + sessionId + ".jsonl");
+        StringBuilder jsonl = new StringBuilder();
+
+        ObjectNode header = MAPPER.createObjectNode();
+        header.put("type", "session");
+        header.put("version", 3);
+        header.put("id", sessionId);
+        header.put("timestamp", now.toString());
+        header.put("cwd", cwd);
+        jsonl.append(MAPPER.writeValueAsString(header)).append('\n');
+
+        String parentId = null;
+        for (ChatHistory.Turn turn : turns) {
+            String entryId = UUID.randomUUID().toString().substring(0, 8);
+            ObjectNode entry = MAPPER.createObjectNode();
+            entry.put("type", "message");
+            entry.put("id", entryId);
+            if (parentId == null) entry.putNull("parentId");
+            else entry.put("parentId", parentId);
+            entry.put("timestamp", now.toString());
+
+            ObjectNode message = entry.putObject("message");
+            boolean assistant = "assistant".equalsIgnoreCase(turn.role());
+            message.put("role", assistant ? "assistant" : "user");
+            ArrayNode content = message.putArray("content");
+            content.addObject().put("type", "text").put("text", turn.content());
+            if (assistant) {
+                message.put("api", "openai-completions");
+                message.put("provider", "openai");
+                message.put("model", "gpt-4o");
+                message.putObject("usage")
+                        .put("input", 0)
+                        .put("output", 0)
+                        .put("cacheRead", 0)
+                        .put("cacheWrite", 0);
+                message.put("stopReason", "stop");
+            }
+            jsonl.append(MAPPER.writeValueAsString(entry)).append('\n');
+            parentId = entryId;
+        }
+
+        Files.writeString(sessionFile, jsonl.toString(), StandardCharsets.UTF_8);
+        return new ExportResult(sessionId, "pi", sessionFile,
+                "pi --session " + sessionId, workingDirectory);
     }
 
     /**

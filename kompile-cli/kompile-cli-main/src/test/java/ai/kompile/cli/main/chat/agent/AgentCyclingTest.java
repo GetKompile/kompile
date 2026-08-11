@@ -28,7 +28,7 @@ class AgentCyclingTest {
     }
 
     @Test
-    void testCycleFromCoderToPlanner() {
+    void testCycleFromCoderToCrawler() {
         List<AgentConfig> primaries = registry.getPrimaryAgents();
         String currentAgent = "coder";
 
@@ -44,8 +44,8 @@ class AgentCyclingTest {
         int nextIdx = (currentIdx + 1) % primaries.size();
         String nextAgent = primaries.get(nextIdx).getName();
 
-        assertEquals("planner", nextAgent,
-                "Cycling from coder should go to planner");
+        assertEquals("crawler", nextAgent,
+                "Cycling from coder should go to crawler");
     }
 
     @Test

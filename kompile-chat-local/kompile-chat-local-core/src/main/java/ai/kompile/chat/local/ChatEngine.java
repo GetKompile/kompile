@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 /**
  * Drives a multi-turn conversation loop with graph tool-calling.
@@ -14,16 +13,11 @@ import java.util.Optional;
  * <p>For each user turn the engine:</p>
  * <ol>
  *   <li>Builds the working message list (system prompt prepended if absent)</li>
- *   <li>Calls {@link InferenceRouter#generate} on the working history</li>
- *   <li>If the output parses as a tool call via {@link ToolCallParser}, dispatches it
-     *       through {@link GraphToolBackend} and loops back to step 2 (up to {@code maxToolRounds})</li>
- *   <li>On malformed-JSON that <em>looks</em> tool-ish, requests one corrective retry</li>
+ *   <li>Calls the active backend with structured messages and graph tool schemas</li>
+ *   <li>Dispatches backend-decoded calls through {@link GraphToolBackend}</li>
+ *   <li>Retries one protocol-invalid response, then fails the complete turn</li>
  *   <li>When a plain text answer is detected (or max rounds hit), returns a {@link TurnResult}</li>
  * </ol>
- *
- * <p>Tool-result messages use the role {@code "user"} with the prefix
- * {@code "TOOL_RESULT <tool>: <json>"} for OpenAI-compatible history (models without
- * a native {@code tool_result} role treat this as context from the user turn).</p>
  */
 public final class ChatEngine {
 
@@ -90,63 +84,67 @@ public final class ChatEngine {
         working.add(Message.user(userInput));
 
         List<ToolRound> rounds = new ArrayList<>();
+        String toolsJson = bridge.catalogJson();
 
         for (int round = 0; round < maxToolRounds; round++) {
-            String rawFull = router.generate(working, opts);
-            // Strip Qwen3.x <think>...</think> blocks before parsing
-            String raw = stripThink(rawFull);
-            log.debug("Model output (round {}) after think-strip: {}", round, raw);
+            ChatResponse response = generateWithProtocolRetry(
+                    working, toolsJson, ChatRequest.ToolChoice.AUTO, opts);
+            log.debug("Structured model output (round {}): content={}, calls={}, errors={}",
+                    round, response.content(), response.toolCalls().size(),
+                    response.protocolErrors());
 
-            Optional<ToolCallParser.ToolCall> tc = ToolCallParser.parse(raw);
-            if (tc.isEmpty()) {
-                // Check for malformed tool-ish output — one corrective retry
-                if (raw.contains("\"tool\"")) {
-                    log.debug("Malformed tool JSON detected, requesting corrective retry.");
-                    working.add(Message.assistant(raw));
-                    working.add(Message.user(
-                            "Your tool call JSON was malformed. Please retry with valid JSON only — " +
-                            "a single JSON object with exactly the keys \"tool\" and \"args\"."));
-                    String retryFull = router.generate(working, opts);
-                    String retry = stripThink(retryFull);
-                    Optional<ToolCallParser.ToolCall> retryTc = ToolCallParser.parse(retry);
-                    if (retryTc.isPresent()) {
-                        // Process as a normal tool call (one round)
-                        ToolCallParser.ToolCall call = retryTc.get();
-                        String argsJson = MiniJson.write(call.args());
-                        String result = bridge.execute(call.tool(), argsJson);
-                        rounds.add(new ToolRound(call.tool(), argsJson, result));
-                        working.add(Message.assistant(retry));
-                        working.add(Message.toolResult(call.tool(), result));
-                        // Then fall through to get the final answer
-                        String finalAnswerFull = router.generate(working, opts);
-                        String finalAnswer = stripThink(finalAnswerFull);
-                        return new TurnResult(requireAnswer(finalAnswer), rounds);
-                    } else {
-                        return new TurnResult(requireAnswer(retry), rounds);
-                    }
-                }
-                // Plain answer
-                return new TurnResult(requireAnswer(raw), rounds);
+            if (response.toolCalls().isEmpty()) {
+                return new TurnResult(requireAnswer(response.content()), rounds);
             }
 
-            // Valid tool call — dispatch it
-            ToolCallParser.ToolCall call = tc.get();
-            String argsJson = MiniJson.write(call.args());
-            String toolResult = bridge.execute(call.tool(), argsJson);
-            rounds.add(new ToolRound(call.tool(), argsJson, toolResult));
-            log.debug("Tool '{}' returned: {}", call.tool(), toolResult);
-
-            // Append tool call + result to working history
-            working.add(Message.assistant(raw));
-            working.add(Message.toolResult(call.tool(), toolResult));
+            working.add(Message.assistant(response));
+            for (ChatToolCall call : response.toolCalls()) {
+                String argsJson = MiniJson.write(call.arguments());
+                String toolResult = bridge.execute(call.name(), argsJson);
+                rounds.add(new ToolRound(call.name(), argsJson, toolResult));
+                log.debug("Tool '{}' returned: {}", call.name(), toolResult);
+                working.add(Message.toolResult(
+                        call.id(), call.name(), toolResult));
+            }
         }
 
         // Max rounds hit — ask the model to synthesise without more tool calls
         working.add(Message.user(
                 "Please synthesize an answer from the tool results above without calling more tools."));
-        String synthesisedFull = router.generate(working, opts);
-        String synthesised = stripThink(synthesisedFull);
-        return new TurnResult(requireAnswer(synthesised), rounds);
+        ChatResponse synthesised = generateWithProtocolRetry(
+                working, toolsJson, ChatRequest.ToolChoice.NONE, opts);
+        if (!synthesised.toolCalls().isEmpty()) {
+            throw new ChatException("Model returned tool calls when tool use was disabled");
+        }
+        return new TurnResult(requireAnswer(synthesised.content()), rounds);
+    }
+
+    private ChatResponse generateWithProtocolRetry(
+            List<Message> messages,
+            String toolsJson,
+            ChatRequest.ToolChoice toolChoice,
+            GenOptions opts) {
+        ChatResponse first = router.generate(
+                new ChatRequest(messages, toolsJson, toolChoice), opts);
+        if (first.isProtocolValid()) {
+            return first;
+        }
+
+        log.debug("Model protocol failure; requesting one retry: {}",
+                first.protocolErrors());
+        List<Message> retryMessages = new ArrayList<>(messages);
+        retryMessages.add(Message.assistant(first.rawText()));
+        retryMessages.add(Message.user(
+                "The previous assistant response failed the model's tool-call protocol validation: "
+                        + String.join("; ", first.protocolErrors())
+                        + ". Retry the same turn using the model's declared response protocol."));
+        ChatResponse retry = router.generate(
+                new ChatRequest(retryMessages, toolsJson, toolChoice), opts);
+        if (!retry.isProtocolValid()) {
+            throw new ChatException("Model protocol failure after retry: "
+                    + String.join("; ", retry.protocolErrors()));
+        }
+        return retry;
     }
 
     private static String requireAnswer(String answer) {
@@ -154,23 +152,6 @@ public final class ChatEngine {
             throw new ChatException("The model returned no assistant text.");
         }
         return answer.trim();
-    }
-
-    // ── System prompt ─────────────────────────────────────────────────────────
-
-    /**
-     * Strip Qwen3.x {@code <think>...</think>} blocks from raw model output.
-     * Qwen3.x models emit reasoning traces in think blocks before the final answer.
-     * After stripping, return the trimmed answer portion.
-     *
-     * @param raw raw model output, possibly containing think blocks
-     * @return output with think blocks removed and leading/trailing whitespace trimmed
-     */
-    public static String stripThink(String raw) {
-        if (raw == null) return "";
-        // Remove <think>...</think> blocks (greedy — handles nested-looking tags too)
-        String stripped = raw.replaceAll("(?s)<think>.*?</think>", "").trim();
-        return stripped.isEmpty() ? raw.trim() : stripped;
     }
 
 }

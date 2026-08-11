@@ -107,6 +107,11 @@ public final class ModelContextWindows {
             entry("mixtral-8x7b-32768", 32_768, 4_096, false),
             entry("llama-3.1-8b-instant", 131_072, 8_192, false),
 
+            // Common local models — text only. LFM 2.5 is shipped with a 4k KV cache in
+            // the CUDA test harness; keep its fallback capability aligned with that runtime
+            // instead of treating an unknown local model as a 128k remote model.
+            entry("lfm2.5-1.2b-instruct", 4_096, 1_536, false),
+            entry("lfm2.5", 4_096, 1_536, false),
             // Common Ollama models — text only
             entry("llama3.3", 128_000, 4_096, false),
             entry("llama3.1", 128_000, 4_096, false),

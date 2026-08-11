@@ -1,5 +1,8 @@
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.tools.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Paths;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -20,13 +24,14 @@ class AgenticChatLoopPlanningTest {
     private AgenticChatLoop loop;
     private ToolRegistry toolRegistry;
     private AgentRegistry agentRegistry;
+    private PermissionService perms;
     private ObjectMapper om;
 
     @BeforeEach
     void setUp() {
         om = new ObjectMapper();
         agentRegistry = new AgentRegistry();
-        PermissionService perms = new PermissionService();
+        perms = new PermissionService();
         toolRegistry = ToolRegistryFactory.create(om, "", agentRegistry, perms,
                 new ai.kompile.cli.main.chat.render.TerminalRenderer(false),
                 null);
@@ -34,6 +39,31 @@ class AgenticChatLoopPlanningTest {
         loop = new AgenticChatLoop(
                 null, om, toolRegistry, perms,
                 agentRegistry, Paths.get("."), null, null);
+    }
+
+    @Test
+    void providerSwitchRebuildsWireHistoryWithoutReplacingTheConversation() {
+        ChatConfig config = new ChatConfig("openai", "test-key", "gpt-4o", null);
+        DirectLlmClient directClient = new DirectLlmClient(config, om);
+        AgenticChatLoop directLoop = new AgenticChatLoop(
+                null, om, toolRegistry, perms, agentRegistry, Paths.get("."),
+                directClient, null);
+
+        directLoop.restoreHistory(List.of(
+                new ChatHistory.Turn("user", "Remember the deployment target."),
+                new ChatHistory.Turn("assistant", "The target is staging.")));
+        directClient.addToHistory("tool", "provider-specific wire envelope");
+
+        assertEquals(3, directClient.getHistorySize());
+        assertEquals(2, directLoop.conversationEntryCount());
+
+        int replayed = directLoop.rebuildDirectHistoryForProviderSwitch();
+
+        assertEquals(2, replayed);
+        assertEquals(2, directClient.getHistorySize(),
+                "the new provider receives the same text conversation without stale wire envelopes");
+        assertEquals(2, directLoop.conversationEntryCount(),
+                "the canonical session conversation must not be reset");
     }
 
     @Test

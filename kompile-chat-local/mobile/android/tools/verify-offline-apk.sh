@@ -256,6 +256,20 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
     fail "libsdx_llm.so missing GGUF preparation export: $symbol"
   done
  fi
+ if [[ $b == libnd4jcpu.so ]]; then
+  # The exact runtime packaged in the APK must understand the canonical v2
+  # text-generation metadata emitted by current SDZ producers. Byte-for-byte AAR
+  # comparison below then binds this contract to the selected provider artifact.
+  local -a text_generation_v2_contracts=(
+   "causal-lm-in-graph-state-v2"
+   "io.recurrentStates"
+   "duplicate recurrent state input"
+  )
+  for contract in "${text_generation_v2_contracts[@]}"; do
+   grep -aFq "$contract" "$f" ||
+    fail "packaged libnd4jcpu.so lacks text-generation v2 contract: $contract"
+  done
+ fi
 }
 for b in "${!LIBS[@]}"; do audit_elf "$b" "${LIBS[$b]}"; done
 

@@ -301,5 +301,23 @@ public class UnifiedCrawlRequest {
          * replacement rather than incremental enrichment.</p>
          */
         private Boolean clearGraphBeforeRun;
+
+        /** Per-request override for post-enrichment knowledge-graph embedding training. */
+        private Boolean trainEmbeddingsAfterEnrichment;
+
+        /** Knowledge-graph embedding algorithm: TRANSE or ROTATE. */
+        private String embeddingAlgorithm;
+
+        /** Entity/relation embedding dimension. Null uses the algorithm default. */
+        private Integer embeddingDim;
+
+        /** Cold-start training epochs. Null uses the algorithm default. */
+        private Integer embeddingEpochs;
+
+        /** Training batch size. Null uses the crawl/global or algorithm default. */
+        private Integer embeddingBatchSize;
+
+        /** Epochs used when incrementally warm-starting a persisted model. */
+        private Integer embeddingWarmStartEpochs;
     }
 }

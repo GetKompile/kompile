@@ -38,8 +38,9 @@ import java.util.stream.Collectors;
  * deployments), the engine falls back to TF-IDF bag-of-words vectors
  * with cosine similarity.
  *
- * <p>The engine watches {@code ~/.kompile/memory/} and
- * {@code ~/.claude/projects/} and refreshes the index every 60 seconds.
+ * <p>The engine watches the active project's {@code .kompile/memory/}, global
+ * {@code ~/.kompile/memory/}, and that project's Claude auto-memory directory.
+ * It refreshes the index every 60 seconds.
  */
 public class SemanticMemoryEngine {
 
@@ -53,7 +54,9 @@ public class SemanticMemoryEngine {
     private final Map<String, double[]> tfidfVectors = new ConcurrentHashMap<>();
     private final Map<String, Integer> documentFrequency = new ConcurrentHashMap<>();
     private final Set<String> vocabulary = ConcurrentHashMap.newKeySet();
+    private volatile List<String> vocabularyOrder = List.of();
     private final List<Path> watchDirs = new CopyOnWriteArrayList<>();
+    private final Path projectDirectory;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
     private final ScheduledExecutorService refreshExecutor;
     private volatile long lastRefreshTime = 0;
@@ -66,6 +69,11 @@ public class SemanticMemoryEngine {
     private volatile String encoderMode = "uninitialized";
 
     public SemanticMemoryEngine() {
+        this(Paths.get(System.getProperty("user.dir")));
+    }
+
+    public SemanticMemoryEngine(Path projectDirectory) {
+        this.projectDirectory = projectDirectory.toAbsolutePath().normalize();
         this.refreshExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "semantic-memory-refresh");
             t.setDaemon(true);
@@ -81,10 +89,13 @@ public class SemanticMemoryEngine {
     public void initialize() {
         if (initialized.getAndSet(true)) return;
 
-        // Standard memory locations
+        // Keep the active project in scope so semantic retrieval is useful for
+        // the session that requested it. Do not recursively mix every Claude
+        // project on the machine into this index.
+        addWatchDir(projectDirectory.resolve(".kompile").resolve("memory"));
         Path home = Paths.get(System.getProperty("user.home"));
         addWatchDir(home.resolve(".kompile").resolve("memory"));
-        addWatchDir(home.resolve(".claude").resolve("projects"));
+        addWatchDir(new MemoryTool().resolveClaudeMemoryDir(projectDirectory));
 
         // Initial scan with TF-IDF (available immediately)
         refreshIndex();
@@ -155,12 +166,13 @@ public class SemanticMemoryEngine {
 
     /**
      * Add a directory to the watch list.
-     * Directories that do not exist are silently ignored.
+     * Missing directories are retained so a memory directory created after
+     * startup is picked up by the next refresh.
      */
     public void addWatchDir(Path dir) {
-        if (Files.isDirectory(dir)) {
-            watchDirs.add(dir);
-        }
+        if (dir == null) return;
+        Path normalized = dir.toAbsolutePath().normalize();
+        if (!watchDirs.contains(normalized)) watchDirs.add(normalized);
     }
 
     /**
@@ -303,15 +315,39 @@ public class SemanticMemoryEngine {
     private void scanDirectory(Path dir) throws IOException {
         if (!Files.isDirectory(dir)) return;
 
+        Set<String> seenIds = new HashSet<>();
         try (var stream = Files.walk(dir, 5)) {
             stream.filter(p -> p.toString().endsWith(".md"))
                   .filter(Files::isRegularFile)
-                  .forEach(this::indexMemoryFile);
+                  .forEach(file -> {
+                      Path normalized = file.toAbsolutePath().normalize();
+                      seenIds.add("file:" + normalized);
+                      indexMemoryFile(normalized, false);
+                  });
         }
+
+        Path normalizedDir = dir.toAbsolutePath().normalize();
+        Set<String> removedIds = memories.stream()
+                .filter(entry -> entry.sourcePath != null
+                        && entry.sourcePath.toAbsolutePath().normalize().startsWith(normalizedDir)
+                        && !seenIds.contains(entry.id))
+                .map(entry -> entry.id)
+                .collect(Collectors.toSet());
+        if (!removedIds.isEmpty()) {
+            memories.removeIf(entry -> removedIds.contains(entry.id));
+            removedIds.forEach(denseVectors::remove);
+            removedIds.forEach(tfidfVectors::remove);
+        }
+        rebuildTfidfIndex();
     }
 
     private void indexMemoryFile(Path file) {
-        String id = "file:" + file.toAbsolutePath();
+        indexMemoryFile(file, true);
+    }
+
+    private void indexMemoryFile(Path file, boolean rebuildTfidf) {
+        Path normalizedFile = file.toAbsolutePath().normalize();
+        String id = "file:" + normalizedFile;
         try {
             long lastModified = Files.getLastModifiedTime(file).toMillis();
             // Skip if already indexed and file hasn't changed
@@ -326,7 +362,8 @@ public class SemanticMemoryEngine {
 
             // Parse YAML frontmatter if present
             String type = "unknown";
-            String name = file.getFileName().toString();
+            String name = normalizedFile.getFileName().toString();
+            String description = "";
             if (content.startsWith("---")) {
                 int endIdx = content.indexOf("---", 3);
                 if (endIdx > 0) {
@@ -337,6 +374,8 @@ public class SemanticMemoryEngine {
                             type = line.substring(5).trim();
                         } else if (line.startsWith("name:")) {
                             name = line.substring(5).trim();
+                        } else if (line.startsWith("description:")) {
+                            description = line.substring(12).trim();
                         }
                     }
                     content = content.substring(endIdx + 3).trim();
@@ -348,9 +387,11 @@ public class SemanticMemoryEngine {
             denseVectors.remove(id);
             tfidfVectors.remove(id);
 
+            String searchableContent = name + "\n" + description + "\n" + content;
             MemoryEntry entry = new MemoryEntry(id, type, name,
-                    StringUtils.truncate(content, MAX_MEMORY_CONTENT_LENGTH), file, lastModified);
-            addEntry(entry);
+                    StringUtils.truncate(searchableContent, MAX_MEMORY_CONTENT_LENGTH),
+                    normalizedFile, lastModified);
+            addEntry(entry, rebuildTfidf);
 
         } catch (IOException e) {
             // Skip unreadable files silently
@@ -358,27 +399,48 @@ public class SemanticMemoryEngine {
     }
 
     private void addEntry(MemoryEntry entry) {
+        addEntry(entry, true);
+    }
+
+    private void addEntry(MemoryEntry entry, boolean rebuildTfidf) {
+        memories.removeIf(existing -> existing.id.equals(entry.id));
+        denseVectors.remove(entry.id);
+        tfidfVectors.remove(entry.id);
         if (useDenseEmbeddings) {
             float[] vec = denseEncode(entry.content);
             if (vec != null) {
                 memories.add(entry);
                 denseVectors.put(entry.id, vec);
+                if (rebuildTfidf) rebuildTfidfIndex();
                 return;
             }
             // Dense encoding failed for this entry — fall through to TF-IDF for this entry
         }
 
-        // TF-IDF path
-        List<String> tokens = tokenize(entry.content);
-        Set<String> uniqueTokens = new HashSet<>(tokens);
-        for (String token : uniqueTokens) {
-            vocabulary.add(token);
-            documentFrequency.merge(token, 1, Integer::sum);
+        memories.add(entry);
+        if (rebuildTfidf) rebuildTfidfIndex();
+    }
+
+    /** Rebuild document frequencies and vectors against one stable vocabulary order. */
+    private synchronized void rebuildTfidfIndex() {
+        documentFrequency.clear();
+        vocabulary.clear();
+        tfidfVectors.clear();
+
+        for (MemoryEntry entry : memories) {
+            Set<String> uniqueTokens = new HashSet<>(tokenize(entry.content));
+            vocabulary.addAll(uniqueTokens);
+            for (String token : uniqueTokens) {
+                documentFrequency.merge(token, 1, Integer::sum);
+            }
         }
 
-        double[] vec = tfidfVector(tokens);
-        memories.add(entry);
-        tfidfVectors.put(entry.id, vec);
+        List<String> ordered = new ArrayList<>(vocabulary);
+        Collections.sort(ordered);
+        vocabularyOrder = List.copyOf(ordered);
+        for (MemoryEntry entry : memories) {
+            tfidfVectors.put(entry.id, tfidfVector(tokenize(entry.content)));
+        }
     }
 
     // ── Dense encoding via SameDiff ───────────────────────────────────────────
@@ -429,7 +491,7 @@ public class SemanticMemoryEngine {
             termFreq.merge(token, 1, Integer::sum);
         }
 
-        List<String> vocabList = new ArrayList<>(vocabulary);
+        List<String> vocabList = vocabularyOrder;
         double[] vec = new double[vocabList.size()];
         int totalDocs = Math.max(1, memories.size());
 

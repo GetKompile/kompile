@@ -184,6 +184,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     // Injected settings file path (for cleanup)
     private Path injectedSettingsFile;
+    // Provider-global arguments (Pi's -e adapter path) for the child process.
+    private volatile List<String> mcpCommandPrefixArguments = List.of();
 
     // Set during agent processing for SIGINT handling
     private volatile boolean agentBusy = false;
@@ -495,7 +497,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             Instant startTime = Instant.now();
 
             try {
-                history.open("", agent + " (emulated)", false);
+                history.open("", agent + " (emulated)", false, Path.of(workingDir));
             } catch (IOException e) {
                 System.err.println("Warning: Could not open chat history: " + e.getMessage());
             }
@@ -4987,10 +4989,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // ── Command building ───────────────────────────────────────────────────
 
     /**
-     * Build the provider-agnostic interactive command for managed passthrough.
-     * User prompts are written to stdin after the child process starts; this path
-     * must not add provider prompt-mode commands or provider-specific
-     * continuation, fork, or session flags.
+     * Build the interactive command for managed passthrough. User prompts are
+     * written to stdin after launch. A requested resume attaches the first child
+     * process to the resolved native session through the centralized provider
+     * argument mapping; ordinary and isolated background launches stay fresh.
      * <p>
      * It DOES honor {@code --skip-permissions} via the single shared interactive command builder
      * (WP2/F7 — the flag was previously accepted but silently dropped). For opencode this adds
@@ -5007,7 +5009,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 agent, resolvedWorkingDir, model, thinking);
         cmd.addAll(AgentLaunchDefaults.commandArguments(
                 agent, selection.model(), selection.thinking(), AgentLaunchDefaults.LaunchMode.INTERACTIVE));
-        return cmd;
+        if (resumeSessionId != null && !resumeSessionId.isBlank()) {
+            cmd.addAll(AgentLaunchDefaults.resumeArguments(agent, agentSessionId));
+        }
+        return SubprocessAgentRunner.prependGlobalOptions(cmd, mcpCommandPrefixArguments);
     }
 
     private void toggleManagedStatusBar() {
@@ -5683,12 +5688,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // ── MCP tool injection ─────────────────────────────────────────────────
 
     private void injectMcpTools() {
+        mcpCommandPrefixArguments = List.of();
         if (!injectTools) return;
         try {
             String sseUrl = mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
             injectedSettingsFile = McpToolInjection.injectTools(
                     Path.of(workingDir), agent, sseUrl);
             if (injectedSettingsFile != null) {
+                mcpCommandPrefixArguments = McpToolInjection.commandLineOverrides(
+                        Path.of(workingDir), agent);
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
                 System.out.println(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
                         + DIM + " (" + injectedSettingsFile + ")" + RESET);
@@ -5700,6 +5708,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     private void removeMcpTools() {
         McpToolInjection.removeTools(injectedSettingsFile);
+        mcpCommandPrefixArguments = List.of();
     }
 
     // ── Key bindings ───────────────────────────────────────────────────────

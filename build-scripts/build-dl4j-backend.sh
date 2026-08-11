@@ -22,7 +22,7 @@
 #                              auto-restore; prints the restore command after build.
 #   --libnd4j-home <path>      Reuse a prebuilt libnd4j C++ tree (skips C++ build)
 #   --skip-cpp                 Build only nd4j-*-preset and nd4j-* (skip :libnd4j)
-#   --jobs <N>                 Parallel C++ compilation threads (default: nproc)
+#   --jobs <N>                 Parallel C++ compilation threads (default: 12)
 #   --maven-repo-local <path>  Install into an isolated Maven local repository
 #   --dry-run                  Print the mvn command and exit without running it
 #   -h, --help                 Show this help and exit
@@ -68,8 +68,9 @@ DO_COMPILE=0
 PIN_VERSION=""
 LIBND4J_HOME=""
 SKIP_CPP=0
-JOBS="${BUILD_THREADS:-$(nproc 2>/dev/null || echo 8)}"
+JOBS="${BUILD_THREADS:-12}"
 MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-}"
+CCACHE_BIN="${CCACHE_BIN:-$(command -v ccache || true)}"
 DRY_RUN=0
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -113,6 +114,8 @@ if [[ "${DL4J_DIR}" != /* ]]; then
 fi
 
 [ -d "${DL4J_DIR}" ] || die "DL4J directory not found: ${DL4J_DIR}  (use --dl4j-dir)"
+[ -n "${CCACHE_BIN}" ] && [ -x "${CCACHE_BIN}" ] \
+  || die "ccache is required for native DL4J builds; set CCACHE_BIN to its executable"
 
 log "DL4J dir: ${DL4J_DIR}"
 log "Chip:     ${CHIP}"
@@ -170,15 +173,30 @@ fi
 
 log "Installing nd4j version: ${INSTALL_VERSION}"
 
+# Isolate mutable SNAPSHOT artifacts by source revision unless the caller explicitly selects a
+# repository. This prevents a fresh nd4j-api from being combined with an older native binding.
+DL4J_REVISION="$(git -C "${DL4J_DIR}" rev-parse --short=12 HEAD)"
+if [ -z "${MAVEN_REPO_LOCAL}" ]; then
+  MAVEN_REPO_LOCAL="${KOMPILE_ROOT}/.kompile/m2/dl4j-${DL4J_REVISION}-${CHIP}"
+fi
+log "DL4J revision: ${DL4J_REVISION}"
+log "Maven repo:    ${MAVEN_REPO_LOCAL}"
+
 # ─── Build the module list ────────────────────────────────────────────────────
 if [ "${SKIP_CPP}" -eq 1 ] || [ -n "${LIBND4J_HOME}" ]; then
-  PL_MODULES=":${ND4J_PRESET},:${ND4J_ARTIFACT}"
+  PL_MODULES=":nd4j-api,:${ND4J_PRESET},:${ND4J_ARTIFACT}"
 else
-  PL_MODULES=":libnd4j,:${ND4J_PRESET},:${ND4J_ARTIFACT}"
+  PL_MODULES=":nd4j-api,:libnd4j,:${ND4J_PRESET},:${ND4J_ARTIFACT}"
 fi
 
 # ─── Compose -Dlibnd4j.* flags ───────────────────────────────────────────────
-LIBND4J_ARGS=()
+# The native build verifies this contract after CMake configuration. Passing it
+# explicitly prevents an otherwise valid auto-detected ccache setup from being rejected.
+LIBND4J_CMAKE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER:FILEPATH=${CCACHE_BIN} -DCMAKE_CXX_COMPILER_LAUNCHER:FILEPATH=${CCACHE_BIN} -DSD_REQUIRE_COMPILER_CACHE=ON -DSD_EXPECTED_COMPILER_CACHE:FILEPATH=${CCACHE_BIN}"
+LIBND4J_ARGS=(
+  "-Dlibnd4j.triton=ON"
+  "-Dlibnd4j.log=libnd4j-build.log"
+)
 
 # Helper flag (comma → space-separated for the -D value DL4J expects)
 if [ -n "${HELPERS}" ]; then
@@ -196,11 +214,6 @@ if [ -n "${EXTENSION}" ]; then
   )
 fi
 
-# MLIR/Triton JIT (--compile shorthand adds this)
-if [ "${DO_COMPILE}" -eq 1 ]; then
-  LIBND4J_ARGS+=("-Dlibnd4j.triton=ON")
-fi
-
 # CUDA-specific flags
 if [ "${CHIP}" = "cuda" ]; then
   LIBND4J_ARGS+=("-Dlibnd4j.chip=cuda" "-Dlibnd4j.cuda.version=${CUDA_VERSION}")
@@ -216,7 +229,7 @@ LIBND4J_ARGS+=("-Dlibnd4j.buildthreads=${JOBS}")
 
 # ─── Compose the full mvn command ─────────────────────────────────────────────
 MVN_CMD=(
-  "${MVN}" "-P${MVN_PROFILE}" clean install -DskipTests
+  "${MVN}" "-P${MVN_PROFILE}" clean install -DskipTests -am
   -pl "${PL_MODULES}"
   "${LIBND4J_ARGS[@]}"
 )
@@ -242,7 +255,7 @@ CONSUME_CMD_DISPLAY="${CONSUME_CMD_DISPLAY# }"
 if [ "${DRY_RUN}" -eq 1 ]; then
   echo ""
   echo "========== DRY-RUN: would execute from ${DL4J_DIR} =========="
-  echo "  ${MVN_CMD_DISPLAY}"
+  echo "  CMAKE_ARGUMENTS=${LIBND4J_CMAKE_ARGS@Q} DL4J_COMPILER_CACHE=${CCACHE_BIN@Q} ${MVN_CMD_DISPLAY}"
   echo "================================================================"
   echo ""
   echo "Kompile consumption line:"
@@ -251,9 +264,11 @@ if [ "${DRY_RUN}" -eq 1 ]; then
 fi
 
 log "Building DL4J backend from: ${DL4J_DIR}"
-log "Command: ${MVN_CMD_DISPLAY}"
+log "Command: CMAKE_ARGUMENTS=${LIBND4J_CMAKE_ARGS@Q} DL4J_COMPILER_CACHE=${CCACHE_BIN@Q} ${MVN_CMD_DISPLAY}"
 
 cd "${DL4J_DIR}"
+CMAKE_ARGUMENTS="${LIBND4J_CMAKE_ARGS}" \
+DL4J_COMPILER_CACHE="${CCACHE_BIN}" \
 "${MVN_CMD[@]}"
 BUILD_RC=$?
 cd "${KOMPILE_ROOT}"
@@ -261,6 +276,35 @@ cd "${KOMPILE_ROOT}"
 if [ "${BUILD_RC}" -ne 0 ]; then
   die "DL4J backend build failed (exit ${BUILD_RC})"
 fi
+
+# Verify the packaged Java binding overrides the exact NativeOps ABI that SameDiff calls.
+ARTIFACT_BASE="${MAVEN_REPO_LOCAL}/org/eclipse/deeplearning4j"
+BACKEND_JAR="${ARTIFACT_BASE}/${ND4J_ARTIFACT}/${INSTALL_VERSION}/${ND4J_ARTIFACT}-${INSTALL_VERSION}.jar"
+if [ "${CHIP}" = "cuda" ]; then
+  BINDING_CLASS="org.nd4j.linalg.jcublas.bindings.Nd4jCuda"
+else
+  BINDING_CLASS="org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu"
+fi
+[ -f "${BACKEND_JAR}" ] || die "Packaged backend jar not found: ${BACKEND_JAR}"
+ABI_OUTPUT="$(javap -classpath "${BACKEND_JAR}" "${BINDING_CLASS}")"
+EXPECTED_DISPATCH_ABI="  public native org.bytedeco.javacpp.Pointer dispatchNativePlan(org.bytedeco.javacpp.Pointer, org.bytedeco.javacpp.Pointer, long, org.bytedeco.javacpp.Pointer, long, org.bytedeco.javacpp.Pointer, long, int, int);"
+ABI_MATCH_COUNT="$(grep -Fxc "${EXPECTED_DISPATCH_ABI}" <<<"${ABI_OUTPUT}" || true)"
+if [ "${ABI_MATCH_COUNT}" -ne 1 ]; then
+  die "${BINDING_CLASS} does not declare exactly one current 9-argument dispatchNativePlan ABI"
+fi
+
+BUILD_MANIFEST="${MAVEN_REPO_LOCAL}/dl4j-build-manifest.txt"
+{
+  echo "revision=${DL4J_REVISION}"
+  echo "version=${INSTALL_VERSION}"
+  echo "chip=${CHIP}"
+  echo "backend=${ND4J_ARTIFACT}"
+  echo "preset=${ND4J_PRESET}"
+  echo "dispatchAbi=9"
+  find "${ARTIFACT_BASE}" -type f -path "*/${INSTALL_VERSION}/*" -print0 \
+    | sort -z | xargs -0 sha256sum
+} >"${BUILD_MANIFEST}"
+log "Wrote aligned artifact manifest: ${BUILD_MANIFEST}"
 
 log "DL4J backend build SUCCEEDED — installed ${INSTALL_VERSION} to ${MAVEN_REPO_LOCAL:-the active Maven local repository}"
 

@@ -143,14 +143,15 @@ class GraphEmbeddingsToolTest {
     }
 
     @Test
-    void execute_nullBaseUrl_returnsError() throws ToolExecutionException {
+    void execute_nullBaseUrl_usesProjectLocalBackend() throws ToolExecutionException {
         GraphEmbeddingsTool noUrl = new GraphEmbeddingsTool(null, OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "train");
         params.put("fact_sheet_id", 1);
         ToolResult result = noUrl.execute(params, ctx());
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"));
+        assertTrue(result.getOutput().contains("graph_embeddings local error"));
+        assertTrue(result.getOutput().contains("project-local"));
     }
 
     // ── missing required param guards (no network needed) ────────────────────

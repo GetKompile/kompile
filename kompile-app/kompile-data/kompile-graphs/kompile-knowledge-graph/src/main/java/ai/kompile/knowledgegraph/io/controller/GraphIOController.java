@@ -12,6 +12,7 @@ package ai.kompile.knowledgegraph.io.controller;
 import ai.kompile.knowledgegraph.io.GraphIOService;
 import ai.kompile.knowledgegraph.io.model.ExportResult;
 import ai.kompile.knowledgegraph.io.model.ImportResult;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +23,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+/**
+ * Legacy interoperability endpoint for non-native exchange formats. Native .kgraph, ASCII, and
+ * PNG diagnostics are served by UnifiedGraphIOController. This compatibility surface remains
+ * enabled by default while callers migrate; it can still be disabled explicitly.
+ */
+@ConditionalOnProperty(value = "kompile.graph.http.legacy-enabled", havingValue = "true", matchIfMissing = true)
 @RestController
 @RequestMapping("/api/graph/io")
 public class GraphIOController {
@@ -40,7 +47,10 @@ public class GraphIOController {
             @RequestParam(value = "factSheetId", required = false) Long factSheetId) throws Exception {
         byte[] payload = file.getBytes();
         byte[] secondary = edgesFile != null ? edgesFile.getBytes() : null;
-        return ResponseEntity.ok(ioService.importGraph(format, payload, secondary));
+        ImportResult result = "kgraph".equalsIgnoreCase(format)
+                ? ioService.importGraph(format, payload, secondary, factSheetId)
+                : ioService.importGraph(format, payload, secondary);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/export")

@@ -17,10 +17,9 @@ public final class GraphChatPrompt {
      * @return compact system prompt for local graph-assisted chat
      */
     public static String systemPrompt() {
-        return "You are a graph assistant. Call tools to answer questions about people and organizations.\n\n"
-                + "TOOL: graph_reasoning_query\n"
-                + "To search: {\"tool\":\"graph_reasoning_query\",\"args\":{\"operation\":\"SEARCH\",\"queryText\":\"name\"}}\n"
-                + "To describe: {\"tool\":\"graph_reasoning_query\",\"args\":{\"operation\":\"DESCRIBE\",\"entityId\":\"id\"}}\n\n"
-                + "RULES: Output ONLY the JSON when calling a tool. After TOOL_RESULT, give a short answer.";
+        return "You are a graph assistant. Use the available graph tools when the answer "
+                + "depends on people, organizations, entities, or relationships in the graph. "
+                + "Inspect relevant entities before drawing conclusions, do not invent missing facts, "
+                + "and give a concise answer grounded in the returned graph data.";
     }
 }

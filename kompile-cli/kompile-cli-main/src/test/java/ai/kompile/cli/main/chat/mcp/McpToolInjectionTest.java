@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.chat.mcp;
 
+import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -148,6 +149,95 @@ class McpToolInjectionTest {
 
         assertEquals(null,
                 McpToolInjectionSupport.normalizeCurrentCommand(missing + " (deleted)"));
+    }
+
+
+    @Test
+    void piInjectionWritesDirectToolsConfigAndRestoresExistingFile() throws Exception {
+        String previousBinary = System.getProperty("kompile.cli.binary");
+        String previousAdapter = System.getProperty("kompile.pi.adapter.path");
+        Path workDir = tempDir.resolve("pi-work");
+        Path adapter = tempDir.resolve("adapter");
+        Files.createDirectories(workDir);
+        Files.createDirectories(adapter);
+        Files.writeString(adapter.resolve("package.json"), "{}");
+        Path config = workDir.resolve(".pi").resolve("mcp.json");
+        Files.createDirectories(config.getParent());
+        String original = "{\n  \"mcpServers\": { \"other\": { \"command\": \"other\" } }\n}\n";
+        Files.writeString(config, original);
+        Path binary = createExecutable("pi-kompile-cli");
+
+        try {
+            System.setProperty("kompile.cli.binary", binary.toString());
+            System.setProperty("kompile.pi.adapter.path", adapter.toString());
+
+            Path written = McpToolInjection.injectTools(workDir, "pi-cli", "http://localhost:8080/mcp/sse");
+            assertEquals(config, written);
+
+            String configured = Files.readString(config);
+            assertTrue(configured.contains("\"other\""));
+            assertTrue(configured.contains("\"kompile\""));
+            assertTrue(configured.contains("\"directTools\" : true") || configured.contains("\"directTools\" : true"));
+            assertTrue(configured.contains("\"toolPrefix\" : \"mcp\""));
+            assertTrue(configured.contains("\"lifecycle\" : \"eager\""));
+            assertTrue(configured.contains("http://localhost:8080/mcp/sse"));
+
+            assertEquals(List.of("-e", adapter.toString()),
+                    McpToolInjection.commandLineOverrides(workDir, "pi"));
+        } finally {
+            McpToolInjection.removeTools(config);
+            assertEquals(original, Files.readString(config));
+            restoreProperty("kompile.cli.binary", previousBinary);
+            restoreProperty("kompile.pi.adapter.path", previousAdapter);
+        }
+    }
+
+    @Test
+    void piManagedCommandReceivesExtensionBeforeProviderFlags() throws Exception {
+        String previousAdapter = System.getProperty("kompile.pi.adapter.path");
+        Path adapter = tempDir.resolve("adapter-command");
+        Files.createDirectories(adapter);
+        try {
+            System.setProperty("kompile.pi.adapter.path", adapter.toString());
+            List<String> base = SubprocessAgentRunner.buildManagedCommand(
+                    "pi", "pi", "hello", false, null, true, tempDir, null);
+            List<String> command = SubprocessAgentRunner.prependGlobalOptions(
+                    base, McpToolInjection.commandLineOverrides(tempDir, "pi"));
+
+            assertEquals("pi", command.get(0));
+            assertEquals("-e", command.get(1));
+            assertEquals(adapter.toString(), command.get(2));
+        } finally {
+            restoreProperty("kompile.pi.adapter.path", previousAdapter);
+        }
+    }
+
+    @Test
+    void piAdapterIsProvisionedFromClasspath() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousAdapter = System.getProperty("kompile.pi.adapter.path");
+        Path home = tempDir.resolve("pi-home");
+        Files.createDirectories(home);
+        try {
+            System.setProperty("user.home", home.toString());
+            System.clearProperty("kompile.pi.adapter.path");
+
+            Path adapter = PiMcpAdapterProvisioner.ensureProvisioned();
+            assertTrue(Files.isRegularFile(adapter.resolve("package.json")));
+            assertTrue(Files.isRegularFile(adapter.resolve("index.ts")));
+            assertEquals(adapter, PiMcpAdapterProvisioner.ensureProvisioned());
+        } finally {
+            restoreProperty("user.home", previousHome);
+            restoreProperty("kompile.pi.adapter.path", previousAdapter);
+        }
+    }
+
+    private static void restoreProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
     }
 
     private Path createExecutable(String name) throws Exception {

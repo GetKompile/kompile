@@ -106,6 +106,7 @@ import { VlmTestWorkflowComponent } from './components/vlm-test-workflow/vlm-tes
 // reached only from other standalone components carry their own imports and are not
 // listed here.
 import { AgentModelConfigComponent } from './components/agent-model-config/agent-model-config.component';
+import { AgentBundlesComponent } from './components/agent-bundles/agent-bundles.component';
 import { AgentTasksComponent } from './components/agent-tasks/agent-tasks.component';
 import { AppShellComponent } from '@shared/components/app-shell/app-shell.component';
 import { ArchiveAssemblyComponent } from './components/archive-assembly/archive-assembly.component';
@@ -160,6 +161,7 @@ import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-or
 @NgModule({
   declarations: [
     AppComponent,
+    AgentBundlesComponent,
     AutoConfigureComponent,
     ContextualRagDebugComponent,
     CrossIndexStatusComponent,

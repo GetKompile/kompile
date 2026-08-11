@@ -838,5 +838,61 @@
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.VersionProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.Info$ManifestVersionProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.exec.NewStepCreator",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.AuthCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.AuthCommand$LoginCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.AuthCommand$LogoutCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.auth.AuthCommand$ListCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.chat.ChatCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.chat.CrawlCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.mcp.McpStdioCommand",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
   }
 ]

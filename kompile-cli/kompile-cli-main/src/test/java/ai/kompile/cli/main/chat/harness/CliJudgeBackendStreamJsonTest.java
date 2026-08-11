@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.harness;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * stream-json stdin/stdout protocol. Requires the claude CLI to
  * be installed and authenticated.
  */
+@EnabledIfEnvironmentVariable(named = "KOMPILE_LIVE_AGENT_TESTS", matches = "(?i:true)")
 class CliJudgeBackendStreamJsonTest {
 
     @Test

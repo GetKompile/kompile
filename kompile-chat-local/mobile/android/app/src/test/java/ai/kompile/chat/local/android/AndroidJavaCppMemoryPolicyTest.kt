@@ -76,12 +76,13 @@ class AndroidJavaCppMemoryPolicyTest {
         ).readText()
         val configureLibrary = runtime.indexOf("SdxAndroidLlmLibrary.configure(")
         val loadTransport = runtime.indexOf("SdxAndroidLlmLibrary.bind(")
-        val createRuntime = runtime.indexOf("native.sdxLlmCreateRuntime()")
+        val createRuntime = runtime.indexOf("abi.sdxLlmCreateRuntime()")
         assertTrue(configureLibrary >= 0)
         assertTrue(loadTransport > configureLibrary)
         assertTrue(createRuntime > loadTransport)
-        assertFalse(runtime.contains("org.bytedeco"))
+        assertTrue(runtime.contains("import org.bytedeco.javacpp.Pointer"))
         assertFalse(runtime.contains("Pointer.maxBytes()"))
+        assertFalse(runtime.contains("Pointer.maxPhysicalBytes()"))
     }
 
     private companion object {

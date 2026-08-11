@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.mcp;
 
+import ai.kompile.cli.main.chat.roles.BuiltInRoles;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
@@ -72,5 +73,14 @@ class McpStdioCommandTest {
         ObjectNode callResult = command.buildCallResult(ToolResult.success("plain text"));
 
         assertFalse(callResult.has("structuredContent"));
+    }
+
+    @Test
+    void architectRoleKeepsCodexDefaultsWithFullAccess() {
+        assertEquals("gpt-5.6-sol", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").getModel());
+        assertEquals("xhigh", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").resolveThinking("gpt-5.6-sol"));
+        assertTrue(BuiltInRoles.ARCHITECT.isCanSpawnSubagents());
+        assertEquals(Set.of("*"), BuiltInRoles.ARCHITECT.getEnabledTools());
+        assertTrue(BuiltInRoles.ARCHITECT.getPermissionOverrides().isEmpty());
     }
 }

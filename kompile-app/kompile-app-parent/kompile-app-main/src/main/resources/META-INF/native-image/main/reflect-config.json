@@ -11233,13 +11233,6 @@
   "methods":[{"name":"CGLIB$SET_THREAD_CALLBACKS","parameterTypes":["org.springframework.cglib.proxy.Callback[]"] }]
 },
 {
-  "name":"ai.kompile.knowledgegraph.io.GraphEmbeddingSidecar",
-  "allDeclaredFields":true,
-  "queryAllDeclaredMethods":true,
-  "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":[] }]
-},
-{
   "name":"ai.kompile.knowledgegraph.io.GraphIOService",
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,

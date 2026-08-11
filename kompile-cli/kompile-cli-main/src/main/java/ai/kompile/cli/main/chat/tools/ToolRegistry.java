@@ -53,7 +53,12 @@ public class ToolRegistry {
     }
 
     public void register(CliTool tool) {
-        tools.put(tool.id(), tool);
+        Objects.requireNonNull(tool, "tool");
+        String id = tool.id();
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("Tool id must not be blank");
+        }
+        tools.put(id, tool);
     }
 
     public void unregister(String id) {
@@ -103,6 +108,23 @@ public class ToolRegistry {
             function.put("name", tool.id());
             function.put("description", tool.description());
             function.set("parameters", tool.parameterSchema());
+            toolsArray.add(toolDef);
+        }
+        return toolsArray;
+    }
+
+    /**
+     * Build provider-neutral definitions for DirectLlmClient. Direct provider
+     * adapters translate this MCP-style shape to Responses, Chat Completions,
+     * Anthropic, or Pi without losing the tool name.
+     */
+    public ArrayNode buildDirectToolDefinitions(AgentConfig agent) {
+        ArrayNode toolsArray = objectMapper.createArrayNode();
+        for (CliTool tool : getToolsForAgent(agent)) {
+            ObjectNode toolDef = objectMapper.createObjectNode();
+            toolDef.put("name", tool.id());
+            toolDef.put("description", tool.description());
+            toolDef.set("inputSchema", tool.parameterSchema());
             toolsArray.add(toolDef);
         }
         return toolsArray;

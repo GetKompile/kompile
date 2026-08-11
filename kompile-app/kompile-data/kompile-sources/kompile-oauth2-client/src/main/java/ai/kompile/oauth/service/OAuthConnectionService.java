@@ -16,10 +16,14 @@
 
 package ai.kompile.oauth.service;
 
+import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.common.auth.OAuthCredentialLifecycle;
 import ai.kompile.oauth.domain.ConnectionStatus;
 import ai.kompile.oauth.domain.OAuthConnection;
+import ai.kompile.oauth.domain.PendingOAuthState;
 import ai.kompile.oauth.dto.*;
 import ai.kompile.oauth.repository.OAuthConnectionRepository;
+import ai.kompile.oauth.repository.PendingOAuthStateRepository;
 import ai.kompile.oauth.service.providers.OAuthProviderHandler;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -30,6 +34,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
@@ -48,11 +53,12 @@ public class OAuthConnectionService {
 
 
     private static final Logger log = LoggerFactory.getLogger(OAuthConnectionService.class);
+    private static final long MINIMUM_TOKEN_VALIDITY_MILLIS = 300_000L;
 
     private OAuthConnectionRepository repository;
+    private PendingOAuthStateRepository stateRepository;
     private TokenEncryptionService encryptionService;
     private final Map<String, OAuthProviderHandler> handlers = new ConcurrentHashMap<>();
-    private final Map<String, String> pendingStates = new ConcurrentHashMap<>();
 
     @Value("${kompile.oauth.redirect-base-url:}")
     private String redirectBaseUrl;
@@ -60,9 +66,11 @@ public class OAuthConnectionService {
     @Autowired
     public OAuthConnectionService(
             OAuthConnectionRepository repository,
+            PendingOAuthStateRepository stateRepository,
             TokenEncryptionService encryptionService,
             @Autowired(required = false) List<OAuthProviderHandler> providerHandlers) {
         this.repository = repository;
+        this.stateRepository = stateRepository;
         this.encryptionService = encryptionService;
 
         // Register all available handlers
@@ -167,11 +175,7 @@ public class OAuthConnectionService {
             throw new IllegalStateException("OAuth provider not configured: " + providerId);
         }
 
-        // Generate state for CSRF protection
-        String state = generateState();
-        pendingStates.put(state, providerId);
-
-        // Determine redirect URI
+        // Determine and bind the redirect URI before persisting the CSRF state.
         String redirectUri = customRedirectUri;
         if (redirectUri == null || redirectUri.isEmpty()) {
             if (redirectBaseUrl != null && !redirectBaseUrl.isEmpty()) {
@@ -181,6 +185,16 @@ public class OAuthConnectionService {
                 redirectUri = "/api/oauth/" + providerId + "/callback";
             }
         }
+
+        String state = generateState();
+        Instant createdAt = Instant.now();
+        stateRepository.save(PendingOAuthState.builder()
+                .state(state)
+                .providerId(providerId)
+                .redirectUri(redirectUri)
+                .createdAt(createdAt)
+                .expiresAt(createdAt.plusSeconds(600))
+                .build());
 
         String authUrl = handler.buildAuthorizationUrl(redirectUri, state);
 
@@ -196,11 +210,19 @@ public class OAuthConnectionService {
      */
     @Transactional
     public OAuthConnectionDto completeAuthorization(String providerId, String code, String state, String redirectUri) {
-        // Validate state
-        String expectedProvider = pendingStates.remove(state);
-        if (expectedProvider == null || !expectedProvider.equals(providerId)) {
+        // Resolve and consume the persisted CSRF state exactly once.
+        PendingOAuthState pendingState = stateRepository.findById(state)
+                .orElseThrow(() -> new SecurityException("Invalid OAuth state parameter"));
+        if (pendingState.isExpired()) {
+            stateRepository.delete(pendingState);
+            throw new SecurityException("Invalid or expired OAuth state parameter");
+        }
+        if (!pendingState.getProviderId().equals(providerId)
+                || !Objects.equals(pendingState.getRedirectUri(), redirectUri)) {
+            stateRepository.delete(pendingState);
             throw new SecurityException("Invalid OAuth state parameter");
         }
+        stateRepository.delete(pendingState);
 
         OAuthProviderHandler handler = handlers.get(providerId);
         if (handler == null) {
@@ -223,11 +245,7 @@ public class OAuthConnectionService {
                 .orElse(new OAuthConnection());
 
         connection.setProviderId(providerId);
-        connection.setAccessTokenEncrypted(encryptionService.encrypt(tokenResponse.getAccessToken()));
-        connection.setRefreshTokenEncrypted(
-                tokenResponse.getRefreshToken() != null ?
-                        encryptionService.encrypt(tokenResponse.getRefreshToken()) : null);
-        connection.setTokenExpiresAt(tokenResponse.getExpiresAt());
+        applyCredential(connection, credentialFrom(tokenResponse, null));
         connection.setScope(tokenResponse.getScope());
         connection.setStatus(ConnectionStatus.CONNECTED);
         connection.setLastError(null);
@@ -266,20 +284,35 @@ public class OAuthConnectionService {
             return null;
         }
 
-        // Check if token needs refresh
-        if (connection.isTokenExpired() && connection.canRefresh()) {
-            refreshConnection(providerId);
+        ManagedCredential current = decryptCredential(connection);
+        ManagedCredential resolved;
+        try {
+            resolved = OAuthCredentialLifecycle.resolve(
+                    current,
+                    MINIMUM_TOKEN_VALIDITY_MILLIS,
+                    System.currentTimeMillis(),
+                    ignored -> {
+                        refreshConnection(providerId);
+                        OAuthConnection refreshed = repository.findById(providerId).orElse(null);
+                        if (refreshed == null || refreshed.getStatus() != ConnectionStatus.CONNECTED) {
+                            throw new IOException("OAuth connection disappeared while refreshing " + providerId);
+                        }
+                        return decryptCredential(refreshed);
+                    });
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to resolve OAuth credential for " + providerId, e);
+        }
+
+        if (resolved != current) {
             connection = repository.findById(providerId).orElse(null);
             if (connection == null || connection.getStatus() != ConnectionStatus.CONNECTED) {
                 return null;
             }
         }
 
-        // Update last used timestamp
         connection.setLastUsedAt(Instant.now());
         repository.save(connection);
-
-        return encryptionService.decrypt(connection.getAccessTokenEncrypted());
+        return resolved.getAccess();
     }
 
     /**
@@ -302,24 +335,24 @@ public class OAuthConnectionService {
             throw new IllegalArgumentException("Unknown OAuth provider: " + providerId);
         }
 
-        String refreshToken = encryptionService.decrypt(connection.getRefreshTokenEncrypted());
-        OAuthTokenResponse tokenResponse = handler.refreshAccessToken(refreshToken);
+        ManagedCredential current = decryptCredential(connection);
+        OAuthTokenResponse tokenResponse = handler.refreshAccessToken(current.getRefresh());
 
         if (!tokenResponse.isSuccess()) {
-            // Mark connection as error
             connection.setStatus(ConnectionStatus.ERROR);
             connection.setLastError("Token refresh failed: " + tokenResponse.getErrorDescription());
             repository.save(connection);
-
             throw new RuntimeException("Token refresh failed: " + tokenResponse.getErrorDescription());
         }
 
-        // Update connection with new tokens
-        connection.setAccessTokenEncrypted(encryptionService.encrypt(tokenResponse.getAccessToken()));
-        if (tokenResponse.getRefreshToken() != null) {
-            connection.setRefreshTokenEncrypted(encryptionService.encrypt(tokenResponse.getRefreshToken()));
+        try {
+            ManagedCredential refreshed = OAuthCredentialLifecycle.refresh(
+                    current,
+                    ignored -> credentialFrom(tokenResponse, current));
+            applyCredential(connection, refreshed);
+        } catch (IOException e) {
+            throw new RuntimeException("Invalid OAuth refresh result for " + providerId, e);
         }
-        connection.setTokenExpiresAt(tokenResponse.getExpiresAt());
         connection.setLastRefreshedAt(Instant.now());
         connection.setStatus(ConnectionStatus.CONNECTED);
         connection.setLastError(null);
@@ -344,13 +377,13 @@ public class OAuthConnectionService {
         OAuthConnection connection = connectionOpt.get();
         OAuthProviderHandler handler = handlers.get(providerId);
 
-        // Try to revoke tokens
         if (handler != null) {
-            String accessToken = encryptionService.decrypt(connection.getAccessTokenEncrypted());
-            String refreshToken = connection.getRefreshTokenEncrypted() != null ?
-                    encryptionService.decrypt(connection.getRefreshTokenEncrypted()) : null;
-
-            handler.revokeToken(accessToken, refreshToken);
+            ManagedCredential credential = decryptCredential(connection);
+            try {
+                OAuthCredentialLifecycle.revoke(credential, handler::revokeToken);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to revoke OAuth credential for " + providerId, e);
+            }
         }
 
         // Delete connection from database
@@ -358,6 +391,45 @@ public class OAuthConnectionService {
 
         log.info("OAuth connection disconnected for provider: {}", providerId);
         return true;
+    }
+
+    private ManagedCredential decryptCredential(OAuthConnection connection) {
+        String refreshToken = connection.getRefreshTokenEncrypted() == null
+                ? ""
+                : encryptionService.decrypt(connection.getRefreshTokenEncrypted());
+        long expires = connection.getTokenExpiresAt() == null
+                ? Long.MAX_VALUE
+                : connection.getTokenExpiresAt().toEpochMilli();
+        return ManagedCredential.oauth(
+                encryptionService.decrypt(connection.getAccessTokenEncrypted()),
+                refreshToken,
+                expires);
+    }
+
+    private ManagedCredential credentialFrom(
+            OAuthTokenResponse response,
+            ManagedCredential current) {
+        String refreshToken = response.getRefreshToken() != null
+                ? response.getRefreshToken()
+                : current == null ? "" : current.getRefresh();
+        long expires = response.getExpiresAt() != null
+                ? response.getExpiresAt().toEpochMilli()
+                : current == null ? Long.MAX_VALUE : current.getExpires();
+        return ManagedCredential.oauth(
+                response.getAccessToken(),
+                refreshToken,
+                expires,
+                current == null ? Map.of() : current.getMetadata());
+    }
+
+    private void applyCredential(OAuthConnection connection, ManagedCredential credential) {
+        connection.setAccessTokenEncrypted(encryptionService.encrypt(credential.getAccess()));
+        connection.setRefreshTokenEncrypted(credential.hasRefreshToken()
+                ? encryptionService.encrypt(credential.getRefresh())
+                : null);
+        connection.setTokenExpiresAt(credential.getExpires() == Long.MAX_VALUE
+                ? null
+                : Instant.ofEpochMilli(credential.getExpires()));
     }
 
     /**
@@ -406,12 +478,15 @@ public class OAuthConnectionService {
     }
 
     /**
-     * Clean up expired states (older than 10 minutes).
+     * Clean up expired authorization states.
      */
     @Scheduled(fixedRate = 60000) // 1 minute
+    @Transactional
     public void cleanupExpiredStates() {
-        // States are automatically cleaned up when used
-        // This could be enhanced with timestamp tracking if needed
+        int deleted = stateRepository.deleteExpired(Instant.now());
+        if (deleted > 0) {
+            log.debug("Deleted {} expired OAuth authorization states", deleted);
+        }
     }
 
     /**

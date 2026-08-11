@@ -73,6 +73,25 @@ class ResumeToolCommandTest {
     }
 
     @Test
+    void piResumePlacesExtensionBeforeSessionSelector() throws Exception {
+        ConversationExporter.ExportResult exportResult = new ConversationExporter.ExportResult(
+                "resume-session",
+                "pi",
+                tempDir.resolve("session.jsonl"),
+                "pi --session resume-session",
+                tempDir);
+
+        List<String> args = buildAgentResumeCommand("pi", exportResult);
+
+        assertEquals("pi", args.get(0));
+        assertTrue(args.contains("-e"));
+        assertTrue(args.contains("--session"));
+        assertTrue(args.indexOf("-e") < args.indexOf("--session"));
+        assertTrue(args.contains("resume-session"));
+        assertFalse(args.contains("--resume"));
+    }
+
+    @Test
     void codexResumeUsesStdioMcpEvenWhenSseUrlExists() throws Exception {
         assertNull(resolveResumeMcpSseUrl("codex"));
         assertEquals("stdio", mcpModeForResume("codex", "http://localhost:8080/mcp/sse"));
@@ -165,7 +184,24 @@ class ResumeToolCommandTest {
         assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("cli-wrapper", "opencode"));
         assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("MANAGED-wrapper", "qwen"));
         assertFalse(ResumeTool.isProviderBackedSyntheticWrapper("ordinary-session", "claude"));
-        assertFalse(ResumeTool.isProviderBackedSyntheticWrapper("managed-enforcer", "pi"));
+        assertTrue(ResumeTool.isProviderBackedSyntheticWrapper("managed-enforcer", "pi"));
+    }
+
+    @Test
+    void literalStandardChatsResumeInKompileInsteadOfPassthrough() {
+        assertTrue(ResumeTool.isStandardKompileChatSession(
+                "cli-standard123", "kompile", "coder", null));
+        assertTrue(ResumeTool.isStandardKompileChatSession(
+                "cli-standard456", "kompile", "unknown", ""));
+
+        assertFalse(ResumeTool.isStandardKompileChatSession(
+                "cli-wrapper", "kompile", "opencode", null));
+        assertFalse(ResumeTool.isStandardKompileChatSession(
+                "cli-wrapper", "kompile", "coder", "native-session-id"));
+        assertFalse(ResumeTool.isStandardKompileChatSession(
+                "passthrough-wrapper", "kompile", "coder", null));
+        assertFalse(ResumeTool.isStandardKompileChatSession(
+                "cli-external", "codex", "coder", null));
     }
 
     @Test

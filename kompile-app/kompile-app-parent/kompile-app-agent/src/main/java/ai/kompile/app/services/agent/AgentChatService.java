@@ -312,7 +312,8 @@ public class AgentChatService {
                 // search mode + re-retrieve, rec 3); if still weak, ABSTAIN with "insufficient evidence"
                 // (rec 2) rather than launching the LLM to guess. Runs BEFORE any process is created, so
                 // an early return cleanly hits the finally{} that completes the emitter.
-                if (sufficiencyGate != null) {
+                if (sufficiencyGate != null
+                        && (request.isEnableRag() || request.isEnableGraphRag())) {
                     RetrievalSufficiencyGate.SufficiencyResult suf =
                             sufficiencyGate.assess(request.getMessage(), retrievedSources);
 

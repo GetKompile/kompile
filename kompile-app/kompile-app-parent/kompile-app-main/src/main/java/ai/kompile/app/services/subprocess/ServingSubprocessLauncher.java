@@ -34,6 +34,7 @@ import ai.kompile.cli.common.logs.AgentLogRecord;
 import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.routing.ServiceEndpointsConfigManager;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.utils.NativeImageInfo;
 import ai.kompile.utils.NativeRuntimePathSelector;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -692,6 +693,35 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
         requireRunning("generateForModel");
         return postJson("/api/llm/generate",
                 Map.of("prompt", prompt, "maxTokens", maxNewTokens));
+    }
+
+    /** Send structured chat to the model-owned template and native parser. */
+    public synchronized String generateChat(
+            StructuredChatLanguageModel.Request request, int maxNewTokens)
+            throws IOException, InterruptedException {
+        if (maxNewTokens <= 0) {
+            throw new IllegalArgumentException("maxNewTokens must be positive");
+        }
+        requireRunning("generateChat");
+        return postJson("/api/llm/chat",
+                Map.of("request", request, "maxTokens", maxNewTokens));
+    }
+
+    /** Structured chat guarded by the exact active model identity. */
+    public synchronized String generateChatForModel(
+            String modelId,
+            StructuredChatLanguageModel.Request request,
+            int maxNewTokens) throws IOException, InterruptedException {
+        if (modelId == null || !modelId.equals(activeModelId)) {
+            throw new IllegalStateException("Requested serving model '" + modelId
+                    + "' is not active (active=" + activeModelId + ")");
+        }
+        if (maxNewTokens <= 0) {
+            throw new IllegalArgumentException("maxNewTokens must be positive");
+        }
+        requireRunning("generateChatForModel");
+        return postJson("/api/llm/chat",
+                Map.of("request", request, "maxTokens", maxNewTokens));
     }
 
     /**

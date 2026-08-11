@@ -7,6 +7,7 @@ package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig.DecomposedPromptTier;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig.ExtractionTarget;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
 import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
@@ -244,6 +245,74 @@ class CrawlExtractionToolBackendTest {
     }
 
     @Test
+    void entityOnlyContractExposesOneEntitySubmissionToolAndStagesNoRelations() throws Exception {
+        GraphSchema schema = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", null)),
+                List.of(new RelationshipType(
+                        "HAS_ROLE", "A person holds a role", null, List.of("serves_as"))),
+                List.of("(PERSON)-[:HAS_ROLE]->(PERSON)"));
+        CrawlExtractionToolBackend backend = backend(
+                corpus(), null, new UnifiedGraph(), schema, ExtractionTarget.ENTITIES_ONLY);
+
+        List<ExtractionToolBackend.ToolDefinition> tools =
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT);
+        assertEquals(1, tools.size());
+        assertEquals(CrawlExtractionToolBackend.SUBMIT_ENTITIES, tools.get(0).name());
+
+        JsonNode parameters = MAPPER.valueToTree(tools.get(0).parameters());
+        assertEquals(List.of("names"), MAPPER.convertValue(
+                parameters.path("required"),
+                MAPPER.getTypeFactory().constructCollectionType(List.class, String.class)));
+        assertTrue(parameters.path("properties").has("names"));
+        assertEquals("array", parameters.path("properties").path("names")
+                .path("type").asText());
+        assertEquals("string", parameters.path("properties").path("names")
+                .path("items").path("type").asText());
+        assertEquals(32, parameters.path("properties").path("names")
+                .path("maxItems").asInt());
+        assertTrue(parameters.path("properties").path("names")
+                .path("uniqueItems").asBoolean());
+        assertEquals(160, parameters.path("properties").path("names")
+                .path("items").path("maxLength").asInt());
+        assertFalse(parameters.toString().contains("relations"));
+        JsonNode context = MAPPER.readTree(
+                backend.toolContextJson(DecomposedPromptTier.COMPACT));
+        assertEquals("ENTITIES_ONLY", context.path("extractionTarget").asText());
+        assertFalse(context.has("graphSchema"), "schema belongs to the later ontology phase");
+
+        JsonNode response = execute(backend, CrawlExtractionToolBackend.SUBMIT_ENTITIES,
+                """
+                {"names":["M. Chen","m. chen","J. Park"]}
+                """);
+
+        assertTrue(response.path("accepted").asBoolean(), response::toPrettyString);
+        assertTrue(response.path("idsAndTypesOwnedByEngine").asBoolean());
+        assertTrue(response.path("ontologyTypingDeferred").asBoolean());
+        assertEquals(2, backend.acceptedResult().orElseThrow().entities().size());
+        assertEquals(List.of("M. Chen", "J. Park"),
+                backend.acceptedResult().orElseThrow().entities().stream()
+                        .map(entity -> entity.name()).toList());
+        assertTrue(backend.acceptedResult().orElseThrow().entities().stream()
+                .allMatch(entity -> "ENTITY".equals(entity.type())));
+        assertEquals(0, backend.acceptedResult().orElseThrow().relations().size());
+    }
+
+    @Test
+    void entityOnlySubmissionRejectsLegacyPipeDelimitedString() throws Exception {
+        CrawlExtractionToolBackend backend = backend(
+                corpus(), null, new UnifiedGraph(), null, ExtractionTarget.ENTITIES_ONLY);
+
+        JsonNode response = execute(backend, CrawlExtractionToolBackend.SUBMIT_ENTITIES,
+                """
+                {"names":"M. Chen | J. Park"}
+                """);
+
+        assertEquals("invalid_entity_submission", response.path("error").asText());
+        assertTrue(response.path("requiredShape").path("names").isArray());
+        assertTrue(backend.acceptedResult().isEmpty());
+    }
+
+    @Test
     void nativeGraphToolAdvertisesOnlyExecutableExtractionCommandsAndReasoningFacets() {
         CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph());
         ExtractionToolBackend.ToolDefinition graphTool = backend
@@ -278,7 +347,7 @@ class CrawlExtractionToolBackendTest {
     }
 
     @Test
-    void compactContextPreservesBroadSchemaWithoutSeedingExampleFacts() throws Exception {
+    void compactContextPreservesVocabularyAndDefersLongSignaturesWithoutSeedingFacts() throws Exception {
         List<NodeType> nodeTypes = new ArrayList<>();
         List<RelationshipType> relationTypes = new ArrayList<>();
         List<String> patterns = new ArrayList<>();
@@ -308,8 +377,12 @@ class CrawlExtractionToolBackendTest {
         assertEquals("TYPE_29", presentedEntityTypes.get(29));
         assertEquals(30, presentedRelationTypes.size());
         assertEquals("REL_29", presentedRelationTypes.get(29));
-        assertEquals(30, graphSchema.path("relationPatterns").size());
-        assertFalse(graphSchema.path("truncated").asBoolean());
+        assertEquals(0, graphSchema.path("relationPatterns").size());
+        assertEquals(30, graphSchema.path("fullCounts").path("relationPatterns").asInt());
+        assertTrue(graphSchema.path("compact").asBoolean());
+        assertTrue(graphSchema.path("truncated").asBoolean());
+        assertEquals("SCHEMA", graphSchema.path("detailedDefinitionsAvailableVia")
+                .path("operation").asText());
         assertFalse(graphSchema.has("submitFormatExamples"));
         assertFalse(graphSchema.toString().contains("source-entity-id"));
         assertFalse(graphSchema.toString().contains("target-entity-id"));
@@ -424,8 +497,8 @@ class CrawlExtractionToolBackendTest {
                 && graphSchema.path("entityTypes").toString().contains("NOISE_00"));
         assertTrue(graphSchema.path("relationTypes").toString()
                 .contains("HAS_ROLE") && graphSchema.path("relationTypes").toString().contains("NOISE_REL_00"));
-        assertTrue(graphSchema.path("relationPatterns").toString()
-                .contains("(PERSON)-[:HAS_ROLE]->(APPROVAL_ROLE)"));
+        assertTrue(graphSchema.path("relationPatterns").isEmpty());
+        assertEquals(21, graphSchema.path("fullCounts").path("relationPatterns").asInt());
         assertFalse(graphSchema.toString().contains("VP FP&A"));
         assertFalse(graphSchema.toString().contains("Controller"));
         assertFalse(graphSchema.has("entityDefinitions"));
@@ -806,6 +879,15 @@ class CrawlExtractionToolBackendTest {
             VectorStore vectors,
             UnifiedGraph graph,
             GraphSchema schema) {
+        return backend(corpus, vectors, graph, schema, ExtractionTarget.FULL_GRAPH);
+    }
+
+    private static CrawlExtractionToolBackend backend(
+            CrawlCorpusSnapshot corpus,
+            VectorStore vectors,
+            UnifiedGraph graph,
+            GraphSchema schema,
+            ExtractionTarget extractionTarget) {
         return new CrawlExtractionToolBackend(
                 "chunk-1",
                 "document-1",
@@ -816,8 +898,10 @@ class CrawlExtractionToolBackendTest {
                 schema,
                 corpus,
                 vectors,
+                null,
                 () -> graph,
-                new GraphReasoningQueryService(null));
+                new GraphReasoningQueryService(null),
+                extractionTarget);
     }
 
     private static CrawlCorpusSnapshot corpus() {

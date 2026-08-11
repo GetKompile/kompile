@@ -429,16 +429,32 @@ public class ConceptExtractorImpl implements ConceptExtractor {
 
         // Find co-occurring concepts (appear within N words of each other)
         int windowSize = 30;  // Word window for co-occurrence
-        String[] words = text.toLowerCase().split("\\s+");
 
-        for (int i = 0; i < concepts.size(); i++) {
-            for (int j = i + 1; j < concepts.size(); j++) {
-                ExtractedConcept c1 = concepts.get(i);
-                ExtractedConcept c2 = concepts.get(j);
+        if (text == null || concepts == null || concepts.size() < 2) {
+            return relationships;
+        }
+        String normalizedText = text.toLowerCase();
+        if (normalizedText.isBlank()) {
+            return relationships;
+        }
+
+        List<ExtractedConcept> usableConcepts = new ArrayList<>();
+        for (ExtractedConcept concept : concepts) {
+            if (concept != null
+                    && hasText(concept.normalizedName())
+                    && hasText(concept.name())) {
+                usableConcepts.add(concept);
+            }
+        }
+
+        for (int i = 0; i < usableConcepts.size(); i++) {
+            for (int j = i + 1; j < usableConcepts.size(); j++) {
+                ExtractedConcept c1 = usableConcepts.get(i);
+                ExtractedConcept c2 = usableConcepts.get(j);
 
                 // Calculate co-occurrence strength
-                double cooccurrence = calculateCooccurrence(text.toLowerCase(),
-                    c1.normalizedName(), c2.normalizedName(), windowSize);
+                double cooccurrence = calculateCooccurrence(normalizedText,
+                        c1.normalizedName(), c2.normalizedName(), windowSize);
 
                 if (cooccurrence > 0.1) {
                     relationships.add(new ConceptRelationship(
@@ -454,7 +470,14 @@ public class ConceptExtractorImpl implements ConceptExtractor {
         return relationships;
     }
 
-    private double calculateCooccurrence(String text, String concept1, String concept2, int windowSize) {
+    private double calculateCooccurrence(String text,
+                                        String concept1,
+                                        String concept2,
+                                        int windowSize) {
+        if (!hasText(text) || !hasText(concept1) || !hasText(concept2)) {
+            return 0.0;
+        }
+
         // Find all positions of each concept
         List<Integer> positions1 = findAllPositions(text, concept1);
         List<Integer> positions2 = findAllPositions(text, concept2);
@@ -479,6 +502,10 @@ public class ConceptExtractorImpl implements ConceptExtractor {
     }
 
     private List<Integer> findAllPositions(String text, String term) {
+        if (!hasText(text) || !hasText(term)) {
+            return List.of();
+        }
+
         List<Integer> positions = new ArrayList<>();
         int index = 0;
         while ((index = text.indexOf(term, index)) != -1) {
@@ -486,6 +513,10 @@ public class ConceptExtractorImpl implements ConceptExtractor {
             index += term.length();
         }
         return positions;
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private List<ExtractedConcept> deduplicateConcepts(List<ExtractedConcept> concepts) {

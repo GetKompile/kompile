@@ -1,70 +1,105 @@
 import Foundation
 
-/// Parses a potential tool-call JSON object from raw model output.
+/// Strict decoder for the canonical structured result returned by SameDiff/SDX.
 ///
-/// Direct port of `ai.kompile.chat.local.ToolCallParser`.
-///
-/// Two extraction strategies are tried in order:
-/// 1. Fenced block: find ```json … ```
-/// 2. Bare object: find the first '{' and last '}' and try that substring.
-///
-/// A valid tool call has exactly the keys "tool" (String) and "args" (Dictionary).
-enum ToolCallParser {
+/// This does not parse model output. Thinking blocks, control tokens, and tool-call
+/// syntax have already been handled by the imported model before this runs.
+struct StructuredChatResponse {
 
     struct ToolCall {
+        let id: String?
         let tool: String
         let args: [String: Any]
     }
 
-    /// Attempt to parse a tool call from the model's raw output.
-    /// Returns nil if no valid tool-call JSON was found.
-    static func parse(_ modelOutput: String) -> ToolCall? {
-        let trimmed = modelOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+    let rawText: String
+    let content: String
+    let reasoningContent: String
+    let toolCalls: [ToolCall]
+    let protocolErrors: [String]
 
-        // Strategy 1: fenced ```json ... ``` block
-        if let fenced = extractFencedBlock(trimmed) {
-            if let result = tryParse(fenced) { return result }
+    var isProtocolValid: Bool { protocolErrors.isEmpty }
+
+    func toolCallsJson() throws -> String {
+        let encoded: [[String: Any]] = toolCalls.map { call in
+            var value: [String: Any] = [
+                "type": "function",
+                "function": [
+                    "name": call.tool,
+                    "arguments": call.args
+                ]
+            ]
+            if let id = call.id { value["id"] = id }
+            return value
         }
-
-        // Strategy 2: first '{' … last '}'
-        if let firstBrace = trimmed.firstIndex(of: "{"),
-           let lastBrace = trimmed.lastIndex(of: "}"),
-           firstBrace <= lastBrace {
-            let candidate = String(trimmed[firstBrace...lastBrace])
-            if let result = tryParse(candidate) { return result }
+        let data = try JSONSerialization.data(withJSONObject: encoded)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw StructuredChatTransportError.invalidUTF8
         }
-
-        return nil
+        return json
     }
 
-    // MARK: - Private helpers
+    static func decode(_ json: String) throws -> StructuredChatResponse {
+        guard let data = json.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw StructuredChatTransportError.invalidEnvelope
+        }
+        let required = ["rawText", "content", "toolCalls", "protocolErrors"]
+        guard required.allSatisfy({ root.keys.contains($0) }),
+              let rawText = root["rawText"] as? String,
+              let content = root["content"] as? String,
+              let calls = root["toolCalls"] as? [[String: Any]],
+              let errors = root["protocolErrors"] as? [String] else {
+            throw StructuredChatTransportError.invalidEnvelope
+        }
 
-    /// Extract content of a ```json ... ``` fenced block, or nil if none found.
-    private static func extractFencedBlock(_ text: String) -> String? {
-        let fence = "```json"
-        guard let fenceRange = text.range(of: fence) else { return nil }
-        var contentStart = fenceRange.upperBound
-        // Skip optional newline immediately after the opening fence (matches Java logic)
-        if contentStart < text.endIndex && text[contentStart] == "\n" {
-            contentStart = text.index(after: contentStart)
+        let toolCalls = try calls.map { value -> ToolCall in
+            guard let name = value["name"] as? String,
+                  !name.isEmpty,
+                  let arguments = value["arguments"] as? [String: Any] else {
+                throw StructuredChatTransportError.invalidToolCall
+            }
+            return ToolCall(
+                id: value["id"] as? String,
+                tool: name,
+                args: arguments
+            )
         }
-        guard let closeRange = text.range(of: "```", range: contentStart..<text.endIndex) else {
-            return nil
-        }
-        return String(text[contentStart..<closeRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return StructuredChatResponse(
+            rawText: rawText,
+            content: content,
+            reasoningContent: root["reasoningContent"] as? String ?? "",
+            toolCalls: toolCalls,
+            protocolErrors: errors
+        )
     }
+}
 
-    /// Try to parse a candidate string as a tool-call JSON object.
-    private static func tryParse(_ candidate: String) -> ToolCall? {
-        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let data = trimmed.data(using: .utf8) else { return nil }
-        guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+/// Source-compatible adapter for older callers. New code consumes the canonical
+/// structured response directly and never invokes a model-text parser here.
+@available(*, deprecated, message: "Use StructuredChatResponse.decode(_:)")
+enum ToolCallParser {
+    typealias Result = StructuredChatResponse
+    typealias ToolCall = StructuredChatResponse.ToolCall
+
+    static func parseStructuredResult(_ json: String) throws -> StructuredChatResponse {
+        try StructuredChatResponse.decode(json)
+    }
+}
+
+enum StructuredChatTransportError: LocalizedError {
+    case invalidEnvelope
+    case invalidToolCall
+    case invalidUTF8
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEnvelope:
+            return "SDX returned an invalid structured chat result."
+        case .invalidToolCall:
+            return "SDX returned an invalid structured tool call."
+        case .invalidUTF8:
+            return "Could not encode structured tool-call history."
         }
-        guard let tool = parsed["tool"] as? String, !tool.isEmpty else { return nil }
-        let args = parsed["args"] as? [String: Any] ?? [:]
-        return ToolCall(tool: tool, args: args)
     }
 }

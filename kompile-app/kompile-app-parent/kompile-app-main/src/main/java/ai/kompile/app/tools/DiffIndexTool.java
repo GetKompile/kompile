@@ -57,7 +57,9 @@ public class DiffIndexTool {
             String filePath,
             String contentQuery,
             String source,
-            Integer limit
+            Integer limit,
+            String sortBy,
+            String sortDir
     ) {}
 
     public record GetDiffEntryInput(String id) {}
@@ -79,14 +81,17 @@ public class DiffIndexTool {
                         "projectDirectory (project path or name substring), " +
                         "filePath (file path substring), " +
                         "contentQuery (search within diff content), " +
-                        "source (CLI source name). " +
+                        "source (CLI source name), " +
+                        "sortBy (timestamp, file_path, project, agent, source, lines_added, " +
+                        "lines_removed, or total_changes), and sortDir (asc or desc). " +
                         "Returns matching diff entries with file path, diff type, and line counts.")
     public Map<String, Object> searchDiffIndex(SearchDiffIndexInput input) {
         if (indexService == null) return errorMap("DiffIndexService not available");
         try {
             List<DiffIndexEntry> results = indexService.search(
                     input.agent(), input.projectDirectory(), input.filePath(),
-                    input.contentQuery(), input.source(), null, null, input.limit());
+                    input.contentQuery(), input.source(), null, null, input.limit(),
+                    input.sortBy(), input.sortDir());
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "success");

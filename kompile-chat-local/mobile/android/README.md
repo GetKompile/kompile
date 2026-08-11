@@ -193,8 +193,15 @@ The retained lower-level `android/tools/build-offline-accelerators.sh` remains
 directly usable for CI or diagnosis. It has two deliberately separate artifact modes:
 
 - Source-build mode accepts `--vulkan-aar`, `--hexagon-aar`,
-  `--tensor-g3-aar`, and `--tensor-g5-aar` (or their matching Maven
-  properties).
+  `--tensor-g3-aar`, and `--tensor-g5-aar` (or their matching environment
+  variables). Tensor G3 resolution is deterministic:
+  `--tensor-g3-aar` > `SDX_TENSOR_G3_AAR` > the canonical published AAR at
+  `libnd4j/build/mobile/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar`
+  > the native SDK AAR at
+  `libnd4j/build/mobile/tensor-g3/native/sdx-runtime-sdk/dist/sdx-runtime-android-arm64-tensor-g3.aar`.
+  The last fallback is accepted only when the provider build left an atomic
+  `.build-receipt` whose exact artifact path and SHA-256 still match; an
+  interrupted rebuild removes that authorization before compiling.
 - Release-consumer mode requires `--sdx-release-version`,
   `--sdx-release-manifest`, and `--sdx-release-artifact-root`. The independently
   pinned version must match `releaseVersion`, and `releaseTag` must be
@@ -202,6 +209,39 @@ directly usable for CI or diagnosis. It has two deliberately separate artifact m
   in `accelerators.json`, selects exactly one `component=runtime` record, retains
   its exact `fileName`, and rejects an incompatible role/packaging/classifier,
   missing or ambiguous selection, or wrong-size/wrong-SHA-256 AAR before Gradle runs.
+
+The direct helper resolves its Android build JDK in the order
+`--java-home` > `JAVA_HOME` > `java` on `PATH`. Every route must resolve a
+complete JDK (both `java` and `javac`) with
+`java.specification.version=17`; it never silently builds with Java 11 or 21.
+
+After a focused low-level native repair build, publish/verify its complete provider
+AAR through the existing wrapper rather than reconstructing Maven inputs:
+
+```bash
+MVN_CMD=/path/to/mvn \
+libnd4j/tools/mobile/build-android-accelerator.sh \
+  --profile libnd4j/tools/mobile/profiles/tensor-g3-nnapi.env \
+  --android-ndk /path/to/android-sdk/ndk/28.1.13356709 \
+  --output-root libnd4j/build/mobile/tensor-g3 \
+  --jobs 1 \
+  --offline \
+  --skip-native
+```
+
+Once the provider is published, the repeatable direct APK command needs no AAR or
+JDK path when JDK 17 is already on `PATH`:
+
+```bash
+android/tools/build-offline-accelerators.sh \
+  --variant tensor-g3 \
+  --skip-maven \
+  --android-sdk /path/to/android-sdk \
+  --android-ndk /path/to/android-sdk/ndk/28.1.13356709
+```
+
+The helper prints the selected JDK and Tensor G3 AAR source/path before packaging,
+so every APK log records the handoff it actually used.
 
 Release-consumer mode passes each verified absolute path to Gradle with an
 explicit Gradle property (`-PsdxVulkanAar`,

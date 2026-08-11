@@ -1,0 +1,8 @@
+{
+  "name": "pi-mcp-adapter",
+  "version": "2.21.0",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

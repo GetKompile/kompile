@@ -15,6 +15,9 @@
  */
 package ai.kompile.app.llm.pipeline;
 
+import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,6 +68,7 @@ import java.util.Map;
 public class LlmGenerateController {
 
     private static final Logger logger = LoggerFactory.getLogger(LlmGenerateController.class);
+    private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
     static final int MAX_REQUEST_MAX_TOKENS = 4096;
 
     private final SameDiffLanguageModelImpl languageModel;
@@ -126,6 +130,49 @@ public class LlmGenerateController {
         }
     }
 
+    /**
+     * Structured chat endpoint used by graph extraction. Messages and function schemas reach the
+     * SameDiff chat template unchanged, and the parsed native calls are returned as structured data.
+     */
+    @PostMapping("/chat")
+    public ResponseEntity<Map<String, Object>> chat(@RequestBody Map<String, Object> request) {
+        if (request == null || request.get("request") == null) {
+            return ResponseEntity.ok(structuredErrorResponse("request field is required"));
+        }
+        Integer maxTokens;
+        try {
+            maxTokens = requestedMaxTokens(request.get("maxTokens"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok(structuredErrorResponse(e.getMessage()));
+        }
+        if (maxTokens == null) {
+            return ResponseEntity.ok(structuredErrorResponse("maxTokens field is required"));
+        }
+        if (!languageModel.isLoaded()) {
+            return ResponseEntity.ok(structuredErrorResponse(
+                    "no model loaded; POST /api/llm/load first"));
+        }
+        long startMs = System.currentTimeMillis();
+        try {
+            StructuredChatLanguageModel.Request chatRequest = MAPPER.convertValue(
+                    request.get("request"), StructuredChatLanguageModel.Request.class);
+            StructuredChatLanguageModel.Response response =
+                    languageModel.generateChat(chatRequest, maxTokens);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("rawText", response.rawText());
+            body.put("content", response.content());
+            body.put("toolCalls", response.toolCalls());
+            body.put("parseErrors", response.parseErrors());
+            body.put("finishReason", "completed");
+            body.put("totalTimeMs", System.currentTimeMillis() - startMs);
+            return ResponseEntity.ok(body);
+        } catch (Exception e) {
+            logger.error("POST /api/llm/chat: structured generation failed for model '{}'",
+                    languageModel.getLoadedModelId(), e);
+            return ResponseEntity.ok(structuredErrorResponse(e.getMessage()));
+        }
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private static Integer requestedMaxTokens(Object rawMaxTokens) {
@@ -170,6 +217,17 @@ public class LlmGenerateController {
         resp.put("tokensPerSecond", 0.0);
         resp.put("firstTokenLatencyMs", 0);
         resp.put("totalTokens", 0);
+        return resp;
+    }
+
+    private static Map<String, Object> structuredErrorResponse(String message) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("rawText", "");
+        resp.put("content", "");
+        resp.put("toolCalls", List.of());
+        resp.put("parseErrors", List.of(message == null ? "structured generation failed" : message));
+        resp.put("finishReason", "error: " + message);
+        resp.put("totalTimeMs", 0);
         return resp;
     }
 }

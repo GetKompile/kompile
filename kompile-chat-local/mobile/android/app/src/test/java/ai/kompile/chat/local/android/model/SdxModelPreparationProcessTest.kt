@@ -48,7 +48,17 @@ class SdxModelPreparationProcessTest {
         assertTrue(source.contains("SdxPlatformRuntimeOwner.open("))
         assertTrue(source.contains("ownerExecutor = Executors.newSingleThreadExecutor"))
         assertTrue(source.contains("EVENT_CHUNK"))
+        assertTrue(source.contains("\"ipc_remote_failure\""))
+        assertTrue(source.contains("\"runtime_open_failed\""))
+        assertTrue(source.contains("\"remote_failure_class\""))
         assertFalse(source.contains("putSerializable"))
+
+        val runtimeOwner = File(
+            "src/sdx/java/ai/kompile/chat/local/android/model/SdxPlatformChatSession.kt"
+        ).readText()
+        assertTrue(runtimeOwner.contains("\"runtime_load_checkpoint\""))
+        assertTrue(runtimeOwner.contains("\"sdxLlmResolveModelBundle\""))
+        assertTrue(runtimeOwner.contains("\"sdxLlmLoadCompiledModel\""))
 
         val manifest = File("src/tensorG3/AndroidManifest.xml").readText()
         assertTrue(manifest.contains("android:name=\".model.SdxRuntimeService\""))
@@ -237,7 +247,8 @@ class SdxModelPreparationProcessTest {
                 .findAll(viewModel)
                 .count()
         )
-        assertTrue(viewModel.contains("modelPath = canonicalSdzPath"))
+        assertTrue(viewModel.contains("val activeModelPath = preparedModel?.canonicalSdzPath ?: exactModelPath"))
+        assertTrue(viewModel.contains("modelPath = activeModelPath"))
         assertFalse(viewModel.contains("SdxRawGgufChatSession"))
 
         val sdx = File(
@@ -325,6 +336,9 @@ class SdxModelPreparationProcessTest {
         assertTrue(apkVerifier.contains("--class ai.kompile.chat.local.android.model.SdxAndroidLlmAbi"))
         assertTrue(apkVerifier.contains("--class org.nd4j.dsp.model.SdxLlmNative"))
         assertFalse(apkVerifier.contains("--class ai.kompile.chat.local.sdx.SdxLlmAbi"))
+        assertTrue(apkVerifier.contains("causal-lm-in-graph-state-v2"))
+        assertTrue(apkVerifier.contains("io.recurrentStates"))
+        assertTrue(apkVerifier.contains("duplicate recurrent state input"))
 
         val runtimeProcess = File(
             "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"

@@ -26,6 +26,8 @@ import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.crawl.graph.passes.ToolDrivenExtractionExecutor;
+import ai.kompile.graph.reasoning.admission.AdmissionComparison;
+import ai.kompile.graph.reasoning.admission.AdmissionDecision;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.GraphRelation;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -241,6 +243,104 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 .map(CrawlLlmDispatcher.LlmCallScope::passInvocation).toList());
         assertTrue(job.getRecentEvents().stream().anyMatch(event ->
                 event.getMessage().contains("Tool-guided extraction pass completed")));
+    }
+
+    @Test
+    void shadowAdmissionObservesAcceptedEntityIdsWithoutChangingReturnedDelta() throws Exception {
+        Harness harness = harness(
+                """
+                {"tool":"submit_graph_delta","args":{"entities":[
+                  {"id":"ent-acme","name":"Acme Corporation","type":"ORGANIZATION"},
+                  {"id":"ent-new","name":"New Corporation","type":"ORGANIZATION"}
+                ],"relations":[]}}
+                """);
+        GraphExtractionConfig config = decomposedConfig();
+        config.setAdmissionMode("SHADOW_COMPARE");
+        List<AdmissionComparison> comparisons = new CopyOnWriteArrayList<>();
+        harness.orchestrator().admissionComparisonSink = comparisons::add;
+
+        String json = harness.orchestrator().extractViaDecomposedPasses(
+                SOURCE, chunk(), config, graph(), job());
+
+        ExtractionResult result = GraphExtractionValidator.fromJson(json);
+        assertEquals(List.of("ent-acme", "ent-new"), result.entities().stream()
+                .map(entity -> entity.id()).toList());
+        assertEquals(List.of("ent-acme", "ent-new"), comparisons.stream()
+                .map(AdmissionComparison::candidateId).toList());
+        assertEquals(AdmissionDecision.REUSE, comparisons.get(0).llmDecision());
+        assertEquals(AdmissionDecision.CREATE_PROVISIONAL, comparisons.get(1).llmDecision());
+        assertTrue(comparisons.stream().allMatch(item ->
+                item.authoritativeDecision() == item.llmDecision()));
+        assertTrue(comparisons.stream().allMatch(AdmissionComparison::graphAvailable));
+        assertTrue(comparisons.stream().allMatch(item ->
+                item.snapshotId().startsWith("graph-7:")));
+
+        assertEquals(1, harness.prompts().size());
+        assertEquals(2, result.entities().size());
+    }
+
+    @Test
+    void graphPolicyFiltersTheAcceptedDeltaAtTheProductionCrawlSeam() throws Exception {
+        String source = "The Approved workbook has Current status. "
+                + "The Blocked workbook has status Do not use.";
+        Harness harness = harness(
+                """
+                {"tool":"submit_graph_delta","args":{
+                  "entities":[
+                    {"id":"workbook-approved","name":"Approved workbook","type":"WORKBOOK"},
+                    {"id":"workbook-blocked","name":"Blocked workbook","type":"WORKBOOK"},
+                    {"id":"status-current","name":"Current","type":"STATUS"},
+                    {"id":"status-blocked","name":"Do not use","type":"STATUS"}
+                  ],
+                  "relations":[
+                    {"source":"workbook-approved","target":"status-current","type":"HAS_STATUS",
+                     "description":"The Approved workbook has Current status.","confidence":1.0},
+                    {"source":"workbook-blocked","target":"status-blocked","type":"HAS_STATUS",
+                     "description":"The Blocked workbook has status Do not use.","confidence":1.0}
+                  ]
+                }}
+                """);
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .entityTypes(new ArrayList<>(List.of("WORKBOOK", "STATUS")))
+                .relationshipTypes(new ArrayList<>(List.of("HAS_STATUS")))
+                .validationPolicy(GraphExtractionValidationPolicy.builder()
+                        .relationPatterns(new ArrayList<>(
+                                List.of("(WORKBOOK)-[:HAS_STATUS]->(STATUS)")))
+                        .build())
+                .admissionMode("GRAPH_POLICY")
+                .operationalAdmissionEntityTypes(List.of("WORKBOOK"))
+                .operationalAdmissionRules(List.of(
+                        new GraphExtractionConfig.OperationalAdmissionRule(
+                                "fpna.status.not-usable", "DENY", 100,
+                                "The workbook must not enter the crawl graph."),
+                        new GraphExtractionConfig.OperationalAdmissionRule(
+                                "fpna.status.authoritative", "ALLOW", 10,
+                                "The workbook is authoritative.")))
+                .build();
+        List<AdmissionComparison> comparisons = new CopyOnWriteArrayList<>();
+        harness.orchestrator().admissionComparisonSink = comparisons::add;
+
+        String json = harness.orchestrator().extractViaDecomposedPasses(
+                source,
+                chunk("chunk-policy", source, "/corpus/policy.txt"),
+                config,
+                graph(),
+                job());
+
+        assertNotNull(json);
+        ExtractionResult result = GraphExtractionValidator.fromJson(json);
+        assertEquals(
+                List.of("status-blocked", "status-current", "workbook-approved"),
+                result.entities().stream().map(entity -> entity.id()).sorted().toList());
+        assertEquals(1, result.relations().size());
+        assertEquals("workbook-approved", result.relations().get(0).source());
+        assertEquals(List.of("workbook-approved", "workbook-blocked"),
+                comparisons.stream().map(AdmissionComparison::candidateId).toList());
+        assertEquals(AdmissionDecision.CREATE_PROVISIONAL,
+                comparisons.get(0).authoritativeDecision());
+        assertEquals(AdmissionDecision.REJECT,
+                comparisons.get(1).authoritativeDecision());
     }
 
     @Test

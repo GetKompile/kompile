@@ -141,7 +141,33 @@ kompile-app/data/
 data/
 
 # Generated build output projects
-kompile-rag-builds/
+kompile-rag-builds/*
+
+# Retain the portable FP&A hybrid-admission regression and its exact fixture.
+# Everything else in this generated test project, including reports and target/, stays ignored.
+!kompile-rag-builds/kompile-fpna-crawl-test/
+kompile-rag-builds/kompile-fpna-crawl-test/*
+!kompile-rag-builds/kompile-fpna-crawl-test/pom.xml
+!kompile-rag-builds/kompile-fpna-crawl-test/src/
+kompile-rag-builds/kompile-fpna-crawl-test/src/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/crawl/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/crawl/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/crawl/graph/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/crawl/graph/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/java/ai/kompile/crawl/graph/FpnaGoldenGraphHybridAdmissionTest.java
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/resources/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/resources/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/resources/graph-quality/
+kompile-rag-builds/kompile-fpna-crawl-test/src/test/resources/graph-quality/*
+!kompile-rag-builds/kompile-fpna-crawl-test/src/test/resources/graph-quality/fpna-unified-corpus-loose-graph-golden-v1.json
 dl4j-build/
 
 # Large build artifacts

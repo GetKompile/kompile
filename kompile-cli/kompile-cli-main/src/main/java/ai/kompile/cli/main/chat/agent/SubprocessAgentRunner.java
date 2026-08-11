@@ -285,6 +285,7 @@ public class SubprocessAgentRunner {
      * Inject MCP tools into the agent's working directory. Call once before first message.
      */
     public void injectMcpTools() {
+        managedCommandPrefixArguments = List.of();
         if (!injectTools) return;
         try {
             if (agent != null && agent.toLowerCase(Locale.ROOT).contains("codex")) {
@@ -304,6 +305,8 @@ public class SubprocessAgentRunner {
             injectedSettingsFile = McpToolInjection.injectTools(
                     Path.of(workingDir), agent, sseUrl);
             if (injectedSettingsFile != null) {
+                managedCommandPrefixArguments = McpToolInjection.commandLineOverrides(
+                        Path.of(workingDir), agent);
                 String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
                 emitLine(GREEN + "  Kompile tools injected (" + mode + ")" + RESET
                         + DIM + " (" + injectedSettingsFile + ")" + RESET);

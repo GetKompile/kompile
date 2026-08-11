@@ -122,6 +122,12 @@ class PiAdapterTest {
         // Sorted by modification time descending
         assertTrue(sessions.stream().anyMatch(s -> "sess-abc".equals(s.sessionId())));
         assertTrue(sessions.stream().anyMatch(s -> "sess-def".equals(s.sessionId())));
+        ChatSessionSummary abc = sessions.stream()
+                .filter(s -> "sess-abc".equals(s.sessionId()))
+                .findFirst().orElseThrow();
+        assertEquals("Hello", abc.title());
+        assertEquals(2, abc.messageCount());
+        assertEquals("/home/user/project", abc.workingDirectory());
     }
 
     @Test

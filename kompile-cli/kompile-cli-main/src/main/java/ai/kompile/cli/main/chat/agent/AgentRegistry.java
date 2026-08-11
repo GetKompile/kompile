@@ -50,6 +50,53 @@ public class AgentRegistry {
                 .maxSteps(50)
                 .build());
 
+        register(AgentConfig.builder("crawler")
+                .displayName("Crawler")
+                .description("Production crawl, code-index, graph-learning, and reasoning operator")
+                .systemPrompt("You operate a project-owned, crawl-backed knowledge graph. Start with crawl_discover. "
+                        + "For ACTIVE Kompile code projects, refresh or reuse local_code_index and code_graph so AST "
+                        + "symbols and dependencies are projected into the same fact sheet as crawled semantic evidence. "
+                        + "Use crawl_documents or crawl_source for content-hash incremental updates and crawl_control "
+                        + "to monitor every pipeline step, including embedding/model training. Use knowledge_graph and "
+                        + "ask_graph_* primitives for assertions and retractions, graph_reason and graph_reasoning_query "
+                        + "for evidence-backed inference, graph_embeddings for TransE/RotatE training and predictions, "
+                        + "and graph analysis tools for search, centrality, simulation, aggregation, forecasting, "
+                        + "and Bayesian analysis. graph_import and graph_export must preserve a portable .kgraph "
+                        + "checkpoint containing structure, vectors, learned models, facts, opinions, and metadata. "
+                        + "Prefer incremental updates; request destructive clear/full recrawls only with operator "
+                        + "approval. Report project ids, fact-sheet ids, job/model ids, changed/deleted evidence, "
+                        + "step state, and reasoning traces.")
+                .enabledTools(Set.of("crawl_discover", "crawl_documents", "crawl_source", "crawl_control",
+                        "local_code_index", "code_graph", "knowledge_graph", "graph_embeddings",
+                        "graph_reason", "graph_reasoning_query", "graph_import", "graph_export",
+                        "graph_search", "graph_aggregate", "graph_forecast", "graph_centrality",
+                        "graph_simulate", "graph_bayes",
+                        "ask_graph_subscribe", "ask_graph_retract", "ask_graph_mebn", "ask_graph_query",
+                        "ask_graph_assert", "ask_graph_explain", "ask_graph_explain_fused",
+                        "ask_graph_synthesize", "ask_graph_verify", "ask_graph_claim",
+                        "transcript_search", "rag_search",
+                        "todowrite", "todoread", "exit_plan_mode"))
+                .canSpawnSubagents(false)
+                .maxSteps(30)
+                .build());
+
+        register(AgentConfig.builder("crawl-worker")
+                .displayName("Offline Crawl Worker")
+                .description("Non-interactive local worker focused on crawl discovery, ingestion, and verification")
+                .systemPrompt("You are a non-interactive crawl and knowledge-indexing worker. Your responsibility is "
+                        + "to discover available crawl capabilities, configure the requested document ingestion, "
+                        + "launch it, monitor it to a terminal state, and report durable job and knowledge-base "
+                        + "identifiers. Call crawl_discover before choosing loaders or pipelines unless the request "
+                        + "explicitly fixes them. Use crawl_documents for an explicit document set, crawl_source only "
+                        + "for a single inline source, and crawl_control for preflight, status, transcript, and graph "
+                        + "statistics. The normal Kompile and workspace MCP tools remain available; use them when "
+                        + "they help complete or verify the indexing task. Do not claim success until the crawl "
+                        + "service reports completion; preserve diagnostics on failure.")
+                .enabledTools(Set.of("*"))
+                .canSpawnSubagents(true)
+                .maxSteps(50)
+                .build());
+
         register(AgentConfig.builder("planner")
                 .displayName("Planner")
                 .description("Read-only architecture and planning agent")

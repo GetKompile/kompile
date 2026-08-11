@@ -38,6 +38,8 @@ public interface CodeEntityRepository extends JpaRepository<CodeEntity, UUID> {
 
     List<CodeEntity> findByProjectIdAndFilePath(String projectId, String filePath);
 
+    List<CodeEntity> findByProjectIdAndFilePathIn(String projectId, Set<String> filePaths);
+
     @Query("SELECT e FROM CodeEntity e WHERE e.projectId = :projectId " +
            "AND (LOWER(e.name) LIKE LOWER(CONCAT('%', :query, '%')) " +
            "OR LOWER(e.fullyQualifiedName) LIKE LOWER(CONCAT('%', :query, '%')) " +

@@ -340,7 +340,7 @@ ensure_lfm2_serving_loaded() {
 
 ensure_app() {
     local pid_file="$RUN_DIR/app.pid"
-    local health_url="$APP_URL/api/unified-crawl/source-types"
+    local health_url="$APP_URL/actuator/health"
 
     if http_ok "$health_url"; then
         local pid

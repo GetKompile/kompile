@@ -51,6 +51,24 @@ quorum_task({
 
 The examples illustrate field placement only. Agent lists and other parameters must come from the live schema.
 
+## One bounded architect dispatch
+
+A lower-thinking doer can delegate a single architecture question with the actual role field:
+
+```text
+task({
+  description: "Design cache invalidation",
+  agent: "codex",
+  role: "architect",
+  prompt: "Objective: design cache invalidation.
+Scope: cache module and direct callers.
+Non-goals: implementation, edits, delegation, and unrelated cleanup.
+Output: one decision-complete plan with exact files, tests, risks, and assumptions."
+})
+```
+
+The built-in Codex architect resolves omitted model/thinking to `gpt-5.6-sol`/`xhigh`. Its runtime policy is read-only and single-task, so it cannot use mutation tools, shell, todo, or another dispatch. The calling doer remains responsible for auditing the full result and explicitly deciding whether to implement it. The task tool never auto-executes an architect plan.
+
 ## Mixed-role work
 
 When packets require different roles:

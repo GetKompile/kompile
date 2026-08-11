@@ -16,6 +16,7 @@
 package ai.kompile.chat.history.service;
 
 import ai.kompile.chat.history.config.ChatHistoryProperties;
+import ai.kompile.chat.history.domain.ChatMessage;
 import ai.kompile.chat.history.domain.ChatSession;
 import ai.kompile.chat.history.service.CliTranscriptService.CliSessionSummary;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +31,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -124,6 +126,10 @@ class CliTranscriptServiceSyncTest {
                     .build();
             when(chatHistoryService.getSession("imported-kompile-already-imported"))
                     .thenReturn(Optional.of(existing));
+            when(chatHistoryService.getSessionMessages("imported-kompile-already-imported"))
+                    .thenReturn(List.of(
+                            message(ChatMessage.MessageRole.USER, "Test question"),
+                            message(ChatMessage.MessageRole.ASSISTANT, "Test answer")));
 
             var result = cliTranscriptService.listNewSessions("kompile");
             assertTrue(result.isEmpty());
@@ -167,10 +173,54 @@ class CliTranscriptServiceSyncTest {
             when(chatHistoryService.getSession("imported-kompile-new-one")).thenReturn(Optional.empty());
             when(chatHistoryService.getSession("imported-kompile-old-one"))
                     .thenReturn(Optional.of(ChatSession.builder().sessionId("imported-kompile-old-one").build()));
+            when(chatHistoryService.getSessionMessages("imported-kompile-old-one"))
+                    .thenReturn(List.of(
+                            message(ChatMessage.MessageRole.USER, "Old question"),
+                            message(ChatMessage.MessageRole.ASSISTANT, "Old answer")));
 
             var result = cliTranscriptService.listNewSessions("kompile");
             assertEquals(1, result.size());
             assertEquals("new-one", result.get(0).sessionId());
+        }
+
+        @Test
+        @DisplayName("should return and append turns added after the initial import")
+        void shouldReconcileAppendedTurns() throws IOException {
+            Files.writeString(tempDir.resolve("continued.txt"), """
+                    ──── Conversation: continued ────
+                    Started: 2025-01-15 10:00:00
+                    Server:  localhost
+                    Agent:   default
+                    RAG:     disabled
+
+                    ──────────────────────────────────
+
+                    > First question
+
+                    First answer
+
+                    > Follow-up
+
+                    Follow-up answer
+
+                    """);
+
+            String importId = "imported-kompile-continued";
+            ChatSession existing = ChatSession.builder().sessionId(importId).build();
+            when(chatHistoryService.getSession(importId)).thenReturn(Optional.of(existing));
+            when(chatHistoryService.getSessionMessages(importId)).thenReturn(List.of(
+                    message(ChatMessage.MessageRole.USER, "First question"),
+                    message(ChatMessage.MessageRole.ASSISTANT, "First answer")));
+
+            var pending = cliTranscriptService.listNewSessions("kompile");
+            assertEquals(1, pending.size());
+
+            cliTranscriptService.importTranscript("continued", "kompile");
+
+            verify(chatHistoryService).addMessage(
+                    importId, ChatMessage.MessageRole.USER, "Follow-up", null);
+            verify(chatHistoryService).addMessage(
+                    importId, ChatMessage.MessageRole.ASSISTANT, "Follow-up answer", null);
         }
     }
 
@@ -209,7 +259,8 @@ class CliTranscriptServiceSyncTest {
                     .title("Sync test question")
                     .source("kompile")
                     .build();
-            when(chatHistoryService.createSessionWithId(eq("imported-kompile-sync-test"), anyString(), eq("kompile")))
+            when(chatHistoryService.createSessionWithId(
+                    eq("imported-kompile-sync-test"), anyString(), eq("kompile"), anyLong()))
                     .thenReturn(importedSession);
             when(chatHistoryService.addMessage(anyString(), any(), anyString(), any()))
                     .thenReturn(null);
@@ -249,7 +300,8 @@ class CliTranscriptServiceSyncTest {
                     .thenReturn(Optional.empty());
 
             // Mock import for first 2
-            when(chatHistoryService.createSessionWithId(anyString(), anyString(), eq("kompile")))
+            when(chatHistoryService.createSessionWithId(
+                    anyString(), anyString(), eq("kompile"), anyLong()))
                     .thenAnswer(inv -> ChatSession.builder()
                             .sessionId(inv.getArgument(0))
                             .title(inv.getArgument(1))
@@ -283,5 +335,9 @@ class CliTranscriptServiceSyncTest {
             int count = cliTranscriptService.syncSource("kompile", 50);
             assertEquals(0, count);
         }
+    }
+
+    private static ChatMessage message(ChatMessage.MessageRole role, String content) {
+        return ChatMessage.builder().role(role).content(content).build();
     }
 }

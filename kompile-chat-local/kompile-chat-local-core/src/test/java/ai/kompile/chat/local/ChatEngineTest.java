@@ -9,6 +9,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -34,9 +36,9 @@ class ChatEngineTest {
 
         try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
             // Model: first call returns a tool call, second returns the answer
-            ScriptedChatModel scripted = ScriptedChatModel.of(
-                    "{\"tool\":\"graph_overview\",\"args\":{}}",
-                    "The graph has 2 entities and 1 relation."
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    ChatResponse.content("The graph has 2 entities and 1 relation.")
             );
             InferenceRouter router = new InferenceRouter(scripted, null);
             ChatEngine engine = new ChatEngine(router, bridge, 4);
@@ -46,7 +48,7 @@ class ChatEngineTest {
             assertNotNull(result.answer());
             assertFalse(result.answer().isBlank());
             assertEquals(1, result.rounds().size(), "expected exactly 1 tool round");
-            assertEquals("graph_overview", result.rounds().get(0).tool());
+            assertEquals("graph_reasoning_query", result.rounds().get(0).tool());
             assertNotNull(result.rounds().get(0).resultJson());
         }
     }
@@ -57,10 +59,11 @@ class ChatEngineTest {
     void testMultiRound() throws Exception {
         Path kgraph = buildAndSaveTinyGraph();
         try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
-            ScriptedChatModel scripted = ScriptedChatModel.of(
-                    "{\"tool\":\"graph_overview\",\"args\":{}}",
-                    "{\"tool\":\"graph_search\",\"args\":{\"query\":\"Alice\"}}",
-                    "Alice works at AcmeCorp."
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    toolCall("graph_reasoning_query", Map.of(
+                            "operation", "SEARCH", "queryText", "Alice")),
+                    ChatResponse.content("Alice works at AcmeCorp.")
             );
             InferenceRouter router = new InferenceRouter(scripted, null);
             ChatEngine engine = new ChatEngine(router, bridge, 4);
@@ -81,10 +84,10 @@ class ChatEngineTest {
             // First response: malformed JSON that contains "tool" but is invalid
             // Second: valid tool call (retry)
             // Third: final answer
-            ScriptedChatModel scripted = ScriptedChatModel.of(
-                    "{\"tool\":\"graph_overview\" MALFORMED",        // triggers retry
-                    "{\"tool\":\"graph_overview\",\"args\":{}}",     // retry succeeds
-                    "Answer after retry."                             // synthesis
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    protocolFailure("incomplete model-owned tool-call envelope"),
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    ChatResponse.content("Answer after retry.")
             );
             InferenceRouter router = new InferenceRouter(scripted, null);
             ChatEngine engine = new ChatEngine(router, bridge, 4);
@@ -103,10 +106,10 @@ class ChatEngineTest {
         Path kgraph = buildAndSaveTinyGraph();
         try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
             // Always returns a tool call, plus a final synthesis answer
-            ScriptedChatModel scripted = ScriptedChatModel.of(
-                    "{\"tool\":\"graph_overview\",\"args\":{}}",  // round 1
-                    "{\"tool\":\"graph_overview\",\"args\":{}}",  // round 2 (max)
-                    "Synthesis answer."                           // asked after max rounds
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    ChatResponse.content("Synthesis answer.")
             );
             InferenceRouter router = new InferenceRouter(scripted, null);
             ChatEngine engine = new ChatEngine(router, bridge, 2);   // maxToolRounds=2
@@ -192,33 +195,70 @@ class ChatEngineTest {
         }
     }
 
-    // ── 8. ToolCallParser — fenced block ────────────────────────────────────
-
     @Test
-    void testToolCallParserFencedBlock() {
-        String input = "Some preamble\n```json\n{\"tool\":\"foo\",\"args\":{\"k\":\"v\"}}\n```\nMore text";
-        var result = ToolCallParser.parse(input);
-        assertTrue(result.isPresent(), "should parse fenced block");
-        assertEquals("foo", result.get().tool());
-        assertEquals("v", result.get().args().get("k"));
+    void testRemoteUsesNativeToolsAndReturnsStructuredCall() throws Exception {
+        String responseBody = "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+                + "\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+                + "\"function\":{\"name\":\"graph_reasoning_query\","
+                + "\"arguments\":\"{\\\"operation\\\":\\\"OVERVIEW\\\"}\"}}]}}]}";
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = startHttpServer(200, responseBody, requestBody);
+        try {
+            int port = server.getAddress().getPort();
+            RemoteChatModel model = new RemoteChatModel(
+                    "http://localhost:" + port, "test-model", null, 10);
+            String tools = "[{\"name\":\"graph_reasoning_query\","
+                    + "\"description\":\"Query graph\","
+                    + "\"parameters\":{\"type\":\"object\"}}]";
+
+            ChatResponse result = model.generate(
+                    ChatRequest.of(List.of(Message.user("Overview")), tools),
+                    GenOptions.defaults());
+
+            assertTrue(result.isProtocolValid());
+            assertEquals("graph_reasoning_query", result.toolCalls().get(0).name());
+            Map<String, Object> sent = ai.kompile.graph.reasoning.unified.MiniJson
+                    .parseObject(requestBody.get());
+            assertTrue(sent.containsKey("tools"));
+            assertEquals("auto", sent.get("tool_choice"));
+        } finally {
+            server.stop(0);
+        }
     }
 
-    // ── 9. ToolCallParser — bare JSON ───────────────────────────────────────
-
     @Test
-    void testToolCallParserBareJson() {
-        var result = ToolCallParser.parse("{\"tool\":\"bar\",\"args\":{}}");
-        assertTrue(result.isPresent(), "should parse bare JSON");
-        assertEquals("bar", result.get().tool());
-        assertTrue(result.get().args().isEmpty());
+    void testStructuredResultTransportPreservesCalls() {
+        String structured = "{\"rawText\":\"native-output\",\"content\":\"\","
+                + "\"reasoningContent\":\"\",\"toolCalls\":[{\"id\":\"c1\","
+                + "\"name\":\"bar\",\"arguments\":{\"k\":\"v\"}}],"
+                + "\"protocolErrors\":[]}";
+        ChatResponse result = ChatResponse.fromStructuredJson(structured);
+        assertTrue(result.isProtocolValid());
+        assertEquals("bar", result.toolCalls().get(0).name());
+        assertEquals("v", result.toolCalls().get(0).arguments().get("k"));
     }
 
-    // ── 10. ToolCallParser — no match ───────────────────────────────────────
+    @Test
+    void testRawModelJsonIsNotAcceptedAsStructuredTransport() {
+        assertThrows(ChatException.class, () ->
+                ChatResponse.fromStructuredJson(
+                        "{\"tool\":\"bar\",\"args\":{}}"));
+    }
 
     @Test
-    void testToolCallParserNoMatch() {
-        var result = ToolCallParser.parse("Just a plain answer without any JSON.");
-        assertFalse(result.isPresent(), "should not find a tool call in plain text");
+    void testSecondProtocolFailureFailsCompleteTurn() throws Exception {
+        Path kgraph = buildAndSaveTinyGraph();
+        try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    protocolFailure("first invalid call"),
+                    protocolFailure("retry invalid call"));
+            ChatEngine engine = new ChatEngine(
+                    new InferenceRouter(scripted, null), bridge, 4);
+
+            ChatException failure = assertThrows(ChatException.class,
+                    () -> engine.chat(List.of(), "Use the graph", GenOptions.defaults()));
+            assertTrue(failure.getMessage().contains("after retry"));
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -235,10 +275,28 @@ class ChatEngineTest {
         return kgraph;
     }
 
+    private static ChatResponse toolCall(String name, Map<String, Object> arguments) {
+        return ChatResponse.toolCalls("", List.of(
+                new ChatToolCall("call-1", name, arguments)));
+    }
+
+    private static ChatResponse protocolFailure(String error) {
+        return new ChatResponse("", "", "", List.of(), List.of(error));
+    }
+
     /** Start a simple HTTP server on a random port. Caller must call server.stop(0). */
     private HttpServer startHttpServer(int statusCode, String body) throws Exception {
+        return startHttpServer(statusCode, body, null);
+    }
+
+    private HttpServer startHttpServer(
+            int statusCode, String body, AtomicReference<String> requestBody) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
+            if (requestBody != null) {
+                requestBody.set(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            }
             byte[] resp = body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(statusCode, resp.length);
             try (var os = exchange.getResponseBody()) {

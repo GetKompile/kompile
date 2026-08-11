@@ -28,6 +28,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -155,7 +156,15 @@ public class McpSseController {
 
         try {
             Mono<Void> result = transport.handleMessage(sessionId, body);
-            result.block();
+            // Return 202 immediately; MCP responses are delivered asynchronously
+            // over the already-open SSE stream. Blocking here can deadlock when
+            // the session handler waits for the outbound emitter write.
+            result.subscribeOn(Schedulers.boundedElastic()).subscribe(
+                    unused -> { },
+                    error -> log.error("Error handling MCP message for session {}: {}", sessionId, error.getMessage(), error),
+                    () -> log.info("MCP message processing completed for session {}", sessionId)
+            );
+            log.info("MCP message accepted for asynchronous processing, session {}", sessionId);
             return ResponseEntity.accepted().build();
         } catch (Exception e) {
             log.error("Error handling MCP message for session {}: {}", sessionId, e.getMessage(), e);

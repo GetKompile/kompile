@@ -64,6 +64,7 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
     private static final String LOAD_PATH = "/api/llm/load";
     private static final String STATUS_PATH = "/api/llm/status";
     private static final String GENERATE_PATH = "/api/llm/generate";
+    private static final String CHAT_PATH = "/api/llm/chat";
     private static final String UNLOAD_PATH = "/api/llm/unload";
     private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
             "connection", "content-length", "keep-alive", "proxy-authenticate",
@@ -98,6 +99,11 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
             @Override
             public ResponseEntity<Map<String, Object>> generate(Map<String, Object> request) {
                 return generateController.generate(request);
+            }
+
+            @Override
+            public ResponseEntity<Map<String, Object>> chat(Map<String, Object> request) {
+                return generateController.chat(request);
             }
 
             @Override
@@ -162,6 +168,9 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
         httpServer.createContext(GENERATE_PATH, exchange -> adapter.handle(
                 exchange, GENERATE_PATH, "POST", Operation.GENERATE, objectMapper, api,
                 maxRequestBytes, maxResponseBytes));
+        httpServer.createContext(CHAT_PATH, exchange -> adapter.handle(
+                exchange, CHAT_PATH, "POST", Operation.CHAT, objectMapper, api,
+                maxRequestBytes, maxResponseBytes));
         httpServer.createContext(UNLOAD_PATH, exchange -> adapter.handle(
                 exchange, UNLOAD_PATH, "POST", Operation.UNLOAD, objectMapper, api,
                 maxRequestBytes, maxResponseBytes));
@@ -209,6 +218,7 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
                 case LOAD -> api.load(readLoadRequest(exchange, objectMapper, maxRequestBytes));
                 case STATUS -> api.status();
                 case GENERATE -> api.generate(readMapRequest(exchange, objectMapper, maxRequestBytes));
+                case CHAT -> api.chat(readMapRequest(exchange, objectMapper, maxRequestBytes));
                 case UNLOAD -> api.unload();
             };
             Map<String, Object> body = response.getBody() != null ? response.getBody() : Map.of();
@@ -470,6 +480,8 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
 
         ResponseEntity<Map<String, Object>> generate(Map<String, Object> request);
 
+        ResponseEntity<Map<String, Object>> chat(Map<String, Object> request);
+
         ResponseEntity<Map<String, Object>> unload();
     }
 
@@ -477,6 +489,7 @@ final class ServingSubprocessHttpServer implements AutoCloseable {
         LOAD(true),
         STATUS(false),
         GENERATE(true),
+        CHAT(true),
         UNLOAD(false);
 
         private final boolean requiresJsonBody;

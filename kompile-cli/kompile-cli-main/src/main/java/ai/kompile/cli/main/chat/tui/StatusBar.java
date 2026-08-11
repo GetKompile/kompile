@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.tui;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager;
+import ai.kompile.cli.main.chat.ChatCompleter;
 import ai.kompile.utils.AnsiConstants;
 import ai.kompile.utils.FormatUtils;
 import ai.kompile.utils.StringUtils;
@@ -484,8 +485,15 @@ public class StatusBar {
      * Build the status bar content string.
      * Layout: [active items...] │ [queue] │ [mode] │ [agent]
      */
-    private String buildStatusContent() {
+    String buildStatusContent() {
         List<String> segments = new ArrayList<>();
+
+        // --- Foreground model activity ---
+        String activity = ChatCompleter.getActivity();
+        if (activity != null && !activity.isBlank()) {
+            String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
+            segments.add(spinner + " " + YELLOW + activity + RESET);
+        }
 
         // --- Judge/enforcer watchers ---
         List<ProcessEntry> runningProcs = processManager.listRunning();
@@ -778,7 +786,8 @@ public class StatusBar {
     // ========================================================================
 
     private boolean hasActiveItems() {
-        return !processManager.listRunning().isEmpty()
+        return ChatCompleter.getActivity() != null
+                || !processManager.listRunning().isEmpty()
                 || !taskManager.getActiveTasks().isEmpty()
                 || activeSubagents.stream().anyMatch(sa -> !isIdleStatus(sa.getStatus()));
     }

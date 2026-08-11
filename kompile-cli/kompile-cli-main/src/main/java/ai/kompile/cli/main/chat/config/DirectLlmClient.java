@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -27,14 +28,18 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Direct LLM client that calls provider APIs without requiring a kompile-app server.
- * Supports both OpenAI-compatible format and Anthropic Messages API.
+ * Supports OpenAI Chat Completions and Responses, Anthropic Messages, and Pi Messages.
  * <p>
  * Handles streaming, tool calling, and multi-turn conversations.
  */
@@ -46,6 +51,8 @@ public class DirectLlmClient {
     private final List<ObjectNode> conversationHistory;
     private volatile AtomicBoolean cancelSignal;
     private volatile java.util.function.Consumer<String> outputConsumer;
+    private volatile RadiusGatewayConfig radiusGatewayConfig;
+    private volatile String radiusGatewayConfigSource;
 
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
         this.config = config;
@@ -128,8 +135,20 @@ public class DirectLlmClient {
                                     String modelOverride) {
         String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
                 ? modelOverride : config.getModel();
-        if (config.isAnthropicFormat()) {
+        if (config.isKompileLocalServing()) {
+            return streamKompileServing(userMessage, systemPrompt, toolDefs, toolResults);
+        } else if (config.isOpenAiCodexFormat()) {
+            return streamOpenAiResponses(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, true);
+        } else if (config.isPiMessagesFormat()) {
+            return streamPiMessages(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+        } else if (config.isAnthropicFormat()) {
             return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+        } else if (usesGitHubAnthropicMessages(effectiveModel)) {
+            return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+        } else if (usesGitHubOpenAiResponses(effectiveModel)) {
+            return streamOpenAiResponses(
+                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, false);
         } else {
             return streamOpenAi(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
         }
@@ -240,6 +259,1017 @@ public class DirectLlmClient {
         return shrunk;
     }
 
+    private boolean usesGitHubAnthropicMessages(String model) {
+        return "github-copilot".equals(config.getProvider())
+                && model != null
+                && model.startsWith("claude-")
+                && !model.startsWith("claude-fable-");
+    }
+
+    private boolean usesGitHubOpenAiResponses(String model) {
+        if (!"github-copilot".equals(config.getProvider()) || model == null) {
+            return false;
+        }
+        return model.startsWith("gpt-5")
+                || model.startsWith("grok-")
+                || model.startsWith("mai-code-");
+    }
+
+    private void applyReasoningEffort(ObjectNode request, boolean responsesFormat) {
+        String effort = config.getThinking();
+        if (effort == null || effort.isBlank()) {
+            return;
+        }
+        if (responsesFormat) {
+            ObjectNode reasoning = objectMapper.createObjectNode();
+            reasoning.put("effort", effort);
+            request.set("reasoning", reasoning);
+        } else {
+            request.put("reasoning_effort", effort);
+        }
+    }
+
+    // ========================================================================
+    // OpenAI Responses and ChatGPT Codex Responses
+    // ========================================================================
+
+    private StreamResult streamOpenAiResponses(
+            String userMessage,
+            String systemPrompt,
+            ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults,
+            String effectiveModel,
+            boolean codex) {
+        StreamResult result = new StreamResult();
+        ResponsesStreamState state = new ResponsesStreamState();
+
+        try {
+            ArrayNode input = buildResponsesInput(userMessage, systemPrompt, toolResults, codex);
+            ObjectNode request = objectMapper.createObjectNode();
+            request.put("model", effectiveModel);
+            request.set("input", input);
+            request.put("stream", true);
+            request.put("store", false);
+            applyReasoningEffort(request, true);
+
+            if (codex) {
+                request.put("instructions",
+                        systemPrompt == null || systemPrompt.isBlank()
+                                ? "You are a helpful assistant."
+                                : systemPrompt);
+                ObjectNode text = objectMapper.createObjectNode();
+                text.put("verbosity", "low");
+                request.set("text", text);
+                ArrayNode include = objectMapper.createArrayNode();
+                include.add("reasoning.encrypted_content");
+                request.set("include", include);
+                request.put("tool_choice", "auto");
+                request.put("parallel_tool_calls", true);
+            }
+
+            if (toolDefs != null && !toolDefs.isEmpty()) {
+                request.set("tools", convertToolDefsToResponses(toolDefs, codex));
+            }
+
+            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            String baseUrl = config.resolveBaseUrl(auth);
+            String url = resolveResponsesUrl(baseUrl, codex);
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Accept", "text/event-stream")
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", "kompile")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            objectMapper.writeValueAsString(request),
+                            StandardCharsets.UTF_8))
+                    .timeout(Duration.ofMinutes(10));
+            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+            }
+            applyHeaders(requestBuilder, auth);
+            applyProviderRequestHeaders(requestBuilder, userMessage);
+
+            HttpResponse<java.io.InputStream> response = httpClient.send(
+                    requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                String label = codex ? "OpenAI Codex" : "OpenAI Responses";
+                result.text = "[" + label + " API error " + response.statusCode()
+                        + ": " + extractErrorMessage(body) + "]";
+                printStreamingChunk(result.text);
+                return result;
+            }
+
+            parseResponsesStream(response.body(), result, state);
+            if (!state.failed && !result.cancelled) {
+                appendResponsesHistory(userMessage, result, state);
+            }
+        } catch (Exception e) {
+            result.text = "[Error: " + formatExceptionMessage(e) + "]";
+        }
+        return result;
+    }
+
+    private ArrayNode buildResponsesInput(
+            String userMessage,
+            String systemPrompt,
+            List<ToolCallResultInput> toolResults,
+            boolean codex) {
+        ArrayNode input = objectMapper.createArrayNode();
+        if (!codex && systemPrompt != null && !systemPrompt.isBlank()) {
+            ObjectNode system = objectMapper.createObjectNode();
+            system.put("role", "developer");
+            system.put("content", systemPrompt);
+            input.add(system);
+        }
+        conversationHistory.forEach(input::add);
+
+        if (toolResults != null) {
+            for (ToolCallResultInput toolResult : toolResults) {
+                ObjectNode output = objectMapper.createObjectNode();
+                output.put("type", "function_call_output");
+                output.put("call_id", toolResult.callId);
+                output.put("output", toolResult.output == null ? "" : toolResult.output);
+                input.add(output);
+                conversationHistory.add(output);
+            }
+        }
+        if (userMessage != null) {
+            input.add(createResponsesUserMessage(userMessage));
+        }
+        return input;
+    }
+
+    private ObjectNode createResponsesUserMessage(String text) {
+        ObjectNode message = objectMapper.createObjectNode();
+        message.put("role", "user");
+        ArrayNode content = objectMapper.createArrayNode();
+        ObjectNode block = objectMapper.createObjectNode();
+        block.put("type", "input_text");
+        block.put("text", text);
+        content.add(block);
+        message.set("content", content);
+        return message;
+    }
+
+    private ArrayNode convertToolDefsToResponses(ArrayNode toolDefs, boolean codex) {
+        ArrayNode tools = objectMapper.createArrayNode();
+        for (JsonNode tool : toolDefs) {
+            ObjectNode responseTool = objectMapper.createObjectNode();
+            responseTool.put("type", "function");
+            responseTool.put("name", tool.path("name").asText());
+            responseTool.put("description", tool.path("description").asText());
+            JsonNode parameters = tool.path("inputSchema");
+            if (parameters == null || parameters.isMissingNode()) {
+                ObjectNode empty = objectMapper.createObjectNode();
+                empty.put("type", "object");
+                empty.set("properties", objectMapper.createObjectNode());
+                parameters = empty;
+            }
+            responseTool.set("parameters", parameters);
+            if (codex) {
+                responseTool.putNull("strict");
+            }
+            tools.add(responseTool);
+        }
+        return tools;
+    }
+
+    private void parseResponsesStream(
+            java.io.InputStream inputStream,
+            StreamResult result,
+            ResponsesStreamState state) throws Exception {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (isCancelled()) {
+                    result.cancelled = true;
+                    return;
+                }
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) {
+                    continue;
+                }
+                String data = trimmed.substring(5).trim();
+                if (data.isEmpty() || "[DONE]".equals(data)) {
+                    continue;
+                }
+
+                JsonNode event;
+                try {
+                    event = objectMapper.readTree(data);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                String type = event.path("type").asText("");
+                int outputIndex = event.path("output_index").asInt(0);
+                switch (type) {
+                    case "response.output_item.added" -> {
+                        JsonNode item = event.path("item");
+                        updateResponsesReasoningItem(state, outputIndex, item);
+                        updateResponsesToolAccumulator(state, outputIndex, item, false);
+                    }
+                    case "response.output_text.delta", "response.refusal.delta" -> {
+                        String delta = event.path("delta").asText("");
+                        if (!delta.isEmpty()) {
+                            printStreamingChunk(delta);
+                            result.text += delta;
+                        }
+                    }
+                    case "response.function_call_arguments.delta" -> {
+                        ResponsesToolCallAccumulator accumulator =
+                                state.toolCalls.computeIfAbsent(
+                                        outputIndex, ignored -> new ResponsesToolCallAccumulator());
+                        accumulator.arguments.append(event.path("delta").asText(""));
+                    }
+                    case "response.function_call_arguments.done" -> {
+                        ResponsesToolCallAccumulator accumulator =
+                                state.toolCalls.computeIfAbsent(
+                                        outputIndex, ignored -> new ResponsesToolCallAccumulator());
+                        String arguments = event.path("arguments").asText(null);
+                        if (arguments != null) {
+                            accumulator.arguments.setLength(0);
+                            accumulator.arguments.append(arguments);
+                        }
+                    }
+                    case "response.output_item.done" -> {
+                        JsonNode item = event.path("item");
+                        updateResponsesReasoningItem(state, outputIndex, item);
+                        updateResponsesToolAccumulator(state, outputIndex, item, true);
+                        if ("message".equals(item.path("type").asText()) && result.text.isEmpty()) {
+                            String completedText = responsesMessageText(item);
+                            if (!completedText.isEmpty()) {
+                                printStreamingChunk(completedText);
+                                result.text = completedText;
+                            }
+                        }
+                    }
+                    case "response.completed", "response.incomplete" -> {
+                        state.terminal = true;
+                        JsonNode response = event.path("response");
+                        backfillResponsesReasoning(state, response.path("output"));
+                        readResponsesUsage(response.path("usage"), result);
+                    }
+                    case "response.failed" -> {
+                        state.terminal = true;
+                        state.failed = true;
+                        String message = event.path("response").path("error").path("message")
+                                .asText("Response failed");
+                        appendProtocolError(result, message);
+                    }
+                    case "error" -> {
+                        state.failed = true;
+                        appendProtocolError(result, event.path("message").asText("Unknown response error"));
+                    }
+                    default -> {
+                        // Other Responses events carry reasoning/status metadata.
+                    }
+                }
+            }
+        }
+
+        for (ResponsesToolCallAccumulator accumulator : state.toolCalls.values()) {
+            if (accumulator.name == null || accumulator.name.isBlank()) {
+                continue;
+            }
+            if (accumulator.callId == null || accumulator.callId.isBlank()) {
+                accumulator.callId = "call_" + result.toolCalls.size();
+            }
+            if (accumulator.itemId == null || accumulator.itemId.isBlank()) {
+                accumulator.itemId = "fc_" + UUID.randomUUID().toString().replace("-", "");
+            }
+            ToolCallOutput toolCall = new ToolCallOutput();
+            toolCall.id = accumulator.callId;
+            toolCall.name = accumulator.name;
+            toolCall.arguments = parseToolArguments(accumulator.arguments.toString());
+            result.toolCalls.add(toolCall);
+        }
+        if (!state.terminal && !state.failed && !result.cancelled) {
+            state.failed = true;
+            appendProtocolError(result, "Responses stream ended without a terminal event");
+        }
+    }
+
+    private void updateResponsesReasoningItem(
+            ResponsesStreamState state,
+            int outputIndex,
+            JsonNode item) {
+        if ("reasoning".equals(item.path("type").asText()) && item.isObject()) {
+            state.reasoningItems.put(outputIndex, ((ObjectNode) item).deepCopy());
+        }
+    }
+
+    private void backfillResponsesReasoning(ResponsesStreamState state, JsonNode output) {
+        if (!output.isArray()) {
+            return;
+        }
+        for (int index = 0; index < output.size(); index++) {
+            JsonNode item = output.get(index);
+            if ("reasoning".equals(item.path("type").asText()) && item.isObject()) {
+                state.reasoningItems.put(index, ((ObjectNode) item).deepCopy());
+            }
+        }
+    }
+
+    private void updateResponsesToolAccumulator(
+            ResponsesStreamState state,
+            int outputIndex,
+            JsonNode item,
+            boolean finalItem) {
+        if (!"function_call".equals(item.path("type").asText())) {
+            return;
+        }
+        ResponsesToolCallAccumulator accumulator =
+                state.toolCalls.computeIfAbsent(
+                        outputIndex, ignored -> new ResponsesToolCallAccumulator());
+        String value = item.path("id").asText(null);
+        if (value != null) accumulator.itemId = value;
+        value = item.path("call_id").asText(null);
+        if (value != null) accumulator.callId = value;
+        value = item.path("name").asText(null);
+        if (value != null) accumulator.name = value;
+        value = item.path("arguments").asText(null);
+        if (value != null && (finalItem || accumulator.arguments.isEmpty())) {
+            accumulator.arguments.setLength(0);
+            accumulator.arguments.append(value);
+        }
+    }
+
+    private String responsesMessageText(JsonNode item) {
+        StringBuilder text = new StringBuilder();
+        for (JsonNode content : item.path("content")) {
+            if ("output_text".equals(content.path("type").asText())) {
+                text.append(content.path("text").asText(""));
+            } else if ("refusal".equals(content.path("type").asText())) {
+                text.append(content.path("refusal").asText(""));
+            }
+        }
+        return text.toString();
+    }
+
+    private void readResponsesUsage(JsonNode usage, StreamResult result) {
+        if (usage == null || usage.isMissingNode()) {
+            return;
+        }
+        long cacheRead = usage.path("input_tokens_details").path("cached_tokens").asLong(0);
+        long cacheWrite = usage.path("input_tokens_details").path("cache_write_tokens").asLong(0);
+        long totalInput = usage.path("input_tokens").asLong(0);
+        result.inputTokens = Math.max(0, totalInput - cacheRead - cacheWrite);
+        result.outputTokens = usage.path("output_tokens").asLong(0);
+        result.cacheReadTokens = cacheRead;
+        result.cacheCreationTokens = cacheWrite;
+    }
+
+    private void appendResponsesHistory(
+            String userMessage,
+            StreamResult result,
+            ResponsesStreamState state) {
+        if (userMessage != null) {
+            conversationHistory.add(createResponsesUserMessage(userMessage));
+        }
+        state.reasoningItems.values().forEach(conversationHistory::add);
+        if (!result.text.isEmpty()) {
+            ObjectNode message = objectMapper.createObjectNode();
+            message.put("type", "message");
+            message.put("role", "assistant");
+            message.put("status", "completed");
+            message.put("id", "msg_" + UUID.randomUUID().toString().replace("-", ""));
+            ArrayNode content = objectMapper.createArrayNode();
+            ObjectNode text = objectMapper.createObjectNode();
+            text.put("type", "output_text");
+            text.put("text", result.text);
+            text.set("annotations", objectMapper.createArrayNode());
+            content.add(text);
+            message.set("content", content);
+            conversationHistory.add(message);
+        }
+        for (ResponsesToolCallAccumulator accumulator : state.toolCalls.values()) {
+            if (accumulator.name == null || accumulator.name.isBlank()) {
+                continue;
+            }
+            ObjectNode item = objectMapper.createObjectNode();
+            item.put("type", "function_call");
+            item.put("id", accumulator.itemId);
+            item.put("call_id", accumulator.callId);
+            item.put("name", accumulator.name);
+            item.put("arguments", accumulator.arguments.isEmpty()
+                    ? "{}" : accumulator.arguments.toString());
+            item.put("status", "completed");
+            conversationHistory.add(item);
+        }
+    }
+
+    private String resolveResponsesUrl(String baseUrl, boolean codex) {
+        String normalized = trimTrailingSlashes(baseUrl);
+        if (!codex) {
+            return normalized.endsWith("/responses") ? normalized : normalized + "/responses";
+        }
+        if (normalized.endsWith("/codex/responses")) return normalized;
+        if (normalized.endsWith("/codex")) return normalized + "/responses";
+        return normalized + "/codex/responses";
+    }
+
+    // ========================================================================
+    // Radius / Pi Messages
+    // ========================================================================
+
+    private StreamResult streamPiMessages(
+            String userMessage,
+            String systemPrompt,
+            ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults,
+            String effectiveModel) {
+        StreamResult result = new StreamResult();
+        try {
+            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            String gateway = config.resolveBaseUrl(auth);
+            RadiusGatewayConfig gatewayConfig = loadRadiusGatewayConfig(gateway, auth);
+            if (!gatewayConfig.modelIds().isEmpty()
+                    && !gatewayConfig.modelIds().contains(effectiveModel)) {
+                result.text = "[Radius model is not present in the gateway catalog: "
+                        + effectiveModel + "]";
+                printStreamingChunk(result.text);
+                return result;
+            }
+
+            ObjectNode request = objectMapper.createObjectNode();
+            request.put("model", effectiveModel);
+            ObjectNode context = objectMapper.createObjectNode();
+            if (systemPrompt != null && !systemPrompt.isBlank()) {
+                context.put("systemPrompt", systemPrompt);
+            }
+            context.set("messages", buildPiMessages(userMessage, toolResults));
+            if (toolDefs != null && !toolDefs.isEmpty()) {
+                context.set("tools", convertToolDefsToPi(toolDefs));
+            }
+            request.set("context", context);
+            ObjectNode options = objectMapper.createObjectNode();
+            options.put("maxTokens", 8192);
+            request.set("options", options);
+
+            String url = appendPath(gatewayConfig.baseUrl(), "/messages");
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Accept", "text/event-stream")
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            objectMapper.writeValueAsString(request),
+                            StandardCharsets.UTF_8))
+                    .timeout(Duration.ofMinutes(10));
+            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+            }
+            applyHeaders(requestBuilder, auth);
+
+            HttpResponse<java.io.InputStream> response = httpClient.send(
+                    requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                result.text = "[Radius API error " + response.statusCode()
+                        + ": " + extractErrorMessage(body) + "]";
+                printStreamingChunk(result.text);
+                return result;
+            }
+
+            PiMessagesStreamState state = new PiMessagesStreamState();
+            parsePiMessagesStream(response.body(), result, state);
+            if (!state.failed && !result.cancelled) {
+                appendPiMessagesHistory(userMessage, effectiveModel, result, state);
+            }
+        } catch (Exception e) {
+            result.text = "[Error: " + formatExceptionMessage(e) + "]";
+        }
+        return result;
+    }
+
+    private RadiusGatewayConfig loadRadiusGatewayConfig(
+            String gateway,
+            OAuthProviderFlow.RequestAuth auth) throws Exception {
+        String normalizedGateway = trimTrailingSlashes(gateway);
+        RadiusGatewayConfig cached = radiusGatewayConfig;
+        if (cached != null && normalizedGateway.equals(radiusGatewayConfigSource)) {
+            return cached;
+        }
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(appendPath(normalizedGateway, "/v1/config")))
+                .header("Accept", "application/json")
+                .GET()
+                .timeout(Duration.ofSeconds(30));
+        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+        }
+        applyHeaders(builder, auth);
+        HttpResponse<String> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException("Could not load Radius config (HTTP "
+                    + response.statusCode() + "): " + extractErrorMessage(response.body()));
+        }
+        JsonNode root = objectMapper.readTree(response.body());
+        String messagesBaseUrl = root.path("baseUrl").asText(null);
+        if (messagesBaseUrl == null || messagesBaseUrl.isBlank()) {
+            throw new IllegalStateException("Invalid Radius config: missing baseUrl");
+        }
+        List<String> modelIds = new ArrayList<>();
+        JsonNode models = root.path("models");
+        if (!models.isArray()) {
+            throw new IllegalStateException("Invalid Radius config: models must be an array");
+        }
+        for (JsonNode model : models) {
+            String id = model.path("id").asText(null);
+            if (id != null && !id.isBlank()) {
+                modelIds.add(id);
+            }
+        }
+        RadiusGatewayConfig loaded = new RadiusGatewayConfig(
+                trimTrailingSlashes(messagesBaseUrl), List.copyOf(modelIds));
+        radiusGatewayConfigSource = normalizedGateway;
+        radiusGatewayConfig = loaded;
+        return loaded;
+    }
+
+    private ArrayNode buildPiMessages(
+            String userMessage,
+            List<ToolCallResultInput> toolResults) {
+        ArrayNode messages = objectMapper.createArrayNode();
+        conversationHistory.forEach(messages::add);
+        if (toolResults != null) {
+            for (ToolCallResultInput toolResult : toolResults) {
+                ObjectNode message = objectMapper.createObjectNode();
+                message.put("role", "toolResult");
+                message.put("toolCallId", toolResult.callId);
+                message.put("toolName", toolResult.name == null ? "" : toolResult.name);
+                ArrayNode content = objectMapper.createArrayNode();
+                ObjectNode text = objectMapper.createObjectNode();
+                text.put("type", "text");
+                text.put("text", toolResult.output == null ? "" : toolResult.output);
+                content.add(text);
+                message.set("content", content);
+                message.put("isError", toolResult.isError);
+                message.put("timestamp", System.currentTimeMillis());
+                messages.add(message);
+                conversationHistory.add(message);
+            }
+        }
+        if (userMessage != null) {
+            messages.add(createPiUserMessage(userMessage));
+        }
+        return messages;
+    }
+
+    private ObjectNode createPiUserMessage(String userMessage) {
+        ObjectNode message = objectMapper.createObjectNode();
+        message.put("role", "user");
+        message.put("content", userMessage);
+        message.put("timestamp", System.currentTimeMillis());
+        return message;
+    }
+
+    private ArrayNode convertToolDefsToPi(ArrayNode toolDefs) {
+        ArrayNode tools = objectMapper.createArrayNode();
+        for (JsonNode tool : toolDefs) {
+            ObjectNode piTool = objectMapper.createObjectNode();
+            piTool.put("name", tool.path("name").asText());
+            piTool.put("description", tool.path("description").asText());
+            JsonNode parameters = tool.path("inputSchema");
+            if (parameters == null || parameters.isMissingNode()) {
+                ObjectNode empty = objectMapper.createObjectNode();
+                empty.put("type", "object");
+                empty.set("properties", objectMapper.createObjectNode());
+                parameters = empty;
+            }
+            piTool.set("parameters", parameters);
+            tools.add(piTool);
+        }
+        return tools;
+    }
+
+    private void parsePiMessagesStream(
+            java.io.InputStream inputStream,
+            StreamResult result,
+            PiMessagesStreamState state) throws Exception {
+        Map<Integer, ResponsesToolCallAccumulator> accumulators = new LinkedHashMap<>();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (isCancelled()) {
+                    result.cancelled = true;
+                    return;
+                }
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) continue;
+                String data = trimmed.substring(5).trim();
+                if (data.isEmpty() || "[DONE]".equals(data)) continue;
+
+                JsonNode event;
+                try {
+                    event = objectMapper.readTree(data);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                String type = event.path("type").asText("");
+                int contentIndex = event.path("contentIndex").asInt(0);
+                switch (type) {
+                    case "text_start" ->
+                            piContentBlock(state, contentIndex, "text", "text");
+                    case "text_delta" -> {
+                        String delta = event.path("delta").asText("");
+                        ObjectNode block = piContentBlock(state, contentIndex, "text", "text");
+                        block.put("text", block.path("text").asText("") + delta);
+                        if (!delta.isEmpty()) {
+                            printStreamingChunk(delta);
+                            result.text += delta;
+                        }
+                    }
+                    case "text_end" -> {
+                        ObjectNode block = piContentBlock(state, contentIndex, "text", "text");
+                        String content = event.path("content").asText(block.path("text").asText(""));
+                        block.put("text", content);
+                        String signature = event.path("contentSignature").asText(null);
+                        if (signature != null) block.put("textSignature", signature);
+                        if (result.text.isEmpty() && !content.isEmpty()) {
+                            printStreamingChunk(content);
+                            result.text = content;
+                        }
+                    }
+                    case "thinking_start" ->
+                            piContentBlock(state, contentIndex, "thinking", "thinking");
+                    case "thinking_delta" -> {
+                        String delta = event.path("delta").asText("");
+                        ObjectNode block = piContentBlock(state, contentIndex, "thinking", "thinking");
+                        block.put("thinking", block.path("thinking").asText("") + delta);
+                    }
+                    case "thinking_end" -> {
+                        ObjectNode block = piContentBlock(state, contentIndex, "thinking", "thinking");
+                        block.put("thinking",
+                                event.path("content").asText(block.path("thinking").asText("")));
+                        String signature = event.path("contentSignature").asText(null);
+                        if (signature != null) block.put("thinkingSignature", signature);
+                        if (event.has("redacted")) block.put("redacted", event.path("redacted").asBoolean());
+                    }
+                    case "toolcall_start" -> {
+                        ResponsesToolCallAccumulator accumulator =
+                                accumulators.computeIfAbsent(
+                                        contentIndex, ignored -> new ResponsesToolCallAccumulator());
+                        accumulator.callId = event.path("id").asText(null);
+                        accumulator.name = event.path("toolName").asText(null);
+                    }
+                    case "toolcall_delta" ->
+                            accumulators.computeIfAbsent(
+                                            contentIndex, ignored -> new ResponsesToolCallAccumulator())
+                                    .arguments.append(event.path("delta").asText(""));
+                    case "toolcall_end" -> {
+                        JsonNode toolCall = event.path("toolCall");
+                        ResponsesToolCallAccumulator accumulator =
+                                accumulators.computeIfAbsent(
+                                        contentIndex, ignored -> new ResponsesToolCallAccumulator());
+                        accumulator.callId = toolCall.path("id").asText(accumulator.callId);
+                        accumulator.name = toolCall.path("name").asText(accumulator.name);
+                        JsonNode arguments = toolCall.path("arguments");
+                        if (!arguments.isMissingNode()) {
+                            accumulator.arguments.setLength(0);
+                            accumulator.arguments.append(objectMapper.writeValueAsString(arguments));
+                        }
+                        if (toolCall.isObject()) {
+                            ObjectNode block = toolCall.deepCopy();
+                            block.put("type", "toolCall");
+                            state.contentBlocks.put(contentIndex, block);
+                        }
+                    }
+                    case "done" -> {
+                        state.terminal = true;
+                        readPiUsage(event.path("usage"), result);
+                    }
+                    case "error" -> {
+                        state.terminal = true;
+                        state.failed = true;
+                        readPiUsage(event.path("usage"), result);
+                        appendProtocolError(
+                                result, event.path("errorMessage").asText("Radius request failed"));
+                    }
+                    default -> {
+                        // The start event carries no content.
+                    }
+                }
+            }
+        }
+
+        for (Map.Entry<Integer, ResponsesToolCallAccumulator> entry : accumulators.entrySet()) {
+            ResponsesToolCallAccumulator accumulator = entry.getValue();
+            if (accumulator.name == null || accumulator.name.isBlank()) continue;
+            ToolCallOutput toolCall = new ToolCallOutput();
+            toolCall.id = accumulator.callId == null || accumulator.callId.isBlank()
+                    ? "call_" + result.toolCalls.size()
+                    : accumulator.callId;
+            toolCall.name = accumulator.name;
+            toolCall.arguments = parseToolArguments(accumulator.arguments.toString());
+            result.toolCalls.add(toolCall);
+            state.contentBlocks.computeIfAbsent(entry.getKey(), ignored -> {
+                ObjectNode block = objectMapper.createObjectNode();
+                block.put("type", "toolCall");
+                block.put("id", toolCall.id);
+                block.put("name", toolCall.name);
+                block.set("arguments", toolCall.arguments);
+                return block;
+            });
+        }
+        if (!state.terminal && !state.failed && !result.cancelled) {
+            state.failed = true;
+            appendProtocolError(result, "Radius stream ended without a terminal event");
+        }
+    }
+
+    private ObjectNode piContentBlock(
+            PiMessagesStreamState state,
+            int contentIndex,
+            String type,
+            String valueField) {
+        return state.contentBlocks.computeIfAbsent(contentIndex, ignored -> {
+            ObjectNode block = objectMapper.createObjectNode();
+            block.put("type", type);
+            block.put(valueField, "");
+            return block;
+        });
+    }
+
+    private void readPiUsage(JsonNode usage, StreamResult result) {
+        if (usage == null || usage.isMissingNode()) return;
+        result.inputTokens = usage.path("input").asLong(0);
+        result.outputTokens = usage.path("output").asLong(0);
+        result.cacheReadTokens = usage.path("cacheRead").asLong(0);
+        result.cacheCreationTokens = usage.path("cacheWrite").asLong(0);
+    }
+
+    private void appendPiMessagesHistory(
+            String userMessage,
+            String effectiveModel,
+            StreamResult result,
+            PiMessagesStreamState state) {
+        if (userMessage != null) {
+            conversationHistory.add(createPiUserMessage(userMessage));
+        }
+        if (result.text.isEmpty() && result.toolCalls.isEmpty() && state.contentBlocks.isEmpty()) return;
+
+        ObjectNode assistant = objectMapper.createObjectNode();
+        assistant.put("role", "assistant");
+        ArrayNode content = objectMapper.createArrayNode();
+        state.contentBlocks.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> content.add(entry.getValue()));
+        boolean hasText = state.contentBlocks.values().stream()
+                .anyMatch(block -> "text".equals(block.path("type").asText()));
+        boolean hasToolCall = state.contentBlocks.values().stream()
+                .anyMatch(block -> "toolCall".equals(block.path("type").asText()));
+        if (!hasText && !result.text.isEmpty()) {
+            ObjectNode text = objectMapper.createObjectNode();
+            text.put("type", "text");
+            text.put("text", result.text);
+            content.add(text);
+        }
+        if (!hasToolCall) {
+            for (ToolCallOutput toolCall : result.toolCalls) {
+                ObjectNode call = objectMapper.createObjectNode();
+                call.put("type", "toolCall");
+                call.put("id", toolCall.id);
+                call.put("name", toolCall.name);
+                call.set("arguments", toolCall.arguments);
+                content.add(call);
+            }
+        }
+        assistant.set("content", content);
+        assistant.put("api", "pi-messages");
+        assistant.put("provider", config.getProvider());
+        assistant.put("model", effectiveModel);
+        ObjectNode usage = objectMapper.createObjectNode();
+        usage.put("input", result.inputTokens);
+        usage.put("output", result.outputTokens);
+        usage.put("cacheRead", result.cacheReadTokens);
+        usage.put("cacheWrite", result.cacheCreationTokens);
+        usage.put("totalTokens", result.inputTokens + result.outputTokens
+                + result.cacheReadTokens + result.cacheCreationTokens);
+        ObjectNode cost = objectMapper.createObjectNode();
+        cost.put("input", 0);
+        cost.put("output", 0);
+        cost.put("cacheRead", 0);
+        cost.put("cacheWrite", 0);
+        cost.put("total", 0);
+        usage.set("cost", cost);
+        assistant.set("usage", usage);
+        assistant.put("stopReason", result.toolCalls.isEmpty() ? "stop" : "toolUse");
+        assistant.put("timestamp", System.currentTimeMillis());
+        conversationHistory.add(assistant);
+    }
+
+    private void appendProtocolError(StreamResult result, String message) {
+        String formatted = "[Error: " + message + "]";
+        if (!result.text.isEmpty()) {
+            result.text += "\n";
+        }
+        result.text += formatted;
+        printStreamingChunk(formatted);
+    }
+
+    private JsonNode parseToolArguments(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return objectMapper.createObjectNode();
+        }
+        try {
+            JsonNode parsed = objectMapper.readTree(raw);
+            return parsed == null ? objectMapper.createObjectNode() : parsed;
+        } catch (Exception ignored) {
+            return objectMapper.createObjectNode();
+        }
+    }
+
+    private String appendPath(String baseUrl, String path) {
+        String normalized = trimTrailingSlashes(baseUrl);
+        return normalized.endsWith(path) ? normalized : normalized + path;
+    }
+
+    private String trimTrailingSlashes(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Provider base URL is missing");
+        }
+        return value.trim().replaceAll("/+$", "");
+    }
+
+    // ========================================================================
+    // Kompile first-party serving subprocess
+    // ========================================================================
+
+    /**
+     * Send canonical structured chat requests to the private loopback endpoint
+     * owned by the first-party {@code ServingSubprocessMain} child.
+     */
+    private StreamResult streamKompileServing(
+            String userMessage,
+            String systemPrompt,
+            ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults) {
+        StreamResult result = new StreamResult();
+        try {
+            if (isCancelled()) {
+                result.cancelled = true;
+                return result;
+            }
+            if (config.getBaseUrl() == null || config.getBaseUrl().isBlank()) {
+                throw new IllegalStateException(
+                        "Kompile serving subprocess endpoint was not prepared");
+            }
+
+            ObjectNode request = objectMapper.createObjectNode();
+            ObjectNode structured = request.putObject("request");
+            structured.set("messages", buildKompileServingMessages(
+                    userMessage, systemPrompt, toolResults));
+            ArrayNode tools = buildKompileServingTools(toolDefs);
+            structured.set("tools", tools);
+            structured.put("addGenerationPrompt", true);
+            structured.put("toolDefinitionFormat", "FLAT");
+            structured.put("toolCallFormat", "NATIVE");
+            structured.put("toolChoice", tools.isEmpty() ? "NONE" : "AUTO");
+            request.put("maxTokens", 1024);
+
+            String url = appendPath(config.getBaseUrl(), "/api/llm/chat");
+            HttpRequest httpRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            objectMapper.writeValueAsString(request)))
+                    .timeout(Duration.ofMinutes(10))
+                    .build();
+            HttpResponse<String> response = httpClient.send(
+                    httpRequest, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                appendProtocolError(result,
+                        "Kompile serving HTTP " + response.statusCode() + ": "
+                                + extractErrorMessage(response.body()));
+                return result;
+            }
+
+            JsonNode payload = objectMapper.readTree(response.body());
+            String finishReason = payload.path("finishReason").asText("");
+            if (finishReason.startsWith("error")) {
+                appendProtocolError(result, finishReason);
+                return result;
+            }
+
+            String rawText = payload.path("rawText").asText("");
+            result.text = payload.path("content").asText("");
+            JsonNode encodedCalls = payload.path("toolCalls");
+            if (encodedCalls.isArray()) {
+                for (JsonNode call : encodedCalls) {
+                    String name = call.path("name").asText("");
+                    if (name.isBlank()) continue;
+                    ToolCallOutput output = new ToolCallOutput();
+                    output.id = call.path("id").asText("");
+                    if (output.id.isBlank()) {
+                        output.id = "call_" + result.toolCalls.size();
+                    }
+                    output.name = name;
+                    JsonNode arguments = call.path("arguments");
+                    output.arguments = arguments.isObject()
+                            ? arguments.deepCopy() : objectMapper.createObjectNode();
+                    result.toolCalls.add(output);
+                }
+            }
+
+            if (result.text.isBlank() && result.toolCalls.isEmpty() && !rawText.isBlank()) {
+                result.text = rawText;
+            }
+            if (!result.text.isEmpty() && !isCancelled()) {
+                printStreamingChunk(result.text);
+            } else if (isCancelled()) {
+                result.cancelled = true;
+            }
+
+            if (userMessage != null) {
+                ObjectNode user = objectMapper.createObjectNode();
+                user.put("role", "user");
+                user.put("content", userMessage);
+                conversationHistory.add(user);
+            }
+            if (!rawText.isBlank() || !result.text.isBlank() || !result.toolCalls.isEmpty()) {
+                ObjectNode assistant = objectMapper.createObjectNode();
+                assistant.put("role", "assistant");
+                assistant.put("content", !rawText.isBlank() ? rawText : result.text);
+                if (!result.toolCalls.isEmpty()) {
+                    ArrayNode calls = assistant.putArray("tool_calls");
+                    for (ToolCallOutput call : result.toolCalls) {
+                        ObjectNode encoded = calls.addObject();
+                        encoded.put("id", call.id);
+                        encoded.put("name", call.name);
+                        encoded.set("arguments", call.arguments);
+                    }
+                }
+                conversationHistory.add(assistant);
+            }
+        } catch (Exception e) {
+            result.text = "[Kompile serving error: " + e.getMessage() + "]";
+            printStreamingChunk(result.text);
+        }
+        return result;
+    }
+
+    private ArrayNode buildKompileServingMessages(
+            String userMessage,
+            String systemPrompt,
+            List<ToolCallResultInput> toolResults) {
+        ArrayNode messages = objectMapper.createArrayNode();
+        if (systemPrompt != null && !systemPrompt.isEmpty()) {
+            ObjectNode system = messages.addObject();
+            system.put("role", "system");
+            system.put("content", systemPrompt);
+        }
+        for (ObjectNode historyMessage : conversationHistory) {
+            ObjectNode message = messages.addObject();
+            message.put("role", historyMessage.path("role").asText("user"));
+            message.put("content", historyMessage.path("content").asText(""));
+        }
+        if (toolResults != null) {
+            for (ToolCallResultInput toolResult : toolResults) {
+                ObjectNode message = messages.addObject();
+                message.put("role", "tool");
+                message.put("content", toolResult.output);
+                ObjectNode history = objectMapper.createObjectNode();
+                history.put("role", "tool");
+                history.put("content", toolResult.output);
+                if (toolResult.callId != null) {
+                    history.put("tool_call_id", toolResult.callId);
+                }
+                if (toolResult.name != null) history.put("name", toolResult.name);
+                conversationHistory.add(history);
+            }
+        }
+        if (userMessage != null) {
+            ObjectNode user = messages.addObject();
+            user.put("role", "user");
+            user.put("content", userMessage);
+        }
+        return messages;
+    }
+
+    private ArrayNode buildKompileServingTools(ArrayNode toolDefs) {
+        ArrayNode tools = objectMapper.createArrayNode();
+        if (toolDefs != null) {
+            for (JsonNode toolDef : toolDefs) {
+                String name = toolDef.path("name").asText("");
+                if (name.isBlank()) continue;
+                ObjectNode tool = tools.addObject();
+                tool.put("name", name);
+                tool.put("description", toolDef.path("description").asText(""));
+                JsonNode parameters = toolDef.path("inputSchema");
+                tool.set("parameters", parameters.isObject()
+                        ? parameters.deepCopy()
+                        : objectMapper.createObjectNode());
+            }
+        }
+        return tools;
+    }
+
     // ========================================================================
     // OpenAI-compatible Chat Completions
     // ========================================================================
@@ -256,6 +1286,7 @@ public class DirectLlmClient {
             request.put("model", effectiveModel);
             request.set("messages", messages);
             request.put("stream", true);
+            applyReasoningEffort(request, false);
 
             // Request token usage in streamed response
             ObjectNode streamOptions = objectMapper.createObjectNode();
@@ -269,16 +1300,21 @@ public class DirectLlmClient {
                 }
             }
 
-            String baseUrl = config.resolveBaseUrl();
+            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+            String baseUrl = config.resolveBaseUrl(auth);
             String url = baseUrl + "/chat/completions";
 
-            HttpRequest httpRequest = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + (config.getApiKey() != null ? config.getApiKey() : ""))
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofMinutes(10))
-                    .build();
+                    .timeout(Duration.ofMinutes(10));
+            if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+                requestBuilder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+            }
+            applyHeaders(requestBuilder, auth);
+            applyProviderRequestHeaders(requestBuilder, userMessage);
+            HttpRequest httpRequest = requestBuilder.build();
 
             HttpResponse<java.io.InputStream> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
@@ -500,12 +1536,20 @@ public class DirectLlmClient {
         StreamResult result = new StreamResult();
 
         try {
+            OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
             request.put("max_tokens", 8192);
             request.put("stream", true);
 
-            if (systemPrompt != null && !systemPrompt.isEmpty()) {
+            boolean anthropicOAuth = auth != null && auth.oauth()
+                    && "anthropic".equalsIgnoreCase(config.getProvider());
+            if (anthropicOAuth) {
+                String identity = "You are Claude Code, Anthropic's official CLI for Claude.";
+                request.put("system", systemPrompt == null || systemPrompt.isEmpty()
+                        ? identity
+                        : identity + "\\n\\n" + systemPrompt);
+            } else if (systemPrompt != null && !systemPrompt.isEmpty()) {
                 request.put("system", systemPrompt);
             }
 
@@ -519,16 +1563,26 @@ public class DirectLlmClient {
                 }
             }
 
-            String baseUrl = config.resolveBaseUrl();
+            String baseUrl = config.resolveBaseUrl(auth);
 
-            HttpRequest httpRequest = HttpRequest.newBuilder()
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl + "/v1/messages"))
                     .header("Content-Type", "application/json")
-                    .header("x-api-key", config.getApiKey() != null ? config.getApiKey() : "")
                     .header("anthropic-version", "2023-06-01")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request)))
-                    .timeout(Duration.ofMinutes(10))
-                    .build();
+                    .timeout(Duration.ofMinutes(10));
+            if (auth == null || (!hasHeader(auth.headers(), "Authorization")
+                    && !hasHeader(auth.headers(), "x-api-key"))) {
+                if ("github-copilot".equals(config.getProvider())) {
+                    requestBuilder.header(
+                            "Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+                } else {
+                    requestBuilder.header("x-api-key", auth == null ? "" : auth.token());
+                }
+            }
+            applyHeaders(requestBuilder, auth);
+            applyProviderRequestHeaders(requestBuilder, userMessage);
+            HttpRequest httpRequest = requestBuilder.build();
 
             HttpResponse<java.io.InputStream> response = httpClient.send(
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
@@ -581,6 +1635,31 @@ public class DirectLlmClient {
         }
 
         return result;
+    }
+
+    private static void applyHeaders(
+            HttpRequest.Builder builder,
+            OAuthProviderFlow.RequestAuth auth) {
+        if (auth != null) {
+            auth.headers().forEach(builder::setHeader);
+        }
+    }
+
+    private static boolean hasHeader(Map<String, String> headers, String expectedName) {
+        return headers.keySet().stream().anyMatch(name -> name.equalsIgnoreCase(expectedName));
+    }
+
+    private void applyProviderRequestHeaders(
+            HttpRequest.Builder builder,
+            String userMessage) {
+        if ("github-copilot".equals(config.getProvider())) {
+            builder.setHeader("User-Agent", "GitHubCopilotChat/0.35.0");
+            builder.setHeader("Editor-Version", "vscode/1.107.0");
+            builder.setHeader("Editor-Plugin-Version", "copilot-chat/0.35.0");
+            builder.setHeader("Copilot-Integration-Id", "vscode-chat");
+            builder.setHeader("X-Initiator", userMessage == null ? "agent" : "user");
+            builder.setHeader("Openai-Intent", "conversation-edits");
+        }
     }
 
     private ArrayNode buildAnthropicMessages(String userMessage, List<ToolCallResultInput> toolResults) {
@@ -892,5 +1971,28 @@ public class DirectLlmClient {
         String id;
         String name;
         StringBuilder arguments = new StringBuilder();
+    }
+
+    private static class ResponsesToolCallAccumulator {
+        String itemId;
+        String callId;
+        String name;
+        StringBuilder arguments = new StringBuilder();
+    }
+
+    private static class ResponsesStreamState {
+        final Map<Integer, ObjectNode> reasoningItems = new LinkedHashMap<>();
+        final Map<Integer, ResponsesToolCallAccumulator> toolCalls = new LinkedHashMap<>();
+        boolean terminal;
+        boolean failed;
+    }
+
+    private static class PiMessagesStreamState {
+        final Map<Integer, ObjectNode> contentBlocks = new LinkedHashMap<>();
+        boolean terminal;
+        boolean failed;
+    }
+
+    private record RadiusGatewayConfig(String baseUrl, List<String> modelIds) {
     }
 }

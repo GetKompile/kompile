@@ -23,6 +23,7 @@ import ai.kompile.graph.reasoning.prior.PriorContext;
 import ai.kompile.graph.reasoning.prior.PriorProvider;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +58,7 @@ public class GraphBayesianNetworkBuilder {
     /** Build a DAG-structured Bayesian network for {@code graph}. */
     public BayesianNetwork build(ReasoningGraph graph) {
         List<GraphEntity> entities = new ArrayList<>(graph.entities());
+        entities.sort(Comparator.comparing(GraphEntity::id));
         BayesianNetwork network = new BayesianNetwork();
 
         int i = 0;
@@ -68,20 +70,27 @@ public class GraphBayesianNetworkBuilder {
             network.addNode(new BayesianNode(var, entity.id(), title));
         }
 
-        // Directed relations, strongest first; drop any that would close a cycle.
+        // Strongest relations first with stable secondary keys; drop any edge that would close a cycle.
         List<GraphRelation> relations = new ArrayList<>(graph.relations());
-        relations.sort((a, b) -> Double.compare(b.weight(), a.weight()));
+        relations.sort(Comparator
+                .comparingDouble(GraphBayesianNetworkBuilder::effectiveStrength).reversed()
+                .thenComparing(GraphBayesianNetworkBuilder::sourceId)
+                .thenComparing(GraphBayesianNetworkBuilder::targetId)
+                .thenComparing(r -> r.type() == null ? "" : r.type())
+                .thenComparing(GraphRelation::id));
 
         Map<String, Double> edgeStrength = new LinkedHashMap<>();
         for (GraphRelation relation : relations) {
-            String parentVar = entityIdToVariable.get(relation.sourceId());
-            String childVar = entityIdToVariable.get(relation.targetId());
-            if (parentVar == null || childVar == null || parentVar.equals(childVar) || relation.weight() <= 0.0) {
+            String parentVar = entityIdToVariable.get(sourceId(relation));
+            String childVar = entityIdToVariable.get(targetId(relation));
+            double strength = effectiveStrength(relation);
+            if (parentVar == null || childVar == null || parentVar.equals(childVar)
+                    || strength <= 0.0 || isConflictType(relation.type())) {
                 continue;
             }
             try {
                 network.addEdge(parentVar, childVar);
-                edgeStrength.put(parentVar + "->" + childVar, Math.min(1.0, relation.weight()));
+                edgeStrength.put(parentVar + "->" + childVar, strength);
             } catch (IllegalArgumentException cycle) {
                 // weaker back-edge would create a cycle — drop it to keep the DAG acyclic
             }
@@ -89,7 +98,7 @@ public class GraphBayesianNetworkBuilder {
 
         for (GraphEntity entity : entities) {
             BayesianNode node = network.getNode(entityIdToVariable.get(entity.id()));
-            double prior = clamp01(entity.weight());
+            double prior = clamp01(entity.confidence());
             if (node.isRoot()) {
                 node.setCpt(NoisyOrCpt.buildPrior(node.getVariableName(), prior));
             } else {
@@ -113,5 +122,35 @@ public class GraphBayesianNetworkBuilder {
 
     private static double clamp01(double x) {
         return Math.max(0.0, Math.min(1.0, x));
+    }
+
+    private static double effectiveStrength(GraphRelation relation) {
+        return clamp01(relation.weight() * relation.confidence());
+    }
+
+    private static String sourceId(GraphRelation relation) {
+        if (relation.directed() || relation.sourceId().compareTo(relation.targetId()) <= 0) {
+            return relation.sourceId();
+        }
+        return relation.targetId();
+    }
+
+    private static String targetId(GraphRelation relation) {
+        if (relation.directed() || relation.sourceId().compareTo(relation.targetId()) <= 0) {
+            return relation.targetId();
+        }
+        return relation.sourceId();
+    }
+
+    private static boolean isConflictType(String type) {
+        String normalized = type == null ? "" : type.trim().toUpperCase(java.util.Locale.ROOT);
+        return normalized.equals("CONTRADICTS")
+                || normalized.equals("CONFLICTS")
+                || normalized.equals("REFUTES")
+                || normalized.equals("DISAGREES")
+                || normalized.equals("OPPOSES")
+                || normalized.equals("NOT_SAME_AS")
+                || normalized.equals("NOT_SAME")
+                || normalized.equals("DIFFERENT_FROM");
     }
 }

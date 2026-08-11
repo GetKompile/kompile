@@ -152,8 +152,10 @@ _ios_assert_contains("${_sdx_service}" "Thread.current === worker"
   "Graal isolate same-thread reentrancy")
 _ios_assert_contains("${_router}" "loadModel(bundle: bundle)"
   "complete model-bundle load routing")
-_ios_assert_contains("${_router}" "renderChatPrompt(messages: messages)"
-  "tokenizer-owned chat routing")
+_ios_assert_contains("${_router}" "sdxService.generateChat("
+  "model-owned structured chat routing")
+_ios_assert_absent("${_router}" "ToolCallParser"
+  "upper-layer model-text parser invocation")
 _ios_assert_contains("${_router}" "sdxService.isModelLoaded"
   "loaded-model route gate")
 foreach(marker IN ITEMS "<|system|>" "<|assistant|>" "buildLocalPrompt")
@@ -245,6 +247,8 @@ _ios_assert_contains("${_canonical_sdx_header}" "sdxLlmLoadCompiledModel("
   "canonical SDX compiled model declaration")
 _ios_assert_contains("${_canonical_sdx_header}" "sdxLlmRenderChatPrompt("
   "canonical SDX tokenizer prompt declaration")
+_ios_assert_contains("${_canonical_sdx_header}" "sdxLlmGenerateChat("
+  "canonical model-owned structured chat declaration")
 
 message(STATUS
   "iOS local-only canonical JavaCPP text-session/manual import, tokenizer chat-template, Safari handoff, diagnostics, and no-direct-chat-network contract passed")

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -88,6 +89,35 @@ class DirectSubagentRunnerStdioTest {
                 SubprocessAgentRunner.buildManagedCommand(
                         "opencode", "/tmp/opencode", "review", false, null,
                         false, tempDir, null, "openai/gpt", "high"));
+    }
+
+    @Test
+    void managedCommandsKeepFullPermissionsEnabled() {
+        List<String> codex = SubprocessAgentRunner.buildManagedCommand(
+                "codex", "/tmp/codex", "implement", false, null, true, tempDir, null,
+                "gpt-5.6-sol", "xhigh");
+        assertTrue(codex.contains("--dangerously-bypass-approvals-and-sandbox"));
+        assertFalse(codex.contains("read-only"));
+        assertFalse(codex.contains("--ephemeral"));
+
+        List<String> resumedCodex = SubprocessAgentRunner.buildManagedCommand(
+                "codex", "/tmp/codex", "continue", true, "session-123", true, tempDir, null,
+                "gpt-5.6-sol", "xhigh");
+        int resumedExecIndex = resumedCodex.indexOf("exec");
+        assertTrue(resumedExecIndex >= 0, resumedCodex.toString());
+        assertTrue(resumedExecIndex < resumedCodex.indexOf("resume"), resumedCodex.toString());
+        assertTrue(resumedCodex.contains("--dangerously-bypass-approvals-and-sandbox"));
+
+        List<String> claude = SubprocessAgentRunner.buildManagedCommand(
+                "claude", "/tmp/claude", "implement", false, null, true, tempDir, null,
+                "gpt", "xhigh");
+        assertTrue(claude.contains("--dangerously-skip-permissions"));
+        assertFalse(claude.contains("--disallowedTools"));
+
+        List<String> opencode = SubprocessAgentRunner.buildManagedCommand(
+                "opencode", "/tmp/opencode", "implement", false, null, true, tempDir, null,
+                "gpt", "xhigh");
+        assertFalse(opencode.containsAll(List.of("--agent", "plan")));
     }
 
     @Test
@@ -185,6 +215,44 @@ class DirectSubagentRunnerStdioTest {
 
         assertTrue(result.contains("managed-output"));
         assertEquals("forked-value", fork.fake.extraEnvironment.get("KOMPILE_TEST_FORK_ENV"));
+    }
+
+    @Test
+    void architectRoleKeepsPromptAndDefaultsWithoutRestrictingTools() throws Exception {
+        RoleConfig architect = RoleConfig.builder()
+                .name("architect")
+                .displayName("Software Architect")
+                .description("one bounded plan")
+                .systemPrompt("Return one plan.")
+                .enabledTools(Set.of("read", "grep"))
+                .canSpawnSubagents(false)
+                .agentDefaults(Map.of("codex", new RoleAgentDefaults("gpt-5.6-sol", "xhigh", Map.of())))
+                .build();
+        ManagedTestRunner runner = new ManagedTestRunner(
+                tempDir, new TestRoleManager(tempDir, architect, null));
+
+        String result = runner.runSubagent(AgentConfig.builder("codex")
+                .roleName("architect")
+                .build(), "design one thing");
+
+        assertTrue(runner.fake.isSkipPermissions());
+        assertFalse(runner.fake.extraEnvironment.containsKey("KOMPILE_SUBAGENT_CAN_SPAWN"));
+        assertFalse(runner.fake.extraEnvironment.containsKey("KOMPILE_SUBAGENT_TOOL_ALLOWLIST"));
+        assertTrue(runner.fake.message.contains("Return one plan."));
+        assertTrue(result.contains("policy=FULL_ACCESS"));
+    }
+
+    @Test
+    void unknownExplicitRoleFailsClosedBeforeLaunch() {
+        ManagedTestRunner runner = new ManagedTestRunner(tempDir);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> runner.runSubagent(AgentConfig.builder("codex")
+                        .roleName("does-not-exist")
+                        .build(), "do work"));
+
+        assertTrue(error.getMessage().contains("Unknown role"));
+        assertNull(runner.fake);
     }
 
     @Test

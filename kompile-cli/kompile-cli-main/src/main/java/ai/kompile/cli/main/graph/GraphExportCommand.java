@@ -14,6 +14,7 @@ import ai.kompile.cli.main.app.AppClientMixin;
 import picocli.CommandLine;
 
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
@@ -23,20 +24,20 @@ import java.util.concurrent.Callable;
  */
 @CommandLine.Command(
         name = "export",
-        description = "Export the graph to JSON, JSON-LD, CSV (zip), GraphML, Cypher dump, "
+        description = "Export the graph to JSON, JSON-LD, CSV (zip), GraphML, Cypher dump, ASCII, PNG, "
                 + "or the full native .kgraph (--format kgraph)",
         mixinStandardHelpOptions = true
 )
 public class GraphExportCommand implements Callable<Integer> {
 
     static final Set<String> SUPPORTED_FORMATS =
-            Set.of("json", "jsonld", "json-ld", "csv", "graphml", "cypher", "kgraph", "unified");
+            Set.of("json", "jsonld", "json-ld", "csv", "graphml", "cypher", "ascii", "png", "kgraph");
 
     @CommandLine.Mixin
     private AppClientMixin app;
 
     @CommandLine.Option(names = "--format", required = false, defaultValue = "kgraph",
-            description = "One of: json, jsonld, csv, graphml, cypher, kgraph (default: kgraph — "
+            description = "One of: json, jsonld, csv, graphml, cypher, ascii, png, kgraph (default: kgraph — "
                     + "the only format that preserves full graph state for round-trip via 'graph import')")
     private String format;
 
@@ -48,21 +49,35 @@ public class GraphExportCommand implements Callable<Integer> {
             description = "Scope export to a fact sheet")
     private Long factSheetId;
 
+    @CommandLine.Option(names = "--vectors", defaultValue = "summary",
+            description = "For ASCII/PNG diagnostics, show vector summaries or values: summary, values (default: summary)")
+    private String vectors;
+
+    @CommandLine.Option(names = "--bundle", defaultValue = "true",
+            description = "For PNG diagnostics, write a ZIP of complete pages; use --bundle=false for one PNG (default: true)")
+    private boolean bundle;
+
     @Override
     public Integer call() {
-        if (!SUPPORTED_FORMATS.contains(format.toLowerCase())) {
+        String normalizedFormat = format.toLowerCase(Locale.ROOT);
+        String normalizedVectors = vectors.toLowerCase(Locale.ROOT);
+        if (!SUPPORTED_FORMATS.contains(normalizedFormat)) {
             System.err.println("Unknown format '" + format + "'. Supported: " + SUPPORTED_FORMATS);
             return 1;
         }
-        KompileHttpClient client = isUnifiedFormat(format) ? app.requireGraphClient() : app.requireClient();
+        if (!Set.of("summary", "values").contains(normalizedVectors)) {
+            System.err.println("Unknown vector mode '" + vectors + "'. Supported: [summary, values]");
+            return 1;
+        }
+        KompileHttpClient client = isUnifiedFormat(normalizedFormat) ? app.requireGraphClient() : app.requireClient();
         if (client == null) return 1;
         try {
             String url;
-            if (isUnifiedFormat(format)) {
+            if (isUnifiedFormat(normalizedFormat)) {
                 // The full native graph (all vector layers, opinions, weights) is a distinct endpoint.
-                url = "/api/graph/unified/export" + (factSheetId != null ? "?factSheetId=" + factSheetId : "");
+                url = unifiedExportUrl(normalizedFormat, factSheetId, normalizedVectors, bundle);
             } else {
-                StringBuilder u = new StringBuilder("/api/graph/io/export?format=").append(format);
+                StringBuilder u = new StringBuilder("/api/graph/io/export?format=").append(normalizedFormat);
                 if (factSheetId != null) u.append("&factSheetId=").append(factSheetId);
                 url = u.toString();
             }
@@ -80,7 +95,17 @@ public class GraphExportCommand implements Callable<Integer> {
     }
 
     static boolean isUnifiedFormat(String format) {
-        return "kgraph".equalsIgnoreCase(format) || "unified".equalsIgnoreCase(format);
+        return "kgraph".equalsIgnoreCase(format)
+                || "ascii".equalsIgnoreCase(format)
+                || "png".equalsIgnoreCase(format);
+    }
+
+    static String unifiedExportUrl(String format, Long factSheetId, String vectors, boolean bundle) {
+        StringBuilder url = new StringBuilder("/api/graph/unified/export?format=").append(format);
+        if (factSheetId != null) url.append("&factSheetId=").append(factSheetId);
+        if (!"summary".equalsIgnoreCase(vectors)) url.append("&vectors=values");
+        if ("png".equalsIgnoreCase(format) && !bundle) url.append("&bundle=false");
+        return url.toString();
     }
 
     static String parseFilename(String contentDisposition) {

@@ -64,8 +64,8 @@ public final class RemoteChatModel implements ChatModel {
     }
 
     @Override
-    public String generate(List<Message> messages, GenOptions opts) throws ChatException {
-        String requestBody = buildRequestBody(messages, opts);
+    public ChatResponse generate(ChatRequest request, GenOptions opts) throws ChatException {
+        String requestBody = buildRequestBody(request, opts);
 
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/v1/chat/completions"))
@@ -95,17 +95,33 @@ public final class RemoteChatModel implements ChatModel {
             throw new ChatException("Remote HTTP " + status + ": " + body);
         }
 
-        return extractContent(body);
+        return extractResponse(body);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private String buildRequestBody(List<Message> messages, GenOptions opts) {
+    private String buildRequestBody(ChatRequest request, GenOptions opts) {
         List<Object> msgArr = new ArrayList<>();
-        for (Message m : messages) {
+        for (Message m : request.messages()) {
             Map<String, Object> msg = new LinkedHashMap<>();
             msg.put("role", m.role());
             msg.put("content", m.content());
+            if (!m.toolCalls().isEmpty()) {
+                List<Object> calls = new ArrayList<>();
+                for (ChatToolCall call : m.toolCalls()) {
+                    Map<String, Object> function = new LinkedHashMap<>();
+                    function.put("name", call.name());
+                    function.put("arguments", MiniJson.write(call.arguments()));
+                    Map<String, Object> encoded = new LinkedHashMap<>();
+                    if (call.id() != null) encoded.put("id", call.id());
+                    encoded.put("type", "function");
+                    encoded.put("function", function);
+                    calls.add(encoded);
+                }
+                msg.put("tool_calls", calls);
+            }
+            if (m.toolCallId() != null) msg.put("tool_call_id", m.toolCallId());
+            if (m.toolName() != null) msg.put("name", m.toolName());
             msgArr.add(msg);
         }
 
@@ -115,12 +131,26 @@ public final class RemoteChatModel implements ChatModel {
         body.put("stream", false);
         body.put("max_tokens", (long) opts.maxTokens());
         body.put("temperature", opts.temperature());
+        if (request.toolChoice() != ChatRequest.ToolChoice.NONE) {
+            List<Object> tools = new ArrayList<>();
+            for (Object value : request.parseTools()) {
+                if (!(value instanceof Map<?, ?> function)) {
+                    throw new ChatException("Graph tool catalog entry must be an object");
+                }
+                tools.add(Map.of("type", "function", "function", function));
+            }
+            if (!tools.isEmpty()) body.put("tools", tools);
+            body.put("tool_choice", request.toolChoice() == ChatRequest.ToolChoice.REQUIRED
+                    ? "required" : "auto");
+        } else {
+            body.put("tool_choice", "none");
+        }
 
         return MiniJson.write(body);
     }
 
     @SuppressWarnings("unchecked")
-    private static String extractContent(String responseBody) throws ChatException {
+    private static ChatResponse extractResponse(String responseBody) throws ChatException {
         Map<String, Object> root;
         try {
             root = MiniJson.parseObject(responseBody);
@@ -144,11 +174,50 @@ public final class RemoteChatModel implements ChatModel {
             throw new ChatException("Unexpected choices[0].message type: " + messageObj);
         }
 
-        Object contentObj = messageMap.get("content");
-        if (!(contentObj instanceof String content)) {
-            throw new ChatException("Unexpected choices[0].message.content type: " + contentObj);
+        String content = messageMap.get("content") instanceof String
+                ? (String) messageMap.get("content") : "";
+        String reasoning = messageMap.get("reasoning_content") instanceof String
+                ? (String) messageMap.get("reasoning_content") : "";
+        List<ChatToolCall> toolCalls = new ArrayList<>();
+        List<String> protocolErrors = new ArrayList<>();
+        Object callsObj = messageMap.get("tool_calls");
+        if (callsObj != null) {
+            if (!(callsObj instanceof List<?> calls)) {
+                protocolErrors.add("provider tool_calls was not an array");
+            } else {
+                for (Object callObj : calls) {
+                    if (!(callObj instanceof Map<?, ?> call)
+                            || !(call.get("function") instanceof Map<?, ?> function)
+                            || !(function.get("name") instanceof String name)
+                            || name.isBlank()) {
+                        protocolErrors.add("provider returned an invalid tool-call object");
+                        continue;
+                    }
+                    Object argsValue = function.get("arguments");
+                    Map<String, Object> arguments = null;
+                    if (argsValue instanceof Map<?, ?> map) {
+                        arguments = (Map<String, Object>) map;
+                    } else if (argsValue instanceof String argsJson) {
+                        try {
+                            arguments = MiniJson.parseObject(argsJson);
+                        } catch (RuntimeException e) {
+                            protocolErrors.add("provider returned invalid arguments for tool " + name);
+                        }
+                    }
+                    if (arguments == null) {
+                        protocolErrors.add("provider omitted arguments for tool " + name);
+                        continue;
+                    }
+                    toolCalls.add(new ChatToolCall(
+                            call.get("id") instanceof String ? (String) call.get("id") : null,
+                            name,
+                            arguments));
+                }
+            }
         }
-
-        return content;
+        if (content.isBlank() && toolCalls.isEmpty() && protocolErrors.isEmpty()) {
+            protocolErrors.add("provider returned neither assistant content nor tool calls");
+        }
+        return new ChatResponse(content, content, reasoning, toolCalls, protocolErrors);
     }
 }

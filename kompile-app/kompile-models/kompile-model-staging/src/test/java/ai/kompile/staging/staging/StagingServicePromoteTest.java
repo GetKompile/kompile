@@ -9,6 +9,7 @@ import ai.kompile.staging.download.DownloadService;
 import ai.kompile.staging.optimization.OptimizationService;
 import ai.kompile.staging.web.dto.TrainingArtifactStageRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,6 +18,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.nd4j.ggml.format.GGUFReader;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -24,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -159,6 +162,105 @@ class StagingServicePromoteTest {
         assertTrue(Files.exists(outputDir.resolve("model.fb")), "Auto-promotion should not consume training output");
         assertFalse(Files.exists(tempDir.resolve(".staging/verified").resolve(modelId)),
                 "Promoted model should move out of verified staging");
+    }
+
+    // ==================== tokenizer metadata migration ====================
+
+    @Test
+    void tokenizerMetadataMigrationBackfillsMissingRolesWithoutOverwritingExistingFields() {
+        ObjectMapper mapper = new ObjectMapper();
+        var config = mapper.createObjectNode();
+        config.put("chat_template", "existing-template");
+
+        boolean changed = StagingService.applyTokenizerMetadata(
+                config,
+                "source-template",
+                List.of("<pad>", "<bos>", "<eos>"),
+                1,
+                2,
+                0);
+
+        assertTrue(changed);
+        assertEquals("existing-template", config.path("chat_template").asText());
+        assertEquals("<bos>", config.path("bos_token").asText());
+        assertEquals("<eos>", config.path("eos_token").asText());
+        assertEquals("<pad>", config.path("pad_token").asText());
+
+        assertFalse(StagingService.applyTokenizerMetadata(
+                config,
+                "replacement-template",
+                List.of("<new-pad>", "<new-bos>", "<new-eos>"),
+                1,
+                2,
+                0));
+        assertEquals("existing-template", config.path("chat_template").asText());
+        assertEquals("<bos>", config.path("bos_token").asText());
+        assertEquals("<eos>", config.path("eos_token").asText());
+        assertEquals("<pad>", config.path("pad_token").asText());
+    }
+
+    @Test
+    void installedGgufMetadataMigrationMatchesSourceContainer() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                Boolean.getBoolean("kompile.staging.metadata.migration.integration"),
+                "opt-in migration of an installed model");
+
+        String modelId = System.getProperty(
+                "kompile.staging.metadata.migration.model", "lfm2.5-1.2b-instruct");
+        RegistryService installedRegistry = new RegistryService();
+        ModelEntry model = installedRegistry.getModel(modelId).orElseThrow(
+                () -> new IllegalStateException("Model is not registered: " + modelId));
+        Path modelDir = installedRegistry.getModelsDir().resolve(model.getPath());
+        Path sourceGguf;
+        try (var files = Files.list(modelDir)) {
+            sourceGguf = files
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gguf"))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "No source GGUF beside installed model " + modelId));
+        }
+
+        List<String> sourceTokens;
+        int sourceBos;
+        int sourceEos;
+        int sourcePad;
+        try (GGUFReader reader = new GGUFReader(sourceGguf.toFile())) {
+            sourceTokens = List.copyOf(reader.getHeader().getTokens());
+            sourceBos = reader.getHeader().getBosTokenId();
+            sourceEos = reader.getHeader().getEosTokenId();
+            sourcePad = reader.getHeader().getPadTokenId();
+        }
+
+        StagingService installedService = new StagingService(
+                installedRegistry, conversionService, List.of(), optimizationService);
+        assertTrue(installedService.repairTokenizerMetadata(modelId));
+
+        Path configPath = modelDir.resolve("tokenizer_config.json");
+        var config = new ObjectMapper().readTree(configPath.toFile());
+        assertTokenRoleMatchesSource(config.path("bos_token").asText(null), sourceTokens, sourceBos);
+        assertTokenRoleMatchesSource(config.path("eos_token").asText(null), sourceTokens, sourceEos);
+        assertTokenRoleMatchesSource(config.path("pad_token").asText(null), sourceTokens, sourcePad);
+
+        try (HuggingFaceTokenizer tokenizer =
+                     HuggingFaceTokenizer.fromFile(modelDir.resolve(model.getVocabFile()).toFile())) {
+            assertEquals(sourceBos, tokenizer.getBosTokenId());
+            assertEquals(sourceEos, tokenizer.getEosTokenId());
+            assertEquals(sourcePad, tokenizer.getPadTokenId());
+            if (sourcePad >= 0) {
+                assertTrue(tokenizer.getSpecialTokenIds().contains(sourcePad),
+                        "the migrated PAD role must participate in generic control-token gating");
+            }
+        }
+    }
+
+    private static void assertTokenRoleMatchesSource(
+            String configuredToken, List<String> sourceTokens, int sourceId) {
+        if (sourceId >= 0 && sourceId < sourceTokens.size()) {
+            assertEquals(sourceTokens.get(sourceId), configuredToken);
+        } else {
+            assertNull(configuredToken);
+        }
     }
 
     // ==================== promoteModel with sharded GGUF ====================

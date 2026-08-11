@@ -16,6 +16,7 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.graphbuilder.GraphBuildCompletedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,7 +26,9 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -201,6 +204,56 @@ class DocumentHashStoreTest {
 
         assertFalse(store.isUnchanged(9L, "/evolving.txt", old), "Old hash must no longer match");
         assertTrue(store.isUnchanged(9L, "/evolving.txt", updated), "New hash must match");
+    }
+
+    @Test
+    void stagedHashIsInvisibleUntilGraphBuildCompletes() {
+        String hash = DocumentHashStore.sha256Hex("candidate graph content");
+        store.stageHash(10L, "/docs/candidate.md", hash, "crawl-10", "DIRECTORY:/docs");
+
+        assertNull(store.lookup(10L, "/docs/candidate.md"),
+                "A load must not publish the manifest before graph persistence succeeds");
+
+        store.onGraphBuildCompleted(new GraphBuildCompletedEvent(
+                this, "crawl-10", 3, 2, 10L, Map.of()));
+
+        DocumentHashStore.HashEntry committed = store.lookup(10L, "/docs/candidate.md");
+        assertNotNull(committed);
+        assertEquals(hash, committed.getContentHash());
+        assertEquals("DIRECTORY:/docs", committed.getSourceScopeId());
+    }
+
+    @Test
+    void discardedRunDoesNotChangeDurableManifest() {
+        store.stageHash(11L, "/docs/failed.md", DocumentHashStore.sha256Hex("partial"),
+                "crawl-failed", "DIRECTORY:/docs");
+
+        store.discardStaged("crawl-failed");
+        DocumentHashStore.CommitSummary summary = store.commitStaged("crawl-failed");
+
+        assertEquals(0, summary.upserted());
+        assertEquals(0, summary.deleted());
+        assertNull(store.lookup(11L, "/docs/failed.md"));
+    }
+
+    @Test
+    void sourceScopedReconciliationDeletesOnlyMissingMembersAfterCommit() {
+        String scope = "DIRECTORY:/docs";
+        store.recordHash(12L, "/docs/live.md", DocumentHashStore.sha256Hex("live"), "old", scope);
+        store.recordHash(12L, "/docs/deleted.md", DocumentHashStore.sha256Hex("gone"), "old", scope);
+        store.recordHash(12L, "/other/kept.md", DocumentHashStore.sha256Hex("other"), "old",
+                "DIRECTORY:/other");
+
+        List<String> missing = store.findMissingSources(12L, scope, Set.of("/docs/live.md"));
+        assertEquals(List.of("/docs/deleted.md"), missing);
+
+        store.stageDeletion(12L, "/docs/deleted.md", "crawl-12");
+        store.onGraphBuildCompleted(new GraphBuildCompletedEvent(
+                this, "crawl-12", 0, 0, 12L, Map.of()));
+
+        assertNull(store.lookup(12L, "/docs/deleted.md"));
+        assertNotNull(store.lookup(12L, "/docs/live.md"));
+        assertNotNull(store.lookup(12L, "/other/kept.md"));
     }
 
     // ── CrawlRuntimeConfig incremental flags ─────────────────────────────────

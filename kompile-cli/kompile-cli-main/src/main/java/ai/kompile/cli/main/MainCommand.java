@@ -17,8 +17,10 @@
 package ai.kompile.cli.main;
 
 import ai.kompile.cli.main.a2a.A2ACommand;
+import ai.kompile.cli.main.auth.AuthCommand;
 import ai.kompile.cli.main.app.AppCommand;
 import ai.kompile.cli.main.chat.ChatCommand;
+import ai.kompile.cli.main.chat.CrawlCommand;
 import ai.kompile.cli.main.chat.EnforcerCommand;
 import ai.kompile.cli.main.chat.LiteChatCommand;
 import ai.kompile.cli.main.chat.PassthroughCommand;
@@ -71,6 +73,7 @@ import java.util.concurrent.Callable;
                 Init.class,
                 ConfigureCommand.class,
                 ConfigMain.class,
+                AuthCommand.class,
                 BuildMain.class,
                 KompileApplicationBuilder.BuildKompileAppCommand.class,
                 InitProjectCommand.class,
@@ -83,6 +86,7 @@ import java.util.concurrent.Callable;
                 PipelineMain.class,
                 // Chat and agent commands
                 ChatCommand.class,
+                CrawlCommand.class,
                 ExecCommand.class,
                 LiteChatCommand.class,
                 SessionCommand.class,

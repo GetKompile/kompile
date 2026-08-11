@@ -168,7 +168,10 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
 
             McpServerSession session = sessionTransport.getSession();
             if (session != null) {
-                return session.handle(message);
+                log.info("Dispatching MCP message for session {} to server session", sessionId);
+                return session.handle(message)
+                        .doOnSuccess(unused -> log.info("MCP server session completed message for {}", sessionId))
+                        .doOnError(error -> log.error("MCP server session failed message for {}", sessionId, error));
             } else {
                 log.warn("Session {} has no MCP session attached", sessionId);
                 return Mono.error(new IllegalStateException("Session not initialized"));
@@ -481,10 +484,11 @@ public class SpringMvcSseServerTransport implements McpServerTransportProvider {
                             .writeValueAsString(message);
 
                     SseEmitter targetEmitter = responseEmitter != null ? responseEmitter : emitter;
+                    log.info("Sending MCP SSE response for session {} ({} bytes)", sessionId, json.length());
                     targetEmitter.send(SseEmitter.event()
                             .name(MESSAGE_EVENT_TYPE)
                             .data(json, MediaType.TEXT_PLAIN));
-                    log.trace("Sent message to session {}: {}", sessionId, json);
+                    log.info("Sent MCP SSE response for session {}", sessionId);
 
                     // For Streamable HTTP, complete the response emitter after sending
                     if (responseEmitter != null) {

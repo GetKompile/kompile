@@ -20,6 +20,7 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.*;
+import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectStore;
@@ -43,6 +44,7 @@ import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.tui.KompileTui;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.Reference;
@@ -100,6 +102,9 @@ public class ChatRepl {
     private String agentName;
     private String localAgentName;
     private List<McpSseClient.ToolInfo> cachedTools;
+    private boolean forceAgentic;
+    private AgentRunController runController;
+    private CrawlRunStore crawlRunStore;
 
     // Tool & agent system
     private final ToolRegistry toolRegistry;
@@ -216,6 +221,7 @@ public class ChatRepl {
         this.ragEnabled = localMode ? false : ragEnabled;
         this.agentName = agentName;
         this.localAgentName = "coder";
+        this.forceAgentic = false;
         this.chatHistory = new ChatHistory(sessionId);
 
         // ChatMemory works in both modes: persistent memory + transcripts always,
@@ -227,6 +233,16 @@ public class ChatRepl {
         this.agentRegistry = new AgentRegistry();
         this.renderer = new TerminalRenderer();
         this.ascii = new AsciiRenderer(renderer);
+        this.permissionService.setPromptListener(prompt -> {
+            ChatCompleter.printAbove("");
+            ChatCompleter.printAbove(renderer.yellow("Permission required: ")
+                    + renderer.bold(prompt.permissionKey()));
+            if (prompt.description() != null && !prompt.description().isBlank()) {
+                ChatCompleter.printAbove("  " + prompt.description());
+            }
+            ChatCompleter.printAbove(renderer.dim(
+                    "  Enter y=yes, n=no, a=allow for session, v=deny for session"));
+        });
 
         Path workDir = Paths.get(System.getProperty("user.dir"));
 
@@ -309,6 +325,38 @@ public class ChatRepl {
         initCollaborators();
     }
 
+    /**
+     * Crawl profile constructor. It reuses the production REPL and agent loop,
+     * but forces normal messages through the bounded agentic path.
+     */
+    public ChatRepl(McpSseClient mcpClient, String baseUrl, String sessionId,
+                    boolean ragEnabled, String agentName, boolean memoryEnabled,
+                    ChatConfig chatConfig, boolean forceAgentic) {
+        this(mcpClient, baseUrl, sessionId, ragEnabled, agentName, memoryEnabled, chatConfig);
+        this.forceAgentic = forceAgentic;
+        if (forceAgentic) {
+            AgentConfig crawler = agentRegistry.get("crawler");
+            if (crawler != null) {
+                this.localAgentName = crawler.getName();
+                this.agenticLoop.setAgentConfig(crawler);
+            }
+        }
+    }
+
+    /** Attach durable control state for a crawl run. */
+    public void configureCrawlControl(AgentRunController controller, CrawlRunStore store) {
+        this.runController = controller;
+        this.crawlRunStore = store;
+        this.agenticLoop.setRunController(controller);
+        if (store != null && controller != null) {
+            store.open(controller, baseUrl, agentName);
+        }
+    }
+
+    public AgentRunController getRunController() { return runController; }
+    public CrawlRunStore getCrawlRunStore() { return crawlRunStore; }
+    public boolean isForceAgentic() { return forceAgentic; }
+
     /** Initialise the four extracted collaborator classes after construction. */
     private void initCollaborators() {
         this.messageHandler = new ChatMessageHandler(
@@ -384,6 +432,48 @@ public class ChatRepl {
     }
 
     // ── Main REPL loop ────────────────────────────────────────────────────────
+
+    /**
+     * Execute exactly one crawl instruction without constructing JLine or the TUI.
+     * The same agentic loop, tool registry, transcript, checkpoint store and
+     * lifecycle cleanup used by the interactive command are retained for CI and
+     * the FP&A production harness.
+     */
+    public void runHeadless(String message) throws Exception {
+        if (message == null || message.isBlank()) {
+            throw new IllegalArgumentException("Headless crawl message must not be blank");
+        }
+        lifecycleManager.restoreSession();
+        chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled);
+        if (!localMode) {
+            try {
+                cachedTools = mcpClient.listTools();
+            } catch (Exception e) {
+                cachedTools = List.of();
+            }
+        } else {
+            cachedTools = List.of();
+        }
+
+        try {
+            messageHandler.handleChatMessage(message);
+            if (crawlRunStore != null && runController != null) {
+                crawlRunStore.event("headless_completed", runController.state().name());
+            }
+        } finally {
+            stopGeneratingSpinner();
+            if (crawlRunStore != null && runController != null) {
+                crawlRunStore.checkpoint(runController, "headless_closed");
+                crawlRunStore.event("session_closed", runController.state().name());
+            }
+            lifecycleManager.printSessionSummary();
+            chatHistory.close();
+            Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
+            sessionMetrics.saveToFile(metricsFile, objectMapper);
+            exportTranscriptToProject();
+            processManager.close();
+        }
+    }
 
     public void run() throws Exception {
         // Restore previous conversation if resuming
@@ -494,16 +584,11 @@ public class ChatRepl {
         // Mode-switching hotkeys (Ctrl+X prefix chord)
         // ================================================================
 
-        // Ctrl+X P — Toggle planning mode
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("toggle-plan-mode"),
-            KeyMap.ctrl('X'), "p"
-        );
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("toggle-plan-mode"),
-            KeyMap.ctrl('X'), "P"
-        );
+        KeyMap<Binding> emacsKeyMap =
+                ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS);
+        bindModeSwitchingHotkeys(emacsKeyMap);
 
+        // Ctrl+X P — Toggle planning mode
         ((LineReaderImpl) reader).setVariable("toggle-plan-mode", new Widget() {
             @Override
             public boolean apply() {
@@ -526,15 +611,6 @@ public class ChatRepl {
         });
 
         // Ctrl+X T — Show todos / checklist
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("show-todos"),
-            KeyMap.ctrl('X'), "t"
-        );
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("show-todos"),
-            KeyMap.ctrl('X'), "T"
-        );
-
         ((LineReaderImpl) reader).setVariable("show-todos", new Widget() {
             @Override
             public boolean apply() {
@@ -552,15 +628,6 @@ public class ChatRepl {
         });
 
         // Ctrl+X A — Cycle primary agent (coder → planner → coder)
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("cycle-agent"),
-            KeyMap.ctrl('X'), "a"
-        );
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("cycle-agent"),
-            KeyMap.ctrl('X'), "A"
-        );
-
         ((LineReaderImpl) reader).setVariable("cycle-agent", new Widget() {
             @Override
             public boolean apply() {
@@ -679,7 +746,10 @@ public class ChatRepl {
                     String prompt = buildPrompt(termWidth);
                     line = reader.readLine(prompt);
                 } catch (UserInterruptException e) {
-                    continue;
+                    // Ctrl-C at the prompt is an explicit request to leave the
+                    // standard chat session. JLine has already cleared the
+                    // current input buffer, so exit through normal cleanup.
+                    break;
                 } catch (EndOfFileException e) {
                     break;
                 } catch (IOError e) {
@@ -687,6 +757,13 @@ public class ChatRepl {
                     // shutdown or when the terminal is interrupted. Exit
                     // cleanly instead of crashing.
                     break;
+                }
+
+                // A background tool may be waiting for a permission decision. JLine
+                // owns terminal input, so route this line to that request before treating
+                // it as a slash command or queued chat message.
+                if (permissionService.submitPromptResponse(line)) {
+                    continue;
                 }
 
                 if (line == null || line.isBlank()) {
@@ -704,7 +781,13 @@ public class ChatRepl {
                 }
             }
         } finally {
+            permissionService.cancelPendingPrompts();
             reader.getHistory().save();
+
+            if (crawlRunStore != null && runController != null) {
+                crawlRunStore.checkpoint(runController, "session_closed");
+                crawlRunStore.event("session_closed", runController.state().name());
+            }
 
             // Log session summary to transcript and save metrics
             lifecycleManager.printSessionSummary();
@@ -1000,6 +1083,26 @@ public class ChatRepl {
     // ── Key binding helper ────────────────────────────────────────────────────
 
     /**
+     * Binds mode shortcuts as true two-key Ctrl+X chords. JLine's bind method
+     * accepts independent key sequences as varargs, so passing Ctrl+X and "p"
+     * separately would also intercept the printable letter p.
+     */
+    static void bindModeSwitchingHotkeys(KeyMap<Binding> keyMap) {
+        bindCtrlXChord(keyMap, "toggle-plan-mode", 'p');
+        bindCtrlXChord(keyMap, "show-todos", 't');
+        bindCtrlXChord(keyMap, "cycle-agent", 'a');
+    }
+
+    private static void bindCtrlXChord(KeyMap<Binding> keyMap, String widgetName, char key) {
+        String prefix = KeyMap.ctrl('X');
+        keyMap.bind(
+                new Reference(widgetName),
+                prefix + Character.toLowerCase(key),
+                prefix + Character.toUpperCase(key)
+        );
+    }
+
+    /**
      * Resolves the cancel key binding string for JLine from the chat config.
      * Supports: ESCAPE (default), Ctrl+<letter> (e.g., "Ctrl+Q"), or raw key strings.
      */
@@ -1037,7 +1140,44 @@ public class ChatRepl {
     void setRagEnabled(boolean enabled) { this.ragEnabled = enabled; }
 
     ChatConfig getChatConfig() { return chatConfig; }
-    void updateChatConfig(ChatConfig config) { this.chatConfig = config; }
+
+    /**
+     * Apply a standard direct-provider change without replacing this REPL,
+     * session id, transcript, or the config object shared by local collaborators.
+     *
+     * @return true when the new configuration is active in this session
+     */
+    boolean updateChatConfig(ChatConfig config) {
+        if (config == null) {
+            return false;
+        }
+        if (!localMode) {
+            this.chatConfig = config;
+            return true;
+        }
+        if (this.chatConfig == null || !canHotSwitchLocalProvider(config)) {
+            return false;
+        }
+
+        String previousProvider = this.chatConfig.getProvider();
+        String previousModel = this.chatConfig.getModel();
+        this.chatConfig.applyLlmSettingsFrom(config);
+        int retainedMessages = agenticLoop.rebuildDirectHistoryForProviderSwitch();
+        sessionMetrics.setProvider(this.chatConfig.getProvider());
+        sessionMetrics.setModel(this.chatConfig.getModel());
+        chatHistory.logSystem("Switched LLM from " + previousProvider + "/" + previousModel
+                + " to " + this.chatConfig.getProvider() + "/" + this.chatConfig.getModel()
+                + "; retained " + retainedMessages + " conversation messages");
+        return true;
+    }
+
+    static boolean canHotSwitchLocalProvider(ChatConfig config) {
+        return config != null
+                && "standard".equalsIgnoreCase(config.getChatMode())
+                && config.getProvider() != null
+                && !config.isKompileServer()
+                && !config.isKompileLocalServing();
+    }
 
     ChatMemory getChatMemory() { return chatMemory; }
 
@@ -1054,14 +1194,16 @@ public class ChatRepl {
     /** Called by SessionLifecycleManager's showMainMenu() to run the setup wizard. */
     void runSetupFromMenu() {
         ChatConfig newConfig = SetupWizard.run();
-        if (newConfig != null) {
-            this.chatConfig = newConfig;
-            System.out.println(renderer.green("Configuration updated. New messages will use the updated settings."));
-            if (localMode) {
-                System.out.println(renderer.dim("Note: restart the chat to fully apply the new configuration."));
-            }
-        } else {
+        if (newConfig == null) {
             System.out.println("Setup cancelled.");
+            return;
+        }
+        if (updateChatConfig(newConfig)) {
+            System.out.println(renderer.green(
+                    "Provider updated in this session. Existing transcript and conversation context were retained."));
+        } else {
+            System.out.println(renderer.dim(
+                    "Configuration saved for the next session; this runtime change cannot be applied in-place."));
         }
     }
 

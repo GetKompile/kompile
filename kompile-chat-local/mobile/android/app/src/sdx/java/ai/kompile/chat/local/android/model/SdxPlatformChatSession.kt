@@ -8,12 +8,16 @@ import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
+import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import org.bytedeco.javacpp.BytePointer
 import org.bytedeco.javacpp.Pointer
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Consumer
 
@@ -55,6 +59,7 @@ internal object SdxPlatformRuntimeOwner {
         loadTransaction: NativeOperationTransaction
     ): SdxOwnedPlatformChatSession {
         val applicationContext = context.applicationContext
+        val trace = SmokeDecodeTraceLog(applicationContext)
         check(Application.getProcessName() == sdxRuntimeProcessName(applicationContext.packageName)) {
             "Direct SDX runtime initialization is allowed only in the app-private runtime process."
         }
@@ -71,7 +76,7 @@ internal object SdxPlatformRuntimeOwner {
                 "Local SDX models use the canonical sharded .sdz format"
             }
 
-            loadTransaction.checkpoint(NativeOperationCheckpoint.PREPARE_DEVICE_CACHE)
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.PREPARE_DEVICE_CACHE)
             val modelCache = File(applicationContext.noBackupFilesDir, "sdx-model-cache")
             require(modelCache.isDirectory || modelCache.mkdirs()) {
                 "Unable to create the app-owned SDX model cache: ${modelCache.absolutePath}"
@@ -82,30 +87,38 @@ internal object SdxPlatformRuntimeOwner {
             }
 
             val library = SdxAndroidLlmLibrary.configure(applicationContext)
-            loadTransaction.checkpoint(NativeOperationCheckpoint.LOAD_NATIVE_TRANSPORT)
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.LOAD_NATIVE_TRANSPORT)
             val abi = SdxAndroidLlmLibrary.bind(library)
             native = abi
 
-            loadTransaction.checkpoint(NativeOperationCheckpoint.CREATE_NATIVE_RUNTIME)
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.CREATE_NATIVE_RUNTIME)
             val runtimeHandle = abi.sdxLlmCreateRuntime()
                 ?: throw ChatException("SDX failed to create its shared compiled-model runtime")
             runtime = runtimeHandle
 
-            loadTransaction.checkpoint(NativeOperationCheckpoint.QUERY_RUNTIME_ABI)
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.QUERY_RUNTIME_ABI)
             val runtimeAbi = abi.sdxLlmAbiVersion(runtimeHandle)
             check(runtimeAbi == SdxAndroidLlmAbi.ABI_VERSION) {
                 "libsdx_llm ABI mismatch: app=${SdxAndroidLlmAbi.ABI_VERSION} library=$runtimeAbi"
             }
 
-            loadTransaction.checkpoint(NativeOperationCheckpoint.RESOLVE_MODEL_ASSETS)
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.RESOLVE_MODEL_ASSETS)
             val resolvedRef = SdxPointerByReference()
-            val resolveStatus = abi.sdxLlmResolveModelBundle(
-                runtimeHandle,
-                source.absolutePath,
-                BuildConfig.SDX_TARGET_PROFILE,
-                modelCache.absolutePath,
-                resolvedRef
+            val resolveHeartbeat = trace.startHeartbeat(
+                loadTransaction.snapshot().attemptId,
+                "sdxLlmResolveModelBundle"
             )
+            val resolveStatus = try {
+                abi.sdxLlmResolveModelBundle(
+                    runtimeHandle,
+                    source.absolutePath,
+                    BuildConfig.SDX_TARGET_PROFILE,
+                    modelCache.absolutePath,
+                    resolvedRef
+                )
+            } finally {
+                resolveHeartbeat.close()
+            }
             requireStatus(
                 abi,
                 runtimeHandle,
@@ -135,16 +148,24 @@ internal object SdxPlatformRuntimeOwner {
                 allowDirectory = false
             )
 
-            loadTransaction.checkpoint(NativeOperationCheckpoint.LOAD_MODEL_BUNDLE)
-            val modelHandle = abi.sdxLlmLoadCompiledModel(
-                runtimeHandle,
-                bundle.absolutePath,
-                tokenizer.absolutePath,
-                BuildConfig.SDX_TARGET_PROFILE,
-                JSONObject()
-                    .put("deviceCompilationCacheDirectory", deviceCache.absolutePath)
-                    .toString()
-            ) ?: throw ChatException(
+            checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.LOAD_MODEL_BUNDLE)
+            val loadHeartbeat = trace.startHeartbeat(
+                loadTransaction.snapshot().attemptId,
+                "sdxLlmLoadCompiledModel"
+            )
+            val modelHandle = try {
+                abi.sdxLlmLoadCompiledModel(
+                    runtimeHandle,
+                    bundle.absolutePath,
+                    tokenizer.absolutePath,
+                    BuildConfig.SDX_TARGET_PROFILE,
+                    JSONObject()
+                        .put("deviceCompilationCacheDirectory", deviceCache.absolutePath)
+                        .toString()
+                )
+            } finally {
+                loadHeartbeat.close()
+            } ?: throw ChatException(
                 "SDX could not load the canonical compiled bundle: " +
                     lastError(abi, runtimeHandle)
             )
@@ -155,7 +176,8 @@ internal object SdxPlatformRuntimeOwner {
                 runtime = runtimeHandle,
                 model = modelHandle,
                 routeName = routeName,
-                modelId = "$modelIdPrefix:${source.name}"
+                modelId = "$modelIdPrefix:${source.name}",
+                trace = SmokeDecodeTraceLog(applicationContext)
             )
             loadTransaction.complete()
             return session
@@ -197,6 +219,22 @@ internal object SdxPlatformRuntimeOwner {
             }
             throw failure
         }
+    }
+
+    private fun checkpointLoad(
+        trace: SmokeDecodeTraceLog,
+        transaction: NativeOperationTransaction,
+        checkpoint: NativeOperationCheckpoint
+    ) {
+        transaction.checkpoint(checkpoint)
+        trace.record(
+            "runtime_load_checkpoint",
+            transaction.snapshot().attemptId,
+            mapOf(
+                "checkpoint" to checkpoint.name,
+                "pid" to android.os.Process.myPid()
+            )
+        )
     }
 
     private inline fun closeAndSuppress(
@@ -268,7 +306,8 @@ internal object SdxPlatformRuntimeOwner {
         private val runtime: Pointer,
         private val model: Pointer,
         override val routeName: String,
-        override val modelId: String
+        override val modelId: String,
+        private val trace: SmokeDecodeTraceLog
     ) : SdxOwnedPlatformChatSession {
         private val cancelRequested = AtomicBoolean(false)
 
@@ -279,13 +318,25 @@ internal object SdxPlatformRuntimeOwner {
             operation: NativeOperationTransaction
         ): String {
             cancelRequested.set(false)
+            val attemptId = operation.snapshot().attemptId
+            val requestJson = JSONObject()
+                .put("messages", JSONArray(encodeSdxRuntimeMessages(messages)))
+                .put("tools", JSONArray())
+                .put("tool_choice", "none")
+                .put("add_generation_prompt", true)
+                .toString()
 
             operation.checkpoint(NativeOperationCheckpoint.RENDER_CHAT_TEMPLATE)
+            trace.record(
+                "render_prompt_enter",
+                attemptId,
+                mapOf("route" to routeName, "process" to Application.getProcessName())
+            )
             val promptRef = SdxPointerByReference()
             val renderStatus = native.sdxLlmRenderChatPrompt(
                 runtime,
                 model,
-                encodeSdxRuntimeMessages(messages),
+                requestJson,
                 1,
                 promptRef
             )
@@ -296,45 +347,125 @@ internal object SdxPlatformRuntimeOwner {
                 "SDX could not render the model chat template"
             )
             val prompt = readAndFree(native, runtime, promptRef.value, "rendered prompt")
+            trace.record(
+                "render_prompt_return",
+                attemptId,
+                mapOf("prompt_chars" to prompt.length)
+            )
 
             operation.checkpoint(NativeOperationCheckpoint.GENERATE_TOKENS)
             val callbackFailure = AtomicReference<Throwable?>()
-            val chunkCallback = onChunk?.let { consumer ->
+            val chunkCount = AtomicInteger(0)
+            val chunkChars = AtomicLong(0L)
+            val chunkCallback = if (onChunk == null) null else
                 SdxAndroidLlmAbi.ChunkCallback { chunk ->
                     try {
                         val text = chunk?.let { BytePointer(it).string }.orEmpty()
                         if (text.isNotEmpty()) {
-                            consumer.accept(text)
+                            val count = chunkCount.incrementAndGet()
+                            val chars = chunkChars.addAndGet(text.length.toLong())
+                            if (count == 1 || count % 16 == 0) {
+                                trace.record(
+                                    "native_chunk",
+                                    attemptId,
+                                    mapOf("chunk_count" to count, "chunk_chars" to chars)
+                                )
+                            }
                         }
                     } catch (failure: Throwable) {
                         callbackFailure.compareAndSet(null, failure)
                         cancelRequested.set(true)
                     }
                 }
-            }
             val cancelCallback = SdxAndroidLlmAbi.CancelCallback {
                 if (cancelRequested.get() || callbackFailure.get() != null) 1 else 0
             }
             val outputRef = SdxPointerByReference()
-            val generationStatus = native.sdxLlmGenerateStreaming(
-                runtime,
-                model,
-                prompt,
-                JSONObject(opts.toOptionsJson())
-                    .put("promptMode", "rendered_chat")
-                    .toString(),
-                chunkCallback,
-                cancelCallback,
-                outputRef
+            trace.record(
+                "native_generate_enter",
+                attemptId,
+                mapOf("max_tokens" to opts.maxTokens(), "pid" to android.os.Process.myPid())
             )
-            callbackFailure.get()?.let { throw it }
+            val heartbeat = trace.startHeartbeat(attemptId, "sdxLlmGenerateStreaming")
+            val generationStatus: Int
+            try {
+                generationStatus = native.sdxLlmGenerateStreaming(
+                    runtime,
+                    model,
+                    prompt,
+                    JSONObject(opts.toOptionsJson())
+                        .put("promptMode", "rendered_chat")
+                        .toString(),
+                    chunkCallback,
+                    cancelCallback,
+                    outputRef
+                )
+            } catch (failure: Throwable) {
+                trace.recordFailure("native_generate_failed", attemptId, failure)
+                throw failure
+            } finally {
+                heartbeat.close()
+            }
+            trace.record(
+                "native_generate_return",
+                attemptId,
+                mapOf(
+                    "status" to generationStatus,
+                    "chunk_count" to chunkCount.get(),
+                    "chunk_chars" to chunkChars.get()
+                )
+            )
+            callbackFailure.get()?.let {
+                trace.recordFailure("native_callback_failed", attemptId, it)
+                throw it
+            }
             requireStatus(
                 native,
                 runtime,
                 generationStatus,
                 "SDX compiled-model generation failed"
             )
-            val decoded = readAndFree(native, runtime, outputRef.value, "generated text").trim()
+            val rawDecoded = readAndFree(
+                native, runtime, outputRef.value, "generated text"
+            )
+            val parsedRef = SdxPointerByReference()
+            val parseStatus = native.sdxLlmParseChatResult(
+                runtime,
+                model,
+                requestJson,
+                rawDecoded,
+                parsedRef
+            )
+            requireStatus(
+                native,
+                runtime,
+                parseStatus,
+                "SDX could not decode the model-owned chat result"
+            )
+            val structured = JSONObject(
+                readAndFree(native, runtime, parsedRef.value, "structured chat result")
+            )
+            val protocolErrors = structured.getJSONArray("protocolErrors")
+            check(protocolErrors.length() == 0) {
+                "SDX model protocol failure: " +
+                    (0 until protocolErrors.length())
+                        .joinToString("; ") { protocolErrors.getString(it) }
+            }
+            check(structured.getJSONArray("toolCalls").length() == 0) {
+                "Content-only Android generation unexpectedly returned tool calls"
+            }
+            val decoded = structured.getString("content").trim()
+            check(decoded.isNotEmpty()) { "The model returned no assistant text" }
+            onChunk?.accept(decoded)
+            trace.record(
+                "native_output_ready",
+                attemptId,
+                mapOf(
+                    "output_chars" to decoded.length,
+                    "chunk_count" to chunkCount.get(),
+                    "chunk_chars" to chunkChars.get()
+                )
+            )
             operation.complete()
             return decoded
         }

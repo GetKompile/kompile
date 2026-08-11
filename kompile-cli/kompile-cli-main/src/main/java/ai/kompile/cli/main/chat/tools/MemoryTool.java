@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 /**
@@ -80,6 +82,10 @@ public class MemoryTool implements CliTool {
 
     private static final int MAX_MEMORY_FILE_SIZE = 50_000; // ~50KB
     private static final int MAX_MAIN_MEMORY_LINES = 200;
+    private static final int DEFAULT_SEARCH_RESULTS = 20;
+    private static final int DEFAULT_RECALL_RESULTS = 10;
+    private static final int MAX_RECALL_RESULTS = 100;
+    private static final int MAX_RECALL_BODY_CHARS = 8_000;
 
     private static final Set<String> MEMORY_TYPES =
             Set.of("user", "feedback", "project", "reference");
@@ -106,7 +112,7 @@ public class MemoryTool implements CliTool {
     @Override
     public String description() {
         return "Persistent memory across chat sessions. Four layers: "
-                + "(1) UNIFIED SEARCH + FLAT FILES — 'search' queries project/global Kompile "
+                + "(1) UNIFIED SEARCH + FLAT FILES — 'search' performs ranked, token-aware retrieval across project/global Kompile "
                 + "memory and Claude/Codex/Gemini/Qwen/OpenCode project memory together; "
                 + "'read', 'write', 'append', and 'list' manage raw markdown files under "
                 + ".kompile/memory/ (project) or ~/.kompile/memory/ (global). "
@@ -148,8 +154,9 @@ public class MemoryTool implements CliTool {
                         + "file for read_claude (default: MEMORY.md).");
         addStringProp(props, "content", "Content to write/append/save");
         addStringProp(props, "query",
-                "Search query. 'search' searches Kompile and all provider memory together; also "
-                        + "used by recall/search_nodes/scan_providers.");
+                "Search query. Multi-word queries are tokenized and ranked; 'search' searches Kompile "
+                        + "and all provider memory together; also used by recall/search_nodes/scan_providers. "
+                        + "Use top_k to bound results.");
         addStringProp(props, "source", "Provider filter for scan_providers: claude-code|codex|gemini|qwen|opencode");
         addStringProp(props, "memoryType",
                 "Memory type for save/recall/types: user|feedback|project|reference");
@@ -157,6 +164,8 @@ public class MemoryTool implements CliTool {
                 "Memory name (for save/forget) or a single entity name (for graph ops)");
         addStringProp(props, "description",
                 "One-line description used as the MEMORY.md index hook for typed memories");
+        addIntegerProp(props, "top_k",
+                "Maximum ranked matches returned by search/recall (default 10, max 100)");
 
         // Array params for batch ops (graph + bulk typed operations)
         addArrayProp(props, "entities",
@@ -177,6 +186,14 @@ public class MemoryTool implements CliTool {
     private static void addStringProp(ObjectNode props, String name, String desc) {
         ObjectNode p = props.putObject(name);
         p.put("type", "string");
+        p.put("description", desc);
+    }
+
+    private static void addIntegerProp(ObjectNode props, String name, String desc) {
+        ObjectNode p = props.putObject(name);
+        p.put("type", "integer");
+        p.put("minimum", 1);
+        p.put("maximum", MAX_RECALL_RESULTS);
         p.put("description", desc);
     }
 
@@ -216,7 +233,9 @@ public class MemoryTool implements CliTool {
                     return listMemoryFiles(context.getWorkingDirectory());
                 case "search":
                     return searchMemory(params.path("query").asText(""),
-                            context.getWorkingDirectory());
+                            context.getWorkingDirectory(),
+                            boundedTopK(params.path("top_k").asInt(DEFAULT_SEARCH_RESULTS),
+                                    DEFAULT_SEARCH_RESULTS));
 
                 // Typed memory operations
                 case "save":
@@ -395,6 +414,7 @@ public class MemoryTool implements CliTool {
 
         try (var files = Files.list(dir)) {
             var list = files.filter(p -> !Files.isDirectory(p))
+                    .filter(p -> !p.getFileName().toString().startsWith(".memory-index.db"))
                     .sorted()
                     .toList();
 
@@ -419,6 +439,11 @@ public class MemoryTool implements CliTool {
     }
 
     ToolResult searchMemory(String query, Path workDir) {
+        return searchMemory(query, workDir, DEFAULT_SEARCH_RESULTS);
+    }
+
+    ToolResult searchMemory(String query, Path workDir, int maxResults) {
+        query = query == null ? "" : query.trim();
         if (query.isEmpty()) {
             return ToolResult.error("query is required for 'search' action");
         }
@@ -428,10 +453,10 @@ public class MemoryTool implements CliTool {
         int matchCount = 0;
 
         Path projectDir = workDir.resolve(".kompile").resolve(MEMORY_DIR);
-        matchCount += searchDir(projectDir, queryLower, "project", sb);
+        matchCount += appendIndexedSearch(projectDir, query, "project", sb, maxResults);
 
         Path globalDir = KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
-        matchCount += searchDir(globalDir, queryLower, "global", sb);
+        matchCount += appendIndexedSearch(globalDir, query, "global", sb, maxResults);
 
         for (ProviderSpec spec : providerMemorySpecs()) {
             List<Path> providerFiles = collectProviderFiles(workDir, spec);
@@ -448,22 +473,68 @@ public class MemoryTool implements CliTool {
         }
 
         return ToolResult.success("memory: search '" + query + "'", sb.toString(),
-                Map.of("query", query, "matchCount", matchCount));
+                Map.of("query", query, "matchCount", matchCount, "top_k", maxResults));
     }
 
-    private int searchDir(Path dir, String queryLower, String scope, StringBuilder sb) {
-        if (!Files.exists(dir)) return 0;
-
-        int matches = 0;
-        try (var files = Files.list(dir)) {
-            for (Path f : files.filter(p -> !Files.isDirectory(p)).toList()) {
-                matches += searchFile(f, queryLower, scope, sb);
-                if (matches >= 30) return matches;
+    private int appendIndexedSearch(Path dir, String query, String scope,
+                                     StringBuilder sb, int maxResults) {
+        if (!Files.isDirectory(dir)) return 0;
+        try (MemorySearchIndex index = new MemorySearchIndex(dir)) {
+            index.open();
+            List<Map<String, Object>> results = index.search(query, null, maxResults);
+            for (Map<String, Object> result : results) {
+                sb.append("\n").append(scope).append("/")
+                        .append(result.get("file")).append(":\n");
+                String body = String.valueOf(result.getOrDefault("body", ""));
+                sb.append(indexedSnippet(body, query));
             }
-        } catch (IOException e) {
-            // Skip
+            return results.size();
+        } catch (SQLException | IOException e) {
+            // Provider memory search remains available if the optional SQLite index fails.
+            return 0;
         }
-        return matches;
+    }
+
+    private String indexedSnippet(String body, String query) {
+        String[] lines = body.split("\\R");
+        String[] terms = query.toLowerCase().split("\\s+");
+        Set<Integer> selected = new TreeSet<>();
+        for (int i = 0; i < lines.length; i++) {
+            String lower = lines[i].toLowerCase();
+            boolean hit = false;
+            for (String term : terms) {
+                if (!term.isBlank() && lower.contains(term)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                selected.add(Math.max(0, i - 1));
+                selected.add(i);
+                selected.add(Math.min(lines.length - 1, i + 1));
+            }
+        }
+        if (selected.isEmpty()) {
+            for (int i = 0; i < Math.min(lines.length, 4); i++) selected.add(i);
+        }
+
+        StringBuilder snippet = new StringBuilder();
+        int count = 0;
+        for (int lineNumber : selected) {
+            if (count++ >= 12) break;
+            String lower = lines[lineNumber].toLowerCase();
+            boolean hit = false;
+            for (String term : terms) {
+                if (!term.isBlank() && lower.contains(term)) {
+                    hit = true;
+                    break;
+                }
+            }
+            snippet.append(hit ? ">>> " : "    ")
+                    .append("L").append(lineNumber + 1).append(": ")
+                    .append(lines[lineNumber]).append("\n");
+        }
+        return snippet.toString();
     }
 
     private int searchFile(Path file, String queryLower, String source, StringBuilder sb) {
@@ -736,9 +807,9 @@ public class MemoryTool implements CliTool {
                 Map.of("scope", scope, "file", fileName));
     }
 
-    private ToolResult recallTypedMemory(Path memDir, JsonNode params, String scope)
+    ToolResult recallTypedMemory(Path memDir, JsonNode params, String scope)
             throws IOException {
-        String query = params.path("query").asText("").trim().toLowerCase();
+        String query = params.path("query").asText("").trim();
         String typeFilter = params.path("memoryType").asText("").trim().toLowerCase();
         if (query.isEmpty() && typeFilter.isEmpty()) {
             return ToolResult.error("'query' or 'memoryType' is required for recall");
@@ -748,36 +819,9 @@ public class MemoryTool implements CliTool {
             return ToolResult.success("No memory directory at: " + memDir);
         }
 
-        List<Map<String, String>> matches = new ArrayList<>();
-        try (var files = Files.list(memDir)) {
-            for (Path f : files.filter(p -> !Files.isDirectory(p)).toList()) {
-                String fn = f.getFileName().toString();
-                if (!fn.endsWith(".md") || fn.equals(INDEX_FILE)) continue;
-                String content;
-                try {
-                    content = Files.readString(f, StandardCharsets.UTF_8);
-                } catch (IOException e) {
-                    continue;
-                }
-
-                Frontmatter fm = parseFrontmatter(content);
-                if (fm == null) continue;
-
-                if (!typeFilter.isEmpty() && !typeFilter.equals(fm.type)) continue;
-                if (!query.isEmpty()) {
-                    String hay = (fm.name + " " + fm.description + " " + fm.body).toLowerCase();
-                    if (!hay.contains(query)) continue;
-                }
-
-                Map<String, String> m = new LinkedHashMap<>();
-                m.put("file", fn);
-                m.put("name", fm.name);
-                m.put("type", fm.type);
-                m.put("description", fm.description);
-                m.put("body", fm.body);
-                matches.add(m);
-            }
-        }
+        int maxResults = boundedTopK(params.path("top_k").asInt(DEFAULT_RECALL_RESULTS),
+                DEFAULT_RECALL_RESULTS);
+        List<Map<String, Object>> matches = rankedTypedMatches(memDir, query, typeFilter, maxResults);
 
         if (matches.isEmpty()) {
             return ToolResult.success("No memory matches for query='" + query
@@ -785,18 +829,58 @@ public class MemoryTool implements CliTool {
         }
 
         StringBuilder sb = new StringBuilder();
-        for (Map<String, String> m : matches) {
+        for (Map<String, Object> m : matches) {
             sb.append("## ").append(m.get("name"))
                     .append(" (").append(m.get("type"))
                     .append(", ").append(m.get("file")).append(")\n");
-            if (!m.get("description").isEmpty()) {
-                sb.append(m.get("description")).append("\n\n");
+            String description = String.valueOf(m.getOrDefault("description", ""));
+            if (!description.isEmpty()) {
+                sb.append(description).append("\n\n");
             }
-            sb.append(m.get("body")).append("\n\n");
+            String body = String.valueOf(m.getOrDefault("body", ""));
+            if (body.length() > MAX_RECALL_BODY_CHARS) {
+                body = body.substring(0, MAX_RECALL_BODY_CHARS) + "\n...[truncated]";
+            }
+            sb.append(body).append("\n\n");
         }
         return ToolResult.success("memory: recall " + matches.size() + " matches",
                 sb.toString(),
-                Map.of("scope", scope, "matches", matches.size()));
+                Map.of("scope", scope, "matches", matches.size(), "top_k", maxResults));
+    }
+
+    private List<Map<String, Object>> rankedTypedMatches(Path memDir, String query,
+                                                           String typeFilter, int maxResults)
+            throws IOException {
+        try (MemorySearchIndex index = new MemorySearchIndex(memDir)) {
+            index.open();
+            List<Map<String, Object>> results = new ArrayList<>();
+            if (typeFilter.isEmpty()) {
+                // Recall is the typed-memory API: exclude raw markdown files
+                // unless they carry one of the supported typed frontmatter types.
+                for (String type : MEMORY_TYPES) {
+                    results.addAll(index.search(query, type, maxResults));
+                }
+                Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+                for (Map<String, Object> result : results) {
+                    unique.putIfAbsent(String.valueOf(result.get("file")), result);
+                }
+                results = new ArrayList<>(unique.values());
+            } else {
+                results.addAll(index.search(query, typeFilter, maxResults));
+            }
+            results.sort(Comparator
+                    .comparingDouble((Map<String, Object> m) ->
+                            ((Number) m.getOrDefault("score", 0.0)).doubleValue())
+                    .thenComparing(m -> String.valueOf(m.get("file"))));
+            return results.subList(0, Math.min(maxResults, results.size()));
+        } catch (SQLException e) {
+            throw new IOException("Unable to search typed memory index", e);
+        }
+    }
+
+    private static int boundedTopK(int requested, int fallback) {
+        if (requested <= 0) return fallback;
+        return Math.min(requested, MAX_RECALL_RESULTS);
     }
 
     private ToolResult listByType(Path memDir, JsonNode params, String scope) throws IOException {

@@ -78,6 +78,8 @@ class GraphExportToolTest {
         assertTrue(schema.path("required").toString().contains("path"));
         assertNotNull(schema.path("properties").path("path"));
         assertNotNull(schema.path("properties").path("factSheetId"));
+        assertTrue(schema.path("properties").path("vectors").path("enum").toString().contains("values"));
+        assertTrue(schema.path("properties").path("bundle").path("default").asBoolean());
     }
 
     @Test
@@ -89,14 +91,14 @@ class GraphExportToolTest {
     }
 
     @Test
-    void backendUnavailable_returnsError() throws Exception {
-        // null baseUrl → GroundingBackendClient.isAvailable() == false
+    void nullBaseUrl_fallsBackToProjectLocalBackend() throws Exception {
         GraphExportTool tool = new GraphExportTool((String) null, om);
         ObjectNode params = om.createObjectNode();
         params.put("path", tempDir.resolve("out.kgraph").toString());
         ToolResult result = tool.execute(params, ctx);
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"));
+        assertTrue(result.getOutput().contains("graph_export local error"));
+        assertTrue(result.getOutput().contains("project-local"));
     }
 
     @Test
@@ -108,7 +110,7 @@ class GraphExportToolTest {
 
         byte[] kgraphBytes = new byte[]{1, 2, 3};
 
-        mockServer.expect(requestTo("http://localhost/api/graph/unified/export"))
+        mockServer.expect(requestTo("http://localhost/api/graph/unified/export?format=kgraph"))
                 .andExpect(method(HttpMethod.GET))
                 .andRespond(withSuccess(kgraphBytes, MediaType.APPLICATION_OCTET_STREAM));
 
@@ -124,6 +126,33 @@ class GraphExportToolTest {
         assertArrayEquals(kgraphBytes, Files.readAllBytes(outFile));
         assertEquals(outFile.toString(), result.getMetadata().get("path"));
         assertEquals(3, result.getMetadata().get("bytes"));
+        mockServer.verify();
+    }
+
+    @Test
+    void exportsPngWithFullVectorsAndSingleImageQueryControls() throws Exception {
+        RestTemplate rt = new RestTemplate();
+        MockRestServiceServer mockServer = MockRestServiceServer.createServer(rt);
+        GroundingBackendClient client = new GroundingBackendClient("http://localhost", rt);
+        GraphExportTool tool = new GraphExportTool(client, om);
+        byte[] pngBytes = new byte[]{(byte) 0x89, 'P', 'N', 'G'};
+
+        mockServer.expect(requestTo("http://localhost/api/graph/unified/export?format=png&vectors=values&bundle=false&factSheetId=42"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(pngBytes, MediaType.IMAGE_PNG));
+
+        Path outFile = tempDir.resolve("debug.png");
+        ObjectNode params = om.createObjectNode();
+        params.put("path", outFile.toString());
+        params.put("format", "png");
+        params.put("vectors", "values");
+        params.put("bundle", false);
+        params.put("factSheetId", 42);
+
+        ToolResult result = tool.execute(params, ctx);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertArrayEquals(pngBytes, Files.readAllBytes(outFile));
         mockServer.verify();
     }
 }

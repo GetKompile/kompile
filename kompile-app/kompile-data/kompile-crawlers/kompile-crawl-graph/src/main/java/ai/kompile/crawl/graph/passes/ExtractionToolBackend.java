@@ -6,6 +6,7 @@
 package ai.kompile.crawl.graph.passes;
 
 import ai.kompile.core.crawl.graph.GraphExtractionConfig.DecomposedPromptTier;
+import ai.kompile.core.crawl.graph.GraphExtractionConfig.ExtractionTarget;
 import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -23,6 +24,11 @@ import java.util.Optional;
  * partially accepted proposals can dirty the live graph during model execution.</p>
  */
 public interface ExtractionToolBackend {
+
+    /** Fact families accepted by this staged backend. */
+    default ExtractionTarget extractionTarget() {
+        return ExtractionTarget.FULL_GRAPH;
+    }
 
     /** Compact, model-facing JSON catalog. It may contain project schema but never example facts. */
     String catalogJson();

@@ -55,6 +55,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -64,6 +66,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -222,6 +225,44 @@ public class ProjectBackendService {
                 .orElse(codingProject);
         registerWithCodeIndexer(registered);
         registerTranscriptScope(root, registered);
+        return new ProjectResponse(manifest, store.status(root));
+    }
+
+    @Transactional
+    public ProjectResponse bindCodingProjectFactSheet(String codingProjectId, Long factSheetId) {
+        if (factSheetId == null || factSheetId < 0) {
+            throw new IllegalArgumentException("factSheetId must be zero or greater");
+        }
+        Path root = requireProjectRoot();
+        KompileProjectManifest manifest = store.load(root);
+        KompileCodingProject codingProject = manifest.getCodingProjects().stream()
+                .filter(project -> codingProjectId.equals(project.getId())
+                        || codingProjectId.equals(project.getCodeProjectId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown coding project: " + codingProjectId));
+        Long previousFactSheetId = codingProject.getFactSheetId();
+        boolean bindingChanged = !Objects.equals(previousFactSheetId, factSheetId);
+        codingProject.setFactSheetId(factSheetId);
+        manifest = store.registerCodingProject(root, codingProject);
+        registerWithCodeIndexer(codingProject);
+        if (bindingChanged) {
+            String projectId = codingProject.getCodeProjectId();
+            String rootPath = codingProject.getRootPath();
+            Runnable refreshProjection = () -> {
+                codebaseIndexer.pruneProjectGraph(projectId, previousFactSheetId);
+                codebaseIndexer.indexDirectoryAsync(projectId, rootPath, true);
+            };
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        refreshProjection.run();
+                    }
+                });
+            } else {
+                refreshProjection.run();
+            }
+        }
         return new ProjectResponse(manifest, store.status(root));
     }
 
@@ -403,6 +444,9 @@ public class ProjectBackendService {
         project.setAutoIndex(codingProject.isAutoIndex());
         project.setIncludePatterns(codingProject.getIncludePatterns());
         project.setExcludePatterns(codingProject.getExcludePatterns());
+        if (codingProject.getFactSheetId() != null) {
+            project.setFactSheetId(codingProject.getFactSheetId());
+        }
         codeProjectRepository.save(project);
 
         codebaseIndexer.addDirectory(

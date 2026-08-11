@@ -580,6 +580,27 @@ class KompileProjectStoreTest {
         assertEquals(cloned.getFileName().toString(), manifest.getName());
     }
 
+    @Test
+    void codingProjectFactSheetBindingRoundTripsThroughManifest() {
+        KompileProjectStore store = new KompileProjectStore();
+        KompileProjectInitRequest request = new KompileProjectInitRequest();
+        request.setName("graph-project");
+        KompileProjectManifest manifest = store.init(tempDir, request);
+        KompileCodingProject codingProject = new KompileCodingProject();
+        codingProject.setId("app");
+        codingProject.setCodeProjectId("app-code");
+        codingProject.setName("Application");
+        codingProject.setRootPath(tempDir.toString());
+        codingProject.setFactSheetId(42L);
+        manifest.getCodingProjects().add(codingProject);
+
+        store.save(tempDir, manifest);
+
+        KompileCodingProject restored = store.load(tempDir).getCodingProjects().get(0);
+        assertEquals(42L, restored.getFactSheetId());
+        assertEquals("app-code", restored.getCodeProjectId());
+    }
+
     private static void runGit(Path directory, String... args) throws Exception {
         List<String> command = new java.util.ArrayList<>();
         command.add("git");

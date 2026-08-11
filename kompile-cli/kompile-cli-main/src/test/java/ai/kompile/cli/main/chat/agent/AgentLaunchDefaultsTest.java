@@ -187,6 +187,23 @@ class AgentLaunchDefaultsTest {
     }
 
     @Test
+    void emitsProviderNativeResumeArguments() {
+        assertEquals(List.of("resume", "session-id"),
+                AgentLaunchDefaults.resumeArguments("codex", "session-id"));
+        assertEquals(List.of("--resume", "session-id"),
+                AgentLaunchDefaults.resumeArguments("claude", "session-id"));
+        assertEquals(List.of("--resume", "session-id"),
+                AgentLaunchDefaults.resumeArguments("qwen", "session-id"));
+        assertEquals(List.of("--resume", "session-id"),
+                AgentLaunchDefaults.resumeArguments("gemini", "session-id"));
+        assertEquals(List.of("--session", "session-id"),
+                AgentLaunchDefaults.resumeArguments("opencode", "session-id"));
+        assertEquals(List.of("--session", "session-id"),
+                AgentLaunchDefaults.resumeArguments("pi", "session-id"));
+        assertTrue(AgentLaunchDefaults.resumeArguments("unknown", "session-id").isEmpty());
+    }
+
+    @Test
     void rejectsControlCharactersInProviderArguments() {
         assertThrows(IllegalArgumentException.class,
                 () -> AgentLaunchDefaults.commandArguments(
@@ -196,6 +213,8 @@ class AgentLaunchDefaultsTest {
                 () -> AgentLaunchDefaults.commandArguments(
                         "claude", "claude-opus\rnext", "high",
                         AgentLaunchDefaults.LaunchMode.MANAGED));
+        assertThrows(IllegalArgumentException.class,
+                () -> AgentLaunchDefaults.resumeArguments("codex", "session\nresume unexpected"));
     }
 
     private static void saveUnchecked(Path config, String agent, String model, String thinking) {

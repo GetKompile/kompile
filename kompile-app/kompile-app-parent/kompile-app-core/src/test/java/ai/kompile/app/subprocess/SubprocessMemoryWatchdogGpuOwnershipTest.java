@@ -53,6 +53,30 @@ class SubprocessMemoryWatchdogGpuOwnershipTest {
     }
 
     @Test
+    void multiDeviceThresholdUsesWorstDeviceInsteadOfAggregateUtilization() {
+        SubprocessMemoryWatchdog.GpuProbe idleDevice =
+                SubprocessMemoryWatchdog.processOwnedGpuProbe(
+                        0, 24 * GIB, 23 * GIB, GIB, GIB);
+        SubprocessMemoryWatchdog.GpuProbe saturatedDevice =
+                SubprocessMemoryWatchdog.processOwnedGpuProbe(
+                        1, 24 * GIB, 4 * GIB, 19 * GIB, 20 * GIB);
+
+        SubprocessMemoryWatchdog.GpuProbe highest =
+                SubprocessMemoryWatchdog.highestUsageGpuProbe(
+                        java.util.List.of(idleDevice, saturatedDevice));
+
+        assertNotNull(highest);
+        assertEquals(1, highest.deviceId());
+        assertTrue(highest.usagePercent() > 80.0,
+                "an idle sibling GPU must not dilute the limiting device below its threshold");
+        double aggregateUsage =
+                ((idleDevice.usedBytes() + saturatedDevice.usedBytes()) * 100.0)
+                        / (idleDevice.totalBytes() + saturatedDevice.totalBytes());
+        assertTrue(aggregateUsage < 50.0,
+                "the regression setup must demonstrate why aggregate utilization is unsafe");
+    }
+
+    @Test
     void unavailableOwnershipDoesNotFallBackToDriverWideOccupancy() {
         assertNull(SubprocessMemoryWatchdog.processOwnedGpuProbe(
                 0, 24 * GIB, 1, 0, -1));

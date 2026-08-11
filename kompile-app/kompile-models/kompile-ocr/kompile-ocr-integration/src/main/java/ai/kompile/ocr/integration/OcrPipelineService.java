@@ -254,6 +254,29 @@ public class OcrPipelineService {
         return vlmPipeline.processPdf(pdfFile, config, progressCallback);
     }
 
+    /**
+     * Process a PDF with the fully configured traditional OCR or VLM pipeline selected by {@code config}.
+     * This is used by isolated/offline workers where no web-layer {@link PdfProcessingConfig} exists.
+     */
+    public List<ParsedDocument> processPdfWithPipelineConfig(
+            File pdfFile,
+            OcrPipelineConfig config,
+            Consumer<OcrPipeline.PipelineProgress> progressCallback) {
+        if (config == null) return processPdf(pdfFile, progressCallback);
+        OcrPipeline pipeline = getPipelineForConfig(config);
+        if (pipeline == null) {
+            String type = config.isUseVlm() ? "VLM" : "OCR";
+            return List.of(ParsedDocument.failed(pdfFile.getAbsolutePath(), 0,
+                    type + " pipeline not available"));
+        }
+        List<ParsedDocument> results = pipeline.processPdf(pdfFile, config, progressCallback);
+        if (!config.isUseVlm() && config.isEnableLlmPostProcessing()
+                && postProcessor != null && postProcessor.isAvailable()) {
+            results = applyPostProcessing(results);
+        }
+        return results;
+    }
+
     public ParsedDocument processPage(File pdfFile, int pageNumber) {
         if (!isOcrEnabled()) {
             return ParsedDocument.failed(pdfFile.getAbsolutePath(), pageNumber, "OCR not enabled");

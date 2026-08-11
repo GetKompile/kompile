@@ -16,15 +16,22 @@
 package ai.kompile.cli.main.chat.format;
 
 import ai.kompile.cli.main.chat.ChatHistory;
+import ai.kompile.cli.common.chat.sources.ChatTurn;
+import ai.kompile.cli.common.chat.sources.adapters.PiAdapter;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 class ConversationExporterParityTest {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void canonicalResumeTranscriptIsIdenticalForEveryNativeExporter() {
@@ -45,5 +52,26 @@ class ConversationExporterParityTest {
         assertEquals(List.of("assistant-first", "request", "system context", "tool output", "answer"),
                 canonical.stream().map(ChatHistory.Turn::content).toList());
         assertSame(rawBlocks, canonical.get(3).rawContentBlocks());
+    }
+
+    @Test
+    void piExportUsesVersionThreeJsonlAndRoundTripsThroughPiAdapter() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            ConversationExporter.ExportResult result = ConversationExporter.exportToAgent(
+                    List.of(
+                            new ChatHistory.Turn("user", "hello pi", null),
+                            new ChatHistory.Turn("assistant", "hello from pi", null)),
+                    "pi", "pi-roundtrip", "claude-code", tempDir);
+
+            assertEquals("pi --session pi-roundtrip", result.getResumeCommand());
+            List<ChatTurn> turns = PiAdapter.parseJsonl(result.getSessionPath());
+            assertEquals(List.of("user", "assistant"), turns.stream().map(ChatTurn::role).toList());
+            assertEquals(List.of("hello pi", "hello from pi"), turns.stream().map(ChatTurn::content).toList());
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home");
+            else System.setProperty("user.home", previousHome);
+        }
     }
 }

@@ -18,6 +18,8 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.crawl.graph.LocalServingBackend;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -26,7 +28,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * App-main {@link LocalServingBackend} that delegates to the {@link ServingSubprocessLauncher}
@@ -73,6 +78,32 @@ public class ServingSubprocessBackend implements LocalServingBackend {
     }
 
     @Override
+    public boolean supportsStructuredChat() {
+        return true;
+    }
+
+    @Override
+    public StructuredChatLanguageModel.Response generateChat(
+            StructuredChatLanguageModel.Request request, int maxNewTokens) throws Exception {
+        if (launcher == null) {
+            throw new IllegalStateException("Serving subprocess launcher not available");
+        }
+        return structuredResponse(launcher.generateChat(request, maxNewTokens));
+    }
+
+    @Override
+    public StructuredChatLanguageModel.Response generateChatForModel(
+            String modelId,
+            StructuredChatLanguageModel.Request request,
+            int maxNewTokens) throws Exception {
+        if (launcher == null) {
+            throw new IllegalStateException("Serving subprocess launcher not available");
+        }
+        return structuredResponse(
+                launcher.generateChatForModel(modelId, request, maxNewTokens));
+    }
+
+    @Override
     public String generate(String prompt) throws Exception {
         if (launcher == null) {
             throw new IllegalStateException("Serving subprocess launcher not available");
@@ -102,6 +133,32 @@ public class ServingSubprocessBackend implements LocalServingBackend {
             throw new IllegalStateException("Serving subprocess launcher not available");
         }
         return generatedText(launcher.generateForModel(modelId, prompt, maxNewTokens));
+    }
+
+    private StructuredChatLanguageModel.Response structuredResponse(String raw) throws IOException {
+        JsonNode response = MAPPER.readTree(raw);
+        String finishReason = response.path("finishReason").asText("");
+        if (finishReason.toLowerCase(Locale.ROOT).startsWith("error")) {
+            throw new IOException("Serving subprocess structured generation failed: " + finishReason);
+        }
+        List<StructuredChatLanguageModel.ToolCall> calls = new ArrayList<>();
+        for (JsonNode call : response.path("toolCalls")) {
+            Map<String, Object> arguments = MAPPER.convertValue(
+                    call.path("arguments"), new TypeReference<Map<String, Object>>() { });
+            calls.add(new StructuredChatLanguageModel.ToolCall(
+                    call.path("id").asText(""),
+                    call.path("name").asText(""),
+                    arguments));
+        }
+        List<String> parseErrors = response.path("parseErrors").isArray()
+                ? MAPPER.convertValue(response.path("parseErrors"),
+                        new TypeReference<List<String>>() { })
+                : List.of();
+        return new StructuredChatLanguageModel.Response(
+                response.path("rawText").asText(""),
+                response.path("content").asText(""),
+                calls,
+                parseErrors);
     }
 
     private String generatedText(String raw) throws IOException {

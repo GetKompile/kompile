@@ -73,6 +73,24 @@ Stop and report if: <risk, ambiguity, missing dependency, or scope expansion>
 
 Do not give workers the intended conclusion. Give them raw artifacts and criteria so their work remains an independent signal.
 
+## Lower-thinking doer to architect
+
+A doer running on a lower-thinking profile (for example, Luna at `xhigh` or `max`) may delegate one bounded architecture question to Codex by selecting the built-in `architect` role:
+
+```text
+task({
+  description: "Design cache invalidation",
+  agent: "codex",
+  role: "architect",
+  prompt: "Objective: design cache invalidation for the request cache.
+Scope: the cache module and its callers.
+Non-goals: no code edits, migrations, or adjacent cleanup.
+Return one decision-complete plan with files, tests, risks, and assumptions."
+})
+```
+
+When `model` and `thinking` are omitted, Codex architect dispatches use `gpt-5.6-sol` with `xhigh` thinking. The architect is a read-only, single-task planner: it cannot mutate files, delegate again, or retain a session. The Luna doer must audit the complete result, verify the cited files and acceptance criteria, and decide whether to implement it; the plan is never auto-executed by the dispatch layer.
+
 ## Model-selection policy
 
 Choose the cheapest agent with demonstrated ability to satisfy the packet's contract. Prefer historical evidence from `performance_harness` over reputation or model size alone.

@@ -54,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,6 +63,7 @@ import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticSeverity
+import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
 import ai.kompile.chat.local.android.viewmodel.GraphImportOutcome
@@ -406,6 +408,11 @@ fun SettingsScreen(
                             }
                         },
                         onOpenAppStorageSettings = { vm.openAppStorageSettings() },
+                        onCopySmokeDecodeTrace = {
+                            clipboard.setText(
+                                AnnotatedString(SmokeDecodeTraceLog(context).readContents())
+                            )
+                        },
                         diagnostics = importDiagnostics
                     )
                     huggingFaceDiscovery
@@ -667,6 +674,23 @@ fun SettingsScreen(
                     ) {
                         Text("Run local model decode test")
                     }
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(
+                                AnnotatedString(SmokeDecodeTraceLog(context).readContents())
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("copy_smoke_decode_trace")
+                    ) {
+                        Text("Copy smoke-decode trace")
+                    }
+                    Text(
+                        text = "The trace is retained in app-private storage and includes the active log plus rotating backups.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     when (val smoke = modelSmokeState) {
                         ModelSmokeUiState.NotRun -> Text(
                             text = "A real bounded decode runs automatically on every model or "

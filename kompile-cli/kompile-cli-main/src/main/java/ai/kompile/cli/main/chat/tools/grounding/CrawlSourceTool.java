@@ -26,6 +26,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.web.client.ResourceAccessException;
+
 /**
  * MCP tool: {@code crawl_source}
  *
@@ -41,16 +43,17 @@ public class CrawlSourceTool implements CliTool {
 
     private final GroundingBackendClient client;
     private final ObjectMapper objectMapper;
+    private final LocalProjectCrawlBackend localBackend;
 
     public CrawlSourceTool(String baseUrl, ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-        this.client = new GroundingBackendClient(baseUrl);
+        this(new GroundingBackendClient(baseUrl), objectMapper);
     }
 
     /** Visible for testing — lets a {@code MockRestServiceServer} intercept HTTP calls. */
     CrawlSourceTool(GroundingBackendClient client, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.client = client;
+        this.localBackend = new LocalProjectCrawlBackend(objectMapper);
     }
 
     @Override
@@ -58,15 +61,16 @@ public class CrawlSourceTool implements CliTool {
 
     @Override
     public String description() {
-        return "Run ONE source (local file path, URL, or inline text) through the real unified-crawl "
-                + "pipeline and persist the extracted entities and relations into the knowledge graph. "
+        return "Run ONE source through the crawl backend. Without a configured manager, local paths "
+                + "and inline text are persisted in the project knowledge base; with a manager, paths and URLs "
+                + "can run the full distributed pipeline and persist extracted entities and relations. "
                 + "Use dryRun=true for a synchronous LLM-extraction preview with ZERO persistence. "
                 + "The steps parameter selects which pipeline stages execute "
                 + "(PREPROCESSING, GRAPH_EXTRACTION, ENTITY_RESOLUTION, EDGE_COMPUTATION, "
                 + "VECTOR_INDEXING, ENTITY_PARTITIONS, ENRICHMENT); loading, conversion, and "
                 + "chunking always run. "
                 + "Server-side dependency resolution ensures required predecessor stages are always "
-                + "included. Requires a running kompile-app. Default wait is 900 s; behind a reverse "
+                + "included for distributed runs. Default remote wait is 900 s; behind a reverse "
                 + "proxy the timeoutSeconds value must stay under the proxy read timeout. "
                 + "NOTE: exactly one of path, url, or text must be supplied.";
     }
@@ -149,7 +153,7 @@ public class CrawlSourceTool implements CliTool {
         }
 
         if (!client.isAvailable()) {
-            return ToolResult.error("crawl_source requires a running kompile-app.");
+            return localBackend.crawlSource(params, context);
         }
 
         // ── Timeout ───────────────────────────────────────────────────────
@@ -365,6 +369,8 @@ public class CrawlSourceTool implements CliTool {
             return ToolResult.success("crawl_source: " + sourceLabel,
                     sb.toString().trim(), metadata);
 
+        } catch (ResourceAccessException e) {
+            return localBackend.crawlSource(params, context);
         } catch (Exception e) {
             return ToolResult.error("crawl_source error: " + e.getMessage());
         }

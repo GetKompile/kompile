@@ -36,7 +36,7 @@ class ServingSubprocessHttpServerTest {
     }
 
     @Test
-    void exposesTheFourControllerContracts() throws Exception {
+    void exposesTheFiveControllerContracts() throws Exception {
         RecordingApi api = new RecordingApi();
         start(api, 1024, 4096);
 
@@ -62,6 +62,16 @@ class ServingSubprocessHttpServerTest {
         assertEquals(200, generate.statusCode());
         assertEquals("hello native serving", objectMapper.readTree(generate.body()).get("prompt").asText());
         assertEquals(16, api.generateRequest.get("maxTokens"));
+
+        HttpResponse<String> chat = request(
+                "POST",
+                "/api/llm/chat",
+                "{\"request\":{\"messages\":[{\"role\":\"user\",\"content\":\"extract\"}],"
+                        + "\"tools\":[],\"addGenerationPrompt\":true,"
+                        + "\"toolDefinitionFormat\":\"FLAT\",\"toolCallFormat\":\"NATIVE\"},"
+                        + "\"maxTokens\":32}");
+        assertEquals(200, chat.statusCode());
+        assertEquals(32, api.chatRequest.get("maxTokens"));
 
         HttpResponse<String> unload = request("POST", "/api/llm/unload", "");
         assertEquals(200, unload.statusCode());
@@ -191,6 +201,7 @@ class ServingSubprocessHttpServerTest {
     private static class RecordingApi implements ServingSubprocessHttpServer.Api {
         private LoadRequest loadedRequest;
         private Map<String, Object> generateRequest;
+        private Map<String, Object> chatRequest;
 
         @Override
         public ResponseEntity<Map<String, Object>> load(LoadRequest request) {
@@ -212,6 +223,12 @@ class ServingSubprocessHttpServerTest {
         public ResponseEntity<Map<String, Object>> generate(Map<String, Object> request) {
             generateRequest = request;
             return ResponseEntity.ok(Map.of("prompt", request.get("prompt")));
+        }
+
+        @Override
+        public ResponseEntity<Map<String, Object>> chat(Map<String, Object> request) {
+            chatRequest = request;
+            return ResponseEntity.ok(Map.of("finishReason", "completed"));
         }
 
         @Override

@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.mcp;
 
 import ai.kompile.cli.common.logs.LogPaths;
+import ai.kompile.cli.common.routing.KompileService;
+import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
@@ -37,6 +39,7 @@ import ai.kompile.cli.main.chat.tools.CodeSearchTool;
 import ai.kompile.cli.main.chat.tools.ConfigArchiveTool;
 import ai.kompile.cli.main.chat.tools.ConversationImportTool;
 import ai.kompile.cli.main.chat.tools.DictationTool;
+import ai.kompile.cli.main.chat.tools.DiffIndexTool;
 import ai.kompile.cli.main.chat.tools.DynamicToolManager;
 import ai.kompile.cli.main.chat.tools.EditCoordinatorTool;
 import ai.kompile.cli.main.chat.tools.EditBatchTool;
@@ -58,6 +61,8 @@ import ai.kompile.cli.main.chat.tools.GraphRagSearchTool;
 import ai.kompile.cli.main.chat.tools.GraphSimulateTool;
 import ai.kompile.cli.main.chat.tools.GrepTool;
 import ai.kompile.cli.main.chat.tools.KnowledgeGraphTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeSearchCliTool;
+import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
 import ai.kompile.cli.main.chat.tools.ListTool;
 import ai.kompile.cli.main.chat.tools.LocalCodeIndexTool;
 import ai.kompile.cli.main.chat.tools.LspTool;
@@ -101,6 +106,9 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphRetractTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphSubscribeTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphSynthesizeTool;
 import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
@@ -156,7 +164,7 @@ public class McpStdioCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--work-dir"}, description = "Working directory for tools")
     private String workDir;
 
-    @CommandLine.Option(names = {"--url"}, description = "Base URL of the kompile-app instance (e.g. http://localhost:8080)")
+    @CommandLine.Option(names = {"--url"}, description = "Optional distributed Kompile base URL; omit for project-local crawl and knowledge tools")
     private String baseUrl;
 
     @CommandLine.Option(names = {"--graph-url"},
@@ -1286,6 +1294,9 @@ public class McpStdioCommand implements Callable<Integer> {
         Map<String, ToolDef> tools = new LinkedHashMap<>();
         GraphServiceRouting.Resolution graphRoute = GraphServiceRouting.resolve(graphUrl);
         String graphBaseUrl = graphRoute.baseUrl();
+        String crawlBaseUrl = baseUrl == null || baseUrl.isBlank()
+                ? null
+                : KompileServiceEndpoints.resolve(KompileService.CRAWL, baseUrl).baseUrl();
         System.err.println("[MCP] Authoritative graph contracts routed to " + graphBaseUrl
                 + " (source: " + graphRoute.source() + ")");
 
@@ -1368,6 +1379,8 @@ public class McpStdioCommand implements Callable<Integer> {
         // ── Knowledge & memory tools ───────────────────────────────────────
         registerCliTool(tools, new TranscriptSearchTool(), om, wd);
         registerCliTool(tools, new ConversationImportTool(), om, wd);
+        registerCliTool(tools, new KnowledgeSearchCliTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new KnowledgeStatusCliTool(baseUrl, om), om, wd);
         registerCliTool(tools, new MemoryTool(), om, wd);
 
         // ── Config tools ──────────────────────────────────────────────────
@@ -1384,8 +1397,9 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new LocalCodeIndexTool(), om, wd);
         registerCliTool(tools, new LspTool(coordinator), om, wd);
 
-        // ── Tool call catalog (search/index tool usage across sessions) ────
+        // ── Tool call and diff history (search indexed agent activity) ─────
         registerCliTool(tools, new ToolCallCatalogTool(), om, wd);
+        registerCliTool(tools, new DiffIndexTool(baseUrl, om), om, wd);
 
         // ── RAG & Graph search (require kompile-app backend) ──────────────
         registerCliTool(tools, new RagSearchTool(baseUrl, om), om, wd);
@@ -1407,7 +1421,10 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new AskGraphSynthesizeTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphImportTool(graphBaseUrl, om), om, wd);
         registerCliTool(tools, new GraphExportTool(graphBaseUrl, om), om, wd);
-        registerCliTool(tools, new CrawlSourceTool(baseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlSourceTool(crawlBaseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlDocumentsTool(crawlBaseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlDiscoveryTool(crawlBaseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlControlTool(crawlBaseUrl, om), om, wd);
 
         // ── Graph analytics (require kompile-app backend) ─────────────────
         registerCliTool(tools, new GraphAggregateTool(baseUrl, om), om, wd);
@@ -1435,7 +1452,7 @@ public class McpStdioCommand implements Callable<Integer> {
 
         // ── Semantic memory (passive vector retrieval) ────────────────────
         long tSem = System.currentTimeMillis();
-        semanticMemoryEngine = new SemanticMemoryEngine();
+        semanticMemoryEngine = new SemanticMemoryEngine(wd);
         semanticMemoryEngine.initialize();
         registerCliTool(tools, new SemanticMemoryTool(semanticMemoryEngine), om, wd);
         System.err.println("[MCP] SemanticMemoryEngine: " + (System.currentTimeMillis() - tSem) + "ms");
