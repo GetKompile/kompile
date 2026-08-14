@@ -34,6 +34,10 @@ def maven() -> str:
     return "mvn.cmd" if os.name == "nt" else "mvn"
 
 
+def native_image() -> str:
+    return "native-image.cmd" if os.name == "nt" else "native-image"
+
+
 def copy_tree_if_present(source: Path, target: Path) -> None:
     if source.exists():
         shutil.copytree(source, target, dirs_exist_ok=True)
@@ -255,7 +259,7 @@ def ensure_graalvm(work: Path, architecture: str,
                    distribution: str = "graalvm-community") -> dict[str, str]:
     if distribution not in {"graalvm-community", "graalvm"}:
         raise ValueError(f"unsupported GraalVM distribution: {distribution}")
-    installed_native_image = shutil.which("native-image")
+    installed_native_image = shutil.which(native_image())
     active_distribution = os.environ.get("KOMPILE_GRAALVM_DISTRIBUTION")
     if installed_native_image and active_distribution in {None, distribution}:
         java_home = Path(installed_native_image).resolve().parent.parent
@@ -265,7 +269,7 @@ def ensure_graalvm(work: Path, architecture: str,
     marker = work / f"{distribution}.java-home"
     if marker.is_file():
         java_home = Path(marker.read_text(encoding="utf-8").strip())
-        if shutil.which("native-image", path=str(java_home / "bin")):
+        if shutil.which(native_image(), path=str(java_home / "bin")):
             return graalvm_environment(java_home, distribution)
 
     system = platform.system().lower()
@@ -316,7 +320,7 @@ def ensure_graalvm(work: Path, architecture: str,
         java_home = java_home / "Contents" / "Home"
     marker.write_text(str(java_home), encoding="utf-8")
     env = graalvm_environment(java_home, distribution)
-    run(["native-image", "--version"], work, env)
+    run([native_image(), "--version"], work, env)
     return env
 
 

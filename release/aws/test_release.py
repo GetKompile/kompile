@@ -280,6 +280,12 @@ class BuildPlatformParityTest(unittest.TestCase):
         self.assertIn("graalvm-community-jdk-", source)
         self.assertIn("graalvm/graalvm-ce-builds", source)
 
+    def test_windows_native_image_uses_cmd_launcher(self):
+        with patch.object(BUILD_MODULE.os, "name", "nt"):
+            self.assertEqual("native-image.cmd", BUILD_MODULE.native_image())
+        with patch.object(BUILD_MODULE.os, "name", "posix"):
+            self.assertEqual("native-image", BUILD_MODULE.native_image())
+
     def test_existing_native_image_sets_graalvm_and_java_home(self):
         with patch.dict(os.environ, {}, clear=False), \
              patch.object(BUILD_MODULE.shutil, "which", return_value="/opt/graalvm/bin/native-image"):
