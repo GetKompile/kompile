@@ -235,7 +235,7 @@ DL4J_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR:-}"
 KOMPILE_MVN_ARGS=(
   --batch-mode
   --no-transfer-progress
-  -Dmaven.test.skip=true
+  -DskipTests
   "-Dnative.quickBuild=${KOMPILE_NATIVE_QUICK_BUILD_PROPERTY}"
 )
 

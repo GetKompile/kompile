@@ -292,6 +292,13 @@ class BuildPlatformParityTest(unittest.TestCase):
         with patch.object(BUILD_MODULE.os, "name", "posix"):
             self.assertEqual("mvn", BUILD_MODULE.maven())
 
+    def test_release_build_preserves_required_test_jars(self):
+        source = (REPOSITORY / "build-scripts" / "build-common.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("  -DskipTests\n", source)
+        self.assertNotIn("-Dmaven.test.skip=true", source)
+
     def test_windows_batch_commands_run_through_cmd(self):
         original = ["mvn.cmd", "--batch-mode", "-Dvalue=space value"]
         with patch.object(BUILD_MODULE.os, "name", "nt"):
