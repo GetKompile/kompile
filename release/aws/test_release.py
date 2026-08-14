@@ -1247,6 +1247,13 @@ class BuildPlatformParityTest(unittest.TestCase):
             "${javacpp.platform}-cuda-12.9-zluda",
             profile("zluda"),
         )
+        for cpu_variant in (
+            "cpu-avx2", "cpu-avx512", "cpu-onednn", "cpu-onednn-avx2",
+            "cpu-onednn-avx512", "cpu-compile", "cpu-compile-avx2",
+            "cpu-compile-avx512", "cpu-armcompute", "cpu-mps",
+            "cpu-mps-compile", "cpu-nnapi", "cpu-compile-nnapi",
+        ):
+            self.assertNotIn("tokenizers.platform.classifier", profile(cpu_variant))
         self.assertNotIn("tokenizers.platform.classifier", profile("cpu-compat"))
 
         distribution_pom = (REPOSITORY / "kompile-dist" / "pom.xml").read_text(
