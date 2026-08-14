@@ -31,7 +31,6 @@ ARTIFACT_CONTAINER=$(config artifactContainer)
 ARTIFACT_PREFIX=$(config artifactPrefix)
 RUN_ID=$(config runId)
 SHARD_ID=$(config shard.id)
-BRANCH=$(config branch)
 COMMIT=$(config commit)
 REPOSITORY=$(config repository)
 IDENTITY_CLIENT_ID=$(config managedIdentityClientId)
@@ -147,18 +146,9 @@ WATCHDOG_PID=$!
 
 git init "${SOURCE_DIR}"
 git -C "${SOURCE_DIR}" remote add origin "${REPOSITORY}"
-if [ -n "${BRANCH}" ]; then
-  git -C "${SOURCE_DIR}" fetch --depth=1 origin \
-    "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
-  branch_commit=$(git -C "${SOURCE_DIR}" rev-parse "refs/remotes/origin/${BRANCH}^{commit}")
-  if [ "${branch_commit}" != "${COMMIT}" ]; then
-    printf 'Branch %s resolved to %s, expected %s\n' \
-      "${BRANCH}" "${branch_commit}" "${COMMIT}" >&2
-    exit 2
-  fi
-else
-  git -C "${SOURCE_DIR}" fetch --depth=1 origin "${COMMIT}"
-fi
+# The controller resolves a requested branch once; the worker always fetches
+# that immutable commit so a moving branch cannot invalidate an active run.
+git -C "${SOURCE_DIR}" fetch --depth=1 origin "${COMMIT}"
 git -C "${SOURCE_DIR}" checkout --detach "${COMMIT}"
 [ "$(git -C "${SOURCE_DIR}" rev-parse HEAD)" = "${COMMIT}" ] || exit 2
 mkdir -p "${OUTPUT_DIR}/maven-repository" "${OUTPUT_DIR}/sdk-assets"

@@ -657,24 +657,23 @@ class WorkerContractTest(unittest.TestCase):
                 ),
             )
 
-    def test_workers_fetch_branch_ref_and_verify_resolved_commit(self):
+    def test_workers_fetch_controller_pinned_commit(self):
         shell = (ROOT / "worker.sh").read_text(encoding="utf-8")
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
         self.assertIn(
-            '"+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"', shell
+            'git -C "${SOURCE_DIR}" fetch --depth=1 origin "${COMMIT}"', shell
         )
+        self.assertNotIn("refs/heads/", shell)
         self.assertIn(
-            'refs/remotes/origin/${BRANCH}^{commit}', shell
+            "git -C $SourceDir fetch --depth=1 origin $Config.commit",
+            powershell,
         )
-        self.assertIn(
-            '$BranchRef = "refs/heads/$($Config.branch)"', powershell
-        )
-        self.assertIn(
-            '$RemoteRef = "refs/remotes/origin/$($Config.branch)"', powershell
-        )
-        self.assertIn(
-            'git -C $SourceDir rev-parse "${RemoteRef}^{commit}"', powershell
-        )
+        self.assertNotIn("$BranchRef", powershell)
+
+    def test_windows_worker_enables_git_long_paths(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        self.assertIn("git config --system core.longpaths true", powershell)
+        self.assertIn("Failed to enable Git long-path support", powershell)
 
     def test_windows_worker_refreshes_native_tool_paths(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")

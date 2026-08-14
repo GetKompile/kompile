@@ -68,6 +68,8 @@ try {
   $MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
   $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+  git config --system core.longpaths true
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long-path support' }
   $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
   if (-not $PythonCommand -or $PythonCommand.Source -like 'C:\tools\msys64\*') {
     throw "Windows Python executable unavailable after Chocolatey install"
@@ -146,20 +148,10 @@ try {
   if (Test-KillSwitch) { throw 'Azure release kill switch is enabled or unreadable' }
   git init $SourceDir
   git -C $SourceDir remote add origin $Config.repository
-  if ($Config.branch) {
-    $BranchRef = "refs/heads/$($Config.branch)"
-    $RemoteRef = "refs/remotes/origin/$($Config.branch)"
-    git -C $SourceDir fetch --depth=1 origin "+${BranchRef}:${RemoteRef}"
-    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch branch $($Config.branch)" }
-    $BranchCommit = git -C $SourceDir rev-parse "${RemoteRef}^{commit}"
-    if ($BranchCommit.Trim() -ne $Config.commit) {
-      throw "Branch $($Config.branch) resolved to $BranchCommit, expected $($Config.commit)"
-    }
-  }
-  else {
-    git -C $SourceDir fetch --depth=1 origin $Config.commit
-    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch commit $($Config.commit)" }
-  }
+  # The controller resolves a requested branch once; the worker always fetches
+  # that immutable commit so a moving branch cannot invalidate an active run.
+  git -C $SourceDir fetch --depth=1 origin $Config.commit
+  if ($LASTEXITCODE -ne 0) { throw "Failed to fetch commit $($Config.commit)" }
   git -C $SourceDir checkout --detach $Config.commit
   $Actual = git -C $SourceDir rev-parse HEAD
   if ($Actual.Trim() -ne $Config.commit) { throw "Commit mismatch: $Actual" }

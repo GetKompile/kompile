@@ -162,12 +162,11 @@ class ReleasePlanTest(unittest.TestCase):
 
 
 class BuildPlatformParityTest(unittest.TestCase):
-    def test_dl4j_checkout_fetches_branch_and_verifies_tip(self):
-        branch = "release/snapshot"
+    def test_dl4j_checkout_fetches_controller_pinned_commit(self):
         commit = "b" * 40
         config = {
             "dl4jRepository": "https://example.test/deeplearning4j.git",
-            "dl4jBranch": branch,
+            "dl4jBranch": "release/snapshot",
             "dl4jCommit": commit,
         }
         completed = Mock(stdout=commit + "\n")
@@ -175,7 +174,7 @@ class BuildPlatformParityTest(unittest.TestCase):
                 patch.object(BUILD_MODULE, "run") as run, \
                 patch.object(
                     BUILD_MODULE.subprocess, "run",
-                    side_effect=[completed, completed],
+                    return_value=completed,
                 ):
             checkout = BUILD_MODULE.ensure_dl4j_checkout(
                 config, pathlib.Path(temporary)
@@ -185,15 +184,18 @@ class BuildPlatformParityTest(unittest.TestCase):
         )
         commands = [item.args[0] for item in run.call_args_list]
         self.assertIn(
-            [
-                "git", "fetch", "--depth=1", "origin",
-                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
-            ],
+            ["git", "fetch", "--depth=1", "origin", commit],
             commands,
         )
         self.assertIn(
             ["git", "checkout", "--detach", commit],
             commands,
+        )
+        self.assertFalse(
+            any(
+                any("refs/heads/" in str(argument) for argument in command)
+                for command in commands
+            )
         )
 
     def test_sdk_jars_are_hydrated_from_configured_snapshot_repository(self):

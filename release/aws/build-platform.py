@@ -350,25 +350,10 @@ def ensure_dl4j_checkout(config: dict[str, Any], source: Path) -> Path:
         phase("checkout-deeplearning4j")
         run(["git", "init", str(dl4j)], source)
         run(["git", "remote", "add", "origin", config["dl4jRepository"]], dl4j)
-        branch = str(config.get("dl4jBranch", "")).strip()
-        if branch:
-            branch_ref = f"refs/heads/{branch}"
-            remote_ref = f"refs/remotes/origin/{branch}"
-            run([
-                "git", "fetch", "--depth=1", "origin",
-                f"+{branch_ref}:{remote_ref}",
-            ], dl4j)
-            branch_commit = subprocess.run(
-                ["git", "rev-parse", f"{remote_ref}^{{commit}}"], cwd=dl4j,
-                text=True, capture_output=True, check=True,
-            ).stdout.strip()
-            if branch_commit != config["dl4jCommit"]:
-                raise RuntimeError(
-                    f"deeplearning4j branch {branch!r} resolved to {branch_commit}, "
-                    f"expected {config['dl4jCommit']}"
-                )
-        else:
-            run(["git", "fetch", "--depth=1", "origin", config["dl4jCommit"]], dl4j)
+        # The controller resolves a requested branch exactly once and records its
+        # commit. Fetch that immutable commit so a branch update cannot change or
+        # invalidate a release after planning has completed.
+        run(["git", "fetch", "--depth=1", "origin", config["dl4jCommit"]], dl4j)
         run(["git", "checkout", "--detach", config["dl4jCommit"]], dl4j)
     actual = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=dl4j, text=True,
