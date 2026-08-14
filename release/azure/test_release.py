@@ -440,6 +440,8 @@ class AzureProviderContractTest(unittest.TestCase):
                     "id": "/subscriptions/sub/resourceGroups/rg/providers/"
                           "Microsoft.Storage/storageAccounts/account",
                 }
+            if arguments[:4] == ["storage", "account", "keys", "list"]:
+                return [{"value": "test-account-key"}]
             if arguments[:3] == ["role", "assignment", "list"]:
                 return []
             return {}
@@ -458,9 +460,14 @@ class AzureProviderContractTest(unittest.TestCase):
             if call[:3] == ["storage", "container", "set-permission"]
         ]
         self.assertEqual(1, len(permissions))
-        public_container = permissions[0][permissions[0].index("--name") + 1]
+        permission = permissions[0]
+        public_container = permission[permission.index("--name") + 1]
         self.assertEqual(self.plan["repositoryContainer"], public_container)
         self.assertNotEqual(self.plan["artifactContainer"], public_container)
+        self.assertEqual("key", permission[permission.index("--auth-mode") + 1])
+        self.assertEqual(
+            "test-account-key", permission[permission.index("--account-key") + 1],
+        )
         by_role = {call[call.index("--role") + 1]: call for call in creates}
         contributor = by_role[MODULE.BLOB_DATA_CONTRIBUTOR]
         reader = by_role[MODULE.BLOB_DATA_READER]
@@ -474,6 +481,22 @@ class AzureProviderContractTest(unittest.TestCase):
                 "/blobServices/default/containers/control"
             )
         )
+
+    def test_storage_public_permission_requires_account_key(self):
+        def fake_az(arguments, **kwargs):
+            if arguments[:3] == ["storage", "account", "show"]:
+                return {"id": "/storage/account"}
+            if arguments[:4] == ["storage", "account", "keys", "list"]:
+                return []
+            return {}
+
+        with patch.object(MODULE, "az", side_effect=fake_az):
+            with self.assertRaisesRegex(
+                RuntimeError, "Azure storage account key unavailable",
+            ):
+                MODULE.configure_storage(
+                    "sub", "eastus", "rg", "account", self.plan,
+                )
 
     def test_bootstrap_sas_is_user_delegation_read_only_and_https(self):
         with patch.object(

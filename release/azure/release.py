@@ -676,9 +676,23 @@ def configure_storage(
             *blob_arguments(account),
             "--name", container,
         ])
+    keys = az([
+        "storage", "account", "keys", "list",
+        "--resource-group", resource_group,
+        "--account-name", account,
+    ])
+    account_key = (
+        str(keys[0].get("value", "")).strip()
+        if isinstance(keys, list) and keys
+        else ""
+    )
+    if not account_key:
+        raise RuntimeError(f"Azure storage account key unavailable: {account}")
     az([
         "storage", "container", "set-permission",
-        *blob_arguments(account),
+        "--account-name", account,
+        "--account-key", account_key,
+        "--auth-mode", "key",
         "--name", plan["repositoryContainer"],
         "--public-access", "blob",
     ])
