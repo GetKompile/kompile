@@ -5,6 +5,7 @@
  */
 package ai.kompile.pipelines.steps.nd4j.llm;
 
+import org.eclipse.deeplearning4j.llm.generation.ToolCallParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -17,16 +18,16 @@ class StrictToolCallParserTest {
 
     @Test
     void acceptsOnlyACompleteDeclaredJsonEnvelope() {
-        StrictToolCallParser.ParseResult valid = StrictToolCallParser.parseJson(
+        ToolCallParser.ParseResult valid = StrictToolCallParser.parseJson(
                 "{\"toolName\":\"lookup\",\"arguments\":{\"query\":\"Mira\"}}",
                 List.of("lookup"));
-        StrictToolCallParser.ParseResult marked = StrictToolCallParser.parseJson(
+        ToolCallParser.ParseResult marked = StrictToolCallParser.parseJson(
                 "<tool_call_json>{\"toolName\":\"lookup\","
                         + "\"arguments\":{\"query\":\"Mira\"}}</tool_call_json>",
                 List.of("lookup"));
-        StrictToolCallParser.ParseResult prose = StrictToolCallParser.parseJson(
+        ToolCallParser.ParseResult prose = StrictToolCallParser.parseJson(
                 "I will call lookup({\"query\":\"Mira\"})", List.of("lookup"));
-        StrictToolCallParser.ParseResult undeclared = StrictToolCallParser.parseJson(
+        ToolCallParser.ParseResult undeclared = StrictToolCallParser.parseJson(
                 "{\"toolName\":\"delete\",\"arguments\":{}}", List.of("lookup"));
 
         assertEquals(1, valid.getToolCalls().size());

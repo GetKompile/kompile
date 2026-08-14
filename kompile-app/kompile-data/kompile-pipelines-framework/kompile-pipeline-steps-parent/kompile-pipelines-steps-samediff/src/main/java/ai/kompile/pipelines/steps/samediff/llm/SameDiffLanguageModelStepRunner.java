@@ -29,6 +29,8 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.deeplearning4j.llm.generation.DecoderInputBuilder;
+import org.eclipse.deeplearning4j.llm.generation.ToolCallParser;
+import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -509,12 +511,12 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 : config.getToolDefinitions().stream()
                 .map(PipelineToolDefinition::getName)
                 .toList();
-        StrictToolCallParser.ParseResult parsed =
+        ToolCallParser.ParseResult parsed =
                 StrictToolCallParser.parseJson(llmOutputText, declaredNames);
         if (parsed.getToolCalls().size() != 1 || !parsed.getErrors().isEmpty()) {
             return null;
         }
-        StrictToolCallParser.ToolCall call = parsed.getToolCalls().get(0);
+        ChatTemplate.ToolCall call = parsed.getToolCalls().get(0);
         if (config.getToolChoice() == LLMStepConfig.ToolChoiceMode.SPECIFIC_TOOL
                 && !call.getName().equals(config.getSpecificToolNameForCall())) {
             log.warn("LLM (step '{}') called tool '{}' but was required to call '{}'. Ignoring.",

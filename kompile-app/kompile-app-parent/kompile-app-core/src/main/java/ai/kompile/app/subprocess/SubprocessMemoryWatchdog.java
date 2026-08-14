@@ -16,7 +16,6 @@
 
 package ai.kompile.app.subprocess;
 
-import org.bytedeco.javacpp.LongPointer;
 import org.bytedeco.javacpp.Pointer;
 import org.nd4j.linalg.api.device.DeviceMemoryManager;
 import org.nd4j.linalg.api.device.DeviceDescriptor;
@@ -1079,22 +1078,6 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         return new GpuProbe(deviceId, ownedBytes, totalBytes, usage, driverUsedBytes);
     }
 
-    /**
-     * Read process-owned allocator-pool occupancy through the stable NativeOps API.
-     * This remains compatible with Sonatype snapshots that predate the convenience
-     * DeviceMemoryManager.getNativePoolUsedMemory method.
-     */
-    private static long nativePoolUsedMemory(NativeOps ops, int deviceId) {
-        try (LongPointer used = new LongPointer(1);
-             LongPointer reserved = new LongPointer(1)) {
-            ops.getMemoryPoolStats(deviceId, used, reserved);
-            return Math.max(0L, used.get());
-        } catch (Exception e) {
-            logger.debug("Failed to query native GPU pool usage on device {}", deviceId, e);
-            return -1L;
-        }
-    }
-
     /** Query one GPU for process-owned memory usage. Returns null when ownership is unavailable. */
     private static GpuProbe queryGpu(NativeOps ops, DeviceMemoryManager deviceMemory, int deviceId) {
         try {
@@ -1102,7 +1085,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
             long free = ops.getDeviceFreeMemory(deviceId);
             DeviceDescriptor registered = deviceMemory.getRegisteredDevice(deviceId);
             long tracked = registered == null ? 0 : deviceMemory.getAllocatedMemory(registered);
-            long nativePoolUsed = nativePoolUsedMemory(ops, deviceId);
+            long nativePoolUsed = deviceMemory.getNativePoolUsedMemory(deviceId);
             GpuProbe probe = processOwnedGpuProbe(
                     deviceId, total, free, tracked, nativePoolUsed);
             if (probe != null && probe.driverUsedBytes() > probe.usedBytes()) {
