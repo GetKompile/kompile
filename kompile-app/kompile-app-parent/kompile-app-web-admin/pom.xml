@@ -192,12 +192,6 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
         </dependency>
-        <!-- NOTE: kompile-pipelines-steps-deeplearning4j / -samediff are deliberately NOT declared.
-             No source here references them, and they pull org.deeplearning4j:nd4j-api — an
-             old-namespace twin of org.eclipse.deeplearning4j:nd4j-api carrying the same packages.
-             Maven cannot dedupe across groupIds, so both land on the compile classpath and javac
-             resolves org.nd4j.linalg.factory.Environment against whichever comes first. The stale
-             one lacks the lifecycle/allocation accessors the diagnostics controllers call. -->
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-process-discovery</artifactId>
