@@ -644,6 +644,18 @@ class WorkerContractTest(unittest.TestCase):
             'git -C $SourceDir rev-parse "${RemoteRef}^{commit}"', powershell
         )
 
+    def test_windows_worker_refreshes_native_tool_paths(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            "[Environment]::GetEnvironmentVariable('Path', 'Machine')",
+            powershell,
+        )
+        self.assertIn("Get-Command python.exe", powershell)
+        self.assertIn("$PythonCommand.Source -like 'C:\\tools\\msys64\\*'", powershell)
+        self.assertIn("Get-Command mvn.cmd", powershell)
+        self.assertIn("Start-Process $PythonExe", powershell)
+        self.assertIn("& $PythonExe -c", powershell)
+
     def test_windows_worker_pins_gnu_rust_toolchain_for_cbindgen(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
         self.assertIn(

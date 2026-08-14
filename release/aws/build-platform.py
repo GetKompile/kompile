@@ -25,9 +25,18 @@ def phase(name: str) -> None:
     print(f"::phase::{name}", flush=True)
 
 
+def subprocess_command(command: list[str]) -> list[str]:
+    executable = str(command[0]).lower()
+    if os.name == "nt" and executable.endswith((".cmd", ".bat")):
+        return [
+            "cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline(command),
+        ]
+    return command
+
+
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     print("+ " + " ".join(command), flush=True)
-    subprocess.run(command, cwd=cwd, env=env, check=True)
+    subprocess.run(subprocess_command(command), cwd=cwd, env=env, check=True)
 
 
 def maven() -> str:

@@ -65,7 +65,23 @@ try {
     Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
   }
   choco install -y --no-progress ccache cmake git maven ninja temurin11 temurin17 python312 7zip msys2 rustup.install visualstudio2022buildtools visualstudio2022-workload-vctools
-  $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+  $MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+  $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+  if (-not $PythonCommand -or $PythonCommand.Source -like 'C:\tools\msys64\*') {
+    throw "Windows Python executable unavailable after Chocolatey install"
+  }
+  $PythonExe = $PythonCommand.Source
+  $MavenCommand = Get-Command mvn.cmd -ErrorAction SilentlyContinue
+  if (-not $MavenCommand) {
+    $MavenScript = Get-ChildItem "$env:ChocolateyInstall\lib\maven" -Filter mvn.cmd -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($MavenScript) {
+      $env:PATH = "$($MavenScript.DirectoryName);$env:PATH"
+      $MavenCommand = Get-Command mvn.cmd -ErrorAction SilentlyContinue
+    }
+  }
+  if (-not $MavenCommand) { throw 'mvn.cmd unavailable after Chocolatey install' }
 
   $AzCopyZip = Join-Path $WorkRoot 'azcopy.zip'
   $AzCopyDir = Join-Path $WorkRoot 'azcopy'
@@ -156,7 +172,7 @@ try {
   $BuildStdout = Join-Path $OutputDir 'build.stdout.log'
   $BuildStderr = Join-Path $OutputDir 'build.stderr.log'
   $Arguments = @($BuildDriver, '--config', $ConfigFile, '--source', $SourceDir, '--repository', $MavenRepo, '--maven-output', $MavenOutput, '--sdk-output', $SdkOutput)
-  $Process = Start-Process python -ArgumentList $Arguments -RedirectStandardOutput $BuildStdout -RedirectStandardError $BuildStderr -PassThru -NoNewWindow
+  $Process = Start-Process $PythonExe -ArgumentList $Arguments -RedirectStandardOutput $BuildStdout -RedirectStandardError $BuildStderr -PassThru -NoNewWindow
   while (-not $Process.HasExited) {
     Start-Sleep -Seconds 20
     if (Test-KillSwitch) {
@@ -176,9 +192,9 @@ try {
   }
   if ($BuildExitCode -ne 0) { throw "Build failed with exit code $BuildExitCode" }
 
-  python -c "import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); c=json.load(open(sys.argv[2])); files=[]; [(lambda p: files.append({'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size}))(p) for p in sorted(root.rglob('*')) if p.is_file()]; json.dump({'schemaVersion':2,'provider':'azure','runId':c['runId'],'shard':c['shard']['id'],'commit':c['commit'],'dl4jCommit':c.get('dl4jCommit',''),'dl4jInputMode':c['dl4jInputMode'],'releaseVersion':c['releaseVersion'],'classifiers':[v.get('classifier',v.get('distributionClassifier',v['name'])) for v in c['shard']['build']['variants']],'files':files},open(root/'shard-manifest.json','w'),indent=2,sort_keys=True)" $OutputDir $ConfigFile
-  python -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $MavenOutput (Join-Path $OutputDir 'maven-repository.tar.gz')
-  python -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $SdkOutput (Join-Path $OutputDir 'sdk-assets.tar.gz')
+  & $PythonExe -c "import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); c=json.load(open(sys.argv[2])); files=[]; [(lambda p: files.append({'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size}))(p) for p in sorted(root.rglob('*')) if p.is_file()]; json.dump({'schemaVersion':2,'provider':'azure','runId':c['runId'],'shard':c['shard']['id'],'commit':c['commit'],'dl4jCommit':c.get('dl4jCommit',''),'dl4jInputMode':c['dl4jInputMode'],'releaseVersion':c['releaseVersion'],'classifiers':[v.get('classifier',v.get('distributionClassifier',v['name'])) for v in c['shard']['build']['variants']],'files':files},open(root/'shard-manifest.json','w'),indent=2,sort_keys=True)" $OutputDir $ConfigFile
+  & $PythonExe -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $MavenOutput (Join-Path $OutputDir 'maven-repository.tar.gz')
+  & $PythonExe -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $SdkOutput (Join-Path $OutputDir 'sdk-assets.tar.gz')
   $ExitCode = 0
 }
 catch {

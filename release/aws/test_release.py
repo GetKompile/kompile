@@ -286,6 +286,17 @@ class BuildPlatformParityTest(unittest.TestCase):
         with patch.object(BUILD_MODULE.os, "name", "posix"):
             self.assertEqual("native-image", BUILD_MODULE.native_image())
 
+    def test_windows_batch_commands_run_through_cmd(self):
+        original = ["mvn.cmd", "--batch-mode", "-Dvalue=space value"]
+        with patch.object(BUILD_MODULE.os, "name", "nt"):
+            command = BUILD_MODULE.subprocess_command(original)
+        self.assertEqual(["cmd.exe", "/d", "/s", "/c"], command[:4])
+        self.assertEqual(
+            BUILD_MODULE.subprocess.list2cmdline(original), command[4],
+        )
+        with patch.object(BUILD_MODULE.os, "name", "posix"):
+            self.assertIs(original, BUILD_MODULE.subprocess_command(original))
+
     def test_existing_native_image_sets_graalvm_and_java_home(self):
         with patch.dict(os.environ, {}, clear=False), \
              patch.object(BUILD_MODULE.shutil, "which", return_value="/opt/graalvm/bin/native-image"):
