@@ -140,6 +140,8 @@ anserini-downloads/
 anserini-vector-index/
 kompile-app/data/
 data/
+!kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-core/src/main/java/ai/kompile/pipelines/framework/core/data/
+!kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-core/src/main/java/ai/kompile/pipelines/framework/core/data/JDataValueInferer.java
 
 # Generated build output projects
 kompile-rag-builds/*
