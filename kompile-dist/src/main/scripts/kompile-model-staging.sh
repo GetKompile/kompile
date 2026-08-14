@@ -14,13 +14,12 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Launcher for the kompile-model-staging Spring Boot service.
+# Launcher for the native kompile-model-staging service.
 #
 # Behavior:
 #   - Resolves the bundle root via the script location.
-#   - Prefers the GraalVM native binary at bin/kompile-model-staging if present,
-#     otherwise falls back to running the exec JAR at lib/kompile-model-staging.jar
-#     under the JVM.
+#   - Requires the GraalVM native binary at bin/kompile-model-staging.
+#   - Side-loads JavaCPP/ND4J/CUDA libraries from the matching dist lib/ tree.
 #   - Defaults to port 8090, but accepts overrides via the KOMPILE_STAGING_PORT
 #     environment variable or a `--port <N>` command-line flag (the flag takes
 #     precedence). Any other arguments are forwarded verbatim.
@@ -36,7 +35,6 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || ec
 DIST_HOME="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 NATIVE_BIN="${DIST_HOME}/bin/kompile-model-staging"
-JAR="${DIST_HOME}/lib/kompile-model-staging.jar"
 
 # Determine port: CLI flag > env var > default 8090.
 PORT="${KOMPILE_STAGING_PORT:-8090}"
@@ -63,54 +61,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Prepend the dist bin and lib dirs so the JVM/native image can locate
-# libkompile_pipelines and friends at runtime.
-#
-# bin/ is load-bearing for the native path, not decorative: build-dist.sh puts the
-# GraalVM-emitted JDK shim libraries (libjvm.so, libjava.so, ...) next to the binaries,
-# so a native start that omits bin/ dies on the first shim it cannot dlopen. Same two
-# entries as kompile-server.sh / kompile-chat.sh / kompile-crawl-manager.sh — every
-# launcher that can exec a native binary resolves libraries the same way.
-export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+# All GraalVM shims and backend libraries live in the canonical side-loaded lib/ tree.
+export KOMPILE_DIST_HOME="${DIST_HOME}"
+export KOMPILE_NATIVE_LIB_DIR="${DIST_HOME}/lib"
+export LD_LIBRARY_PATH="${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export DYLD_LIBRARY_PATH="${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
-# Heap defaults (only used in the JVM fallback path).
-KOMPILE_STAGING_HEAP="${KOMPILE_STAGING_HEAP:--Xmx4g}"
-
-if [ -x "${NATIVE_BIN}" ]; then
-    exec "${NATIVE_BIN}" \
-        -Dkompile.dist.home="${DIST_HOME}" \
-        -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
-        "--server.port=${PORT}" \
-        "${PASSTHROUGH_ARGS[@]}"
-fi
-
-if [ ! -f "${JAR}" ]; then
-    echo "error: neither native binary ${NATIVE_BIN} nor exec JAR ${JAR} found" >&2
+if [ ! -x "${NATIVE_BIN}" ]; then
+    echo "error: native model-staging worker not found: ${NATIVE_BIN}" >&2
+    echo "       install a complete backend-matched Kompile distribution" >&2
     exit 1
 fi
 
-# Java resolution order:
-#   $KOMPILE_JAVA → <dist>/runtime/bin/java → $JAVA_HOME/bin/java → java on PATH
-if [ -x "${KOMPILE_JAVA:-}" ]; then
-    JAVA_BIN="${KOMPILE_JAVA}"
-elif [ -x "${DIST_HOME}/runtime/bin/java" ]; then
-    JAVA_BIN="${DIST_HOME}/runtime/bin/java"
-elif [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
-    JAVA_BIN="${JAVA_HOME}/bin/java"
-elif command -v java >/dev/null 2>&1; then
-    JAVA_BIN="java"
-else
-    echo "error: no Java runtime found. Install Java 21+, set JAVA_HOME, or rebuild the dist" >&2
-    echo "       with a bundled runtime (see build-dist.sh --variant <variant>)." >&2
-    exit 1
-fi
-
-exec "${JAVA_BIN}" \
-    ${KOMPILE_STAGING_HEAP} \
-    -Djava.library.path="${DIST_HOME}/bin:${DIST_HOME}/lib" \
+exec "${NATIVE_BIN}" \
     -Dkompile.dist.home="${DIST_HOME}" \
     -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
-    -jar "${JAR}" \
     "--server.port=${PORT}" \
     "${PASSTHROUGH_ARGS[@]}"

@@ -239,6 +239,23 @@ class ChatCompleterTtyTest {
     }
 
     // ========================================================================
+    // Standard-chat post display regressions
+    // ========================================================================
+
+    @Test
+    void emptyQueueDoesNotReservePermanentPostRows() {
+        ChatCompleter.setQueueSupplier(List::of);
+        assertEquals("", ChatCompleter.buildPostWithQueue());
+    }
+
+    @Test
+    void queuedMessagesDoNotOccupyTheInputPostArea() {
+        ChatCompleter.setQueueSupplier(() -> List.of("fix the crawl"));
+        assertEquals("", ChatCompleter.buildPostWithQueue());
+        ChatCompleter.setQueueSupplier(null);
+    }
+
+    // ========================================================================
     // Autosuggestion widget verification
     // ========================================================================
 

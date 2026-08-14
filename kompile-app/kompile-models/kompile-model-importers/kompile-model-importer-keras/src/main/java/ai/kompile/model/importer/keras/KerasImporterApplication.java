@@ -16,6 +16,7 @@
 
 package ai.kompile.model.importer.keras;
 
+import ai.kompile.utils.NativeLibraryResolver;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -26,6 +27,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class KerasImporterApplication {
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         SpringApplication.run(KerasImporterApplication.class, args);
     }
 }

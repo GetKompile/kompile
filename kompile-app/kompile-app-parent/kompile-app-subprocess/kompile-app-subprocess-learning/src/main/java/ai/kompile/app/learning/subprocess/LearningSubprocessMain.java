@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.learning.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.core.kgembedding.KGEmbeddingConfig;
 import ai.kompile.core.kgembedding.KGEmbeddingModel;
 import ai.kompile.core.kgembedding.TrainingProgress;
@@ -102,6 +103,7 @@ public class LearningSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         // 1. Capture original stdout BEFORE anything else writes to it
         PrintStream originalStdout = System.out;
         // 2. Redirect System.out → System.err so ND4J/log noise never pollutes the

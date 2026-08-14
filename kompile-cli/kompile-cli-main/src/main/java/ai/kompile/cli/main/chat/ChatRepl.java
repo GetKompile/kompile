@@ -43,6 +43,7 @@ import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.*;
 import ai.kompile.cli.main.chat.tui.KompileTui;
 import ai.kompile.cli.main.chat.tui.StatusBar;
+import ai.kompile.utils.AnsiConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
@@ -147,6 +148,9 @@ public class ChatRepl {
 
     // Persistent below-bar status line showing processes, subagents, queue
     private final StatusBar statusBar;
+
+    // Interactive process/subagent rows reserved directly below the input area.
+    private final StandardChatActivityPanel activityPanel;
 
     // Pending file/image attachments for the next message
     private final List<PendingAttachment> pendingAttachments = new ArrayList<>();
@@ -294,6 +298,26 @@ public class ChatRepl {
         // Initialize unified TUI (TopBar + scroll region + StatusBar)
         this.tui = new KompileTui(backgroundTaskManager, processManager, messageQueue, renderer);
         this.statusBar = tui.getStatusBar();
+        this.activityPanel = new StandardChatActivityPanel(
+                backgroundTaskManager, processManager, statusBar, tui::getReservedMiddleRows);
+        this.agenticLoop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
+            @Override
+            public void onToolStart(String callId, String toolName, String rawInput) {
+                activityPanel.recordToolStart(callId, toolName, rawInput);
+            }
+
+            @Override
+            public void onToolComplete(String callId, String toolName,
+                                       String rawInput, ToolResult result) {
+                activityPanel.recordToolComplete(callId, toolName, rawInput, result);
+            }
+
+            @Override
+            public void onToolDenied(String callId, String toolName,
+                                     String rawInput, String reason) {
+                activityPanel.recordToolDenied(callId, toolName, rawInput, reason);
+            }
+        });
 
         // Initialize session metrics
         this.sessionMetrics = new ChatSessionMetrics(sessionId);
@@ -343,6 +367,14 @@ public class ChatRepl {
         }
     }
 
+    /**
+     * Apply the explicit standard-chat dangerous permission bypass for this session.
+     * This only affects Kompile tool permissions; provider subprocess flags are handled separately.
+     */
+    public void setDangerouslySkipPermissions(boolean enabled) {
+        permissionService.setAutoApproveAll(enabled);
+    }
+
     /** Attach durable control state for a crawl run. */
     public void configureCrawlControl(AgentRunController controller, CrawlRunStore store) {
         this.runController = controller;
@@ -365,7 +397,7 @@ public class ChatRepl {
                 backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments);
 
         this.queueManager = new MessageQueueManager(
-                messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
+                this, messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
                 renderer, ascii, autoDequeueEnabled);
 
         this.lifecycleManager = new SessionLifecycleManager(
@@ -476,9 +508,6 @@ public class ChatRepl {
     }
 
     public void run() throws Exception {
-        // Restore previous conversation if resuming
-        lifecycleManager.restoreSession();
-
         // Set initial terminal title
         renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
 
@@ -528,6 +557,12 @@ public class ChatRepl {
         // Auto-trigger slash command completion as the user types
         ChatCompleter.enableAutoTrigger(reader);
 
+        // Standard chat owns the activity rows below the input. Down enters them,
+        // Up navigates back toward the prompt, Enter inspects, and Del kills an
+        // owned process. Normal typing/history remain the fallback.
+        bindStandardChatActivityKeys(
+                (LineReaderImpl) reader, messageQueue, activityPanel, tui);
+
         // Bind Ctrl+B to background current task
         ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
             new Reference("background-task"),
@@ -557,24 +592,33 @@ public class ChatRepl {
             }
         });
 
-        // Bind cancel key (default: Escape) to cancel in-progress operations
+        // Bind cancel key (default: Escape) to cancel in-progress operations.
+        // Escape is also the prefix for arrows and EMACS Meta sequences. Keep a short
+        // ambiguity window so complete escape sequences still win without making a lone
+        // Escape wait for JLine's one-second default.
+        LineReaderImpl lineReader = (LineReaderImpl) reader;
+        lineReader.setVariable(LineReader.AMBIGUOUS_BINDING, 80L);
         String cancelKeyBinding = resolveCancelKeyBinding();
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+        lineReader.getKeyMaps().get(LineReader.EMACS).bind(
             new Reference("cancel-operation"),
             cancelKeyBinding
         );
 
-        ((LineReaderImpl) reader).setVariable("cancel-operation", new Widget() {
+        lineReader.setVariable("cancel-operation", new Widget() {
             @Override
             public boolean apply() {
                 if (llmBusy) {
-                    cancelSignal.set(true);
+                    if (messageHandler != null) {
+                        messageHandler.requestCancel();
+                    } else {
+                        cancelSignal.set(true);
+                    }
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
-                    System.out.println();
-                    System.out.println(renderer.yellow("  ⊘ Cancelling...") + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
-                    System.out.println(renderer.dim("    Current operation will stop at next safe point"));
-                    System.out.println();
-                    System.out.flush();
+                    ChatCompleter.printAbove("");
+                    ChatCompleter.printAbove(renderer.yellow("  ⊘ Cancelling...")
+                            + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
+                    ChatCompleter.printAbove(renderer.dim("    Interrupting the active operation"));
+                    ChatCompleter.printAbove("");
                 }
                 return true;
             }
@@ -711,12 +755,24 @@ public class ChatRepl {
         tui.setSessionId(sessionId);
         tui.setMode(localMode ? "local" : "server");
         tui.setPlanningMode(agenticLoop.isPlanningMode());
+        tui.setReservedRowsCalculator(StandardChatActivityPanel::reservedRowsForTerminal);
         tui.start(terminal);
+        activityPanel.refresh();
 
-        // Wire change listeners so the status bar redraws on state changes
-        Runnable statusRedraw = statusBar::requestRedraw;
-        backgroundTaskManager.addChangeListener(statusRedraw);
-        processManager.addChangeListener(statusRedraw);
+        // KompileTui.start() clears the terminal while establishing its bars and
+        // scroll region. Restore only after that clear, and route each line through
+        // the TUI so the prior transcript remains visible above the live prompt.
+        lifecycleManager.restoreSession(tui::printInScrollRegion);
+
+        // Wire activity changes into both the compact status line and the
+        // interactive process/subagent rows.
+        Runnable activityRedraw = () -> {
+            activityPanel.refresh();
+            refreshCurrentActivityView(tui, activityPanel);
+        };
+        backgroundTaskManager.addChangeListener(activityRedraw);
+        processManager.addChangeListener(activityRedraw);
+        tui.addResizeListener(activityRedraw);
 
         // Wire subagent lifecycle tracking into the status bar
         SubagentRunner runner = toolRegistry.getSubagentRunner();
@@ -725,10 +781,31 @@ public class ChatRepl {
                 @Override
                 public void onSubagentStart(String id, String type, String description) {
                     statusBar.registerSubagent(id, type, description);
+                    activityPanel.refresh();
+                    refreshCurrentActivityView(tui, activityPanel);
+                }
+                @Override
+                public void onSubagentStatus(String id, String status) {
+                    statusBar.updateSubagentStatus(id, status);
+                    activityPanel.refresh();
+                    refreshCurrentActivityView(tui, activityPanel);
+                }
+                @Override
+                public void onSubagentActivity(String id, String summary, String detail) {
+                    statusBar.appendSubagentActivity(id, summary, detail);
+                    activityPanel.refresh();
+                    refreshCurrentActivityView(tui, activityPanel);
+                }
+                @Override
+                public void onSubagentOutput(String id, String chunk) {
+                    statusBar.appendSubagentOutput(id, chunk);
+                    refreshCurrentActivityView(tui, activityPanel);
                 }
                 @Override
                 public void onSubagentEnd(String id) {
                     statusBar.unregisterSubagent(id);
+                    activityPanel.refresh();
+                    refreshCurrentActivityView(tui, activityPanel);
                 }
             });
         }
@@ -772,11 +849,35 @@ public class ChatRepl {
 
                 String trimmed = line.trim();
 
+                String viewedSubagentId = activityPanel.viewedSubagentId();
+                if (!trimmed.startsWith("/") && !viewedSubagentId.isBlank()) {
+                    if (runner != null && runner.sendMessage(viewedSubagentId, trimmed)) {
+                        refreshCurrentActivityView(tui, activityPanel);
+                    } else {
+                        statusBar.appendSubagentActivity(
+                                viewedSubagentId,
+                                "follow-up unavailable",
+                                "\n  Follow-up was not sent: this subagent session is no longer interactive.");
+                        refreshCurrentActivityView(tui, activityPanel);
+                    }
+                    continue;
+                }
+
+                // Any accepted parent-chat input (including bracketed paste, which
+                // bypasses SELF_INSERT) returns from a process/tool transcript first.
+                if (!activityPanel.isViewingMain() && !trimmed.startsWith("/")) {
+                    activityPanel.returnToMain();
+                    tui.showMainView();
+                }
+
                 if (trimmed.startsWith("/")) {
                     if (!commandRouter.handleSlashCommand(trimmed)) {
                         break;
                     }
                 } else {
+                    // JLine already painted this row; retain it so switching to a
+                    // process transcript and back reconstructs the full parent view.
+                    tui.rememberMainTranscriptLine("kompile> " + trimmed);
                     messageHandler.handleChatMessage(trimmed);
                 }
             }
@@ -804,6 +905,8 @@ public class ChatRepl {
 
             // Stop the unified TUI (resets scroll regions, stops refresh threads)
             tui.stop();
+            ChatCompleter.clearTerminalRef(reader);
+            ChatCompleter.setQueueSupplier(null);
 
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
@@ -974,21 +1077,14 @@ public class ChatRepl {
 
         StringBuilder prompt = new StringBuilder();
         prompt.append("kompile");
-
-        // Show queue count
-        if (!messageQueue.isEmpty()) {
-            int queueSize = messageQueue.size();
-            prompt.append(renderer.green("["))
-                  .append(renderer.yellow(String.valueOf(queueSize)))
-                  .append(renderer.green("]"));
+        String viewedSubagent = activityPanel.viewedSubagentId();
+        if (!viewedSubagent.isBlank()) {
+            prompt.append("[").append(viewedSubagent).append("]");
         }
 
-        // Show queue chain progress
-        if (backgroundTaskManager.isInQueueChain()) {
-            int current = backgroundTaskManager.getQueueChainCurrent();
-            int total = backgroundTaskManager.getQueueChainTotal();
-            prompt.append(renderer.dim("(" + current + "/" + total + ")"));
-        }
+        // Queue count and chain progress are live status-bar state. Embedding them
+        // in readLine's immutable prompt leaves stale kompile[N] text after dequeue
+        // or Up-to-edit and makes acknowledged messages look permanently queued.
 
         // Show planning mode indicator
         if (agenticLoop.isPlanningMode()) {
@@ -1011,6 +1107,14 @@ public class ChatRepl {
             chainInfo = renderer.dim(" [" + current + "/" + total + "]");
         }
         stopGeneratingSpinner(); // stop any previous spinner
+        if (ChatCompleter.hasLineReader()) {
+            // JLine owns the editable row. Activity belongs in the fixed status
+            // bar; a carriage-return spinner corrupts the prompt and can scroll.
+            ChatCompleter.setActivity("Thinking");
+            renderer.setTerminalTitle("⏳ Kompiling..." + (chainInfo.isEmpty() ? "" : " " + AnsiConstants.stripAnsi(chainInfo)));
+            statusBar.requestRedraw();
+            return;
+        }
         generatingSpinner = renderer.startGeneratingSpinner(chainInfo);
     }
 
@@ -1022,6 +1126,10 @@ public class ChatRepl {
         if (spinner != null) {
             spinner.stop();
             generatingSpinner = null;
+        }
+        if (ChatCompleter.hasLineReader()) {
+            renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+            statusBar.requestRedraw();
         }
     }
 
@@ -1036,8 +1144,10 @@ public class ChatRepl {
         llmBusy = false;
         renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
 
-        // Auto-dequeue next message if enabled and queue is not empty
-        if (autoDequeueEnabled && !messageQueue.isEmpty()) {
+        // Continue either the normal auto-dequeue policy or an explicit
+        // /queue-send-all chain. Both consult the queue manager's single state.
+        if ((isAutoDequeueEnabled() || backgroundTaskManager.isInQueueChain())
+                && !messageQueue.isEmpty()) {
             MessageQueue.QueuedMessage nextMsg = messageQueue.peek();
             if (nextMsg != null) {
                 // Start chain tracking if not already in a chain
@@ -1050,14 +1160,17 @@ public class ChatRepl {
                 int total = backgroundTaskManager.getQueueChainTotal();
                 int remaining = messageQueue.size() - 1;
 
-                System.out.println();
-                System.out.println(renderer.green("  ✓ Complete ") + renderer.dim("→ sending next (" + current + "/" + total + ")"));
-                System.out.println(renderer.dim("     → ") + StringUtils.truncate(nextMsg.getContent(), 60));
+                ChatCompleter.printAbove("");
+                ChatCompleter.printAbove(renderer.green("  ✓ Complete ")
+                        + renderer.dim("→ sending next (" + current + "/" + total + ")"));
+                ChatCompleter.printAbove(renderer.dim("     → ")
+                        + StringUtils.truncate(nextMsg.getContent(), 60));
                 if (remaining > 0) {
-                    System.out.println(renderer.dim("     (" + remaining + " more queued)"));
+                    ChatCompleter.printAbove(renderer.dim("     (" + remaining + " more queued)"));
                 }
-                System.out.println();
+                ChatCompleter.printAbove("");
                 messageQueue.dequeue();
+                statusBar.requestRedraw();
                 sessionMetrics.recordMessageAutoDequeued();
                 // Small delay for clean transition
                 try {
@@ -1074,13 +1187,237 @@ public class ChatRepl {
         if (backgroundTaskManager.isInQueueChain()) {
             int total = backgroundTaskManager.getQueueChainTotal();
             backgroundTaskManager.endQueueChain();
-            System.out.println();
-            System.out.println(renderer.green("  ✓ All " + total + " queued messages processed"));
-            System.out.println();
+            ChatCompleter.printAbove("");
+            ChatCompleter.printAbove(renderer.green("  ✓ All " + total + " queued messages processed"));
+            ChatCompleter.printAbove("");
+            statusBar.requestRedraw();
         }
     }
 
     // ── Key binding helper ────────────────────────────────────────────────────
+
+    static final String STANDARD_CHAT_UP_WIDGET = "standard-chat-contextual-up";
+    static final String STANDARD_CHAT_DOWN_WIDGET = "standard-chat-activity-down";
+    static final String STANDARD_CHAT_PARENT_WIDGET = "standard-chat-activity-parent";
+    static final String STANDARD_CHAT_PAGE_UP_WIDGET = "standard-chat-transcript-page-up";
+    static final String STANDARD_CHAT_PAGE_DOWN_WIDGET = "standard-chat-transcript-page-down";
+
+    enum StandardUpAction {
+        MOVE_WITHIN_DRAFT,
+        EDIT_LATEST_QUEUED,
+        PREVIOUS_HISTORY,
+        KEEP_DRAFT
+    }
+
+    /**
+     * Resolve the one unambiguous action for Up in standard chat.
+     */
+    static StandardUpAction resolveStandardUpAction(
+            String buffer, int cursor, boolean hasQueuedMessage, boolean browsingHistory) {
+        String text = buffer == null ? "" : buffer;
+        int safeCursor = Math.max(0, Math.min(cursor, text.length()));
+        if (text.substring(0, safeCursor).indexOf('\n') >= 0) {
+            return StandardUpAction.MOVE_WITHIN_DRAFT;
+        }
+        if (text.isEmpty() && hasQueuedMessage) {
+            return StandardUpAction.EDIT_LATEST_QUEUED;
+        }
+        if (text.isEmpty() || browsingHistory) {
+            return StandardUpAction.PREVIOUS_HISTORY;
+        }
+        return StandardUpAction.KEEP_DRAFT;
+    }
+
+    static void bindStandardChatUpArrow(LineReaderImpl reader, MessageQueue queue) {
+        bindStandardChatUpArrow(reader, queue, null);
+    }
+
+    private static void bindStandardChatUpArrow(
+            LineReaderImpl reader, MessageQueue queue,
+            StandardChatActivityPanel activityPanel) {
+        reader.getWidgets().put(STANDARD_CHAT_UP_WIDGET, () -> {
+            String text = reader.getBuffer().toString();
+            if (activityPanel != null && activityPanel.isFocused()) {
+                if (text.isBlank() && activityPanel.selectPrevious()) {
+                    reader.callWidget(LineReader.REDISPLAY);
+                    return true;
+                }
+                activityPanel.clearSelection();
+            }
+            int historyIndex = reader.getHistory().index();
+            boolean browsingHistory = reader.getHistory().size() > 0
+                    && historyIndex >= reader.getHistory().first()
+                    && historyIndex <= reader.getHistory().last();
+            StandardUpAction action = resolveStandardUpAction(
+                    text, reader.getBuffer().cursor(), !queue.isEmpty(), browsingHistory);
+
+            if (action == StandardUpAction.MOVE_WITHIN_DRAFT
+                    || action == StandardUpAction.PREVIOUS_HISTORY) {
+                reader.callWidget(LineReader.UP_LINE_OR_HISTORY);
+                return true;
+            }
+            if (action == StandardUpAction.EDIT_LATEST_QUEUED) {
+                List<MessageQueue.QueuedMessage> queued = queue.getAll();
+                if (!queued.isEmpty()) {
+                    MessageQueue.QueuedMessage latest = queued.get(queued.size() - 1);
+                    if (queue.remove(latest.getId())) {
+                        reader.getBuffer().write(latest.getContent());
+                        if (activityPanel != null) {
+                            activityPanel.refresh();
+                        }
+                        ChatCompleter.refreshPostDisplay(reader);
+                    }
+                }
+                return true;
+            }
+
+            // A non-empty single-line draft remains untouched. History is still
+            // available after clearing the prompt, so Up cannot destroy typed text.
+            reader.callWidget(LineReader.REDISPLAY);
+            return true;
+        });
+
+        Reference contextualUp = new Reference(STANDARD_CHAT_UP_WIDGET);
+        KeyMap<Binding> emacs = reader.getKeyMaps().get(LineReader.EMACS);
+        emacs.bind(contextualUp, "\033[A", "\033OA");
+    }
+
+    static void bindStandardChatActivityKeys(
+            LineReaderImpl reader,
+            MessageQueue queue,
+            StandardChatActivityPanel activityPanel,
+            KompileTui tui) {
+        bindStandardChatUpArrow(reader, queue, activityPanel);
+
+        Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
+        reader.getWidgets().put(STANDARD_CHAT_DOWN_WIDGET, () -> {
+            String text = reader.getBuffer().toString();
+            if (text.isBlank() && activityPanel.selectNext()) {
+                reader.callWidget(LineReader.REDISPLAY);
+                return true;
+            }
+            if (activityPanel.isFocused()) {
+                activityPanel.clearSelection();
+            }
+            return originalDown == null || originalDown.apply();
+        });
+        reader.getKeyMaps().get(LineReader.EMACS).bind(
+                new Reference(STANDARD_CHAT_DOWN_WIDGET), "\033[B", "\033OB");
+
+        Widget originalLeft = reader.getWidgets().get(LineReader.BACKWARD_CHAR);
+        reader.getWidgets().put(STANDARD_CHAT_PARENT_WIDGET, () -> {
+            if (reader.getBuffer().toString().isBlank() && activityPanel.selectParent()) {
+                reader.callWidget(LineReader.REDISPLAY);
+                return true;
+            }
+            return originalLeft == null || originalLeft.apply();
+        });
+        reader.getKeyMaps().get(LineReader.EMACS).bind(
+                new Reference(STANDARD_CHAT_PARENT_WIDGET), "\033[D", "\033OD");
+
+        reader.getWidgets().put(STANDARD_CHAT_PAGE_UP_WIDGET, () -> {
+            boolean changed = tui.pageContent(1);
+            reader.callWidget(LineReader.REDISPLAY);
+            return changed;
+        });
+        reader.getWidgets().put(STANDARD_CHAT_PAGE_DOWN_WIDGET, () -> {
+            boolean changed = tui.pageContent(-1);
+            reader.callWidget(LineReader.REDISPLAY);
+            return changed;
+        });
+        KeyMap<Binding> activityKeys = reader.getKeyMaps().get(LineReader.EMACS);
+        activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_UP_WIDGET),
+                "\033[5~", "\033[5;2~", "\033[1;2A");
+        activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_DOWN_WIDGET),
+                "\033[6~", "\033[6;2~", "\033[1;2B");
+
+        Widget originalAccept = reader.getWidgets().get(LineReader.ACCEPT_LINE);
+        if (originalAccept != null) {
+            reader.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
+                if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
+                    showActivityView(tui, activityPanel.openSelectedView());
+                    reader.callWidget(LineReader.REDISPLAY);
+                    return true;
+                }
+                if (activityPanel.isFocused()) {
+                    activityPanel.clearSelection();
+                }
+                return originalAccept.apply();
+            });
+        }
+
+        Widget originalDelete = reader.getWidgets().get(LineReader.DELETE_CHAR);
+        if (originalDelete != null) {
+            reader.getWidgets().put(LineReader.DELETE_CHAR, () -> {
+                if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
+                    String result = activityPanel.killSelected();
+                    StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
+                    if (view != null && !view.main()) {
+                        showActivityView(tui, view);
+                    } else {
+                        tui.printInScrollRegion(result);
+                    }
+                    reader.callWidget(LineReader.REDISPLAY);
+                    return true;
+                }
+                if (activityPanel.isFocused()) {
+                    activityPanel.clearSelection();
+                }
+                return originalDelete.apply();
+            });
+        }
+
+        Widget originalSelfInsert = reader.getWidgets().get(LineReader.SELF_INSERT);
+        if (originalSelfInsert != null) {
+            reader.getWidgets().put(LineReader.SELF_INSERT, () -> {
+                if (activityPanel.isFocused()) {
+                    activityPanel.clearSelection();
+                }
+                if (!activityPanel.isViewingMain()
+                        && activityPanel.viewedSubagentId().isBlank()) {
+                    activityPanel.returnToMain();
+                    tui.showMainView();
+                }
+                return originalSelfInsert.apply();
+            });
+        }
+
+        Widget originalBackspace = reader.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
+        if (originalBackspace != null) {
+            reader.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
+                if (activityPanel.isFocused()) {
+                    activityPanel.clearSelection();
+                }
+                if (!activityPanel.isViewingMain()
+                        && activityPanel.viewedSubagentId().isBlank()) {
+                    activityPanel.returnToMain();
+                    tui.showMainView();
+                }
+                return originalBackspace.apply();
+            });
+        }
+    }
+
+    private static void showActivityView(
+            KompileTui tui,
+            StandardChatActivityPanel.ActivityView view) {
+        if (view == null) {
+            return;
+        }
+        if (view.main()) {
+            tui.showMainView();
+        } else {
+            tui.showActivityView(view.key(), view.title(), view.content());
+        }
+    }
+
+    private static void refreshCurrentActivityView(
+            KompileTui tui, StandardChatActivityPanel activityPanel) {
+        StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
+        if (view != null && !view.main()) {
+            tui.updateActivityView(view.key(), view.title(), view.content());
+        }
+    }
 
     /**
      * Binds mode shortcuts as true two-key Ctrl+X chords. JLine's bind method
@@ -1188,8 +1525,11 @@ public class ChatRepl {
 
     boolean isLlmBusy() { return llmBusy; }
     void setLlmBusy(boolean busy) { this.llmBusy = busy; }
+    void requestStatusRedraw() { statusBar.requestRedraw(); }
 
-    boolean isAutoDequeueEnabled() { return autoDequeueEnabled; }
+    boolean isAutoDequeueEnabled() {
+        return queueManager == null ? autoDequeueEnabled : queueManager.isAutoDequeueEnabled();
+    }
 
     /** Called by SessionLifecycleManager's showMainMenu() to run the setup wizard. */
     void runSetupFromMenu() {

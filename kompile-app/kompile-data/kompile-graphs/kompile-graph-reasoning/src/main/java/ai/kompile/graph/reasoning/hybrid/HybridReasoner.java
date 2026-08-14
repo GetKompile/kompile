@@ -20,11 +20,13 @@ import ai.kompile.graph.reasoning.bayesian.GraphBayesianNetworkBuilder;
 import ai.kompile.graph.reasoning.bayesian.VariableElimination;
 import ai.kompile.graph.reasoning.embedding.Embeddings;
 import ai.kompile.graph.reasoning.embedding.GraphEmbeddingResolver;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.psl.GraphPslProgramBuilder;
 import ai.kompile.graph.reasoning.psl.HlMrfMapInference;
 import ai.kompile.graph.reasoning.psl.PslProgram;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -151,6 +153,10 @@ public class HybridReasoner {
     private Map<String, Double> pslActivations(ReasoningGraph graph) {
         GraphPslProgramBuilder builder = new GraphPslProgramBuilder();
         PslProgram program = builder.build(graph);
+        if (graph instanceof UnifiedGraph unifiedGraph) {
+            program = UnifiedGraphReasoningLifecycle.applyLearnedPslWeights(
+                    unifiedGraph, program);
+        }
         HlMrfMapInference.Result res = HlMrfMapInference.solve(program);
         Map<String, Double> out = new LinkedHashMap<>();
         for (Map.Entry<String, String> e : builder.entityIdToConstant().entrySet()) {

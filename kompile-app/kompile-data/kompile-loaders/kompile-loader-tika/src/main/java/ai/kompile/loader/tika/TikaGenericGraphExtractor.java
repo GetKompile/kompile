@@ -923,7 +923,7 @@ public class TikaGenericGraphExtractor implements DocumentGraphExtractor {
                 ExtractedEntity sectionEntity = new ExtractedEntity(
                         sectionId, headingText, ENTITY_DOCUMENT_SECTION,
                         null, "Section: " + headingText, 0.85, sectionProps);
-                entityIndex.put(sectionId, sectionEntity);
+                addEntity(entityIndex, sectionEntity);
 
                 if (level <= 1) {
                     // Top-level section: linked directly to document

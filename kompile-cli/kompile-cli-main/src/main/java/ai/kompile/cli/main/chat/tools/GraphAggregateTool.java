@@ -40,11 +40,13 @@ public class GraphAggregateTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public GraphAggregateTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -84,8 +86,8 @@ public class GraphAggregateTool implements CliTool {
 
         ObjectNode graphId = props.putObject("graph_id");
         graphId.put("type", "string");
-        graphId.put("description", "Specific graph ID to aggregate over (e.g. 'factsheet_42'). " +
-                "Omit to search all loaded graphs.");
+        graphId.put("description", "Optional remote/legacy graph selector. "
+                + "Omit locally to use the current folder's knowledge base.");
 
         ObjectNode groupBySubtype = props.putObject("group_by_subtype");
         groupBySubtype.put("type", "boolean");
@@ -112,10 +114,13 @@ public class GraphAggregateTool implements CliTool {
         String graphId = params.path("graph_id").asText(null);
         boolean groupBySubtype = params.path("group_by_subtype").asBoolean(false);
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable("/api/graph/aggregate")) {
-            return ToolResult.error("Graph aggregation requires a running kompile-app-chat instance at "
+            return ToolResult.error("The explicitly configured remote graph aggregation service is unavailable at "
                     + backend.baseUrlFor("/api/graph/aggregate")
-                    + ". Start it with: kompile manage start kompile-app-chat, or use --url to connect.");
+                    + ". Remove --url to use the in-process graph.");
         }
 
         try {
@@ -144,7 +149,8 @@ public class GraphAggregateTool implements CliTool {
             return formatResult(rootType, aggregationStr, numericAttribute, result);
 
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote graph aggregation service became unavailable. "
+                    + "Remove --url to continue with the in-process graph. " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
             return ToolResult.error("Graph aggregation timed out after 30s.");
         } catch (Exception e) {

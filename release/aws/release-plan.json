@@ -1,0 +1,618 @@
+{
+  "schemaVersion": 2,
+  "projectTag": "kompile-release",
+  "killSwitchParameter": "/kompile/release/kill-switch",
+  "logGroupName": "/kompile/releases",
+  "logRetentionDays": 30,
+  "artifactPrefix": "kompile/releases",
+  "coveredWorkflows": [
+    "release.yml",
+    "publish-release.yml",
+    "build-native-linux-x86_64.yml",
+    "build-native-linux-arm64.yml",
+    "build-native-linux-cuda.yml",
+    "build-native-windows-x86_64.yml",
+    "build-native-windows-cuda.yml",
+    "build-native-mac-arm64.yml",
+    "build-kompile-chat-local-android.yml",
+    "publish-external-aws-release.yml"
+  ],
+  "buildCoverage": {
+    "distributionVariants": [
+      "cli-only",
+      "full",
+      "hosted",
+      "cpu-intel",
+      "cpu-arm",
+      "cuda",
+      "amd-zluda"
+    ],
+    "kompileNativeTargets": [
+      "kompile-cli-main",
+      "kompile-agent-cli",
+      "kompile-app-cli",
+      "kompile-model-cli",
+      "kompile-component-cli"
+    ],
+    "androidArtifact": "debug-apk",
+    "publishingPolicy": "supplemental-assets-to-existing-canonical-github-release"
+  },
+  "defaults": {
+    "rootVolumeGiB": 500,
+    "volumeType": "gp3",
+    "mavenHeapGiB": 24,
+    "buildThreads": 48
+  },
+  "shards": [
+    {
+      "id": "distribution-linux-x86_64",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "distribution",
+        "maven"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "distribution",
+        "backend": "cpu",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "cli-only",
+            "chip": "none"
+          },
+          {
+            "name": "full",
+            "chip": "cpu"
+          },
+          {
+            "name": "hosted",
+            "chip": "none"
+          },
+          {
+            "name": "cpu-intel",
+            "chip": "cpu-avx2"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "distribution-linux-x86_64-accelerators",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.9.1-devel-ubuntu22.04",
+      "reuseHostForVariants": true,
+      "workloads": ["distribution", "maven"],
+      "artifactRules": {"mode": "all"},
+      "build": {
+        "kind": "distribution",
+        "backend": "multi",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "cuda",
+            "chip": "cuda-12.9"
+          },
+          {
+            "name": "amd-zluda",
+            "chip": "amd-zluda"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "distribution-linux-arm64",
+      "os": "linux",
+      "architecture": "arm64",
+      "instanceType": "c7g.16xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*", "architecture": "arm64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": ["distribution", "maven"],
+      "artifactRules": {"mode": "all"},
+      "build": {
+        "kind": "distribution",
+        "backend": "cpu",
+        "javacppPlatform": "linux-arm64",
+        "variants": [{"name": "cpu-arm", "chip": "cpu-arm64"}],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "macos-arm64-all",
+      "os": "macos",
+      "architecture": "arm64",
+      "instanceType": "mac2-m2pro.metal",
+      "amiQuery": {
+        "owners": [
+          "amazon"
+        ],
+        "name": "amzn-ec2-macos-14.*",
+        "architecture": "arm64_mac"
+      },
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk",
+        "distribution"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "macos-all",
+        "backend": "cpu",
+        "javacppPlatform": "macosx-arm64",
+        "variants": [
+          {
+            "name": "all"
+          }
+        ],
+        "nativeVariants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 10,
+        "mavenHeapGiB": 12
+      },
+      "dedicatedHost": true,
+      "hostAvailabilityZone": "auto"
+    },
+    {
+      "id": "distribution-windows-x86_64",
+      "os": "windows",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["amazon"], "name": "Windows_Server-2022-English-Full-Base-*", "architecture": "x86_64", "platform": "windows"},
+      "worker": "worker.ps1",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "distribution",
+        "maven"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "distribution",
+        "backend": "cpu",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "cli-only",
+            "chip": "none"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "native-linux-x86_64",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cpu",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "onednn-avx2",
+            "helper": "onednn",
+            "extension": "avx2"
+          },
+          {
+            "name": "onednn-avx512",
+            "helper": "onednn",
+            "extension": "avx512"
+          },
+          {
+            "name": "onednn",
+            "helper": "onednn"
+          },
+          {
+            "name": "compile",
+            "compile": true
+          },
+          {
+            "name": "compile-avx2",
+            "compile": true,
+            "extension": "avx2"
+          },
+          {
+            "name": "compile-avx512",
+            "compile": true,
+            "extension": "avx512"
+          },
+          {
+            "name": "avx2",
+            "extension": "avx2"
+          },
+          {
+            "name": "avx512",
+            "extension": "avx512"
+          },
+          {
+            "name": "base"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "native-linux-arm64",
+      "os": "linux",
+      "architecture": "arm64",
+      "instanceType": "c7g.16xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*", "architecture": "arm64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cpu",
+        "javacppPlatform": "linux-arm64",
+        "variants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "armcompute"
+          },
+          {
+            "name": "onednn",
+            "helper": "onednn"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 48,
+        "profiles": [
+          "cpu",
+          "osx-aarch64-protoc"
+        ]
+      }
+    },
+    {
+      "id": "native-windows-x86_64",
+      "os": "windows",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["amazon"], "name": "Windows_Server-2022-English-Full-Base-*", "architecture": "x86_64", "platform": "windows"},
+      "worker": "worker.ps1",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cpu",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "onednn-avx2",
+            "helper": "onednn",
+            "extension": "avx2"
+          },
+          {
+            "name": "onednn-avx512",
+            "helper": "onednn",
+            "extension": "avx512"
+          },
+          {
+            "name": "onednn",
+            "helper": "onednn"
+          },
+          {
+            "name": "compile",
+            "compile": true
+          },
+          {
+            "name": "avx2",
+            "extension": "avx2"
+          },
+          {
+            "name": "avx512",
+            "extension": "avx512"
+          },
+          {
+            "name": "base"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "native-linux-cuda-12.6",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cuda",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "cudnn",
+            "helper": "cudnn"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 48,
+        "cudaVersion": "12.6"
+      },
+      "containerImage": "nvidia/cuda:12.6.3-devel-ubuntu22.04"
+    },
+    {
+      "id": "native-linux-cuda-12.9",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cuda",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "cudnn",
+            "helper": "cudnn"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 48,
+        "cudaVersion": "12.9"
+      },
+      "containerImage": "nvidia/cuda:12.9.1-devel-ubuntu22.04"
+    },
+    {
+      "id": "native-windows-cuda-12.6",
+      "os": "windows",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["amazon"], "name": "Windows_Server-2022-English-Full-Base-*", "architecture": "x86_64", "platform": "windows"},
+      "worker": "worker.ps1",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cuda",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "cudnn",
+            "helper": "cudnn"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 48,
+        "cudaVersion": "12.6"
+      }
+    },
+    {
+      "id": "native-windows-cuda-12.9",
+      "os": "windows",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["amazon"], "name": "Windows_Server-2022-English-Full-Base-*", "architecture": "x86_64", "platform": "windows"},
+      "worker": "worker.ps1",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "native-sdk",
+        "backend": "cuda",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "base"
+          },
+          {
+            "name": "cudnn",
+            "helper": "cudnn"
+          },
+          {
+            "name": "compile",
+            "mlir": true
+          }
+        ],
+        "buildThreads": 48,
+        "cudaVersion": "12.9"
+      }
+    },
+    {
+      "id": "kompile-native-linux-x86_64",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "maven",
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "kompile-native",
+        "backend": "cpu",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "all"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "kompile-native-linux-arm64",
+      "os": "linux",
+      "architecture": "arm64",
+      "instanceType": "c7g.16xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-arm64-server-*", "architecture": "arm64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "kompile-native",
+        "backend": "cpu",
+        "javacppPlatform": "linux-arm64",
+        "variants": [
+          {
+            "name": "all"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "kompile-native-windows-x86_64",
+      "os": "windows",
+      "architecture": "x86_64",
+      "instanceType": "c7i.24xlarge",
+      "amiQuery": {"owners": ["amazon"], "name": "Windows_Server-2022-English-Full-Base-*", "architecture": "x86_64", "platform": "windows"},
+      "worker": "worker.ps1",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "sdk"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "kompile-native",
+        "backend": "cpu",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "all"
+          }
+        ],
+        "buildThreads": 48
+      }
+    },
+    {
+      "id": "android-chat-local",
+      "os": "linux",
+      "architecture": "x86_64",
+      "instanceType": "c7i.16xlarge",
+      "amiQuery": {"owners": ["099720109477"], "ownerIds": ["099720109477"], "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*", "architecture": "x86_64"},
+      "worker": "worker.sh",
+      "reuseHostForVariants": true,
+      "workloads": [
+        "android"
+      ],
+      "artifactRules": {
+        "mode": "all"
+      },
+      "build": {
+        "kind": "android",
+        "backend": "cpu",
+        "javacppPlatform": "android-arm64",
+        "variants": [
+          {
+            "name": "debug-apk",
+            "chip": "android-arm64"
+          }
+        ],
+        "buildThreads": 32
+      }
+    }
+  ]
+}

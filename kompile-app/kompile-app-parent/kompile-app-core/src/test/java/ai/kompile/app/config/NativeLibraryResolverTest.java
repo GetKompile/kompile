@@ -43,7 +43,7 @@ class NativeLibraryResolverTest {
     Path tempDirectory;
 
     @Test
-    void publishesExactSelectedDirectoriesForSharedRuntimeValidation()
+    void publishesExactSelectedDirectoriesForNativeLoading()
             throws Exception {
         Path first = Files.createDirectory(tempDirectory.resolve("first"))
                 .toRealPath();

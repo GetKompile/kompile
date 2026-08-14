@@ -80,7 +80,7 @@ public class GraphExportTool implements CliTool {
                 .put("description", "Local filesystem path to write the .kgraph file to.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Fact sheet to export. Omit for the global/default graph.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         ObjectNode formatProperty = props.putObject("format");
         formatProperty.put("type", "string");
         formatProperty.set("enum", objectMapper.createArrayNode().add("kgraph").add("ascii").add("png"));

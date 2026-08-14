@@ -39,7 +39,13 @@ class ChatReplKeyBindingTest {
         keyMap.bind(new Reference("cycle-agent"), KeyMap.ctrl('X') + "a");
         keyMap.bind(new Reference("cycle-agent"), KeyMap.ctrl('X') + "A");
         keyMap.bind(new Reference("background-task"), KeyMap.ctrl('B'));
-        keyMap.bind(new Reference("cancel-operation"), KeyMap.ctrl('G'));
+        keyMap.bind(new Reference("cancel-operation"), "\033");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_DOWN_WIDGET), "\033[B", "\033OB");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_PARENT_WIDGET), "\033[D", "\033OD");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_PAGE_UP_WIDGET),
+                "\033[5~", "\033[5;2~", "\033[1;2A");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_PAGE_DOWN_WIDGET),
+                "\033[6~", "\033[6;2~", "\033[1;2B");
     }
 
     @Test
@@ -64,7 +70,9 @@ class ChatReplKeyBindingTest {
     void noPrintableAsciiShouldTriggerWidget() {
         // Every printable character must type normally — none should trigger a custom widget
         Set<String> widgetNames = Set.of("toggle-plan-mode", "show-todos", "cycle-agent",
-                "background-task", "cancel-operation");
+                "background-task", "cancel-operation", ChatRepl.STANDARD_CHAT_DOWN_WIDGET,
+                ChatRepl.STANDARD_CHAT_PARENT_WIDGET, ChatRepl.STANDARD_CHAT_PAGE_UP_WIDGET,
+                ChatRepl.STANDARD_CHAT_PAGE_DOWN_WIDGET);
         for (char c = ' '; c <= '~'; c++) {
             String key = String.valueOf(c);
             Object bound = keyMap.getBound(key);
@@ -102,20 +110,64 @@ class ChatReplKeyBindingTest {
     }
 
     @Test
-    void ctrlGShouldBindToCancelOperation() {
-        Object bound = keyMap.getBound(KeyMap.ctrl('G'));
+    void escapeShouldBindToCancelOperation() {
+        Object bound = keyMap.getBound("\033");
         assertInstanceOf(Reference.class, bound);
         assertEquals("cancel-operation", ((Reference) bound).name());
     }
 
     @Test
-    void rawEscapeShouldNotBebound() {
-        // ESC (0x1B) must NOT be bound to cancel — it's the Meta prefix in EMACS mode
-        Object bound = keyMap.getBound("\033");
-        if (bound instanceof Reference ref) {
-            assertNotEquals("cancel-operation", ref.name(),
-                    "Raw ESC should not be bound to cancel-operation — it corrupts EMACS Meta prefix");
-        }
+    void downArrowEntersActivityWithoutInterceptingPrintableInput() {
+        assertEquals(ChatRepl.STANDARD_CHAT_DOWN_WIDGET,
+                ((Reference) keyMap.getBound("\033[B")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_DOWN_WIDGET,
+                ((Reference) keyMap.getBound("\033OB")).name());
+        assertNull(keyMap.getBound("B"),
+                "The printable letter B must remain a normal self-insert key");
+    }
+
+    @Test
+    void leftArrowNavigatesToActivityParentWithoutInterceptingPrintableInput() {
+        assertEquals(ChatRepl.STANDARD_CHAT_PARENT_WIDGET,
+                ((Reference) keyMap.getBound("\033[D")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_PARENT_WIDGET,
+                ((Reference) keyMap.getBound("\033OD")).name());
+        assertNull(keyMap.getBound("D"),
+                "The printable letter D must remain a normal self-insert key");
+    }
+
+    @Test
+    void pageAndShiftArrowKeysScrollTranscriptWithoutPrintableInterception() {
+        assertEquals(ChatRepl.STANDARD_CHAT_PAGE_UP_WIDGET,
+                ((Reference) keyMap.getBound("\033[5~")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_PAGE_UP_WIDGET,
+                ((Reference) keyMap.getBound("\033[1;2A")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_PAGE_DOWN_WIDGET,
+                ((Reference) keyMap.getBound("\033[6~")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_PAGE_DOWN_WIDGET,
+                ((Reference) keyMap.getBound("\033[1;2B")).name());
+        assertNull(keyMap.getBound("5"));
+        assertNull(keyMap.getBound("6"));
+    }
+
+    @Test
+    void contextualUpArrowHasOneActionPerPromptState() {
+        assertEquals(ChatRepl.StandardUpAction.MOVE_WITHIN_DRAFT,
+                ChatRepl.resolveStandardUpAction("first\nsecond", 12, true, false));
+        assertEquals(ChatRepl.StandardUpAction.EDIT_LATEST_QUEUED,
+                ChatRepl.resolveStandardUpAction("", 0, true, false));
+        assertEquals(ChatRepl.StandardUpAction.PREVIOUS_HISTORY,
+                ChatRepl.resolveStandardUpAction("", 0, false, false));
+        assertEquals(ChatRepl.StandardUpAction.PREVIOUS_HISTORY,
+                ChatRepl.resolveStandardUpAction("recalled", 8, false, true));
+        assertEquals(ChatRepl.StandardUpAction.KEEP_DRAFT,
+                ChatRepl.resolveStandardUpAction("unsent draft", 12, false, false));
+    }
+
+    @Test
+    void firstLineOfMultilineDraftDoesNotFallIntoHistory() {
+        assertEquals(ChatRepl.StandardUpAction.KEEP_DRAFT,
+                ChatRepl.resolveStandardUpAction("first\nsecond", 3, false, false));
     }
 
     @Test

@@ -17,7 +17,7 @@
 package ai.kompile.cli.main.chat.mcp;
 
 import ai.kompile.cli.common.util.JsonUtils;
-import ai.kompile.cli.main.MainCommand;
+import ai.kompile.cli.main.CliProcessLauncher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -27,7 +27,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Shared support for generating MCP configs and launching the CLI stdio MCP server.
@@ -94,6 +93,24 @@ public final class McpToolInjectionSupport {
         return command;
     }
 
+    /**
+     * Re-executes the installed CLI through its native binary or executable JAR ABI.
+     * Development classpaths are deliberately not accepted.
+     */
+    public static List<String> buildCliProcessCommand(List<String> arguments) {
+        CliLauncher launcher = findCliLauncher();
+        if (launcher == null) {
+            return null;
+        }
+        List<String> command = new ArrayList<>();
+        command.add(launcher.command());
+        command.addAll(launcher.prefixArgs());
+        if (arguments != null) {
+            command.addAll(arguments);
+        }
+        return command;
+    }
+
     private static McpConfig createSseConfig(String sseUrl) throws IOException {
         ObjectNode root = OBJECT_MAPPER.createObjectNode();
         ObjectNode server = root.putObject("mcpServers").putObject(SERVER_NAME);
@@ -110,37 +127,10 @@ public final class McpToolInjectionSupport {
     }
 
     static CliLauncher findCliLauncher() {
-        String binaryOverride = firstNonBlank(System.getProperty("kompile.cli.binary"), System.getenv("KOMPILE_CLI_BINARY"));
-        if (isRunnableCommand(binaryOverride)) {
-            return new CliLauncher(binaryOverride, List.of());
-        }
-
-        String jarOverride = firstNonBlank(System.getProperty("kompile.cli.jar"), System.getenv("KOMPILE_CLI_JAR"));
-        if (jarOverride != null && Files.exists(Path.of(jarOverride))) {
-            return new CliLauncher(resolveJavaCommand(), List.of("-jar", Path.of(jarOverride).toAbsolutePath().toString()));
-        }
-
-        String currentCommand = normalizeCurrentCommand(
-                ProcessHandle.current().info().command().orElse(null));
-        if (currentCommand != null && !currentCommand.toLowerCase(Locale.ROOT).contains("java")) {
-            String scriptLauncher = resolveShellWrappedLauncher();
-            if (scriptLauncher != null) {
-                return new CliLauncher(scriptLauncher, List.of());
-            }
-            return new CliLauncher(currentCommand, List.of());
-        }
-
-        Path codeSource = resolveCodeSource();
-        if (codeSource != null && Files.isRegularFile(codeSource) && codeSource.toString().endsWith(".jar")) {
-            return new CliLauncher(resolveJavaCommand(), List.of("-jar", codeSource.toString()));
-        }
-
-        String classPath = System.getProperty("java.class.path");
-        if (classPath != null && !classPath.isBlank()) {
-            return new CliLauncher(resolveJavaCommand(), List.of("-cp", classPath, MainCommand.class.getName()));
-        }
-
-        return null;
+        CliProcessLauncher.Launcher launcher = CliProcessLauncher.find();
+        return launcher == null
+                ? null
+                : new CliLauncher(launcher.command(), launcher.prefixArgs());
     }
 
     /**
@@ -148,100 +138,15 @@ public final class McpToolInjectionSupport {
      * {@code " (deleted)"} when a running native executable has been replaced on disk. Passing
      * that diagnostic suffix to a child as its command makes an otherwise healthy stdio MCP
      * server impossible to launch. Reuse the replacement path only when it is executable; all
-     * other stale or malformed values fall through to the jar/classpath launchers.
+     * other stale or malformed values fall through to the executable-JAR launcher.
      */
     static String normalizeCurrentCommand(String command) {
-        if (command == null || command.isBlank()) {
-            return null;
-        }
-        String candidate = command.strip();
-        String deletedSuffix = " (deleted)";
-        if (candidate.endsWith(deletedSuffix)) {
-            candidate = candidate.substring(0, candidate.length() - deletedSuffix.length()).strip();
-        }
-        return isRunnableCommand(candidate) ? candidate : null;
-    }
-
-    private static Path resolveCodeSource() {
-        try {
-            return Path.of(MainCommand.class.getProtectionDomain().getCodeSource().getLocation().toURI())
-                .toAbsolutePath()
-                .normalize();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static String resolveJavaCommand() {
-        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String javaBinary = osName.contains("win") ? "java.exe" : "java";
-        Path javaPath = Path.of(System.getProperty("java.home"), "bin", javaBinary);
-        if (Files.isExecutable(javaPath)) {
-            return javaPath.toString();
-        }
-        return ProcessHandle.current().info().command().orElse("java");
+        return CliProcessLauncher.normalizeCurrentCommand(command);
     }
 
     private static Path normalizeWorkingDir(Path workingDir) {
         Path resolved = workingDir != null ? workingDir : Path.of(System.getProperty("user.dir"));
         return resolved.toAbsolutePath().normalize();
-    }
-
-    private static String resolveShellWrappedLauncher() {
-        String currentCommand = ProcessHandle.current().info().command().orElse(null);
-        if (currentCommand == null) {
-            return null;
-        }
-
-        String executableName = Path.of(currentCommand).getFileName().toString().toLowerCase(Locale.ROOT);
-        if (!List.of("sh", "bash", "zsh", "dash", "fish").contains(executableName)) {
-            return null;
-        }
-
-        String[] arguments = ProcessHandle.current().info().arguments().orElse(null);
-        if (arguments == null || arguments.length == 0) {
-            return null;
-        }
-
-        try {
-            Path scriptPath = Path.of(arguments[0]).toAbsolutePath().normalize();
-            if (Files.isExecutable(scriptPath)) {
-                return scriptPath.toString();
-            }
-        } catch (Exception e) {
-            return null;
-        }
-
-        return null;
-    }
-
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Bare command names are resolved by the child process through PATH. Explicit paths must
-     * already name an executable; otherwise a stale KOMPILE_CLI_BINARY value would make Codex
-     * accept the MCP configuration and then fail its server startup with os error 2.
-     */
-    private static boolean isRunnableCommand(String command) {
-        if (command == null || command.isBlank()) {
-            return false;
-        }
-        try {
-            Path candidate = Path.of(command);
-            boolean explicitPath = candidate.isAbsolute()
-                    || command.contains("/")
-                    || command.contains("\\");
-            return !explicitPath || Files.isExecutable(candidate);
-        } catch (RuntimeException ignored) {
-            return false;
-        }
     }
 
     static record CliLauncher(String command, List<String> prefixArgs) {

@@ -42,6 +42,7 @@ buildNumber.properties
 !kompile-local-sdk/bindings/**/*.json
 !kompile-local-sdk/examples/**/*.json
 !kompile-chat-local/mobile/android/accelerators.json
+!release/*/release-plan.json
 
 # Agent/editor tooling and scratch output that happen to be JSON at a repo or project root.
 .mcp.json

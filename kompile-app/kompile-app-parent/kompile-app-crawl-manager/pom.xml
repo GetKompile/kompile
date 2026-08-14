@@ -350,8 +350,11 @@
                                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:ExcludeResources=META-INF/services/org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>

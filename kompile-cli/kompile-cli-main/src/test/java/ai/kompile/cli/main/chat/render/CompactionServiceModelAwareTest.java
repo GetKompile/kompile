@@ -66,8 +66,10 @@ class CompactionServiceModelAwareTest {
                 "preserve span must be smaller than the window itself");
 
         CompactionService large = new CompactionService(mapper, 200_000);
-        assertEquals(20_000, large.compactionBuffer(), "large windows keep the legacy 20K buffer cap");
-        assertEquals(40_000, large.preserveRecentTokens(), "large windows keep the legacy 40K preserve cap");
+        assertEquals(30_000, large.compactionBuffer(),
+                "the default 85% ceiling must scale with large windows");
+        assertEquals(40_000, large.preserveRecentTokens(),
+                "recent-history preservation remains bounded");
     }
 
     @Test
@@ -88,6 +90,39 @@ class CompactionServiceModelAwareTest {
         assertFalse(service.needsCompaction(tiny, 0));
         // Provider reported the real prompt (system prompt + tools) was near the window.
         assertTrue(service.needsCompaction(tiny, 8_000));
+    }
+
+    @Test
+    void outputCapacityReservesEnoughContextForTheResponse() {
+        CompactionService service = new CompactionService(mapper, 400_000);
+        service.configure(true, 0.90d, 128_000, 0);
+
+        assertEquals(136_192, service.effectiveReserveTokens(),
+                "reserve includes the provider output limit plus an input-estimation safety margin");
+        assertEquals(263_808, service.triggerTokens(),
+                "output reserve must win over a later ratio trigger");
+        assertTrue(service.needsCompaction(263_808));
+    }
+
+    @Test
+    void policyCanBeDisabledAndExplicitlyRetuned() {
+        CompactionService service = new CompactionService(mapper, 100_000);
+        service.configure(false, 0.75d, 8_192, 10_000);
+        assertEquals(75_000, service.triggerTokens());
+        assertFalse(service.needsCompaction(99_000));
+
+        service.configure(true, 0.75d, 8_192, 30_000);
+        assertEquals(70_000, service.triggerTokens());
+        assertTrue(service.needsCompaction(70_000));
+    }
+
+    @Test
+    void projectedProviderUsageCanForceHeuristicFallback() {
+        CompactionService service = new CompactionService(mapper, 8_192);
+        List<CompactionService.ConversationEntry> entries = List.of(
+                CompactionService.ConversationEntry.toolResult("read", "c1", "x".repeat(4_000)));
+        assertFalse(service.compact(entries).isCompacted());
+        assertTrue(service.compact(entries, 8_000).isCompacted());
     }
 
     @Test

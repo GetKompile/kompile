@@ -39,7 +39,7 @@ public class ToolContext {
     private final AgentConfig agent;
     private final PermissionService permissionService;
     private final Path workingDirectory;
-    private final AtomicBoolean aborted;
+    private volatile AtomicBoolean aborted;
     private final ToolRegistry toolRegistry;
     private volatile Consumer<String> outputConsumer;
     private volatile boolean autoApproveAll = false;
@@ -83,6 +83,17 @@ public class ToolContext {
     public AtomicBoolean getAbortSignal() { return aborted; }
 
     /**
+     * Makes this context observe the caller's cancellation signal. Child contexts
+     * use the exact same flag so an Escape cancellation reaches running tools and
+     * nested subagents instead of stopping only the outer agent loop.
+     */
+    public void linkAbortSignal(AtomicBoolean sharedAbortSignal) {
+        if (sharedAbortSignal != null) {
+            this.aborted = sharedAbortSignal;
+        }
+    }
+
+    /**
      * Returns the output consumer for streaming progress to the caller, or null if not set.
      */
     public Consumer<String> getOutputConsumer() { return outputConsumer; }
@@ -92,6 +103,22 @@ public class ToolContext {
      */
     public void setOutputConsumer(Consumer<String> outputConsumer) {
         this.outputConsumer = outputConsumer;
+    }
+
+    /**
+     * Emit one display/progress entry through the caller-owned output channel.
+     * Interactive standard chat installs a JLine-safe consumer so asynchronous
+     * tool and subagent output is inserted above the live input editor. Headless
+     * and legacy callers retain stdout as a compatibility fallback.
+     */
+    public void emitOutput(String output) {
+        String line = output == null ? "" : output;
+        Consumer<String> consumer = outputConsumer;
+        if (consumer != null) {
+            consumer.accept(line);
+        } else {
+            System.out.println(line);
+        }
     }
 
     /**

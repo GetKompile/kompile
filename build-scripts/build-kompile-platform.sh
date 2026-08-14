@@ -17,16 +17,19 @@
 #
 # Options:
 #   --native-targets T   Comma-separated native image targets (default: cli)
-#                        Valid: cli, app, staging
+#                        Valid: cli, component-cli, app, chat, crawl-manager,
+#                        sample, app-lite, staging, model-serving, pipeline-serving,
+#                        ingest, vector, embedding, model-init, vlm-test, training, or all
 #   --variant V          Distribution variant (default: auto-detect from platform)
-#                        Valid: cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda
+#                        Valid: cli-only, local, hosted, cpu-intel, cpu-arm, cuda, amd-zluda
 #   --dl4j-branch B      DL4J branch to clone/checkout (default: master)
-#   --kompile-branch B   Kompile branch to checkout (default: main)
+#   --kompile-branch B   Branch used only when cloning a missing Kompile checkout (default: main)
 #   --dl4j-root DIR      Path to DL4J checkout (default: ../deeplearning4j, cloned if missing)
 #   --dl4j-repository U  Resolve DL4J from Maven repository U; never build it
 #   --dl4j-sdk-assets D  Extracted DL4J sdk-assets shard required with repository backends
 #   --repository-id ID   Maven settings.xml server id for DL4J (default: dl4j-release)
 #   --nd4j-version V     Published DL4J/ND4J version (default: 1.0.0-SNAPSHOT)
+#   --version V          Kompile distribution/Maven version (default: root POM)
 #   --maven-repo-local D Isolated Maven local repository
 #   --publish            Deploy Kompile reactor artifacts after building
 #   --deploy-repository U  Publish target (defaults to --dl4j-repository)
@@ -70,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --dl4j-sdk-assets)  DL4J_SDX_ASSETS_DIR="$2"; shift 2 ;;
     --repository-id)    DL4J_MAVEN_REPOSITORY_ID="$2"; shift 2 ;;
     --nd4j-version)     ND4J_VERSION="$2"; shift 2 ;;
+    --version)          KOMPILE_VERSION="$2"; shift 2 ;;
     --maven-repo-local) MAVEN_REPO_LOCAL="$2"; shift 2 ;;
     --publish)          KOMPILE_PUBLISH=1; shift ;;
     --deploy-repository) KOMPILE_DEPLOY_REPOSITORY_URL="$2"; shift 2 ;;
@@ -85,7 +89,7 @@ while [[ $# -gt 0 ]]; do
       printf '  %s\n' "${KOMPILE_PLATFORMS[@]}"
       exit 0 ;;
     --help|-h)
-      head -35 "$0" | tail -33
+      head -41 "$0" | tail -39
       exit 0 ;;
     -*)
       echo "Unknown option: $1" >&2; exit 1 ;;
@@ -114,8 +118,21 @@ if [ -z "${VARIANT:-}" ]; then
   esac
 fi
 
-# Auto-provision if requested
-if [ "${DO_SETUP}" -eq 1 ] && [ "${_DL4J_COMMON_LOADED}" -eq 1 ]; then
+# Auto-provision if requested. The installer playbook lives in DL4J's shared
+# build-common; load it even in repository/--skip-dl4j lanes so --setup never
+# degrades into a silent no-op on a fresh host.
+if [ "${DO_SETUP}" -eq 1 ]; then
+  if [ "${_DL4J_COMMON_LOADED}" -ne 1 ]; then
+    kompile_ensure_dl4j
+    if [ -f "${DL4J_PROJECT_ROOT}/build-scripts/build-common.sh" ]; then
+      PROJECT_ROOT="${DL4J_PROJECT_ROOT}" source "${DL4J_PROJECT_ROOT}/build-scripts/build-common.sh"
+      _DL4J_COMMON_LOADED=1
+    fi
+  fi
+  if [ "${_DL4J_COMMON_LOADED}" -ne 1 ]; then
+    echo "Unable to load the DL4J host setup playbook." >&2
+    exit 1
+  fi
   auto_setup_host "${PLATFORM}"
 fi
 

@@ -17,10 +17,16 @@ package ai.kompile.cli.common;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class KompileHomeTest {
 
@@ -62,6 +68,30 @@ class KompileHomeTest {
         assertEquals(new File("/tmp/kompile-explicit-project"),
                 KompileHome.resolveHomeDirectory(
                         "/tmp/kompile-explicit-project", "/tmp/kompile-env-project"));
+    }
+
+    @Test
+    void installDirectoryHonorsOverridesAndNativeDistribution(@TempDir Path tempDir) throws Exception {
+        Path distribution = tempDir.resolve("kompile-dist-root");
+        Path bin = Files.createDirectories(distribution.resolve("bin"));
+        Files.createDirectories(distribution.resolve("lib"));
+        Path executable = Files.createFile(bin.resolve("kompile-component"));
+        File fallback = new File("/tmp/kompile-home-fallback");
+
+        assertEquals(distribution.toFile(), KompileHome.resolveInstallDirectory(
+                new Properties(), Map.of(), executable, fallback));
+
+        Properties properties = new Properties();
+        properties.setProperty("kompile.dist.home", "/tmp/property-dist");
+        assertEquals(new File("/tmp/property-dist"), KompileHome.resolveInstallDirectory(
+                properties, Map.of(), executable, fallback));
+        assertEquals(new File("/tmp/env-install"), KompileHome.resolveInstallDirectory(
+                properties, Map.of("KOMPILE_INSTALL_DIR", "/tmp/env-install"), executable, fallback));
+
+        properties.setProperty("kompile.install.dir", "/tmp/property-install");
+        assertEquals(new File("/tmp/property-install"), KompileHome.resolveInstallDirectory(
+                properties, Map.of("KOMPILE_INSTALL_DIR", "/tmp/env-install"), executable, fallback));
+        assertNull(KompileHome.inferDistributionHome(distribution.resolve("other/kompile")));
     }
 
     @Test

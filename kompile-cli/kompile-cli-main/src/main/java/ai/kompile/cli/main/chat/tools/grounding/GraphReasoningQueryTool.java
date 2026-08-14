@@ -83,7 +83,8 @@ public class GraphReasoningQueryTool implements CliTool {
                 "explain, find paths, rank, or list assets. Start with operation=CAPABILITIES to " +
                 "see the full list. Entity names and ids are resolved automatically. Results include " +
                 "ranked answers, matching entities/relations, and a reasoning trace showing how the " +
-                "answer was derived. Requires kompile-graph-service or a compatible kompile-app.";
+                "answer was derived. Runs against the project-local graph over stdio by default; a " +
+                "configured graph URL is an optional remote override.";
     }
 
     @Override
@@ -91,7 +92,7 @@ public class GraphReasoningQueryTool implements CliTool {
         return "One tool to ask the graph anything: operation=capabilities|overview|schema|search|" +
                 "describe|neighbors|path|timeline|facts|similar|verify|why|why_not|rank (or just " +
                 "question=...). Start with operation=capabilities to see what the graph can answer. " +
-                "factSheetId via knowledge_graph list_fact_sheets.";
+                "Local stdio defaults to and initializes the current folder; factSheetId is an optional remote/legacy override.";
     }
 
     @Override
@@ -110,7 +111,11 @@ public class GraphReasoningQueryTool implements CliTool {
 
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope the query to a specific fact sheet. Obtain via knowledge_graph list_fact_sheets.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
+
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Project-local knowledge-base id returned in crawlResult; selects that crawl's graph.");
 
         props.putObject("entityId")
                 .put("type", "string")
@@ -276,6 +281,30 @@ public class GraphReasoningQueryTool implements CliTool {
             });
         }
 
+        // ── Ranked facts ──────────────────────────────────────────────────────
+        JsonNode facts = result.path("data").path("facts");
+        if (!facts.isArray()) {
+            facts = result.path("facts");
+        }
+        if (facts.isArray() && !facts.isEmpty()) {
+            sb.append("\nFacts (").append(facts.size()).append("):\n");
+            facts.forEach(fact -> {
+                String atom = fact.path("atom").asText("").trim();
+                if (!atom.isEmpty()) {
+                    sb.append("  - ").append(atom);
+                    String kind = fact.path("kind").asText("").trim();
+                    if (!kind.isEmpty()) {
+                        sb.append(" [").append(kind).append("]");
+                    }
+                    if (fact.has("confidence")) {
+                        sb.append("  confidence=")
+                                .append(String.format("%.2f", fact.path("confidence").asDouble()));
+                    }
+                    sb.append("\n");
+                }
+            });
+        }
+
         // ── Path ──────────────────────────────────────────────────────────────
         JsonNode path = result.path("path");
         if (path.isArray() && !path.isEmpty()) {
@@ -330,7 +359,8 @@ public class GraphReasoningQueryTool implements CliTool {
                 "status", status,
                 "intent", intent,
                 "entityCount",   entities.isArray()   ? entities.size()   : 0,
-                "relationCount", relations.isArray()  ? relations.size()  : 0);
+                "relationCount", relations.isArray()  ? relations.size()  : 0,
+                "factCount",     facts.isArray()      ? facts.size()      : 0);
 
         return ToolResult.success("graph_reasoning_query: " + status, sb.toString().trim(), meta);
     }

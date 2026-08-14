@@ -437,7 +437,7 @@
                         <configuration>
                             <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
                             <imageName>kompile-model-staging</imageName>
-                            <quickBuild>true</quickBuild>
+                            <quickBuild>${native.quickBuild}</quickBuild>
                             <metadataRepository>
                                 <enabled>true</enabled>
                             </metadataRepository>
@@ -491,8 +491,8 @@
                                 <!-- Resource includes -->
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=model-sources\.yml</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring\.components</buildArg>
@@ -502,11 +502,11 @@
                                 <buildArg>-H:IncludeResources=log4j2\.xml</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2-spring\.xml</buildArg>
                                 <buildArg>-H:IncludeResources=.*Log4j2Plugins\.dat$</buildArg>
-                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.so</buildArg>
-                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dll</buildArg>
-                                <buildArg>-H:IncludeResources=org/eclipse/deeplearning4j/tokenizers/.*\.dylib</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
-                                <!-- Exclude native binaries from image to prevent analysis bloat -->
+                                <!-- Tokenizer/JNI binaries share the distribution's side-loaded lib/ tree. -->
+                                <!-- All platform/JNI payloads are side-loaded from dist/lib. Exclude
+                                     the entire platform directory before ResourcesFeature reads it. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so$</buildArg>
                                 <buildArg>-H:ExcludeResources=org/bytedeco/.*\.so\..*</buildArg>
                                 <buildArg>-H:ExcludeResources=org/bytedeco/.*\.dll$</buildArg>
@@ -581,8 +581,10 @@
                                 <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/staging</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                             </buildArgs>

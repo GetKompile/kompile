@@ -1,5 +1,5 @@
 {
-  "description": "JBang catalog for an unpacked Kompile distribution. Script-refs are relative to the zip root so `jbang --catalog ./jbang-catalog.json kompile-server` works immediately after extraction. Native binaries in bin/ are the primary path; these jars are the fallback.",
+  "description": "JBang catalog for JVM product surfaces in an unpacked Kompile distribution. Local MCP model workers are native-only and are intentionally not exposed here.",
   "catalogs": {},
   "aliases": {
     "kompile": {
@@ -13,26 +13,6 @@
     "kompile-server": {
       "script-ref": "lib/kompile-server.jar",
       "description": "Kompile admin console (:8080) — developer, agents, enforcer, settings, graph maintenance. End-user chat and crawl are the kompile-chat and kompile-crawl-manager aliases",
-      "java": "17+",
-      "java-options": [
-        "-XX:+ExitOnOutOfMemoryError",
-        "--add-opens=java.base/java.lang=ALL-UNNAMED",
-        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
-        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
-        "--add-opens=java.base/java.io=ALL-UNNAMED",
-        "--add-opens=java.base/java.net=ALL-UNNAMED",
-        "--add-opens=java.base/java.nio=ALL-UNNAMED",
-        "--add-opens=java.base/java.util=ALL-UNNAMED",
-        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
-        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
-        "--add-opens=java.base/sun.misc=ALL-UNNAMED",
-        "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
-        "-Dfile.encoding=UTF-8"
-      ]
-    },
-    "kompile-staging": {
-      "script-ref": "lib/kompile-model-staging.jar",
-      "description": "Kompile Model Staging — download, convert, and stage ML models",
       "java": "17+",
       "java-options": [
         "-XX:+ExitOnOutOfMemoryError",

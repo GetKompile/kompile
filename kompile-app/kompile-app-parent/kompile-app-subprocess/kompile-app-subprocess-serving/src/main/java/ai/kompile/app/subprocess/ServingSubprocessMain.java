@@ -16,13 +16,15 @@
 
 package ai.kompile.app.subprocess;
 
-import ai.kompile.app.config.KompileServerConstants;
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.llm.pipeline.LlmGenerateController;
 import ai.kompile.app.llm.pipeline.LlmModelController;
 import ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
+import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
@@ -30,8 +32,7 @@ import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -39,24 +40,25 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Subprocess entry point for modular LLM serving.
  *
- * <p>Starts a bounded JDK HTTP server backed by a narrow Spring bean context with
- * LLM load/unload/generate endpoints. Runs as an independent process with its own
- * ND4J backend (CPU or CUDA). Can be deployed separately from the main kompile-app
- * for modular model serving.</p>
+ * <p>Starts a bounded JDK HTTP server backed by an explicitly constructed,
+ * reflection-free serving graph with LLM load/unload/generate endpoints. Runs as an
+ * independent process with its own ND4J backend (CPU or CUDA). Can be deployed
+ * separately from the main kompile-app for modular model serving.</p>
  *
  * <h3>Usage:</h3>
  * <pre>
- *   # Via subprocess routing:
- *   java -jar kompile-app-main.jar --subprocess=serving args-file.json
+ *   # Standalone executable JAR:
+ *   java -jar kompile-app-subprocess-serving-exec.jar args-file.json
  *
- *   # Direct:
- *   java -cp <classpath> ai.kompile.app.subprocess.ServingSubprocessMain args-file.json
+ *   # Standalone native binary:
+ *   kompile-model-serving args-file.json
  *
  * </pre>
  *
@@ -74,6 +76,7 @@ public class ServingSubprocessMain {
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         final ServingSubprocessArgs servingArgs;
         try {
             servingArgs = requireArgs(args);
@@ -105,23 +108,21 @@ public class ServingSubprocessMain {
             int port = servingArgs.port() > 0 ? servingArgs.port() : 8091;
             String host = servingArgs.host() != null && !servingArgs.host().isBlank()
                     ? servingArgs.host() : "127.0.0.1";
-            String stagingUrl = servingArgs.stagingUrl() != null
-                    ? servingArgs.stagingUrl() : KompileServerConstants.DEFAULT_STAGING_URL;
+            String stagingUrl = servingArgs.stagingUrl();
 
             logger.info("Starting LLM serving subprocess on {}:{}", host, port);
 
-            System.setProperty("kompile.staging.url", stagingUrl);
+            if (stagingUrl != null && !stagingUrl.isBlank()) {
+                System.setProperty("kompile.staging.url", stagingUrl);
+            }
             if (System.getProperty("kompile.llm.cache.dir") == null) {
                 System.setProperty("kompile.llm.cache.dir",
                         KompileHome.llmCacheDirectory().getAbsolutePath());
             }
-            // Internal process-role marker: enable direct-serving beans and never create the
-            // service-endpoints.json-backed client proxy inside the serving child itself.
-            System.setProperty("kompile.llm.direct-serving.enabled", "true");
-
-            AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
-            context.register(SubprocessServingConfiguration.class);
-            context.refresh();
+            // This is a fixed request-scoped worker graph. Construct it explicitly instead
+            // of asking a native image to reflectively bootstrap Spring's annotation context.
+            ServingComponents components = createServingComponents(
+                    stagingUrl, System.getProperty("kompile.llm.cache.dir"));
 
             AtomicReference<ServingSubprocessHttpServer> httpServerRef = new AtomicReference<>();
             CountDownLatch shutdownLatch = new CountDownLatch(1);
@@ -131,23 +132,23 @@ public class ServingSubprocessMain {
                 if (server != null) {
                     server.close();
                 }
-                context.close();
+                components.close();
                 shutdownLatch.countDown();
             }, "serving-subprocess-shutdown"));
 
             // Finish optional initialization before accepting requests. This prevents
             // concurrent load/generate calls from racing startup model construction.
             if (servingArgs.modelId() != null && servingArgs.modelPath() != null) {
-                preloadModel(context, servingArgs);
+                preloadModel(components.languageModel(), servingArgs);
                 trimGpuMemoryPools("post-model-preload");
             }
 
             ServingSubprocessHttpServer httpServer = ServingSubprocessHttpServer.start(
                     host,
                     port,
-                    context.getBean(ObjectMapper.class),
-                    context.getBean(LlmModelController.class),
-                    context.getBean(LlmGenerateController.class));
+                    components.objectMapper(),
+                    components.modelController(),
+                    components.generateController());
             httpServerRef.set(httpServer);
 
             logger.info("LLM serving subprocess started on port {}", port);
@@ -162,6 +163,33 @@ public class ServingSubprocessMain {
         }
     }
 
+    static ServingComponents createServingComponents(String stagingUrl, String cacheDir) {
+        ObjectMapper objectMapper = JsonUtils.newStandardMapper();
+        SameDiffLanguageModelImpl languageModel = new SameDiffLanguageModelImpl(
+                Optional.of(NoOpMetrics.INSTANCE),
+                Optional.of(NoOpProfiler.INSTANCE));
+        LlmModelController modelController = new LlmModelController(
+                languageModel,
+                new RestTemplateBuilder(),
+                objectMapper,
+                stagingUrl,
+                cacheDir);
+        LlmGenerateController generateController = new LlmGenerateController(languageModel);
+        return new ServingComponents(
+                objectMapper, languageModel, modelController, generateController);
+    }
+
+    record ServingComponents(
+            ObjectMapper objectMapper,
+            SameDiffLanguageModelImpl languageModel,
+            LlmModelController modelController,
+            LlmGenerateController generateController) implements AutoCloseable {
+        @Override
+        public void close() {
+            languageModel.unloadModel();
+        }
+    }
+
     static ServingSubprocessArgs requireArgs(String[] args) throws IOException {
         if (args == null || args.length != 1 || args[0] == null || args[0].isBlank()) {
             throw new IllegalArgumentException("expected exactly one args JSON file");
@@ -173,10 +201,9 @@ public class ServingSubprocessMain {
         return ServingSubprocessArgs.fromFile(argsPath);
     }
 
-    private static void preloadModel(ConfigurableApplicationContext context,
-                                      ServingSubprocessArgs args) {
+    private static void preloadModel(SameDiffLanguageModelImpl llm,
+                                     ServingSubprocessArgs args) {
         try {
-            SameDiffLanguageModelImpl llm = context.getBean(SameDiffLanguageModelImpl.class);
             Path modelPath = Paths.get(args.modelPath());
             Path tokenizerPath = args.tokenizerPath() != null
                     ? Paths.get(args.tokenizerPath())

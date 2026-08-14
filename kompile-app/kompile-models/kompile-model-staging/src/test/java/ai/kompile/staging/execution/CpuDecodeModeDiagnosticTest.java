@@ -20,6 +20,7 @@ import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 import org.eclipse.deeplearning4j.model.benchmark.BenchmarkConfig;
 import org.junit.jupiter.api.Test;
 import org.nd4j.autodiff.samediff.diagnostics.DspDiagnostics;
+import org.nd4j.autodiff.samediff.execution.GraphExecutionMode;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
@@ -46,21 +47,20 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * produced, not only by whether the expected word appears.</p>
  *
  * <p>The modes are ordered cheapest-trust-first: {@code SLOT_BY_SLOT} runs op by op with no graph
- * backend and is the reference; {@code OPENVINO} and {@code ONEDNN} each force one layer of the
- * cascade on its own; the {@code AUTO} rows then run the real chain, with {@code CPU_CASCADE}
- * additionally freezing and merging DSP segments. Whichever step first turns sane text into
- * repetition is the one that corrupts the logits.</p>
+ * backend and is the reference; {@code OPENVINO} forces that backend; portable replay selects the
+ * platform's available CPU graph recorder; and the {@code AUTO} rows run the real cascade, with
+ * {@code CPU_CASCADE} additionally freezing and merging DSP segments. Whichever step first turns
+ * sane text into repetition is the one that corrupts the logits.</p>
  *
- * <p>The forced rows are what make the AUTO rows readable. AUTO builds a chain and hands each
+ * <p>The focused rows are what make the AUTO rows readable. AUTO builds a chain and hands each
  * segment to the first backend that accepts it, so a wrong answer from AUTO names the chain, not a
- * member of it. Both layers need their own row: OneDNN sits behind OpenVINO and only sees what
- * OpenVINO declines, so on a model OpenVINO accepts whole it never executes under AUTO at all and
- * a defect in it would stay hidden behind a working first layer.</p>
+ * member of it. Portable replay deliberately follows the current native capability resolver instead
+ * of naming a removed oneDNN-only Java mode.</p>
  *
- * <p>A forced row is a request, not a guarantee — the cascade still demotes a segment its one
- * backend declines to slot-by-slot. Read the row together with the native
+ * <p>A focused row is a request, not a guarantee — an unavailable backend can still demote a
+ * segment to slot-by-slot. Read the row together with the native
  * {@code POST_EXEC ... segs(cpuGraph=N[name])} counter, which names the backend that actually ran;
- * a forced row that reports {@code cpuGraph=0} ran native and attributes nothing.</p>
+ * a row that reports {@code cpuGraph=0} ran native and attributes nothing.</p>
  *
  * <p>Opt-in like the other real-model harnesses (loading a multi-GB model is slow):
  * {@code mvn -o test -pl :kompile-model-staging -Dtest=CpuDecodeModeDiagnosticTest
@@ -106,7 +106,9 @@ class CpuDecodeModeDiagnosticTest {
         Map<String, Supplier<BenchmarkConfig>> modes = new LinkedHashMap<>();
         modes.put("SLOT_BY_SLOT (reference)", BenchmarkConfig::cpuSlotBySlot);
         modes.put("OPENVINO only (forced)", BenchmarkConfig::cpuOpenVino);
-        modes.put("ONEDNN only (forced)", BenchmarkConfig::cpuOneDnn);
+        modes.put("portable CPU graph replay", () -> BenchmarkConfig.create("CPU_PORTABLE_REPLAY")
+                .executionMode(GraphExecutionMode.PORTABLE_REPLAY)
+                .maxTokens(TOKENS).minDiversityPct(5));
         modes.put("AUTO cascade, no merge", BenchmarkConfig::cpuCascadeNoMerge);
         modes.put("AUTO cascade + freeze/merge", BenchmarkConfig::cpuCascade);
 

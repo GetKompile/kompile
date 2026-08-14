@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess.model;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -103,6 +104,7 @@ public class ModelInitSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         // Capture original stdout for protocol messages
         originalStdout = System.out;
 

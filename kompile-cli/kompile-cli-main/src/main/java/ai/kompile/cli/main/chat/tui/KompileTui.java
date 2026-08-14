@@ -24,6 +24,11 @@ import ai.kompile.utils.AnsiConstants;
 import org.jline.terminal.Terminal;
 
 import java.io.PrintStream;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static ai.kompile.utils.AnsiConstants.*;
 
@@ -49,6 +54,9 @@ import static ai.kompile.utils.AnsiConstants.*;
  */
 public class KompileTui {
 
+    private static final String MAIN_CONTENT_VIEW = "main";
+    private static final int MAX_MAIN_TRANSCRIPT_LINES = 2_000;
+
     private final TopBar topBar;
     private final StatusBar statusBar;
     private final TerminalRenderer renderer;
@@ -62,6 +70,19 @@ public class KompileTui {
     private volatile boolean started = false;
 
     /**
+     * Retained main-chat lines let the transcript area switch to a managed
+     * process view and back without relying on terminal scrollback scraping.
+     */
+    private final Deque<String> mainTranscriptLines = new ArrayDeque<>();
+    private volatile String contentViewKey = MAIN_CONTENT_VIEW;
+    private volatile String contentViewTitle = "Main chat";
+    private volatile List<String> contentViewLines = List.of();
+    /** Lines above the bottom of the retained transcript currently being viewed. */
+    private volatile int contentScrollOffset = 0;
+    /** Activity views pin their title row while their transcript body scrolls. */
+    private volatile boolean contentViewPinsHeader = false;
+
+    /**
      * Extra rows reserved between the scroll region and the StatusBar.
      * Used by EmulatedPassthroughCommand for its input box, queue preview, etc.
      * ChatRepl leaves this at 0 (readline lives inside the scroll region).
@@ -70,6 +91,7 @@ public class KompileTui {
 
     /** Optional callback for recalculating reserved rows on resize. */
     private volatile ReservedRowsCalculator reservedRowsCalculator;
+    private final List<Runnable> resizeListeners = new CopyOnWriteArrayList<>();
 
     // ── Construction ──────────────────────────────────────────────────────
 
@@ -127,6 +149,16 @@ public class KompileTui {
         this.reservedMiddleRows = Math.max(0, rows);
     }
 
+    public int getReservedMiddleRows() {
+        return reservedMiddleRows;
+    }
+
+    public void addResizeListener(Runnable listener) {
+        if (listener != null) {
+            resizeListeners.add(listener);
+        }
+    }
+
     /**
      * Install a calculator that recomputes reserved middle rows on every resize.
      * Also immediately computes and applies the value.
@@ -160,6 +192,43 @@ public class KompileTui {
 
     public int getTerminalHeight() {
         return terminalHeight;
+    }
+
+    public boolean isMainContentView() {
+        return MAIN_CONTENT_VIEW.equals(contentViewKey);
+    }
+
+    public String getContentViewKey() {
+        return contentViewKey;
+    }
+
+    public String getContentViewTitle() {
+        return contentViewTitle;
+    }
+
+    /** Snapshot used by focused renderer regressions and non-ANSI callers. */
+    public List<String> getContentViewLines() {
+        synchronized (drawLock) {
+            return List.copyOf(contentViewLines);
+        }
+    }
+
+    public int getContentScrollOffset() {
+        return contentScrollOffset;
+    }
+
+    /** Snapshot of the actual transcript rows selected by the current viewport. */
+    public List<String> getVisibleContentLines() {
+        synchronized (drawLock) {
+            return visibleContentLines(contentViewLines, contentViewPinsHeader);
+        }
+    }
+
+    /** Retain a JLine-owned user input row without printing it a second time. */
+    public void rememberMainTranscriptLine(String text) {
+        synchronized (drawLock) {
+            rememberMainLines(splitLines(text));
+        }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -206,6 +275,7 @@ public class KompileTui {
                 topBar.redraw();
                 statusBar.requestRedraw();
             }
+            fireResizeListeners();
         });
     }
 
@@ -223,6 +293,7 @@ public class KompileTui {
             topBar.redraw();
             statusBar.requestRedraw();
         }
+        fireResizeListeners();
     }
 
     /**
@@ -263,18 +334,201 @@ public class KompileTui {
      * Thread-safe via drawLock.
      */
     public void printInScrollRegion(String text) {
+        List<String> lines = splitLines(text);
+        synchronized (drawLock) {
+            rememberMainLines(lines);
+        }
+        if (!isMainContentView()) {
+            // Parent chat output continues to be retained while a process view is
+            // open, but must not bleed over the selected process transcript.
+            return;
+        }
         if (!started) {
-            System.out.println(text);
+            lines.forEach(System.out::println);
             return;
         }
         synchronized (drawLock) {
-            PrintStream out = System.out;
-            // Re-establish scroll region (JLine may have reset it)
-            out.printf("%s%d;%dr", ESC, scrollTop(), scrollBottom());
-            // Move to last row of scroll region, print, newline triggers scroll
-            out.printf("%s%d;1H%s2K%s\n", ESC, scrollBottom(), ESC, text);
-            out.flush();
+            if (contentScrollOffset > 0) {
+                // Keep an explicitly scrolled viewport stable while new agent output
+                // arrives. The user returns to the live tail with PageDown.
+                contentScrollOffset = clampScrollOffset(
+                        contentScrollOffset + lines.size(), contentViewLines, false);
+                replaceScrollRegion(contentViewLines, false);
+                return;
+            }
+            for (String line : lines) {
+                writeScrollLine(line);
+            }
         }
+    }
+
+    /**
+     * Replace the transcript area with one process/subagent/task view. The
+     * replacement is cursor-addressed rather than newline-driven, so live input
+     * and the activity tree below it do not drift down the terminal.
+     */
+    public void showActivityView(String key, String title, String content) {
+        List<String> lines = new ArrayList<>();
+        lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
+        lines.addAll(splitLines(content));
+        boolean plainOutput = !started;
+        synchronized (drawLock) {
+            contentViewKey = key == null || key.isBlank() ? "activity" : key;
+            contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+            contentViewLines = List.copyOf(lines);
+            contentScrollOffset = 0;
+            contentViewPinsHeader = true;
+            replaceScrollRegion(lines, true);
+        }
+        if (plainOutput) {
+            lines.forEach(System.out::println);
+        }
+    }
+
+    /**
+     * Refresh a selected activity without snapping a reader back to the tail.
+     * This is used for live subagent chunks and process output updates.
+     */
+    public void updateActivityView(String key, String title, String content) {
+        if (key == null || !key.equals(contentViewKey)) return;
+        List<String> lines = new ArrayList<>();
+        lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
+        lines.addAll(splitLines(content));
+        synchronized (drawLock) {
+            int previousSize = contentViewLines.size();
+            boolean followingTail = contentScrollOffset == 0;
+            contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+            contentViewLines = List.copyOf(lines);
+            contentViewPinsHeader = true;
+            if (!followingTail && lines.size() > previousSize) {
+                contentScrollOffset += lines.size() - previousSize;
+            }
+            contentScrollOffset = clampScrollOffset(
+                    followingTail ? 0 : contentScrollOffset, contentViewLines, true);
+            replaceScrollRegion(contentViewLines, true);
+        }
+    }
+
+    /** Restore the retained parent-chat transcript in-place. */
+    public void showMainView() {
+        synchronized (drawLock) {
+            contentViewKey = MAIN_CONTENT_VIEW;
+            contentViewTitle = "Main chat";
+            List<String> lines = new ArrayList<>(mainTranscriptLines);
+            contentViewLines = List.copyOf(lines);
+            contentScrollOffset = 0;
+            contentViewPinsHeader = false;
+            replaceScrollRegion(lines, false);
+        }
+    }
+
+    /** Scroll upward for positive deltas and downward for negative deltas. */
+    public boolean scrollContent(int deltaLines) {
+        if (deltaLines == 0) return false;
+        synchronized (drawLock) {
+            int next = clampScrollOffset(
+                    contentScrollOffset + deltaLines, contentViewLines, contentViewPinsHeader);
+            if (next == contentScrollOffset) return false;
+            contentScrollOffset = next;
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return true;
+        }
+    }
+
+    public boolean pageContent(int direction) {
+        int page = Math.max(1, transcriptCapacity() - 2);
+        return scrollContent(direction > 0 ? page : -page);
+    }
+
+    public boolean scrollToBottom() {
+        synchronized (drawLock) {
+            if (contentScrollOffset == 0) return false;
+            contentScrollOffset = 0;
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return true;
+        }
+    }
+
+    private void rememberMainLines(List<String> lines) {
+        for (String line : lines) {
+            mainTranscriptLines.addLast(line);
+            while (mainTranscriptLines.size() > MAX_MAIN_TRANSCRIPT_LINES) {
+                mainTranscriptLines.removeFirst();
+            }
+        }
+        if (isMainContentView()) {
+            contentViewLines = List.copyOf(mainTranscriptLines);
+        }
+    }
+
+    private static List<String> splitLines(String text) {
+        if (text == null) {
+            return List.of("");
+        }
+        return List.of(text.split("\\R", -1));
+    }
+
+    private void writeScrollLine(String line) {
+        PrintStream out = System.out;
+        out.printf("%s%d;%dr", ESC, scrollTop(), scrollBottom());
+        out.printf("%s%d;1H%s2K%s\n", ESC, scrollBottom(), ESC, line);
+        out.flush();
+    }
+
+    private void replaceScrollRegion(List<String> lines, boolean preserveHeader) {
+        if (!started) {
+            return;
+        }
+        PrintStream out = System.out;
+        int top = scrollTop();
+        int bottom = scrollBottom();
+        // The bottom scroll row belongs to JLine's live prompt. Process output
+        // occupies only the transcript rows above it, then REDISPLAY restores the
+        // input without either surface overwriting the other.
+        int contentBottom = Math.max(top, bottom - 1);
+        out.printf("%s%d;%dr", ESC, top, bottom);
+        for (int row = top; row <= contentBottom; row++) {
+            out.printf("%s%d;1H%s2K", ESC, row, ESC);
+        }
+        List<String> visible = visibleContentLines(lines, preserveHeader);
+        int row = top;
+        for (int i = 0; i < visible.size() && row <= contentBottom; i++, row++) {
+            out.printf("%s%d;1H%s", ESC, row, visible.get(i));
+        }
+        out.printf("%s%d;1H", ESC, bottom);
+        out.flush();
+    }
+
+    private List<String> visibleContentLines(List<String> lines, boolean preserveHeader) {
+        int capacity = transcriptCapacity();
+        if (lines == null || lines.isEmpty()) return List.of();
+        int offset = clampScrollOffset(contentScrollOffset, lines, preserveHeader);
+        if (preserveHeader && capacity > 1) {
+            int bodyCapacity = capacity - 1;
+            int bodySize = Math.max(0, lines.size() - 1);
+            int end = Math.max(0, bodySize - offset);
+            int start = Math.max(0, end - bodyCapacity);
+            List<String> visible = new ArrayList<>(capacity);
+            visible.add(lines.get(0));
+            visible.addAll(lines.subList(1 + start, 1 + end));
+            return visible;
+        }
+        int end = Math.max(0, lines.size() - offset);
+        int start = Math.max(0, end - capacity);
+        return List.copyOf(lines.subList(start, end));
+    }
+
+    private int clampScrollOffset(int requested, List<String> lines, boolean preserveHeader) {
+        int capacity = transcriptCapacity();
+        int lineCount = lines == null ? 0 : lines.size();
+        int bodyCount = preserveHeader && lineCount > 0 ? lineCount - 1 : lineCount;
+        int bodyCapacity = preserveHeader && capacity > 1 ? capacity - 1 : capacity;
+        int maximum = Math.max(0, bodyCount - Math.max(1, bodyCapacity));
+        return Math.max(0, Math.min(requested, maximum));
+    }
+
+    private int transcriptCapacity() {
+        return Math.max(1, Math.max(scrollTop(), scrollBottom() - 1) - scrollTop() + 1);
     }
 
     /**
@@ -337,5 +591,15 @@ public class KompileTui {
         }
         if (terminalHeight <= 0) terminalHeight = 24;
         if (terminalWidth <= 0) terminalWidth = 80;
+    }
+
+    private void fireResizeListeners() {
+        for (Runnable listener : resizeListeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException ignored) {
+                // A display listener must never break terminal resize handling.
+            }
+        }
     }
 }

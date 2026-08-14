@@ -26,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,11 +45,30 @@ class CorpusSchemaPromptBuilderTest {
         assertTrue(chunkBIndex >= 0);
         assertTrue(chunkAIndex > chunkBIndex);
 
-        assertTrue(prompt.contains("\"nodeTypes\""));
-        assertTrue(prompt.contains("\"relationshipTypes\""));
-        assertTrue(prompt.contains("\"patterns\""));
-        assertTrue(prompt.contains("Node and relationship names must match [A-Z][A-Z0-9_]*"));
-        assertTrue(prompt.contains("Schema definitions are vocabulary and constraints, not source evidence."));
+        assertTrue(prompt.contains("node type"));
+        assertTrue(prompt.contains("relationship type"));
+        assertTrue(prompt.contains("patterns object"));
+        assertTrue(prompt.contains("Type names must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*"));
+        assertTrue(prompt.contains("never for a particular name or value"));
+        assertTrue(prompt.contains("Call submit_corpus_schema exactly once"));
+        assertFalse(prompt.contains("sent by"));
+    }
+
+    @Test
+    void boundsOneModelBatchWithoutSeedingDomainTypes() {
+        Map<String, String> passages = new LinkedHashMap<>();
+        for (int index = 0; index < 30; index++) {
+            passages.put(String.format("chunk-%02d", index), "Observation " + index);
+        }
+
+        String prompt = CorpusSchemaPromptBuilder.build(passages, null);
+
+        assertEquals(8, countOccurrences(prompt, "BEGIN CORPUS PASSAGE"));
+        assertTrue(prompt.contains("chunkId: chunk-00"));
+        assertTrue(prompt.contains("chunkId: chunk-07"));
+        assertFalse(prompt.contains("chunkId: chunk-08"));
+        assertFalse(prompt.contains("EMAIL_MESSAGE"));
+        assertFalse(prompt.contains("SENT_BY"));
     }
 
     @Test
@@ -76,30 +96,16 @@ class CorpusSchemaPromptBuilderTest {
         assertTrue(prompt.contains("HAS_ROLE"));
         assertTrue(prompt.contains("serves_as"));
         assertTrue(prompt.contains("(PERSON)-[:HAS_ROLE]->(ROLE)"));
-        assertTrue(prompt.contains("do not rename or delete existing canonical names"));
+        assertTrue(prompt.contains("Do not delete, rename, redefine, or repeat these types"));
     }
 
-    @Test
-    void unificationShapeDoesNotSeedConcreteTypesOrAliasPatterns() {
-        CorpusSchemaCandidates.Inventory inventory = new CorpusSchemaCandidates.Inventory(
-                List.of(new CorpusSchemaCandidates.NodeCandidate(
-                        "person", List.of("person"), List.of("person"), 2, 0.9,
-                        List.of("chunk-1"), List.of()
-                )),
-                List.of()
-        );
-
-        String prompt = CorpusSchemaUnificationPromptBuilder.build(inventory, null);
-
-        assertTrue(prompt.contains("{ \"nodeTypes\": [], \"relationshipTypes\": [], \"patterns\": [] }"));
-        assertTrue(prompt.contains("Every nodeTypes item MUST be a JSON object"));
-        assertTrue(prompt.contains("Never put bare strings in nodeTypes"));
-        assertTrue(prompt.contains("Every relationshipTypes item MUST be a JSON object"));
-        assertTrue(prompt.contains("Never put bare strings in relationshipTypes"));
-        assertTrue(prompt.contains("(SOURCE_TYPE)-[:RELATIONSHIP_TYPE]->(TARGET_TYPE)"));
-        assertTrue(prompt.contains("aliases are not valid values inside [:...]"));
-        assertFalse(prompt.contains("ORGANIZATION"));
-        assertFalse(prompt.contains("ASSET"));
-        assertFalse(prompt.contains("OWNS"));
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 }

@@ -20,7 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,7 +31,8 @@ import java.util.Map;
 
 @RestController("stagingMcpSseController")
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
-@ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
+@ConditionalOnExpression(
+        "${kompile.staging.app.enabled:false} && ${kompile.staging.mcp.enabled:true}")
 public class McpSseController {
 
     private static final Logger log = LoggerFactory.getLogger(McpSseController.class);

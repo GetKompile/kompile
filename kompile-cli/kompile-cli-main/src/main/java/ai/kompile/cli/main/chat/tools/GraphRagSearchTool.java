@@ -38,11 +38,13 @@ public class GraphRagSearchTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public GraphRagSearchTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -102,10 +104,12 @@ public class GraphRagSearchTool implements CliTool {
             return ToolResult.error("query is required");
         }
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable()) {
-            return ToolResult.error("Graph search requires a running kompile-app instance with Neo4j. " +
-                    "Start kompile-app with Neo4j enabled or use --url to connect. " +
-                    "The backend will be auto-detected when it comes online.");
+            return ToolResult.error("The explicitly configured remote graph search service is unavailable at "
+                    + backend.baseUrlFor("/api/chat/graph-rag/search") + ". Remove --url to use the in-process graph.");
         }
 
         try {
@@ -131,7 +135,8 @@ public class GraphRagSearchTool implements CliTool {
             return formatResults(query, result, searchType);
 
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote graph search service became unavailable. "
+                    + "Remove --url to continue with the in-process graph. " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
             return ToolResult.error("Graph search timed out after 30s. " +
                     "The graph query may be too broad. Try a more specific query.");

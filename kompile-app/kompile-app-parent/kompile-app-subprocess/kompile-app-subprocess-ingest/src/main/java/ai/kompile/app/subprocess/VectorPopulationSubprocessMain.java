@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.services.pipeline.IngestPipelineConfig;
 import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
@@ -96,6 +97,7 @@ public class VectorPopulationSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         // Capture original stdout for protocol messages
         originalStdout = System.out;
 

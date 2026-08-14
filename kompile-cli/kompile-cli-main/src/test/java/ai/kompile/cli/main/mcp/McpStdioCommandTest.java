@@ -20,6 +20,7 @@ import ai.kompile.cli.main.chat.roles.BuiltInRoles;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
+import picocli.CommandLine;
 
 import java.lang.reflect.Field;
 import java.util.List;
@@ -29,6 +30,27 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 class McpStdioCommandTest {
+
+    @Test
+    void daemonBridgeIsExplicitOptInAndNoDaemonNeverEnablesIt() throws Exception {
+        McpStdioCommand defaults = new McpStdioCommand();
+        new CommandLine(defaults).parseArgs();
+        assertFalse(daemonEnabled(defaults));
+
+        McpStdioCommand optedIn = new McpStdioCommand();
+        new CommandLine(optedIn).parseArgs("--daemon");
+        assertTrue(daemonEnabled(optedIn));
+
+        McpStdioCommand explicitlyDisabled = new McpStdioCommand();
+        new CommandLine(explicitlyDisabled).parseArgs("--no-daemon");
+        assertFalse(daemonEnabled(explicitlyDisabled));
+    }
+
+    private boolean daemonEnabled(McpStdioCommand command) throws Exception {
+        Field field = McpStdioCommand.class.getDeclaredField("daemon");
+        field.setAccessible(true);
+        return field.getBoolean(command);
+    }
 
     @Test
     @SuppressWarnings("unchecked")

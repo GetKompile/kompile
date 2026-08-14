@@ -206,6 +206,10 @@ public class ChatCommandRouter {
                 handleCompact(rest);
                 return true;
 
+            case "/auto-compact":
+                handleAutoCompact(rest);
+                return true;
+
             case "/rag":
                 if (localMode) {
                     System.out.println(renderer.dim("RAG is not available in local mode. "
@@ -578,6 +582,7 @@ public class ChatCommandRouter {
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
+            body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/stats")).append("              Session statistics (tokens, timing, tools)\n");
@@ -609,6 +614,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Clear server history\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation (local mode only)\n");
+            body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Auto-compaction status and policy\n");
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("\n");
@@ -1477,7 +1483,7 @@ public class ChatCommandRouter {
         }
         if ("reset".equalsIgnoreCase(parts[0])) {
             permissionService.resetSessionOverrides();
-            System.out.println("Permission choices reset to agent and tool defaults.");
+            System.out.println("Permission choices reset. MCP tools default to allow; explicit agent rules still apply.");
             return;
         }
 
@@ -1734,6 +1740,11 @@ public class ChatCommandRouter {
     // ========================================================================
 
     private void handleCompact(String focusInstruction) {
+        if (repl.isLlmBusy()) {
+            System.out.println(renderer.yellow("  /compact is available after the active turn finishes."));
+            System.out.println(renderer.dim("  Mid-tool compaction would break provider function-call/result linkage."));
+            return;
+        }
         if (!agenticLoop.supportsForceCompact()) {
             System.out.println(renderer.yellow("  /compact requires local mode."));
             System.out.println(renderer.dim("  In server mode, use /clear to reset the server session, "
@@ -1787,6 +1798,98 @@ public class ChatCommandRouter {
                 System.out.println(renderer.red("  " + result.getMessage()));
                 break;
         }
+    }
+
+    private void handleAutoCompact(String arguments) {
+        ChatConfig config = repl.getChatConfig();
+        if (!localMode || config == null || !agenticLoop.supportsForceCompact()) {
+            System.out.println(renderer.yellow("  /auto-compact requires standard local chat mode."));
+            return;
+        }
+
+        String trimmed = arguments == null ? "" : arguments.trim();
+        if (!trimmed.isEmpty() && !"status".equalsIgnoreCase(trimmed)) {
+            String[] parts = trimmed.split("\\s+", 2);
+            String action = parts[0].toLowerCase(Locale.ROOT);
+            String value = parts.length > 1 ? parts[1].trim() : "";
+            try {
+                switch (action) {
+                    case "on" -> config.setAutoCompactEnabled(true);
+                    case "off" -> config.setAutoCompactEnabled(false);
+                    case "threshold" -> config.setAutoCompactThreshold(parseCompactionThreshold(value));
+                    case "reserve" -> config.setCompactionReserveTokens(parseTokenSetting(value));
+                    case "context" -> config.setContextWindowTokens(parseTokenSetting(value));
+                    case "output" -> config.setMaxOutputTokens(parseTokenSetting(value));
+                    default -> {
+                        printAutoCompactUsage();
+                        return;
+                    }
+                }
+                config.saveLoadedOrGlobal();
+                agenticLoop.refreshCompactionPolicy();
+            } catch (Exception e) {
+                System.out.println(renderer.red("  Could not update auto-compaction: " + e.getMessage()));
+                printAutoCompactUsage();
+                return;
+            }
+        } else {
+            agenticLoop.refreshCompactionPolicy();
+        }
+        printAutoCompactStatus(config);
+    }
+
+    private double parseCompactionThreshold(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("threshold value is required");
+        }
+        String normalized = value.trim();
+        boolean percent = normalized.endsWith("%");
+        if (percent) normalized = normalized.substring(0, normalized.length() - 1).trim();
+        double parsed = Double.parseDouble(normalized);
+        if (percent || parsed > 1.0d) parsed /= 100.0d;
+        if (!Double.isFinite(parsed) || parsed < 0.50d || parsed > 0.95d) {
+            throw new IllegalArgumentException("threshold must be between 50% and 95%");
+        }
+        return parsed;
+    }
+
+    private int parseTokenSetting(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("token value is required");
+        }
+        if ("auto".equalsIgnoreCase(value.trim())) return 0;
+        long parsed = Long.parseLong(value.trim().replace("_", ""));
+        if (parsed <= 0L || parsed > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("token value must be positive or 'auto'");
+        }
+        return (int) parsed;
+    }
+
+    private void printAutoCompactStatus(ChatConfig config) {
+        String state = agenticLoop.autoCompactEnabled() ? "enabled" : "disabled";
+        System.out.println(renderer.cyan("  Auto-compaction: ") + state);
+        System.out.println(renderer.dim(String.format(Locale.ROOT,
+                "  active model limits: %,d context / %,d output tokens",
+                agenticLoop.contextWindowTokens(), agenticLoop.maxOutputTokens())));
+        System.out.println(renderer.dim(String.format(Locale.ROOT,
+                "  trigger: %,d tokens (%.0f%% ceiling, %,d reserved)",
+                agenticLoop.compactionTriggerTokens(),
+                agenticLoop.autoCompactThreshold() * 100.0d,
+                agenticLoop.compactionReserveTokens())));
+        System.out.println(renderer.dim("  overrides: context="
+                + tokenSetting(config.getContextWindowTokens()) + ", output="
+                + tokenSetting(config.getMaxOutputTokens()) + ", reserve="
+                + tokenSetting(config.getCompactionReserveTokens())));
+    }
+
+    private String tokenSetting(int value) {
+        return value > 0 ? String.format(Locale.ROOT, "%,d", value) : "auto";
+    }
+
+    private void printAutoCompactUsage() {
+        System.out.println(renderer.dim("  Usage: /auto-compact status|on|off"));
+        System.out.println(renderer.dim("         /auto-compact threshold <50%-95%>"));
+        System.out.println(renderer.dim("         /auto-compact reserve|context|output <tokens|auto>"));
     }
 
     // ========================================================================

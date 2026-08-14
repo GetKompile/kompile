@@ -31,6 +31,12 @@ public interface SubagentRunner {
      */
     interface LifecycleListener {
         void onSubagentStart(String id, String type, String description);
+        default void onSubagentStatus(String id, String status) {
+        }
+        default void onSubagentActivity(String id, String summary, String detail) {
+        }
+        default void onSubagentOutput(String id, String chunk) {
+        }
         void onSubagentEnd(String id);
     }
 
@@ -47,9 +53,17 @@ public interface SubagentRunner {
     String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception;
 
     /**
-     * Set a lifecycle listener for subagent start/end events.
+     * Set a lifecycle listener for subagent start/status/end events.
      */
     default void setLifecycleListener(LifecycleListener listener) {
         // Default no-op for implementations that don't support it
+    }
+
+    /**
+     * Queue a user follow-up for an existing subagent conversation.
+     * Implementations return false when the id is unknown or not interactive.
+     */
+    default boolean sendMessage(String subagentId, String message) {
+        return false;
     }
 }

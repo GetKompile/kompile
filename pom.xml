@@ -64,6 +64,9 @@
     <mockito.version>5.11.0</mockito.version>
     <graalvm.sdk.version>24.0.1</graalvm.sdk.version>
     <native-maven-plugin.version>0.10.1</native-maven-plugin.version>
+    <!-- Development native images use GraalVM quick build (-Ob). Release builds
+         override with -Dnative.quickBuild=false. -->
+    <native.quickBuild>true</native.quickBuild>
     <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
     <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
 
@@ -125,7 +128,16 @@
     <tokenizers.platform.classifier>${javacpp.platform}</tokenizers.platform.classifier>
 
     <!-- Default exclusions (will be overridden by profiles) -->
-    <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
+    <!-- Native executables side-load every JNI/backend library from the distribution.
+         Native-image resources contain metadata/configuration only; platform payloads must
+         never enter the image builder's resource closure. -->
+    <native.bytedeco.metadata.pattern>org/bytedeco/.*/properties/.*</native.bytedeco.metadata.pattern>
+    <!-- SharedCompilerRuntime reads this classifier-local manifest dynamically at
+         runtime; keep it in native images while side-loading only the binary payload. -->
+    <native.nd4j.config.pattern>org/nd4j/((linalg/factory|config)/.*|.*/shared-runtime-manifest\.txt)</native.nd4j.config.pattern>
+    <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+    <native.exclude.platform.payload>(.*/)?(linux|windows|macosx|android|ios)[^/]*/.*\.(so(\..*)?|dylib|dll|a|lib|o|obj|vsa|vso)$</native.exclude.platform.payload>
+    <native.exclude.library.payload>.*\.(so(\..*)?|dylib|dll|a|lib|o|obj|vsa|vso)$</native.exclude.library.payload>
     <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
     <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
     <native.exclude.linux.arm>org/bytedeco/.*/linux-arm.*</native.exclude.linux.arm>
@@ -484,6 +496,7 @@
           <artifactId>native-maven-plugin</artifactId>
           <version>${native-maven-plugin.version}</version>
           <configuration>
+            <quickBuild>${native.quickBuild}</quickBuild>
             <buildArgs>
               <buildArg>-J-Xmx32g</buildArg>
               <buildArg>--verbose</buildArg>
@@ -498,7 +511,6 @@
               <buildArg>-H:IncludeResources=org/nd4j/linalg/factory/.*</buildArg>
               <buildArg>-H:IncludeResources=org/nd4j/config/.*</buildArg>
               <buildArg>-H:IncludeResources=${native.include.pattern}</buildArg>
-              <arg>-H:LargeArrayThreshold=8192</arg>
               <arg>--enable-preview</arg>
 
               <buildArg>-H:ExcludeResources=${native.exclude.windows}</buildArg>
@@ -514,6 +526,10 @@
               <buildArg>-H:ExcludeResources=.*/lib/test-classes</buildArg>
               <buildArg>-H:ExcludeResources=.*/\.jar$</buildArg>
               <buildArg>-H:ExcludeResources=.*/\.zip$</buildArg>
+              <!-- Platform/JNI payloads are always side-loaded from dist/lib. These
+                   exclusions also override stale tracing-agent resource configurations. -->
+              <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
             </buildArgs>
           </configuration>
         </plugin>
@@ -693,8 +709,8 @@
       </activation>
       <properties>
         <javacpp.platform>linux-x86_64</javacpp.platform>
-        <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
-        <native.exclude.linux.x86></native.exclude.linux.x86>
+        <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+        <native.exclude.linux.x86>org/bytedeco/.*/linux-x86_64/.*</native.exclude.linux.x86>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
         <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
         <native.exclude.linux.arm>org/bytedeco/.*/linux-arm.*</native.exclude.linux.arm>
@@ -715,8 +731,8 @@
       </activation>
       <properties>
         <javacpp.platform>linux-arm64</javacpp.platform>
-        <native.include.pattern>org/bytedeco/.*/linux-arm64/.*</native.include.pattern>
-        <native.exclude.linux.arm></native.exclude.linux.arm>
+        <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+        <native.exclude.linux.arm>org/bytedeco/.*/linux-arm.*</native.exclude.linux.arm>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
         <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
         <native.exclude.linux.x86>org/bytedeco/.*/linux-x86_64/.*</native.exclude.linux.x86>
@@ -736,8 +752,8 @@
       </activation>
       <properties>
         <javacpp.platform>macosx-x86_64</javacpp.platform>
-        <native.include.pattern>org/bytedeco/.*/macosx-x86_64/.*</native.include.pattern>
-        <native.exclude.macosx></native.exclude.macosx>
+        <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+        <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
         <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
         <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
@@ -757,8 +773,8 @@
       </activation>
       <properties>
         <javacpp.platform>macosx-arm64</javacpp.platform>
-        <native.include.pattern>org/bytedeco/.*/macosx-arm64/.*</native.include.pattern>
-        <native.exclude.macosx></native.exclude.macosx>
+        <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+        <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
         <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
         <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
@@ -778,8 +794,8 @@
       </activation>
       <properties>
         <javacpp.platform>windows-x86_64</javacpp.platform>
-        <native.include.pattern>org/bytedeco/.*/windows-x86_64/.*</native.include.pattern>
-        <native.exclude.windows></native.exclude.windows>
+        <native.include.pattern>(${native.bytedeco.metadata.pattern}|${native.nd4j.config.pattern})</native.include.pattern>
+        <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
         <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
         <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
         <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
@@ -885,6 +901,16 @@
       <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-compile</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-compile</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
+      <id>backend-cpu-compile-avx2</id>
+      <activation><property><name>kompile.backend</name><value>cpu-compile-avx2</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compile-avx2</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-compile-avx2</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-compile-avx2</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
+      <id>backend-cpu-compile-avx512</id>
+      <activation><property><name>kompile.backend</name><value>cpu-compile-avx512</value></property></activation>
+      <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-compile-avx512</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-compile-avx512</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-compile-avx512</kompile.distribution.platform.classifier></properties>
+    </profile>
+    <profile>
       <id>backend-cpu-armcompute</id>
       <activation><property><name>kompile.backend</name><value>cpu-armcompute</value></property></activation>
       <properties><nd4j.backend>nd4j-native</nd4j.backend><javacpp.platform.extension>-armcompute</javacpp.platform.extension><tokenizers.platform.classifier>${javacpp.platform}-armcompute</tokenizers.platform.classifier><kompile.distribution.platform.classifier>${javacpp.platform}-armcompute</kompile.distribution.platform.classifier></properties>
@@ -918,32 +944,32 @@
     <profile>
       <id>backend-cuda-12.6</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.6</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><kompile.cuda.redist.version>12.6-9.5-1.5.11</kompile.cuda.redist.version><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
       <id>backend-cuda-12.6-cudnn</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.6-cudnn</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-cudnn</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><kompile.cuda.redist.version>12.6-9.5-1.5.11</kompile.cuda.redist.version><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-cudnn</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
       <id>backend-cuda-12.6-compile</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.6-compile</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-compile</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.6</nd4j.backend><kompile.cuda.redist.version>12.6-9.5-1.5.11</kompile.cuda.redist.version><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.6-compile</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
       <id>backend-cuda-12.9</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.9</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><kompile.cuda.redist.version>12.9-9.10-1.5.12</kompile.cuda.redist.version><javacpp.platform.extension></javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
       <id>backend-cuda-12.9-cudnn</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.9-cudnn</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-cudnn</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><kompile.cuda.redist.version>12.9-9.10-1.5.12</kompile.cuda.redist.version><javacpp.platform.extension>-cudnn</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-cudnn</kompile.distribution.platform.classifier></properties>
     </profile>
     <profile>
       <id>backend-cuda-12.9-compile</id>
       <activation><property><name>kompile.backend</name><value>cuda-12.9-compile</value></property></activation>
-      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-compile</kompile.distribution.platform.classifier></properties>
+      <properties><nd4j.backend>nd4j-cuda-12.9</nd4j.backend><kompile.cuda.redist.version>12.9-9.10-1.5.12</kompile.cuda.redist.version><javacpp.platform.extension>-compile</javacpp.platform.extension><kompile.distribution.platform.classifier>${javacpp.platform}-cuda-12.9-compile</kompile.distribution.platform.classifier></properties>
     </profile>
 
     <profile>
@@ -997,6 +1023,24 @@
       </activation>
       <modules>
         <module>kompile-dist</module>
+      </modules>
+    </profile>
+
+    <!--
+      Lean native distribution for standard CLI chat and folder-local MCP/model
+      orchestration. Native workers are built explicitly by
+      build-scripts/build-kompile-local.sh; this module owns canonical packaging
+      and Maven attachment without pulling the web/batch distribution into scope.
+    -->
+    <profile>
+      <id>local-dist</id>
+      <activation>
+        <property>
+          <name>kompile.local.dist</name>
+        </property>
+      </activation>
+      <modules>
+        <module>kompile-local-dist</module>
       </modules>
     </profile>
   </profiles>

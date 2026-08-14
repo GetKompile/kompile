@@ -32,12 +32,11 @@ import org.springframework.web.client.ResourceAccessException;
  * MCP tool: {@code crawl_source}
  *
  * <p>Run a single source (local file path, URL, or inline text) through the real unified-crawl
- * pipeline into the knowledge graph, via {@code POST /api/unified-crawl/single-source}.
- * Pass {@code dryRun=true} for a synchronous LLM-extraction preview with zero persistence.
- * The {@code steps} parameter selects which pipeline stages to execute; server-side dependency
- * resolution ensures required predecessors are always included. Requires a running kompile-app;
- * the default wait timeout is 900 s — behind a reverse proxy the value must stay under the
- * proxy's read timeout.</p>
+ * pipeline into the project-local knowledge graph, or through
+ * {@code POST /api/unified-crawl/single-source} when a remote URL is explicitly configured.
+ * Pass {@code dryRun=true} for a synchronous extraction preview with zero persistence.
+ * The {@code steps} parameter selects which pipeline stages to execute; dependency resolution
+ * ensures required predecessors are always included.</p>
  */
 public class CrawlSourceTool implements CliTool {
 
@@ -77,10 +76,8 @@ public class CrawlSourceTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Crawl ONE source (path|url|text) into the KG. "
-                + "dryRun=true=preview; steps=[...] selects stages; "
-                + "factSheetId via list_fact_sheets; deriveOntology default on. "
-                + "Default 900s wait.";
+        return "Crawl one path|url|text into the current folder. dryRun=true previews; "
+                + "steps=[...] selects stages; factSheetId is an optional remote override; 900s default.";
     }
 
     @Override
@@ -113,7 +110,7 @@ public class CrawlSourceTool implements CliTool {
                 + "Dependencies are auto-added server-side. Omit to run all stages.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Fact sheet to crawl into. Omit to use the default sheet.");
+                .put("description", "Optional remote/legacy fact-sheet selector. Omit locally to use the current folder's knowledge base.");
         props.putObject("model")
                 .put("type", "string")
                 .put("description", "Override the extraction model name.");
@@ -361,6 +358,9 @@ public class CrawlSourceTool implements CliTool {
                 Map<String, String> spMap = new LinkedHashMap<>();
                 stepsPlannedNode.fields().forEachRemaining(e -> spMap.put(e.getKey(), e.getValue().asText()));
                 metadata.put("stepsPlanned", spMap);
+            }
+            if (!isDryRun && (persisted || jobId != null)) {
+                CrawlResultHandle.from(r, "managed", jobId, null).attachTo(metadata);
             }
 
             String sourceLabel = (path != null && !path.isBlank()) ? path

@@ -16,7 +16,6 @@
 
 package ai.kompile.cli.component.cmd;
 
-import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.registry.InstanceInfo;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import ai.kompile.cli.component.output.OutputFormatter;
@@ -26,7 +25,6 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -46,12 +44,6 @@ import java.util.concurrent.Callable;
 public class ComponentListCommand implements Callable<Integer> {
 
     private static final Map<String, ComponentMetadata> KNOWN_COMPONENTS = knownComponents();
-
-    private static final Map<String, List<String>> BINARY_ALIASES = Map.of(
-            "kompile-app-main", List.of("kompile-app-main", "kompile-server"),
-            "kompile-model-staging", List.of("kompile-model-staging"),
-            "kompile-cli", List.of("kompile-cli", "kompile")
-    );
 
     @Option(names = {"--format", "-f"}, 
             description = "Output format: text, json, yaml, csv, table",
@@ -103,7 +95,7 @@ public class ComponentListCommand implements Callable<Integer> {
     }
 
     private Map<String, Object> createComponentEntry(ComponentMetadata metadata) {
-        InstallInfo install = findInstallInfo(metadata.id());
+        ComponentInstallPaths.InstallInfo install = ComponentInstallPaths.findInstallInfo(metadata.id());
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("id", metadata.id());
         entry.put("name", metadata.name());
@@ -159,7 +151,7 @@ public class ComponentListCommand implements Callable<Integer> {
 
     private Set<String> discoverInstalledComponentIds() {
         Set<String> ids = new LinkedHashSet<>();
-        for (File root : componentRoots()) {
+        for (File root : ComponentInstallPaths.componentRoots()) {
             File[] dirs = root.listFiles(File::isDirectory);
             if (dirs == null) {
                 continue;
@@ -172,114 +164,6 @@ public class ComponentListCommand implements Callable<Integer> {
             }
         }
         return ids;
-    }
-
-    private InstallInfo findInstallInfo(String componentId) {
-        for (File artifact : distributionArtifacts(componentId)) {
-            if (artifact != null && artifact.isFile()) {
-                return new InstallInfo(true, artifact, distributionVersion(artifact));
-            }
-        }
-
-        for (File root : componentRoots()) {
-            File componentDir = new File(root, componentId);
-            if (!componentDir.isDirectory()) {
-                continue;
-            }
-
-            File[] versionDirs = componentDir.listFiles(File::isDirectory);
-            if (versionDirs != null && versionDirs.length > 0) {
-                Arrays.sort(versionDirs, Comparator
-                        .comparingLong(File::lastModified)
-                        .thenComparing(File::getName)
-                        .reversed());
-                for (File versionDir : versionDirs) {
-                    File artifact = firstArtifact(versionDir, componentId);
-                    if (artifact != null) {
-                        return new InstallInfo(true, artifact, versionDir.getName());
-                    }
-                }
-                return new InstallInfo(true, null, versionDirs[0].getName());
-            }
-
-            File nativeExe = new File(componentDir, componentId);
-            if (nativeExe.isFile() && nativeExe.canExecute()) {
-                return new InstallInfo(true, nativeExe, null);
-            }
-            return new InstallInfo(true, null, null);
-        }
-
-        return new InstallInfo(false, null, null);
-    }
-
-    private List<File> distributionArtifacts(String componentId) {
-        List<File> artifacts = new ArrayList<>();
-        File installBase = resolveInstallBaseDir();
-        File binDir = new File(installBase, "bin");
-        File libDir = new File(installBase, "lib");
-        for (String alias : aliasesFor(componentId)) {
-            artifacts.add(new File(binDir, alias));
-            artifacts.add(new File(binDir, alias + ".exe"));
-            File[] jars = libDir.listFiles((dir, name) -> name.startsWith(alias) && name.endsWith(".jar"));
-            if (jars != null) {
-                Arrays.sort(jars, Comparator.comparing(File::getName).reversed());
-                artifacts.addAll(Arrays.asList(jars));
-            }
-        }
-        return artifacts;
-    }
-
-    private File firstArtifact(File versionDir, String componentId) {
-        File[] files = versionDir.listFiles(file -> file.isFile()
-                && (file.getName().endsWith(".jar") || file.canExecute())
-                && (file.getName().startsWith(componentId) || file.canExecute()));
-        if (files == null || files.length == 0) {
-            return null;
-        }
-        Arrays.sort(files, Comparator
-                .comparing((File file) -> !file.canExecute())
-                .thenComparing(File::getName));
-        return files[0];
-    }
-
-    private List<File> componentRoots() {
-        List<File> roots = new ArrayList<>();
-        File installComponents = new File(resolveInstallBaseDir(), "components");
-        roots.add(installComponents);
-        File homeComponents = new File(KompileHome.homeDirectory(), "components");
-        if (!homeComponents.equals(installComponents)) {
-            roots.add(homeComponents);
-        }
-        return roots;
-    }
-
-    private File resolveInstallBaseDir() {
-        String prop = System.getProperty("kompile.install.dir");
-        if (prop != null && !prop.isBlank()) {
-            return new File(prop);
-        }
-        String env = System.getenv("KOMPILE_INSTALL_DIR");
-        if (env != null && !env.isBlank()) {
-            return new File(env);
-        }
-        return KompileHome.homeDirectory();
-    }
-
-    private List<String> aliasesFor(String componentId) {
-        return BINARY_ALIASES.getOrDefault(componentId, List.of(componentId));
-    }
-
-    private String distributionVersion(File artifact) {
-        String name = artifact.getName();
-        int idx = name.indexOf("-0.");
-        if (idx < 0) {
-            idx = name.indexOf("-1.");
-        }
-        if (idx < 0) {
-            return null;
-        }
-        String version = name.substring(idx + 1);
-        return version.endsWith(".jar") ? version.substring(0, version.length() - 4) : version;
     }
 
     private static Map<String, ComponentMetadata> knownComponents() {
@@ -354,6 +238,4 @@ public class ComponentListCommand implements Callable<Integer> {
         }
     }
 
-    private record InstallInfo(boolean installed, File path, String version) {
-    }
 }

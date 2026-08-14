@@ -11,11 +11,14 @@ package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.graph.GraphServiceRouting;
+import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -23,8 +26,9 @@ import com.sun.net.httpserver.HttpServer;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.nio.file.Paths;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
@@ -42,6 +46,9 @@ class KnowledgeGraphToolTest {
     private ToolContext context;
     private ObjectMapper om;
 
+    @TempDir
+    Path tempDir;
+
     @BeforeEach
     void setUp() {
         om = new ObjectMapper();
@@ -54,7 +61,7 @@ class KnowledgeGraphToolTest {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("knowledge_graph", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        context = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        context = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -185,7 +192,7 @@ class KnowledgeGraphToolTest {
             "opinions", "facts_by_tier", "graph_health", "list_rules", "reactive_rules",
             "node_provenance", "list_pipelines", "reasoning_layers"
     })
-    void testNoUrlReturnsError(String action) throws Exception {
+    void testNoUrlRoutesToProjectLocalBackend(String action) throws Exception {
         ObjectNode params = om.createObjectNode();
         params.put("action", action);
         // Add minimal required params to get past validation
@@ -222,9 +229,82 @@ class KnowledgeGraphToolTest {
         params.put("ontology_schema_id", "test-ontology");
 
         ToolResult result = noUrlTool.execute(params, context);
-        assertTrue(result.isError(), "action '" + action + "' should return error when no URL configured");
-        assertTrue(result.getOutput().contains("requires a running kompile-app"),
-                "error for '" + action + "' should mention requiring kompile-app");
+        assertFalse(result.getOutput().contains("requires a running kompile-app"),
+                "action '" + action + "' must not require the remote app in local chat");
+        assertFalse(result.getOutput().contains("localhost:8095"),
+                "action '" + action + "' must not route to the default graph-service port");
+    }
+
+    @Test
+    void graphInventoryBootstrapsTheCurrentFolderWithoutAFactSheetId() throws Exception {
+        ObjectNode listGraphs = om.createObjectNode().put("action", "list_graphs");
+
+        ToolResult result = noUrlTool.execute(listGraphs, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        String knowledgeBase = tempDir.getFileName().toString().toLowerCase() + "-knowledge";
+        assertTrue(result.getOutput().contains(knowledgeBase), result.getOutput());
+        assertTrue(Files.isRegularFile(tempDir.resolve("data/crawls")
+                .resolve(knowledgeBase).resolve("graph.kgraph")));
+    }
+
+    @Test
+    void projectLocalGraphSupportsDiscoveryStatusAndQueries() throws Exception {
+        Path graphPath = tempDir.resolve("data/crawls/kb-7/graph.kgraph");
+        Files.createDirectories(graphPath.getParent());
+        UnifiedGraph graph = new UnifiedGraph()
+                .graphId("local:test:kb-7")
+                .factSheetId(7L)
+                .meta("backend", "project-local")
+                .meta("knowledgeBaseId", "kb-7")
+                .meta("knowledgeBaseName", "Permission Test");
+        graph.addEntity("alice", "PERSON", "Alice");
+        graph.addEntity("repo", "PROJECT", "Kompile");
+        graph.addRelation("alice-knows-repo", "alice", "repo", "KNOWS", 1.0);
+        graph.save(graphPath);
+
+        ObjectNode overview = om.createObjectNode().put("action", "overview")
+                .put("knowledgeBase", "kb-7");
+        ToolResult overviewResult = noUrlTool.execute(overview, context);
+        assertFalse(overviewResult.isError(), overviewResult.getOutput());
+        assertTrue(overviewResult.getOutput().contains("project-local"));
+        assertTrue(overviewResult.getOutput().contains("Alice")
+                        || overviewResult.getOutput().contains("entities"));
+
+        ObjectNode factSheets = om.createObjectNode().put("action", "list_fact_sheets");
+        ToolResult factSheetResult = noUrlTool.execute(factSheets, context);
+        assertFalse(factSheetResult.isError(), factSheetResult.getOutput());
+        assertTrue(factSheetResult.getOutput().contains("Permission Test"));
+
+        ObjectNode predicates = om.createObjectNode().put("action", "list_predicates")
+                .put("knowledgeBase", "kb-7");
+        ToolResult predicateResult = noUrlTool.execute(predicates, context);
+        assertFalse(predicateResult.isError(), predicateResult.getOutput());
+        assertTrue(predicateResult.getOutput().contains("KNOWS"));
+
+        ObjectNode search = om.createObjectNode().put("action", "search_nodes")
+                .put("knowledgeBase", "kb-7").put("query", "Alice");
+        ToolResult searchResult = noUrlTool.execute(search, context);
+        assertFalse(searchResult.isError(), searchResult.getOutput());
+        assertTrue(searchResult.getOutput().contains("Alice"));
+    }
+
+    @Test
+    void localRegistryUsesGraphArchiveInsteadOfDefaultGraphServicePort() {
+        GraphServiceRouting.Resolution defaultRoute = new GraphServiceRouting.Resolution(
+                GraphServiceRouting.DEFAULT_URL, GraphServiceRouting.Source.DEFAULT);
+        GraphServiceRouting.Resolution configuredRoute = new GraphServiceRouting.Resolution(
+                "http://graph.example:9195", GraphServiceRouting.Source.ENVIRONMENT);
+        GraphServiceRouting.Resolution staleManagedRoute = new GraphServiceRouting.Resolution(
+                "http://localhost:8095", GraphServiceRouting.Source.MANAGED_INSTANCE);
+
+        assertNull(ToolRegistryFactory.resolveGraphBaseUrl("", defaultRoute));
+        assertNull(ToolRegistryFactory.resolveGraphBaseUrl(null, defaultRoute));
+        assertNull(ToolRegistryFactory.resolveGraphBaseUrl("", staleManagedRoute));
+        assertEquals("http://graph.example:9195",
+                ToolRegistryFactory.resolveGraphBaseUrl("", configuredRoute));
+        assertEquals(GraphServiceRouting.DEFAULT_URL,
+                ToolRegistryFactory.resolveGraphBaseUrl("http://localhost:8081", defaultRoute));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -513,7 +593,7 @@ class KnowledgeGraphToolTest {
         params.put("action", "overview");
         ToolResult result = unreachable.execute(params, context);
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("Cannot connect") ||
+        assertTrue(result.getOutput().contains("explicitly configured remote") ||
                         result.getOutput().contains("Knowledge graph error"),
                 "connection error should be handled gracefully");
     }

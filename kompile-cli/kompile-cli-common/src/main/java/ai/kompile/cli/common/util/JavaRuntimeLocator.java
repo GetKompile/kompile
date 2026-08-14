@@ -16,13 +16,19 @@
 package ai.kompile.cli.common.util;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Comparator;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
- * Resolves which {@code java} executable to use when launching jar-tier
- * components (app-main, model-staging) from the CLI or generated scripts.
+ * Resolves which {@code java} executable to use when launching executable-JAR
+ * components (model serving, pipeline execution, staging, and optional UI services)
+ * from the CLI or generated scripts.
  *
  * <p>Kompile distributions bundle a jlink-built runtime at {@code <dist-root>/runtime}
  * so the jar tier works on boxes with no system JDK. Resolution order:</p>
@@ -36,6 +42,8 @@ import java.util.Optional;
  *   <li>The JVM running this process, when this process is itself a JVM
  *       (jar-launched CLI; excluded under native image where the current
  *       executable is the kompile binary)</li>
+ *   <li>An SDKMAN Java 17 GraalVM candidate, discovered through {@code $SDKMAN_DIR}
+ *       or {@code ~/.sdkman} (including the {@code current} candidate)</li>
  *   <li>{@code java} from {@code $PATH}</li>
  * </ol>
  */
@@ -69,6 +77,11 @@ public final class JavaRuntimeLocator {
         File current = currentProcessJava();
         if (current != null) {
             return current.getAbsolutePath();
+        }
+
+        File sdkman = sdkmanJava17Graal();
+        if (sdkman != null) {
+            return sdkman.getAbsolutePath();
         }
 
         return "java";
@@ -114,6 +127,58 @@ public final class JavaRuntimeLocator {
         String name = exe.getName();
         boolean isJava = name.equals("java") || name.equals("java.exe");
         return isJava && isExecutable(exe) ? exe : null;
+    }
+
+    /**
+     * Discover the SDKMAN-managed Java 17 GraalVM used by local Kompile builds and
+     * executable-JAR subprocesses. Candidate names are inspected rather than pinning
+     * a particular GraalVM patch release, so SDKMAN upgrades remain transparent.
+     */
+    private static File sdkmanJava17Graal() {
+        String configuredRoot = System.getenv("SDKMAN_DIR");
+        Path sdkmanRoot = configuredRoot == null || configuredRoot.isBlank()
+                ? Paths.get(System.getProperty("user.home"), ".sdkman")
+                : Paths.get(configuredRoot);
+        Path candidates = sdkmanRoot.resolve("candidates").resolve("java");
+
+        Path current = candidates.resolve("current");
+        File currentJava = javaBin(current);
+        if (isExecutable(currentJava)
+                && isJava17GraalCandidate(resolveCandidateName(current))) {
+            return currentJava;
+        }
+
+        if (!Files.isDirectory(candidates)) {
+            return null;
+        }
+        try (Stream<Path> entries = Files.list(candidates)) {
+            return entries
+                    .filter(Files::isDirectory)
+                    .filter(path -> isJava17GraalCandidate(path.getFileName().toString()))
+                    .sorted(Comparator.comparingLong(
+                            (Path path) -> path.toFile().lastModified()).reversed())
+                    .map(JavaRuntimeLocator::javaBin)
+                    .filter(JavaRuntimeLocator::isExecutable)
+                    .findFirst()
+                    .orElse(null);
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    private static String resolveCandidateName(Path candidate) {
+        try {
+            return candidate.toRealPath().getFileName().toString();
+        } catch (IOException ignored) {
+            Path name = candidate.getFileName();
+            return name == null ? "" : name.toString();
+        }
+    }
+
+    private static boolean isJava17GraalCandidate(String candidateName) {
+        String name = candidateName.toLowerCase(Locale.ROOT);
+        return (name.startsWith("17") || name.contains("-17") || name.contains("17-"))
+                && name.contains("graal");
     }
 
     private static File javaBin(Path runtimeRoot) {

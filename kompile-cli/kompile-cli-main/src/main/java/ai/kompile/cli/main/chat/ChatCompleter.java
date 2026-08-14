@@ -71,6 +71,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/history", "Show conversation history");
         COMMANDS.put("/clear", "Clear conversation");
         COMMANDS.put("/compact", "Summarize conversation to free context");
+        COMMANDS.put("/auto-compact", "Configure automatic model-aware compaction");
         COMMANDS.put("/memory", "Show memory entries");
         COMMANDS.put("/recall", "Recall from memory");
         COMMANDS.put("/transcript", "Show transcript");
@@ -166,6 +167,15 @@ public class ChatCompleter implements Completer {
         SUB_ARGS.put("/plan", List.of(
                 new String[]{"on", "Enable plan mode"},
                 new String[]{"off", "Disable plan mode"}
+        ));
+        SUB_ARGS.put("/auto-compact", List.of(
+                new String[]{"status", "Show active model limits and trigger"},
+                new String[]{"on", "Enable automatic compaction"},
+                new String[]{"off", "Disable automatic compaction"},
+                new String[]{"threshold", "Set trigger percentage"},
+                new String[]{"reserve", "Set reserved input headroom"},
+                new String[]{"context", "Override context window"},
+                new String[]{"output", "Override max output tokens"}
         ));
         SUB_ARGS.put("/mode", List.of(
                 new String[]{"standard", "Standard chat mode"},
@@ -472,7 +482,7 @@ public class ChatCompleter implements Completer {
     /** Active standard-chat reader used for thread-safe asynchronous output. */
     private static volatile LineReader lineReaderRef;
 
-    /** Optional supplier of queued message strings to display below the bottom border. */
+    /** Retained compatibility hook; queue state is rendered by the status bar, not JLine post rows. */
     private static volatile Supplier<List<String>> queueSupplier;
 
     /** Current standard-chat model activity rendered by the persistent status bar. */
@@ -499,6 +509,15 @@ public class ChatCompleter implements Completer {
      */
     public static boolean hasLineReader() {
         return lineReaderRef != null;
+    }
+
+    public static void clearTerminalRef(LineReader reader) {
+        if (lineReaderRef == reader) {
+            lineReaderRef = null;
+            terminalRef = null;
+            cachedImpl = null;
+            activityLabel = null;
+        }
     }
 
     public static void setActivity(String activity) {
@@ -616,24 +635,12 @@ public class ChatCompleter implements Completer {
     private static volatile LineReaderImpl cachedImpl;
 
     /**
-     * Schedules a deferred restore of the post field (bottom border + queue).
-     * JLine's {@code readLine()} clears the post field during initialization,
-     * so this must be called just before each {@code readLine()} invocation.
-     * A short delay ensures readLine has finished its setup before we re-inject.
+     * Compatibility hook retained for callers. Persistent post restoration was
+     * removed because its delayed redisplay raced asynchronous transcript output
+     * and produced blank-line/feed corruption while the user was idle.
      */
     public static void schedulePostRestore() {
-        LineReaderImpl impl = cachedImpl;
-        if (impl == null || postField == null) return;
-        Thread t = new Thread(() -> {
-            try {
-                Thread.sleep(30);
-                setBottomBorderOnly(impl);
-                impl.callWidget(LineReader.REDISPLAY);
-            } catch (Exception ignored) {
-            }
-        }, "post-restore");
-        t.setDaemon(true);
-        t.start();
+        // Slash candidates are installed synchronously by updatePostDisplay().
     }
 
     /**
@@ -645,45 +652,25 @@ public class ChatCompleter implements Completer {
     }
 
     /**
-     * Builds the full post content: bottom border + optional queued messages.
+     * Queue previews no longer occupy JLine's post area. The live status bar owns
+     * queue counts and enqueue/dequeue acknowledgements are transcript events.
      */
-    private static String buildPostWithQueue() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(buildBottomBorder());
-
-        // Status bar: keyboard shortcuts and indicators
-        sb.append('\n').append(DIM)
-          .append("  Ctrl+G cancel \u00b7 /help \u00b7 /agent \u00b7 /quit")
-          .append(ANSI_RESET);
-
-        Supplier<List<String>> qs = queueSupplier;
-        if (qs != null) {
-            List<String> queued = qs.get();
-            if (queued != null && !queued.isEmpty()) {
-                sb.append('\n').append(DIM).append("  queued:").append(ANSI_RESET);
-                for (int i = 0; i < queued.size(); i++) {
-                    String msg = queued.get(i);
-                    if (msg.length() > 60) msg = msg.substring(0, 57) + "...";
-                    sb.append('\n').append("  ").append(DIM).append(i + 1).append(". ").append(ANSI_RESET)
-                      .append(ANSI_CYAN).append(msg).append(ANSI_RESET);
-                }
-                sb.append('\n').append(DIM).append("  \u2191 up arrow to edit").append(ANSI_RESET);
-            }
-        }
-
-        return sb.toString();
+    static String buildPostWithQueue() {
+        return "";
     }
 
-    /**
-     * Sets the post display to the bottom border + queued messages (no candidates).
-     */
+    /** Clear transient slash-completion rows without reserving permanent post rows. */
     private static void setBottomBorderOnly(LineReaderImpl impl) {
         try {
             if (postField == null) return;
-            // fromAnsi() parses ANSI escapes so JLine measures visible width correctly
-            AttributedString postContent = AttributedString.fromAnsi(buildPostWithQueue());
-            postField.set(impl, (Supplier<AttributedString>) () -> postContent);
+            postField.set(impl, (Supplier<AttributedString>) () -> new AttributedString(""));
         } catch (Exception ignored) {
+        }
+    }
+
+    static void refreshPostDisplay(LineReader reader) {
+        if (reader instanceof LineReaderImpl impl) {
+            updatePostDisplay(impl);
         }
     }
 
@@ -707,10 +694,9 @@ public class ChatCompleter implements Completer {
 
             String bottomBorder = buildBottomBorder();
 
-            // No slash prefix → show bottom border + queued messages
+            // No slash prefix: the status bar owns persistent state, so clear post rows.
             if (buf.isEmpty() || !buf.startsWith("/")) {
-                AttributedString postContent = AttributedString.fromAnsi(buildPostWithQueue());
-                postField.set(impl, (Supplier<AttributedString>) () -> postContent);
+                setBottomBorderOnly(impl);
                 impl.callWidget(LineReader.REDISPLAY);
                 return;
             }
@@ -722,9 +708,8 @@ public class ChatCompleter implements Completer {
             completer.complete(impl, impl.getParser().parse(buf, buf.length()), candidates);
 
             if (candidates.isEmpty()) {
-                // No matches → bottom border + queued messages
-                AttributedString postContent = AttributedString.fromAnsi(buildPostWithQueue());
-                postField.set(impl, (Supplier<AttributedString>) () -> postContent);
+                // No matches: remove transient completion rows.
+                setBottomBorderOnly(impl);
                 impl.callWidget(LineReader.REDISPLAY);
                 return;
             }

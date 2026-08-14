@@ -1,163 +1,187 @@
 package ai.kompile.chat.local.android.model
 
-import org.bytedeco.javacpp.BytePointer
-import org.bytedeco.javacpp.Pointer
-import org.bytedeco.javacpp.PointerPointer
-import org.nd4j.dsp.model.SdxLlmNative
+import java.nio.charset.StandardCharsets
+
+internal data class SdxNativeHandle(val address: Long) {
+    init {
+        require(address != 0L) { "A native SDX handle cannot be null" }
+    }
+}
 
 internal class SdxPointerByReference {
-    var value: Pointer? = null
+    var value: SdxNativeHandle? = null
 }
 
 /**
- * Android-only adapter around DL4J's JavaCPP transport for libsdx_llm.
+ * Android-only direct JNI adapter around libsdx_llm's stable C ABI.
  *
- * String and out-parameter conversion stays here so import and execution cannot
- * accidentally fall back to the desktop JNA ABI.
+ * JavaCPP remains private to the embedded Graal image. Keeping it out of this
+ * ART-facing transport prevents two JVMs from sharing JavaCPP's process-global
+ * JNI class, field, and method caches.
  */
 internal object SdxAndroidLlmAbi {
-    const val ABI_VERSION = SdxLlmNative.SDX_LLM_ABI_VERSION
+    const val ABI_VERSION = SdxAndroidLlmNative.SDX_LLM_ABI_VERSION
 
     fun interface ChunkCallback {
-        fun invoke(chunk: Pointer?)
+        fun invoke(chunk: String?)
     }
 
     fun interface CancelCallback {
         fun invoke(): Int
     }
 
-    fun sdxLlmCreateRuntime(): Pointer? = SdxLlmNative.sdxLlmCreateRuntime()
-    fun sdxLlmDestroyRuntime(runtime: Pointer): Int = SdxLlmNative.sdxLlmDestroyRuntime(runtime)
-    fun sdxLlmAbiVersion(runtime: Pointer): Int = SdxLlmNative.sdxLlmAbiVersion(runtime)
+    fun ensureLoaded() = SdxAndroidLlmNative.ensureLoaded()
+
+    fun sdxLlmCreateRuntime(): SdxNativeHandle? =
+        SdxAndroidLlmNative.nativeCreateRuntime().toHandle()
+
+    fun sdxLlmDestroyRuntime(runtime: SdxNativeHandle): Int =
+        SdxAndroidLlmNative.nativeDestroyRuntime(runtime.address)
+
+    fun sdxLlmAbiVersion(runtime: SdxNativeHandle): Int =
+        SdxAndroidLlmNative.nativeAbiVersion(runtime.address)
 
     fun sdxLlmPrepareGguf(
-        runtime: Pointer,
+        runtime: SdxNativeHandle,
         sourceGguf: String,
         tokenizerPath: String?,
         targetProfile: String,
         cacheDirectory: String,
         optionsJson: String?,
         outJson: SdxPointerByReference
-    ): Int = withStrings(sourceGguf, tokenizerPath, targetProfile, cacheDirectory, optionsJson) { values ->
-        withOutput(outJson) { output ->
-            SdxLlmNative.sdxLlmPrepareGguf(
-                runtime, values[0], values[1], values[2], values[3], values[4], output
-            )
-        }
+    ): Int = withOutput(outJson) { output ->
+        SdxAndroidLlmNative.nativePrepareGguf(
+            runtime.address,
+            sourceGguf.utf8(),
+            tokenizerPath.utf8OrNull(),
+            targetProfile.utf8(),
+            cacheDirectory.utf8(),
+            optionsJson.utf8OrNull(),
+            output
+        )
     }
 
     fun sdxLlmResolveModelBundle(
-        runtime: Pointer,
+        runtime: SdxNativeHandle,
         sourceSdz: String,
         targetProfile: String,
         cacheDirectory: String,
         outJson: SdxPointerByReference
-    ): Int = withStrings(sourceSdz, targetProfile, cacheDirectory) { values ->
-        withOutput(outJson) { output ->
-            SdxLlmNative.sdxLlmResolveModelBundle(
-                runtime, values[0], values[1], values[2], output
-            )
-        }
+    ): Int = withOutput(outJson) { output ->
+        SdxAndroidLlmNative.nativeResolveModelBundle(
+            runtime.address,
+            sourceSdz.utf8(),
+            targetProfile.utf8(),
+            cacheDirectory.utf8(),
+            output
+        )
     }
 
     fun sdxLlmLoadCompiledModel(
-        runtime: Pointer,
+        runtime: SdxNativeHandle,
         bundlePath: String,
         tokenizerPath: String?,
         targetProfile: String,
         optionsJson: String?
-    ): Pointer? = withStrings(bundlePath, tokenizerPath, targetProfile, optionsJson) { values ->
-        SdxLlmNative.sdxLlmLoadCompiledModel(runtime, values[0], values[1], values[2], values[3])
-    }
+    ): SdxNativeHandle? = SdxAndroidLlmNative.nativeLoadCompiledModel(
+        runtime.address,
+        bundlePath.utf8(),
+        tokenizerPath.utf8OrNull(),
+        targetProfile.utf8(),
+        optionsJson.utf8OrNull()
+    ).toHandle()
 
-    fun sdxLlmUnloadModel(runtime: Pointer, model: Pointer): Int =
-        SdxLlmNative.sdxLlmUnloadModel(runtime, model)
+    fun sdxLlmUnloadModel(runtime: SdxNativeHandle, model: SdxNativeHandle): Int =
+        SdxAndroidLlmNative.nativeUnloadModel(runtime.address, model.address)
 
     fun sdxLlmRenderChatPrompt(
-        runtime: Pointer,
-        model: Pointer,
+        runtime: SdxNativeHandle,
+        model: SdxNativeHandle,
         messagesJson: String,
         addGenerationPrompt: Int,
         outPrompt: SdxPointerByReference
-    ): Int = withStrings(messagesJson) { values ->
-        withOutput(outPrompt) { output ->
-            SdxLlmNative.sdxLlmRenderChatPrompt(
-                runtime, model, values[0], addGenerationPrompt, output
-            )
-        }
+    ): Int = withOutput(outPrompt) { output ->
+        SdxAndroidLlmNative.nativeRenderChatPrompt(
+            runtime.address,
+            model.address,
+            messagesJson.utf8(),
+            addGenerationPrompt,
+            output
+        )
     }
 
     fun sdxLlmParseChatResult(
-        runtime: Pointer,
-        model: Pointer,
+        runtime: SdxNativeHandle,
+        model: SdxNativeHandle,
         requestJson: String,
         rawText: String,
         outJson: SdxPointerByReference
-    ): Int = withStrings(requestJson, rawText) { values ->
-        withOutput(outJson) { output ->
-            SdxLlmNative.sdxLlmParseChatResult(
-                runtime, model, values[0], values[1], output
-            )
-        }
+    ): Int = withOutput(outJson) { output ->
+        SdxAndroidLlmNative.nativeParseChatResult(
+            runtime.address,
+            model.address,
+            requestJson.utf8(),
+            rawText.utf8(),
+            output
+        )
     }
 
     fun sdxLlmGenerateStreaming(
-        runtime: Pointer,
-        model: Pointer,
+        runtime: SdxNativeHandle,
+        model: SdxNativeHandle,
         prompt: String,
         optionsJson: String?,
         onChunk: ChunkCallback?,
         shouldCancel: CancelCallback?,
         outText: SdxPointerByReference
-    ): Int = withStrings(prompt, optionsJson) { values ->
+    ): Int = withOutput(outText) { output ->
         val nativeChunk = onChunk?.let { callback ->
-            object : SdxLlmNative.ChunkCallback() {
-                override fun call(chunk: BytePointer?) = callback.invoke(chunk)
+            SdxAndroidLlmNative.ChunkCallback { bytes ->
+                callback.invoke(bytes?.let { String(it, StandardCharsets.UTF_8) })
             }
         }
         val nativeCancel = shouldCancel?.let { callback ->
-            object : SdxLlmNative.CancelCallback() {
-                override fun call(): Int = callback.invoke()
-            }
+            SdxAndroidLlmNative.CancelCallback { callback.invoke() }
         }
-        withOutput(outText) { output ->
-            SdxLlmNative.sdxLlmGenerateStreaming(
-                runtime, model, values[0], values[1], nativeChunk, nativeCancel, output
-            )
-        }
+        SdxAndroidLlmNative.nativeGenerateStreaming(
+            runtime.address,
+            model.address,
+            prompt.utf8(),
+            optionsJson.utf8OrNull(),
+            nativeChunk,
+            nativeCancel,
+            output
+        )
     }
 
-    fun sdxLlmFree(runtime: Pointer, pointer: Pointer) = SdxLlmNative.sdxLlmFree(runtime, pointer)
+    fun sdxLlmReadUtf8(pointer: SdxNativeHandle): String =
+        String(
+            checkNotNull(SdxAndroidLlmNative.nativeReadUtf8(pointer.address)) {
+                "SDX returned a null UTF-8 result"
+            },
+            StandardCharsets.UTF_8
+        )
 
-    fun sdxLlmGetLastError(runtime: Pointer, buffer: ByteArray, capacity: Int): Int =
-        BytePointer(buffer.size.toLong()).use { nativeBuffer ->
-            nativeBuffer.put(buffer, 0, buffer.size)
-            val status = SdxLlmNative.sdxLlmGetLastError(runtime, nativeBuffer, capacity)
-            nativeBuffer.get(buffer)
-            status
-        }
+    fun sdxLlmFree(runtime: SdxNativeHandle, pointer: SdxNativeHandle) =
+        SdxAndroidLlmNative.nativeFree(runtime.address, pointer.address)
+
+    fun sdxLlmGetLastError(runtime: SdxNativeHandle, buffer: ByteArray, capacity: Int): Int =
+        SdxAndroidLlmNative.nativeGetLastError(runtime.address, buffer, capacity)
 
     private inline fun <T> withOutput(
         destination: SdxPointerByReference,
-        block: (PointerPointer<Pointer>) -> T
-    ): T = PointerPointer<Pointer>(1).use { output ->
-        output.put(0, null as Pointer?)
+        block: (LongArray) -> T
+    ): T {
+        val output = longArrayOf(0L)
         val result = block(output)
-        destination.value = output.get(0)
-        result
+        destination.value = output[0].toHandle()
+        return result
     }
 
-    private inline fun <T> withStrings(
-        vararg strings: String?,
-        block: (Array<BytePointer?>) -> T
-    ): T {
-        val values = Array<BytePointer?>(strings.size) { index ->
-            strings[index]?.let(::BytePointer)
-        }
-        return try {
-            block(values)
-        } finally {
-            values.forEach { it?.close() }
-        }
-    }
+    private fun Long.toHandle(): SdxNativeHandle? =
+        takeUnless { it == 0L }?.let(::SdxNativeHandle)
+
+    private fun String.utf8(): ByteArray = toByteArray(StandardCharsets.UTF_8)
+
+    private fun String?.utf8OrNull(): ByteArray? = this?.utf8()
 }

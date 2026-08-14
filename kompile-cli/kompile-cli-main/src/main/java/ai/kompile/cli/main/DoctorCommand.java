@@ -247,17 +247,24 @@ public class DoctorCommand implements Callable<Integer> {
         return out;
     }
 
-    /** Check 3: the admin console, model staging, and the two end-user persona apps. */
+    /** Check 3: the executable closure required by the installed distribution variant. */
     List<CheckResult> checkComponents() {
         List<CheckResult> out = new ArrayList<>();
         ComponentRegistry reg = new ComponentRegistry();
+        Path kompileHome = Info.homeDirectory().toPath();
+        boolean localDistribution = isLocalDistribution(kompileHome);
 
-        List<String> required = List.of(ComponentRegistry.KOMPILE_APP_MAIN, ComponentRegistry.KOMPILE_MODEL_STAGING);
-        // The persona apps serve the end-user surfaces that kompile-app-main no longer mounts, so
-        // their absence breaks `kompile chat` and `kompile project crawl --serve`. It is reported as
-        // a warning rather than a critical failure because an admin-only box is a legitimate install.
-        List<String> personas = List.of(ComponentRegistry.KOMPILE_APP_CHAT,
-                ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER);
+        List<String> required = localDistribution
+                ? List.of(ComponentRegistry.KOMPILE_MODEL_STAGING,
+                        ComponentRegistry.KOMPILE_MODEL_SERVING,
+                        ComponentRegistry.KOMPILE_PIPELINE_SERVING)
+                : List.of(ComponentRegistry.KOMPILE_APP_MAIN, ComponentRegistry.KOMPILE_MODEL_STAGING);
+        // Standard chat and crawl run inside the CLI in a local distribution. Persona apps are
+        // required only by the full/web execution model.
+        List<String> personas = localDistribution
+                ? List.of()
+                : List.of(ComponentRegistry.KOMPILE_APP_CHAT,
+                        ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER);
         List<String> all = new ArrayList<>(required);
         all.addAll(personas);
 
@@ -266,7 +273,9 @@ public class DoctorCommand implements Callable<Integer> {
                 File artifact = reg.findInstalledJar(id);
                 if (artifact == null) {
                     String fix = "Install with: kompile install " + id
-                            + "  — or reinstall the full distribution (install.sh)";
+                            + "  — or reinstall the "
+                            + (localDistribution ? "local" : "full")
+                            + " distribution (install.sh)";
                     out.add(required.contains(id)
                             ? CheckResult.fail(id, "not installed", fix)
                             : CheckResult.warn(id, "not installed — "
@@ -282,7 +291,32 @@ public class DoctorCommand implements Callable<Integer> {
                         "Run: kompile install " + id));
             }
         }
+        if (localDistribution) {
+            out.add(checkLocalWorker(kompileHome, "document-model", "kompile-vlm-test"));
+        }
         return out;
+    }
+
+    static boolean isLocalDistribution(Path kompileHome) {
+        Path variant = kompileHome.resolve(".variant");
+        try {
+            return Files.isRegularFile(variant)
+                    && "local".equalsIgnoreCase(Files.readString(variant).trim());
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    static CheckResult checkLocalWorker(Path kompileHome, String name, String binaryName) {
+        Path binary = kompileHome.resolve("bin").resolve(binaryName);
+        Path windowsBinary = kompileHome.resolve("bin").resolve(binaryName + ".exe");
+        Path installed = Files.isExecutable(binary) ? binary
+                : (Files.isExecutable(windowsBinary) ? windowsBinary : null);
+        if (installed != null) {
+            return CheckResult.ok(name, "native at " + installed.toAbsolutePath());
+        }
+        return CheckResult.fail(name, "not installed",
+                "Reinstall the local distribution (install.sh --variant local)");
     }
 
     /** Human-readable description of what a persona app serves, for the "not installed" warning. */

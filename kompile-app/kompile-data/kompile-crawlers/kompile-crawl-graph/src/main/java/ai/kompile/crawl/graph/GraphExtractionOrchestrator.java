@@ -19,6 +19,7 @@ package ai.kompile.crawl.graph;
 import ai.kompile.core.crawl.graph.AgentCallContext;
 import ai.kompile.core.crawl.graph.BatchRetryPolicy;
 import ai.kompile.core.crawl.graph.DynamicBatchSizer;
+import ai.kompile.core.crawl.graph.ExtractionMode;
 import ai.kompile.core.crawl.graph.FallbackBackendSelector;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.GraphExtractionValidationPolicy;
@@ -119,14 +120,8 @@ class GraphExtractionOrchestrator {
     private static final int INLINE_PROMPT_OVERHEAD_TOKENS = 1_536;
     private static final int INLINE_PROMPT_CHARS_PER_TOKEN = 2;
 
-    private static final int CORPUS_SCHEMA_MAX_PASSAGES = 96;
-    private static final int CORPUS_SCHEMA_MAX_PASSAGE_CHARS = 12_000;
     private static final int CORPUS_SCHEMA_MAX_TYPES = 180;
-    private static final int CORPUS_SCHEMA_MIN_TYPE_OCCURRENCES = 1;
     private static final double CORPUS_SCHEMA_MIN_CONCEPT_CONFIDENCE = 0.45;
-    private static final double CORPUS_SCHEMA_MIN_RELATION_STRENGTH = 0.22;
-    private static final int CORPUS_SCHEMA_MAX_LABEL_LENGTH = 50;
-    private static final Set<String> CORPUS_SCHEMA_CATEGORIES = Set.of("ENTITY", "TOPIC", "THEME");
 
     /** Default char budget per batch. When the operator leaves this untouched, the per-call budget is
      *  derived from the extraction model's real limits ({@link ModelCapability}); an explicit override
@@ -258,6 +253,10 @@ class GraphExtractionOrchestrator {
     private final ConcurrentMap<String, CrawlCorpusSnapshot> activeExtractionCorpora =
             new ConcurrentHashMap<>();
 
+    /** One prepass-derived, additively mutable ontology shared by every window in an active crawl. */
+    private final ConcurrentMap<String, CrawlOntology> activeExtractionOntologies =
+            new ConcurrentHashMap<>();
+
     @Autowired
     CrawlMemoryMonitor memoryMonitor;
 
@@ -372,11 +371,14 @@ class GraphExtractionOrchestrator {
                                    UnifiedCrawlJob job,
                                    ExecutorService extractionPool) {
         CrawlCorpusSnapshot corpus = activateExtractionCorpus(job, documents, null);
-        GraphSchema derivedCorpusSchema = deriveCorpusSchema(job, corpus, config);
+        GraphSchema derivedCorpusSchema = deriveCorpusSchema(job, corpus, config, targetGraph);
+        CrawlOntology crawlOntology = activateExtractionOntology(
+                job, buildGraphSchema(config, derivedCorpusSchema));
         try {
             extractGraphFromDocumentsWithActiveCorpus(
                     documents, config, targetGraph, job, extractionPool, derivedCorpusSchema);
         } finally {
+            deactivateExtractionOntology(job, crawlOntology);
             deactivateExtractionCorpus(job, corpus);
         }
     }
@@ -507,6 +509,35 @@ class GraphExtractionOrchestrator {
 
     int activeExtractionCorpusCount() {
         return activeExtractionCorpora.size();
+    }
+
+    private CrawlOntology activateExtractionOntology(
+            UnifiedCrawlJob job, GraphSchema initialSchema) {
+        CrawlOntology ontology = new CrawlOntology(initialSchema);
+        String key = corpusKey(job);
+        if (key != null) {
+            activeExtractionOntologies.put(key, ontology);
+        }
+        return ontology;
+    }
+
+    private void deactivateExtractionOntology(
+            UnifiedCrawlJob job, CrawlOntology ontology) {
+        String key = corpusKey(job);
+        if (key != null && ontology != null) {
+            activeExtractionOntologies.remove(key, ontology);
+        }
+    }
+
+    private CrawlOntology extractionOntology(
+            UnifiedCrawlJob job, GraphSchema fallbackSchema) {
+        String key = corpusKey(job);
+        CrawlOntology active = key == null ? null : activeExtractionOntologies.get(key);
+        return active == null ? new CrawlOntology(fallbackSchema) : active;
+    }
+
+    int activeExtractionOntologyCount() {
+        return activeExtractionOntologies.size();
     }
 
     private CrawlCorpusSnapshot extractionCorpus(
@@ -643,26 +674,20 @@ class GraphExtractionOrchestrator {
     }
 
     /**
-     * Derives schema hints from the real unified crawl corpus using the deterministic concept extractor.
-     *
-     * <p>This is a production-aligned pass intended to keep the schema vocabulary close to what
-     * the actual corpus talks about, while staying bounded and explicit about risk:</p>
-     * <ul>
-     *   <li>Only top passage-sized windows are sampled to avoid runaway extractor cost.</li>
-     *   <li>Only entity/topic/theme concepts above a confidence threshold are used.</li>
-     *   <li>Only relation candidates above a confidence threshold are used.</li>
-     *   <li>Everything is sanitized into schema-safe labels to avoid validator noise.</li>
-     * </ul>
+     * Derives one corpus-wide schema before semantic extraction. Configured seeds, every type already
+     * emitted by deterministic/source-native extractors, deterministic concept evidence, and bounded
+     * small-model passes over every corpus passage are merged into one frozen ontology.
      */
-    private GraphSchema deriveCorpusSchema(UnifiedCrawlJob job,
+    GraphSchema deriveCorpusSchema(UnifiedCrawlJob job,
                                          CrawlCorpusSnapshot corpus,
-                                         GraphExtractionConfig config) {
-        if (conceptExtractor == null) {
-            log.debug("[Job {}] Unified-corpus schema pre-pass skipped: no conceptExtractor bean",
+                                         GraphExtractionConfig config,
+                                         Graph deterministicGraph) {
+        if (!shouldDeriveCorpusSchema(config)) {
+            log.debug("[Job {}] Unified-corpus schema pre-pass skipped: a strict configured "
+                            + "schema is already authoritative",
                     job == null ? "?" : job.getJobId());
             return null;
         }
-
         List<CrawlCorpusPassage> passages = corpus == null ? List.of() : corpus.passages();
         if (passages == null || passages.isEmpty()) {
             log.debug("[Job {}] Unified-corpus schema pre-pass skipped: corpus empty",
@@ -670,26 +695,20 @@ class GraphExtractionOrchestrator {
             return null;
         }
 
-        Map<String, String> passageTexts = passages.stream()
+        List<CrawlCorpusPassage> orderedPassages = passages.stream()
                 .filter(Objects::nonNull)
+                .filter(passage -> hasText(passage.content()))
                 .sorted(Comparator.comparingInt((CrawlCorpusPassage p) -> p.chunkIndex())
                         .thenComparing(p -> p.chunkId() == null ? "" : p.chunkId()))
-                .limit(CORPUS_SCHEMA_MAX_PASSAGES)
+                .toList();
+        Map<String, String> passageTexts = orderedPassages.stream()
                 .map(passage -> {
-                    if (!hasText(passage.content())) {
-                        return null;
-                    }
                     String content = passage.content();
                     String chunkId = hasText(passage.chunkId())
                             ? passage.chunkId()
                             : "chunk-" + sha256Hex(content);
-                    if (content.length() > CORPUS_SCHEMA_MAX_PASSAGE_CHARS) {
-                        content = content.substring(0, CORPUS_SCHEMA_MAX_PASSAGE_CHARS);
-                    }
                     return Map.entry(chunkId, content);
                 })
-                .filter(Objects::nonNull)
-                .filter(entry -> hasText(entry.getKey()) && hasText(entry.getValue()))
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         Map.Entry::getValue,
@@ -704,45 +723,180 @@ class GraphExtractionOrchestrator {
 
         String jobId = job == null ? "?" : job.getJobId();
         try {
-            ConceptExtractor.ExtractionConfig prepassConfig = new ConceptExtractor.ExtractionConfig(
-                    CORPUS_SCHEMA_MAX_TYPES,
-                    CORPUS_SCHEMA_MIN_CONCEPT_CONFIDENCE,
-                    true,
-                    true,
-                    true,
-                    CORPUS_SCHEMA_CATEGORIES.stream().toList(),
-                    true);
-            Map<String, ConceptExtractor.ExtractionResult> prepass = conceptExtractor
-                    .extractConceptsFromPassages(
-                    passageTexts, prepassConfig);
-            if (prepass == null || prepass.isEmpty()) {
-                return null;
-            }
-
-            CorpusSchemaCandidates.Inventory candidates = CorpusSchemaCandidateCollector.collect(prepass);
-            if (candidates.isEmpty()) {
-                log.debug("[Job {}] Unified-corpus schema pre-pass completed with no inferred candidates", jobId);
-                return null;
-            }
-
             if (corpusSchemaUnifier == null) {
-                markSchemaPrepassFailure(job, "CorpusSchemaUnifier is unavailable");
-                log.warn(
-                        "[Job {}] Corpus schema candidates were collected, but no CorpusSchemaUnifier is available",
-                        jobId
-                );
-                return null;
+                throw new IllegalStateException(
+                        "Unified-corpus ontology pre-pass requires CorpusSchemaUnifier");
+            }
+            if (llmDispatcher == null
+                    || (!llmDispatcher.hasStructuredChatBackend()
+                    && !llmDispatcher.hasLlmChat()
+                    && !llmDispatcher.hasModelBackend(job))) {
+                throw new IllegalStateException(
+                        "Unified-corpus ontology pre-pass requires a model backend");
+            }
+
+            CorpusSchemaCandidates.Inventory candidates =
+                    new CorpusSchemaCandidates.Inventory(List.of(), List.of());
+            if (conceptExtractor != null) {
+                ConceptExtractor.ExtractionConfig prepassConfig =
+                        new ConceptExtractor.ExtractionConfig(
+                                CORPUS_SCHEMA_MAX_TYPES,
+                                CORPUS_SCHEMA_MIN_CONCEPT_CONFIDENCE,
+                                true,
+                                true,
+                                true,
+                                List.of(),
+                                true);
+                Map<String, ConceptExtractor.ExtractionResult> prepass =
+                        conceptExtractor.extractConceptsFromPassages(
+                                passageTexts, prepassConfig);
+                if (prepass != null && !prepass.isEmpty()) {
+                    candidates = CorpusSchemaCandidateCollector.collect(prepass);
+                }
+            } else {
+                log.debug(
+                        "[Job {}] No concept candidate extractor is registered for the corpus schema pre-pass",
+                        jobId);
             }
 
             GraphSchema configuredSchema = parseConfiguredSchema(config);
-            return corpusSchemaUnifier.unify(candidates, configuredSchema, job, corpus.snapshotId());
+            GraphSchema deterministicGraphSchema =
+                    DeterministicGraphSchemaInferencer.infer(deterministicGraph);
+            ExplicitAssertionSchemaInferencer.Analysis explicitAssertions =
+                    ExplicitAssertionSchemaInferencer.analyze(passageTexts);
+            GraphSchema explicitAssertionSchema = explicitAssertions.schema();
+            try {
+                GraphSchema semanticSchema = corpusSchemaUnifier.unify(
+                        passageTexts,
+                        candidates,
+                        configuredSchema,
+                        deterministicGraphSchema,
+                        job,
+                        corpus.snapshotId(),
+                        llmDispatcher);
+                return explicitAssertionSchema == null
+                        ? semanticSchema
+                        : CrawlOntology.merge(semanticSchema, explicitAssertionSchema);
+            } catch (RuntimeException schemaToolFailure) {
+                GraphSchema establishedSchema = corpusSchemaUnifier.unify(
+                        passageTexts,
+                        candidates,
+                        configuredSchema,
+                        deterministicGraphSchema,
+                        job,
+                        corpus.snapshotId(),
+                        null);
+                if (explicitAssertionSchema != null) {
+                    establishedSchema = CrawlOntology.merge(establishedSchema, explicitAssertionSchema);
+                }
+                GraphSchema modelDiscoverySchema = deriveSchemaFromModelGraphDiscovery(
+                        passageTexts, config, job, establishedSchema, explicitAssertions);
+                if (modelDiscoverySchema == null) {
+                    throw new IllegalStateException(
+                            "Unified-corpus ontology model pre-pass failed: the schema tool overlay "
+                                    + "was invalid and submit_graph_delta produced no accepted delta",
+                            schemaToolFailure);
+                }
+                log.info("[Job {}] Corpus schema tool overlay was invalid; recovered ontology "
+                                + "through the production native graph-extraction tool path",
+                        jobId);
+                return CrawlOntology.merge(establishedSchema, modelDiscoverySchema);
+            }
         } catch (RuntimeException e) {
             String schemaError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             markSchemaPrepassFailure(job, schemaError);
-            log.warn("[Job {}] Unified-corpus schema pre-pass failed; continuing without derived schema: {}",
-                    jobId, schemaError);
+            log.error("[Job {}] Unified-corpus ontology pre-pass failed: {}", jobId, schemaError, e);
+            throw e;
+        }
+    }
+
+    private GraphSchema deriveSchemaFromModelGraphDiscovery(
+            Map<String, String> passageTexts,
+            GraphExtractionConfig sourceConfig,
+            UnifiedCrawlJob job,
+            GraphSchema establishedSchema,
+            ExplicitAssertionSchemaInferencer.Analysis explicitAssertions) {
+        if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
             return null;
         }
+        int explicitEntityCount = explicitAssertions == null
+                ? 0 : explicitAssertions.explicitEntityCount();
+        int explicitRelationCount = explicitAssertions == null
+                ? 0 : explicitAssertions.explicitRelationCount();
+
+        GraphExtractionConfig discoveryConfig = GraphExtractionConfig.builder()
+                .llmProvider(sourceConfig == null ? null : sourceConfig.getLlmProvider())
+                .modelName(sourceConfig == null ? null : sourceConfig.getModelName())
+                .temperature(sourceConfig == null ? 0.0d : sourceConfig.getTemperature())
+                .maxTokens(sourceConfig == null ? 4096 : sourceConfig.getMaxTokens())
+                .standardizedSchema(establishedSchema)
+                .schemaMode(establishedSchema == null
+                        ? SchemaEnforcementMode.STRICT
+                        : SchemaEnforcementMode.LENIENT)
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .decomposedPromptTier(GraphExtractionConfig.DecomposedPromptTier.COMPACT)
+                .decomposedBoundNativeProposalArrays(explicitEntityCount > 0)
+                .decomposedEntityCandidateLimit(Math.max(0, explicitEntityCount))
+                .decomposedRelationCandidateLimit(Math.max(0, explicitRelationCount))
+                .admissionMode("LLM_ONLY")
+                .entityResolution(false)
+                .customPrompt("ONTOLOGY DISCOVERY PREPASS: submit one entity per exact name. "
+                        + "For 'X is a Y', use Y as X's one uppercase type token. For 'X VERB Y', "
+                        + "use VERB as one uppercase directed relation type. Fill every positional "
+                        + "proposal slot required by the native tool schema exactly once, then stop. "
+                        + "Never join types or put prose in a type.")
+                .build();
+        Graph modelDiscoveryGraph = Graph.builder()
+                .id("schema-discovery:" + (job == null ? "crawl" : job.getJobId()))
+                .name("Corpus schema model discovery graph")
+                .build();
+
+        List<Map<String, String>> batches = CorpusSchemaUnifier.modelPassageBatches(passageTexts);
+        for (int index = 0; index < batches.size(); index++) {
+            Map<String, String> batch = batches.get(index);
+            ExplicitAssertionSchemaInferencer.Analysis batchAssertions =
+                    ExplicitAssertionSchemaInferencer.analyze(batch);
+            StringBuilder source = new StringBuilder();
+            batch.forEach((chunkId, text) -> source
+                    .append("BEGIN SOURCE ").append(chunkId).append('\n')
+                    .append(text).append('\n')
+                    .append("END SOURCE\n"));
+            String id = "corpus-schema-discovery-" + (index + 1);
+            Document document = new Document(
+                    id,
+                    source.toString(),
+                    Map.of("sourcePath", id + ".txt", "schemaPrepass", true));
+            String json = extractViaDecomposedPasses(
+                    source.toString(),
+                    document,
+                    discoveryConfig,
+                    null,
+                    modelDiscoveryGraph,
+                    job,
+                    null,
+                    batchAssertions);
+            if (!hasText(json)) {
+                continue;
+            }
+            try {
+                var extraction = GraphExtractionValidator.fromJson(json);
+                Graph discovered = GraphExtractionValidator.toGraph(extraction, source.toString());
+                mergeIntoContext(discovered, modelDiscoveryGraph, discoveryConfig);
+            } catch (Exception parseFailure) {
+                log.warn("[Job {}] Native graph schema-discovery batch {} was unusable: {}",
+                        job == null ? "?" : job.getJobId(), index + 1,
+                        parseFailure.getMessage() == null
+                                ? parseFailure.getClass().getSimpleName()
+                                : parseFailure.getMessage());
+            }
+        }
+        return DeterministicGraphSchemaInferencer.infer(modelDiscoveryGraph);
+    }
+
+    boolean shouldDeriveCorpusSchema(GraphExtractionConfig config) {
+        return config == null
+                || config.getSchemaMode() != SchemaEnforcementMode.STRICT
+                || parseConfiguredSchema(config) == null;
     }
 
     private static void markSchemaPrepassFailure(UnifiedCrawlJob job, String reason) {
@@ -762,32 +916,6 @@ class GraphExtractionOrchestrator {
         if (job.getCurrentPhase() != null) {
             job.getCurrentPhase().set("SCHEMA_UNIFICATION_FAILED");
         }
-    }
-
-    private static String deriveSchemaLabel(String preferred,
-                                          String normalized,
-                                          String fallback) {
-        String raw = hasText(preferred) ? preferred : normalized;
-        if (!hasText(raw)) {
-            raw = fallback;
-        }
-        if (!hasText(raw)) {
-            return null;
-        }
-        String transformed = raw.toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9]+", "_")
-                .replaceAll("_+", "_")
-                .replaceAll("^_+|_+$", "");
-        if (!hasText(transformed)) {
-            return null;
-        }
-        if (transformed.length() > CORPUS_SCHEMA_MAX_LABEL_LENGTH) {
-            transformed = transformed.substring(0, CORPUS_SCHEMA_MAX_LABEL_LENGTH);
-        }
-        if (!Character.isLetter(transformed.charAt(0))) {
-            transformed = "TYPE_" + transformed;
-        }
-        return transformed.substring(0, Math.min(transformed.length(), CORPUS_SCHEMA_MAX_LABEL_LENGTH));
     }
 
     private static String sha256Hex(String value) {
@@ -3383,6 +3511,39 @@ class GraphExtractionOrchestrator {
                                       Graph targetGraph,
                                       UnifiedCrawlJob job,
                                       ExtractionTaskContext taskContext) {
+        return extractViaDecomposedPasses(
+                text,
+                doc,
+                config,
+                corpusSchema,
+                targetGraph,
+                job,
+                taskContext,
+                compactProposalAnalysis(text, doc, config));
+    }
+
+    static ExplicitAssertionSchemaInferencer.Analysis compactProposalAnalysis(
+            String text, Document doc, GraphExtractionConfig config) {
+        if (config == null
+                || !config.isDecomposedBoundNativeProposalArrays()
+                || text == null
+                || text.isBlank()) {
+            return null;
+        }
+        String chunkId = doc != null && doc.getId() != null && !doc.getId().isBlank()
+                ? doc.getId() : "chunk";
+        return ExplicitAssertionSchemaInferencer.analyze(Map.of(chunkId, text));
+    }
+
+    String extractViaDecomposedPasses(
+                                      String text,
+                                      Document doc,
+                                      GraphExtractionConfig config,
+                                      GraphSchema corpusSchema,
+                                      Graph targetGraph,
+                                      UnifiedCrawlJob job,
+                                      ExtractionTaskContext taskContext,
+                                      ExplicitAssertionSchemaInferencer.Analysis compactProposalAnalysis) {
         String jobId = job != null ? job.getJobId() : "?";
         String chunkId = doc != null && doc.getId() != null ? doc.getId() : "chunk";
         String sourcePath = docSourcePath(doc);
@@ -3407,6 +3568,8 @@ class GraphExtractionOrchestrator {
                     : jobFactSheetId(job) == null ? "in-run" : "factsheet_" + jobFactSheetId(job);
             String parentGraphId = targetGraph == null ? null : targetGraph.getParentGraphId();
 
+            GraphSchema effectiveSchema = buildGraphSchema(config, corpusSchema);
+            CrawlOntology crawlOntology = extractionOntology(job, effectiveSchema);
             CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
                     chunkId,
                     documentId,
@@ -3414,7 +3577,7 @@ class GraphExtractionOrchestrator {
                     graphId,
                     parentGraphId,
                     effectiveValidationPolicy(config),
-                    buildGraphSchema(config, corpusSchema),
+                    effectiveSchema,
                     corpus,
                     vectors.store(),
                     vectors.initializationError(),
@@ -3422,7 +3585,38 @@ class GraphExtractionOrchestrator {
                     graphReasoningQueryService,
                     config == null
                             ? GraphExtractionConfig.ExtractionTarget.FULL_GRAPH
-                            : config.getExtractionTarget());
+                            : config.getExtractionTarget(),
+                    crawlOntology,
+                    ontologyUpdatesAllowed(config, effectiveSchema));
+            if (config != null && config.isDecomposedBoundNativeProposalArrays()) {
+                if (compactProposalAnalysis != null) {
+                    backend.configureCompactProposalCardinality(
+                            compactProposalAnalysis.explicitEntityCount(),
+                            compactProposalAnalysis.explicitRelationCount());
+                    int entityNameMaxLength = compactProposalAnalysis.entityAssertions().stream()
+                            .map(ExplicitAssertionSchemaInferencer.EntityAssertion::name)
+                            .filter(Objects::nonNull)
+                            .mapToInt(value -> value.codePointCount(0, value.length()))
+                            .max()
+                            .orElse(1);
+                    backend.configureCompactProposalGuidance(
+                            entityNameMaxLength,
+                            compactProposalAnalysis.entityAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.EntityAssertion::type)
+                                    .filter(Objects::nonNull)
+                                    .distinct()
+                                    .toList(),
+                            compactProposalAnalysis.relationAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.RelationAssertion::type)
+                                    .filter(Objects::nonNull)
+                                    .distinct()
+                                    .toList());
+                } else if (compactProposalAnalysis == null) {
+                    backend.configureCompactProposalBounds(
+                            config.getDecomposedEntityCandidateLimit(),
+                            config.getDecomposedRelationCandidateLimit());
+                }
+            }
 
             DecomposedExtractionExecutor.PromptProfile promptProfile =
                     DecomposedExtractionExecutor.promptProfileFrom(config, promptCapability);
@@ -3461,7 +3655,8 @@ class GraphExtractionOrchestrator {
                                 throw e;
                             }
                         },
-                        promptProfile);
+                        promptProfile,
+                        config == null ? null : config.getCustomPrompt());
             } else {
                 result = toolDrivenExecutor.extract(
                         text,
@@ -3492,7 +3687,8 @@ class GraphExtractionOrchestrator {
                                 throw e;
                             }
                         },
-                        promptProfile);
+                        promptProfile,
+                        config == null ? null : config.getCustomPrompt());
             }
             log.debug("[Job {}] Tool-driven extraction chunk {}: {}", jobId, chunkId, result.summary());
             if (!result.usable()) {
@@ -3513,7 +3709,13 @@ class GraphExtractionOrchestrator {
         }
     }
 
-    private static StructuredChatLanguageModel.Request toStructuredChatRequest(
+    static boolean ontologyUpdatesAllowed(
+            GraphExtractionConfig config, GraphSchema effectiveSchema) {
+        return effectiveSchema == null
+                && (config == null || config.getSchemaMode() != SchemaEnforcementMode.STRICT);
+    }
+
+    static StructuredChatLanguageModel.Request toStructuredChatRequest(
             ToolDrivenExtractionExecutor.StructuredRequest request) {
         List<StructuredChatLanguageModel.Message> messages = request.messages().stream()
                 .map(message -> new StructuredChatLanguageModel.Message(
@@ -4393,17 +4595,13 @@ class GraphExtractionOrchestrator {
             return configured;
         }
 
-        boolean allowInferredNodes = config.getEntityTypes() == null || config.getEntityTypes().isEmpty();
-        boolean allowInferredRelations = config.getRelationshipTypes() == null
-                || config.getRelationshipTypes().isEmpty();
-
-        List<NodeType> nodeTypes = allowInferredNodes
-                ? mergeNodeTypes(configured.getNodeTypes(), corpusSchemaOverride.getNodeTypes())
-                : configured.getNodeTypes();
-        List<RelationshipType> relationTypes = allowInferredRelations
-                ? mergeRelationshipTypes(configured.getRelationshipTypes(),
-                corpusSchemaOverride.getRelationshipTypes())
-                : configured.getRelationshipTypes();
+        // The prepass describes the unified corpus even when legacy focus lists were configured.
+        // Configured definitions remain authoritative on conflicts; corpus discoveries fill and extend them.
+        List<NodeType> nodeTypes =
+                mergeNodeTypes(configured.getNodeTypes(), corpusSchemaOverride.getNodeTypes());
+        List<RelationshipType> relationTypes =
+                mergeRelationshipTypes(configured.getRelationshipTypes(),
+                        corpusSchemaOverride.getRelationshipTypes());
 
         LinkedHashSet<String> patterns = new LinkedHashSet<>();
         if (configured.getPatterns() != null) {

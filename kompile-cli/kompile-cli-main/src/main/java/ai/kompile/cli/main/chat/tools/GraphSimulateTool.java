@@ -58,19 +58,19 @@ public class GraphSimulateTool implements CliTool {
     @Override
     public String description() {
         return "Sandbox graph scenarios: create isolated simulation runs, reason over them, " +
-                "compare against ground truth, and promote the best results into the real graph. " +
+                "compare against ground truth, and promote the best results into the current folder's graph. " +
                 "Actions: " +
                 "'scenarios' (list available simulation scenarios with IDs and descriptions), " +
-                "'create_run' (start a new simulation from a scenario; creates a sandbox fact sheet), " +
+                "'create_run' (start a new isolated simulation from a scenario), " +
                 "'runs' (list active simulation runs), " +
-                "'run' (get details of a specific run: status, step count, fact sheet ID), " +
+                "'run' (get details of a specific run: status and step count), " +
                 "'step' (advance the simulation by one step), " +
                 "'play' (run to completion), " +
                 "'pause' (pause a running simulation), " +
                 "'reason' (trigger reasoning over the current simulation state), " +
                 "'ground_truth' (compare current state against the planted ground-truth overlay), " +
-                "'promote' (make the sandbox a permanent fact sheet in the real graph), " +
-                "'delete' (discard the run and its sandbox fact sheet). " +
+                "'promote' (merge the sandbox into the current folder's graph), " +
+                "'delete' (discard the run and its sandbox). " +
                 "Sandbox runs never affect live data until promoted.";
     }
 
@@ -95,7 +95,7 @@ public class GraphSimulateTool implements CliTool {
                 "Simulation run ID (from create_run or runs) — required for run, step, play, pause, " +
                 "reason, ground_truth, promote, delete");
         addStringProp(props, "name",
-                "Optional name for the sandbox fact sheet created by create_run");
+                "Optional name for the sandbox created by create_run");
         addLongProp(props, "seed",
                 "Random seed for reproducible scenarios (default 42)");
         addStringProp(props, "mode",
@@ -123,8 +123,8 @@ public class GraphSimulateTool implements CliTool {
         if (action.isEmpty()) {
             return ToolResult.error("action is required");
         }
-        if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("graph_simulate requires a running kompile-app. Use --url to connect.");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {
@@ -145,7 +145,8 @@ public class GraphSimulateTool implements CliTool {
                         "reason, ground_truth, promote, delete");
             };
         } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
+            return ToolResult.error("The explicitly configured remote simulation service became unavailable at "
+                    + baseUrl + ". Remove --url to continue with in-process simulation.");
         } catch (Exception e) {
             return ToolResult.error("graph_simulate error: " + e.getMessage());
         }

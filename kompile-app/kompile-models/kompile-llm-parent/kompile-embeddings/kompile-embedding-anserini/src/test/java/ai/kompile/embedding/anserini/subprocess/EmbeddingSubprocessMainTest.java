@@ -18,6 +18,9 @@ package ai.kompile.embedding.anserini.subprocess;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,5 +41,17 @@ class EmbeddingSubprocessMainTest {
         assertFalse(EmbeddingSubprocessMain.isRecoverableEmbeddingValidationFailure(
                 new IllegalStateException("cudaStreamSynchronize error code [700]: illegal memory access")));
         assertFalse(EmbeddingSubprocessMain.isRecoverableEmbeddingValidationFailure(new RuntimeException("boom")));
+    }
+
+    @Test
+    void rejectsNativeLoaderEnvironmentOverrides() {
+        EmbeddingSubprocessLauncher.DebugConfig config = new EmbeddingSubprocessLauncher.DebugConfig();
+        config.setSystemEnvironmentVariables(Map.of(
+                "LD_PRELOAD", "/tmp/forbidden.so",
+                "SAFE_OPTION", "preserved"));
+
+        assertFalse(config.getSystemEnvironmentVariables().containsKey("LD_PRELOAD"));
+        assertFalse(config.buildEnvironmentVariables().containsKey("LD_PRELOAD"));
+        assertEquals("preserved", config.buildEnvironmentVariables().get("SAFE_OPTION"));
     }
 }

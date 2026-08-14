@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -63,7 +64,7 @@ public class AskGraphMebnTool implements CliTool {
                 + "nodeId = graph node UUID — find it with knowledge_graph search_nodes or list_nodes. "
                 + "Returns updated probability estimates for all related nodes reachable within maxDepth hops, "
                 + "showing before/after probability deltas sorted by how much each changed. "
-                + "factSheetId optional — discover via knowledge_graph list_fact_sheets; omit for the global graph. "
+                + "Local stdio uses the current folder; factSheetId is an optional remote/legacy override. "
                 + "Output: prior→posterior deltas for each related node; biggest deltas = most influenced by the anchor.";
     }
 
@@ -76,7 +77,7 @@ public class AskGraphMebnTool implements CliTool {
                 "Returns updated probability estimates for all related variables reachable within maxDepth hops, " +
                 "with before/after probability deltas, entity type, and the reasoning group each variable belongs to. " +
                 "Use this to assess probabilistic risk, influence, or belief state for any knowledge graph entity. " +
-                "Requires a running kompile-app.";
+                "Runs against the project-local graph unless a remote URL is explicitly configured.";
     }
 
     @Override
@@ -99,11 +100,7 @@ public class AskGraphMebnTool implements CliTool {
                 .put("default", 100);
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Optional fact sheet ID to scope MEBN inference. " +
-                        "When provided, nodes discovered during BFS are filtered to those belonging " +
-                        "to this fact sheet, preventing cross-sheet contamination. " +
-                        "Omit to use the global/default graph. " +
-                        "Use knowledge_graph action=list_fact_sheets to discover valid IDs.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
 
         schema.putArray("required").add("nodeId");
         return schema;
@@ -125,7 +122,7 @@ public class AskGraphMebnTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_mebn requires a running kompile-app.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         int maxDepth = params.path("maxDepth").asInt(3);

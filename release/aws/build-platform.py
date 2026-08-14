@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -99,6 +100,41 @@ def validate_sdk_assets(root: Path, description: str) -> None:
         )
 
 
+def validate_dl4j_sdk_manifest(
+    config: dict[str, Any],
+    manifest: dict[str, Any],
+    lane_id: str,
+    variant: str,
+    manifest_url: str,
+) -> None:
+    """Bind Azure SDK assets to the completion marker used by Maven."""
+    if not str(config.get("dl4jRepositoryMarkerUrl", "")).strip():
+        return
+    expected = {
+        "commit": config.get("dl4jCommit"),
+        "releaseVersion": config.get("dl4jReleaseVersion"),
+        "runId": config.get("dl4jRunId"),
+    }
+    mismatches = [
+        key for key, value in expected.items()
+        if value and manifest.get(key) != value
+    ]
+    shard = str(manifest.get("shard", ""))
+    variants = {
+        str(item) for item in manifest.get("variants", [])
+    }
+    if (
+        mismatches
+        or not (shard == lane_id or shard.startswith(lane_id + "--"))
+        or variant not in variants
+    ):
+        raise RuntimeError(
+            f"DL4J Azure SDK identity does not match its Maven completion marker "
+            f"for {lane_id}--{variant}: {manifest_url}; "
+            f"mismatches={mismatches}, shard={shard!r}, variants={sorted(variants)}"
+        )
+
+
 def download_dl4j_sdk_assets(
     config: dict[str, Any], lane_id: str, variant: str, destination: Path,
 ) -> None:
@@ -121,16 +157,53 @@ def download_dl4j_sdk_assets(
         raise RuntimeError(f"unknown DL4J SDK URL placeholder: {exc.args[0]}") from exc
     download = destination.parent / "dl4j-sdk-assets.archive"
     checksum = destination.parent / "dl4j-sdk-assets.archive.sha256"
+    manifest_url = url.rsplit("/", 1)[0] + "/shard-manifest.json"
+    manifest_path = destination.parent / "dl4j-shard-manifest.json"
+    manifest: dict[str, Any] | None = None
     phase(f"download-dl4j-sdk-{variant}")
     urllib.request.urlretrieve(url, download)
-    urllib.request.urlretrieve(url + ".sha256", checksum)
-    expected = checksum.read_text(encoding="ascii").strip().split()[0].lower()
+    try:
+        urllib.request.urlretrieve(url + ".sha256", checksum)
+        expected = checksum.read_text(encoding="ascii").strip().split()[0].lower()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        # DL4J's Azure worker attests the archive in the adjacent shard
+        # manifest instead of emitting a standalone checksum sidecar.
+        urllib.request.urlretrieve(manifest_url, manifest_path)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        matches = [
+            item for item in manifest.get("files", [])
+            if str(item.get("path", "")).endswith("sdk-assets.tar.gz")
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"DL4J Azure shard manifest does not attest sdk-assets.tar.gz: "
+                f"{manifest_url}"
+            ) from exc
+        expected = str(matches[0].get("sha256", "")).lower()
+    if config.get("dl4jRepositoryMarkerUrl"):
+        if manifest is None:
+            urllib.request.urlretrieve(manifest_url, manifest_path)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_dl4j_sdk_manifest(
+            config, manifest, lane_id, variant, manifest_url,
+        )
     actual = sha256_file(download)
     if not re.fullmatch(r"[0-9a-f]{64}", expected) or expected != actual:
         raise RuntimeError(
             f"DL4J SDK archive checksum mismatch for {url}: "
             f"expected {expected!r}, calculated {actual}"
         )
+    if manifest is not None:
+        matches = [
+            item for item in manifest.get("files", [])
+            if str(item.get("path", "")).endswith("sdk-assets.tar.gz")
+        ]
+        if matches and matches[0].get("size") not in (None, download.stat().st_size):
+            raise RuntimeError(
+                f"DL4J SDK archive size does not match {manifest_url}"
+            )
     extract_sdk_archive(download, destination)
     validate_sdk_assets(destination, url)
 
@@ -251,8 +324,27 @@ def ensure_dl4j_checkout(config: dict[str, Any], source: Path) -> Path:
     dl4j = source / "deeplearning4j"
     if not (dl4j / "pom.xml").exists():
         phase("checkout-deeplearning4j")
-        run(["git", "clone", "--filter=blob:none", config["dl4jRepository"], str(dl4j)], source)
-        run(["git", "fetch", "--depth=1", "origin", config["dl4jCommit"]], dl4j)
+        run(["git", "init", str(dl4j)], source)
+        run(["git", "remote", "add", "origin", config["dl4jRepository"]], dl4j)
+        branch = str(config.get("dl4jBranch", "")).strip()
+        if branch:
+            branch_ref = f"refs/heads/{branch}"
+            remote_ref = f"refs/remotes/origin/{branch}"
+            run([
+                "git", "fetch", "--depth=1", "origin",
+                f"+{branch_ref}:{remote_ref}",
+            ], dl4j)
+            branch_commit = subprocess.run(
+                ["git", "rev-parse", f"{remote_ref}^{{commit}}"], cwd=dl4j,
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            if branch_commit != config["dl4jCommit"]:
+                raise RuntimeError(
+                    f"deeplearning4j branch {branch!r} resolved to {branch_commit}, "
+                    f"expected {config['dl4jCommit']}"
+                )
+        else:
+            run(["git", "fetch", "--depth=1", "origin", config["dl4jCommit"]], dl4j)
         run(["git", "checkout", "--detach", config["dl4jCommit"]], dl4j)
     actual = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=dl4j, text=True,
@@ -285,6 +377,64 @@ def configure_dl4j_environment(config: dict[str, Any], env: dict[str, str]) -> N
         env["DL4J_MAVEN_REPOSITORY_ID"] = config.get("dl4jMavenRepositoryId", "dl4j-release")
 
 
+def hydrate_dl4j_sdk_jars(
+    config: dict[str, Any],
+    source: Path,
+    repository: Path,
+    destination: Path,
+    classifier: str,
+) -> None:
+    """Replace companion SDK jars with artifacts from the configured Maven repo."""
+    build = config["shard"]["build"]
+    backend = str(build["backend"])
+    platform_name = str(build["javacppPlatform"])
+    if backend == "cpu":
+        artifacts = ["nd4j-native", "nd4j-native-preset"]
+        if platform_name in {"linux-x86_64", "windows-x86_64"}:
+            artifacts.append("nd4j-native-platform")
+        if platform_name in {
+            "linux-x86_64", "windows-x86_64", "linux-arm64", "macosx-arm64",
+        }:
+            artifacts.extend([
+                "libtokenizers", "tokenizers-native-preset", "tokenizers-native",
+            ])
+    elif backend == "cuda":
+        cuda_version = str(build["cudaVersion"])
+        base = f"nd4j-cuda-{cuda_version}"
+        artifacts = [base, f"{base}-preset", f"{base}-platform"]
+    else:
+        raise RuntimeError(
+            f"repository-backed SDK hydration is unsupported for backend {backend!r}"
+        )
+
+    coordinates = [(artifact, "") for artifact in artifacts]
+    coordinates.extend([(artifacts[0], classifier), (artifacts[1], classifier)])
+    jars = destination / "jars"
+    shutil.rmtree(jars, ignore_errors=True)
+    jars.mkdir(parents=True)
+    phase(f"hydrate-dl4j-sdk-jars-{classifier}")
+    for artifact_id, artifact_classifier in coordinates:
+        coordinate = (
+            f"org.eclipse.deeplearning4j:{artifact_id}:"
+            f"{config['snapshotVersion']}:jar"
+        )
+        if artifact_classifier:
+            coordinate += f":{artifact_classifier}"
+        run([
+            maven(), "--batch-mode", "--no-transfer-progress", "-U", "-N",
+            "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:copy",
+            "-Dtransitive=false",
+            f"-Dartifact={coordinate}",
+            f"-DoutputDirectory={jars}",
+            f"-Dmaven.repo.local={repository}",
+            *dl4j_maven_arguments(config),
+        ], source)
+    if not any(jars.glob("*.jar")):
+        raise RuntimeError(
+            f"configured DL4J Maven repository produced no SDK jars for {classifier}"
+        )
+
+
 def stage_kompile_maven_artifacts(repository: Path, maven_output: Path) -> None:
     """Stage only Kompile coordinates for collector-side publication."""
     source = repository / "ai" / "kompile"
@@ -313,7 +463,8 @@ def dl4j_lane_id(shard: dict[str, Any]) -> str:
 
 def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path,
                           maven_output: Path, assets: Path, lane_id: str,
-                          variants: list[str] | None = None) -> None:
+                          variants: list[str] | None = None,
+                          require_sdk: bool = True) -> None:
     """Delegate native SDK construction to the exact DL4J branch release driver."""
     dl4j = ensure_dl4j_checkout(config, source)
     driver = dl4j / "release" / "aws" / "build-platform.py"
@@ -338,7 +489,7 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
             raise RuntimeError(
                 f"DL4J lane {lane_id} does not define requested variants {sorted(requested - found)}"
             )
-    lane["workloads"] = ["maven", "sdk"]
+    lane["workloads"] = ["maven", "sdk"] if require_sdk else ["maven"]
     # Preserve the lane's artifactIds/classifiers: the upstream SDK packager
     # uses them to select jars/ and hard-fails an SDK workload if none remain.
     kompile_build = config["shard"]["build"]
@@ -429,6 +580,91 @@ def build_native_sdk(config: dict[str, Any], source: Path, repository: Path, mav
         config, source, repository, maven_output, assets,
         dl4j_lane_id(shard), [item["name"] for item in shard["build"]["variants"]],
     )
+
+
+def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
+                        maven_output: Path, assets: Path) -> None:
+    """Build complete Kompile distributions for every selected DL4J classifier.
+
+    The release controller keeps the Kompile source identity separate from its
+    DL4J input identity. Source mode delegates the exact classifier to the
+    selected DL4J commit's release driver. Repository mode resolves Maven
+    coordinates from the configured repository and downloads the matching SDK
+    companion archive only for classifiers that package a runtime SDK.
+    """
+    shard = config["shard"]
+    build = shard["build"]
+    env = ensure_graalvm(
+        source / ".external-tools", shard["architecture"], "graalvm-community",
+    )
+    env["MAVEN_OPTS"] = f"-Xmx{build.get('mavenHeapGiB', 32)}g"
+    env["MAVEN_REPO_LOCAL"] = str(repository)
+    env["KOMPILE_MAVEN_REPO"] = str(repository)
+    env["BUILD_THREADS"] = str(build.get("buildThreads", 64))
+    env["NATIVE_TARGETS"] = str(build.get("nativeTargets", "all"))
+    env["KOMPILE_NATIVE_QUICK_BUILD"] = "0"
+    configure_dl4j_environment(config, env)
+
+    for variant in build["variants"]:
+        classifier = str(variant["classifier"])
+        lane_id = str(variant.get("dl4jLane", build["dl4jLane"]))
+        dl4j_variant = str(variant.get("dl4jVariant", variant["name"]))
+        require_sdk = bool(variant.get("requireSdk", build.get("requireSdk", True)))
+        classifier_output = assets / classifier
+        classifier_output.mkdir(parents=True, exist_ok=True)
+        env["KOMPILE_OUTPUT_DIR"] = str(classifier_output)
+        env["KOMPILE_SDX_OUTPUT_DIR"] = str(classifier_output / "sdx-sdk")
+
+        with tempfile.TemporaryDirectory(prefix=f"dl4j-sdk-{classifier}-") as temporary:
+            temporary_root = Path(temporary)
+            sdk_assets = temporary_root / "assets"
+            sdk_assets.mkdir(parents=True)
+            if uses_prebuilt_dl4j(config):
+                if require_sdk:
+                    download_dl4j_sdk_assets(
+                        config, lane_id, dl4j_variant, sdk_assets,
+                    )
+                    hydrate_dl4j_sdk_jars(
+                        config, source, repository, sdk_assets, classifier,
+                    )
+            else:
+                run_dl4j_release_lane(
+                    config,
+                    source,
+                    repository,
+                    temporary_root / "maven-output",
+                    sdk_assets,
+                    lane_id,
+                    [dl4j_variant],
+                    require_sdk=require_sdk,
+                )
+                if require_sdk:
+                    validate_sdk_assets(
+                        sdk_assets, f"DL4J source lane {lane_id}--{dl4j_variant}",
+                    )
+
+            command = [
+                "bash", "./build-scripts/build-kompile-platform.sh", classifier,
+                "--variant", "full",
+                "--skip-dl4j",
+                "--maven-repo-local", str(repository),
+                "--nd4j-version", config["snapshotVersion"],
+                "--version", config["releaseVersion"],
+            ]
+            if uses_prebuilt_dl4j(config):
+                command.extend([
+                    "--dl4j-repository", config["dl4jMavenRepositoryUrl"],
+                    "--repository-id",
+                    config.get("dl4jMavenRepositoryId", "dl4j-release"),
+                ])
+            if require_sdk:
+                command.extend(["--dl4j-sdk-assets", str(sdk_assets)])
+            if bool(variant.get("skipNative", build.get("skipNative", False))):
+                command.append("--skip-native")
+            phase(f"kompile-platform-{classifier}")
+            run(command, source, env)
+
+    stage_kompile_maven_artifacts(repository, maven_output)
 
 
 def build_kompile_native(config: dict[str, Any], source: Path, repository: Path,
@@ -570,6 +806,10 @@ def main() -> None:
         build_distribution(config, args.source, args.repository, args.maven_output, args.sdk_output)
     elif kind == "native-sdk":
         build_native_sdk(config, args.source, args.repository, args.maven_output, args.sdk_output)
+    elif kind == "platform":
+        build_full_platform(
+            config, args.source, args.repository, args.maven_output, args.sdk_output,
+        )
     elif kind == "macos-all":
         original = config["shard"]["build"]
         distribution_config = json.loads(json.dumps(config))

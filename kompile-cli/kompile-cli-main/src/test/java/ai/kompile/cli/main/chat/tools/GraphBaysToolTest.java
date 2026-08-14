@@ -21,8 +21,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -35,6 +36,9 @@ import static org.junit.jupiter.api.Assertions.*;
 class GraphBaysToolTest {
 
     private static final ObjectMapper OM = new ObjectMapper();
+
+    @TempDir
+    Path tempDir;
 
     private GraphBayesTool tool;
 
@@ -135,22 +139,24 @@ class GraphBaysToolTest {
     }
 
     @Test
-    void execute_nullBaseUrl_returnsError() throws ToolExecutionException {
+    void execute_nullBaseUrl_usesProjectLocalBackend() throws ToolExecutionException {
         GraphBayesTool noUrl = new GraphBayesTool(null, OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "query");
         ToolResult result = noUrl.execute(params, ctx());
-        assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"));
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("project-local"), result.getOutput());
+        assertFalse(result.getOutput().contains("kompile-app"));
     }
 
     @Test
-    void execute_emptyBaseUrl_returnsError() throws ToolExecutionException {
+    void execute_emptyBaseUrl_usesProjectLocalBackend() throws ToolExecutionException {
         GraphBayesTool noUrl = new GraphBayesTool("", OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "stats");
         ToolResult result = noUrl.execute(params, ctx());
-        assertTrue(result.isError());
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("project-local"), result.getOutput());
     }
 
     // ── action dispatch — connection-refused paths ─────────────────────────────
@@ -206,6 +212,6 @@ class GraphBaysToolTest {
     private ToolContext ctx() {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_bayes", PermissionService.PermissionLevel.ALLOW);
-        return new ToolContext("test-session", null, perms, Paths.get("."), null);
+        return new ToolContext("test-session", null, perms, tempDir, null);
     }
 }

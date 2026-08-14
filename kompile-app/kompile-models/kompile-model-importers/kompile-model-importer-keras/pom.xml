@@ -208,8 +208,8 @@
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader</buildArg>
                                 <buildArg>--initialize-at-run-time=org.deeplearning4j.nn.modelimport.keras.KerasModelImport</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=org/deeplearning4j/.*</buildArg>
                             </buildArgs>
                         </configuration>

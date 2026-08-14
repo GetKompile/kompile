@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -46,10 +47,12 @@ public class KnowledgeGraphTool implements CliTool {
     private final String baseUrl;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final LocalProjectGraphBackend localBackend;
 
     public KnowledgeGraphTool(String baseUrl, ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
         this.objectMapper = objectMapper;
+        this.localBackend = new LocalProjectGraphBackend(objectMapper);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -61,6 +64,8 @@ public class KnowledgeGraphTool implements CliTool {
     @Override
     public String description() {
         return "Full knowledge graph operations: CRUD, algorithms, traversal, hierarchy, extraction, and more. " +
+                "Without a configured server, the current MCP folder is the knowledge-base identity and its local graph is initialized automatically. " +
+                "Fact-sheet management actions and fact_sheet_id remain available only for explicit remote/legacy workflows. " +
                 "Actions: " +
                 // Read/search
                 "'overview' (graph statistics, sources, topics), " +
@@ -137,8 +142,8 @@ public class KnowledgeGraphTool implements CliTool {
                 "'list_pipelines' (channel update pipeline configurations), " +
                 // NEW: Unified reasoning overlays
                 "'reasoning_layers' (typed overlays for ontology, PSL, MEBN, provenance, opinions, and neural scores), " +
-                // Fact-sheet management — use these to discover factSheetId values for other operations
-                "'list_fact_sheets' (list all fact sheets with id/name/active status — start here to find factSheetId), " +
+                // Explicit remote/legacy fact-sheet management
+                "'list_fact_sheets' (remote/legacy fact-sheet registry; local stdio instead lists folder graph artifacts), " +
                 "'get_fact_sheet' (get details of one fact sheet by fact_sheet_id), " +
                 "'get_active_fact_sheet' (get the currently active fact sheet), " +
                 "'create_fact_sheet' (create a new fact sheet; requires title), " +
@@ -155,20 +160,10 @@ public class KnowledgeGraphTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "knowledge_graph: full KG ops + fact-sheet management + graph versioning/undo snapshots. " +
-                "Golden path: list_fact_sheets -> list_predicates -> ask_graph_verify 'predicate(a,b)'. " +
-                "ALWAYS call list_fact_sheets first to discover factSheetId values needed by other " +
-                "actions (start_job, build_graph, communities, graph_health, list_rules, etc.). " +
-                "Predicate discovery: list_predicates (fact_sheet_id optional) — shows predicate names + counts; " +
-                "use these names in ask_graph_verify or ask_graph_query. " +
-                "Fact-sheet actions: list_fact_sheets, get_fact_sheet, get_active_fact_sheet, " +
-                "create_fact_sheet (requires title param), activate_fact_sheet (requires fact_sheet_id). " +
-                "Graph snapshot (undo) actions: create_snapshot (requires fact_sheet_id), " +
-                "list_snapshots (requires fact_sheet_id), " +
-                "restore_snapshot (requires fact_sheet_id + snapshot_id; REPLACES live graph, " +
-                "auto re-projects FOL fact store + fires graph-build event), " +
-                "delete_snapshot (requires fact_sheet_id + snapshot_id). " +
-                "Required param for all actions: action=<action_name>.";
+        return "knowledge_graph: full KG operations. Local stdio defaults to and auto-initializes the current folder; " +
+                "start with action=overview or list_predicates and omit fact_sheet_id. " +
+                "Fact-sheet management and snapshot actions are remote/legacy workflows with explicit IDs. " +
+                "Required param: action=<action_name>.";
     }
 
     @Override
@@ -365,9 +360,8 @@ public class KnowledgeGraphTool implements CliTool {
             return ToolResult.error("action is required");
         }
 
-        if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("Knowledge graph tool requires a running kompile-app instance. " +
-                    "Start kompile-app or use --url to connect.");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return localBackend.knowledgeGraph(params, context);
         }
 
         try {
@@ -502,7 +496,8 @@ public class KnowledgeGraphTool implements CliTool {
                         "list_predicates");
             };
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
+            return ToolResult.error("The explicitly configured remote knowledge graph became unavailable at "
+                    + baseUrl + ". Remove --url to continue with the project-local graph.");
         } catch (Exception e) {
             return ToolResult.error("Knowledge graph error: " + e.getMessage());
         }

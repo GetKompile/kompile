@@ -16,6 +16,7 @@
 
 package ai.kompile.app.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.OcrPipelineConfig;
@@ -67,6 +68,7 @@ public class VlmTestSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         originalStdout = System.out;
         System.setOut(System.err);
 

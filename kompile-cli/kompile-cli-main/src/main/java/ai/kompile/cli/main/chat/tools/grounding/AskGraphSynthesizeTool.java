@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -80,7 +81,7 @@ public class AskGraphSynthesizeTool implements CliTool {
                 .put("description", "The natural-language question to answer, e.g. 'who leads Acme?'.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope synthesis to a specific fact sheet. Null/absent = 0 (global).");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("expectedType")
                 .put("type", "string")
                 .put("description", "Demand an answer of this entity type; other-typed candidates are demoted.");
@@ -108,8 +109,7 @@ public class AskGraphSynthesizeTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_synthesize requires a running kompile-app. "
-                    + "Start kompile-app or use --url to connect.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

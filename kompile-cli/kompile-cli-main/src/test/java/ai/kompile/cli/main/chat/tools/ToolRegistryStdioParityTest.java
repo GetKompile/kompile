@@ -29,6 +29,7 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
@@ -113,6 +114,7 @@ class ToolRegistryStdioParityTest {
         put(tools, new CrawlSourceTool(DUMMY_BASE_URL, OM));
         put(tools, new CrawlDocumentsTool(DUMMY_BASE_URL, OM));
         put(tools, new CrawlDiscoveryTool(DUMMY_BASE_URL, OM));
+        put(tools, new ModelRuntimeTool(OM));
         put(tools, new CrawlControlTool(DUMMY_BASE_URL, OM));
         put(tools, new ProcessMiningCliTool(DUMMY_BASE_URL, OM));
         put(tools, new AskGraphClaimTool(DUMMY_BASE_URL, OM));
@@ -151,6 +153,7 @@ class ToolRegistryStdioParityTest {
         ids.add(new CrawlSourceTool(DUMMY_BASE_URL, OM).id());
         ids.add(new CrawlDocumentsTool(DUMMY_BASE_URL, OM).id());
         ids.add(new CrawlDiscoveryTool(DUMMY_BASE_URL, OM).id());
+        ids.add(new ModelRuntimeTool(OM).id());
         ids.add(new CrawlControlTool(DUMMY_BASE_URL, OM).id());
         ids.add(new ProcessMiningCliTool(DUMMY_BASE_URL, OM).id());
         ids.add(new AskGraphClaimTool(DUMMY_BASE_URL, OM).id());

@@ -71,7 +71,8 @@ class HuggingFaceImportProgressPanelTest {
                         state = state,
                         onCancelStep = { true },
                         onRetryStep = { true },
-                        onOpenAppStorageSettings = {}
+                        onOpenAppStorageSettings = {},
+                        onCopySmokeDecodeTrace = {}
                     )
                 }
             }
@@ -115,7 +116,8 @@ class HuggingFaceImportProgressPanelTest {
                         state = state,
                         onCancelStep = { true },
                         onRetryStep = { true },
-                        onOpenAppStorageSettings = {}
+                        onOpenAppStorageSettings = {},
+                        onCopySmokeDecodeTrace = {}
                     )
                     if (state is HuggingFaceImportUiState.SelectionRequired) {
                         repeat(12) { candidate ->
@@ -227,6 +229,7 @@ class HuggingFaceImportProgressPanelTest {
                         onCancelStep = { true },
                         onRetryStep = { true },
                         onOpenAppStorageSettings = {},
+                        onCopySmokeDecodeTrace = {},
                         diagnostics = diagnostics
                     )
                 }

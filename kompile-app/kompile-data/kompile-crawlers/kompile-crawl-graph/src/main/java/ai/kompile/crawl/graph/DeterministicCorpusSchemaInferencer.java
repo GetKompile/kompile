@@ -47,7 +47,8 @@ final class DeterministicCorpusSchemaInferencer {
             "^\\(([A-Z][A-Z0-9_]*)\\)-\\[:([A-Z][A-Z0-9_]*)]\\->\\(([A-Z][A-Z0-9_]*)\\)$");
     private static final Set<String> GENERIC_TYPES = Set.of(
             "NODE", "NODE_LABEL", "REL", "REL_TYPE", "ENTITY_TYPE", "TYPE", "UNKNOWN",
-            "ENTITY", "TOPIC", "THEME", "RELATIONSHIP", "RELATIONS");
+            "ENTITY", "TOPIC", "THEME", "KEYWORD", "TECHNICAL", "PHRASE",
+            "RELATIONSHIP", "RELATIONS", "CO_OCCURS");
 
     private DeterministicCorpusSchemaInferencer() {
     }

@@ -28,6 +28,7 @@ import java.util.List;
  */
 public class MessageQueueManager {
 
+    private final ChatRepl repl;
     private final MessageQueue messageQueue;
     private final ChatMessageHandler messageHandler;
     private final BackgroundTaskManager backgroundTaskManager;
@@ -37,6 +38,7 @@ public class MessageQueueManager {
     private boolean autoDequeueEnabled;
 
     public MessageQueueManager(
+            ChatRepl repl,
             MessageQueue messageQueue,
             ChatMessageHandler messageHandler,
             BackgroundTaskManager backgroundTaskManager,
@@ -44,6 +46,7 @@ public class MessageQueueManager {
             TerminalRenderer renderer,
             AsciiRenderer ascii,
             boolean autoDequeueEnabled) {
+        this.repl = repl;
         this.messageQueue = messageQueue;
         this.messageHandler = messageHandler;
         this.backgroundTaskManager = backgroundTaskManager;
@@ -82,6 +85,7 @@ public class MessageQueueManager {
         }
 
         MessageQueue.QueuedMessage msg = messageQueue.enqueue(content);
+        repl.requestStatusRedraw();
         System.out.println(renderer.green("Message queued [") + msg.getId() + renderer.green("]"));
         System.out.println(renderer.dim("  Use /queues to view, /queue-send to send now, /queue-remove <id> to cancel"));
         System.out.println();
@@ -130,9 +134,16 @@ public class MessageQueueManager {
             System.out.println(renderer.yellow("Queue is empty"));
             return;
         }
+        if (repl.isLlmBusy()) {
+            System.out.println(renderer.yellow("Current turn is still active; message remains queued [")
+                    + msg.getId() + renderer.yellow("]"));
+            System.out.println(renderer.dim("  It will be acknowledged and removed when dispatch actually starts."));
+            return;
+        }
 
         System.out.println(renderer.cyan("Sending queued message [") + msg.getId() + renderer.cyan("]"));
         messageQueue.dequeue();
+        repl.requestStatusRedraw();
         messageHandler.handleChatMessage(msg.getContent());
     }
 
@@ -152,9 +163,16 @@ public class MessageQueueManager {
             System.out.println(renderer.red("Message not found: ") + id);
             return;
         }
+        if (repl.isLlmBusy()) {
+            System.out.println(renderer.yellow("Current turn is still active; message remains queued [")
+                    + id + renderer.yellow("]"));
+            System.out.println(renderer.dim("  It will be acknowledged and removed when dispatch actually starts."));
+            return;
+        }
 
         System.out.println(renderer.cyan("Sending queued message [") + id + renderer.cyan("]"));
         messageQueue.remove(id);
+        repl.requestStatusRedraw();
         messageHandler.handleChatMessage(msg.getContent());
     }
 
@@ -164,6 +182,15 @@ public class MessageQueueManager {
     public void sendAllQueuedMessages() {
         if (messageQueue.isEmpty()) {
             System.out.println(renderer.yellow("Queue is empty"));
+            return;
+        }
+        if (repl.isLlmBusy()) {
+            System.out.println(renderer.yellow("Current turn is still active; the queue was not changed."));
+            if (autoDequeueEnabled) {
+                System.out.println(renderer.dim("  All queued messages will dispatch in order after it completes."));
+            } else {
+                System.out.println(renderer.dim("  Enable /auto-dequeue or run /queue-send-all again when idle."));
+            }
             return;
         }
 
@@ -178,6 +205,7 @@ public class MessageQueueManager {
         // re-enqueue every item while the first turn is busy.
         backgroundTaskManager.advanceQueueChain();
         MessageQueue.QueuedMessage msg = messageQueue.dequeue();
+        repl.requestStatusRedraw();
         System.out.println(renderer.dim("→ [1/" + total + "] Sending: ")
                 + StringUtils.truncate(msg.getContent(), 55));
         messageHandler.handleChatMessage(msg.getContent());
@@ -195,6 +223,7 @@ public class MessageQueueManager {
         }
 
         if (messageQueue.remove(id)) {
+            repl.requestStatusRedraw();
             System.out.println(renderer.green("Removed message [") + id + renderer.green("]"));
         } else {
             System.out.println(renderer.red("Message not found: ") + id);
@@ -206,6 +235,7 @@ public class MessageQueueManager {
      */
     public void clearQueuedMessages() {
         messageQueue.clear();
+        repl.requestStatusRedraw();
         System.out.println(renderer.green("Queue cleared"));
     }
 

@@ -360,8 +360,13 @@ class ToolDrivenExtractionExecutorTest {
         ToolDrivenExtractionExecutor.StructuredRequest request = observed.get();
         assertEquals(1, request.tools().size());
         assertEquals("submit_entities", request.tools().get(0).name());
-        assertTrue(request.messages().get(0).content().contains("Call submit_entities directly"));
-        assertTrue(request.messages().get(0).content().contains("ontology typing"));
+        assertEquals("Call submit_entities with each distinct name copied exactly from the text.",
+                request.messages().get(0).content());
+        assertTrue(request.messages().get(0).content().length() < 100);
+        assertEquals("Text: M. Chen and J. Park reviewed the forecast.",
+                request.messages().get(1).content());
+        assertFalse(request.messages().get(1).content().contains("CURRENT GRAPH"));
+        assertFalse(request.messages().get(1).content().contains("SOURCE SHARD"));
         assertEquals(List.of("names"), ((List<?>) request.tools().get(0).parameters()
                 .get("required")));
         assertFalse(request.tools().get(0).parameters().toString().contains("relations"));
@@ -452,7 +457,8 @@ class ToolDrivenExtractionExecutorTest {
                                 8_192,
                                 1_024,
                                 3.5,
-                                "TEST"));
+                                "TEST"),
+                        "Extract the explicit REVIEWED relation and preserve exact source names.");
 
         assertTrue(result.usable(), () -> result.notes().toString());
         assertEquals(2, result.extraction().entities().size());
@@ -461,7 +467,9 @@ class ToolDrivenExtractionExecutorTest {
                 result.toolsUsed());
 
         ToolDrivenExtractionExecutor.StructuredRequest initial = requests.get(0);
-        assertEquals(List.of("submit_graph_delta", "graph_reasoning_query"),
+        assertEquals(List.of(
+                        "submit_graph_delta", "graph_reasoning_query",
+                        "update_ontology", "unified_corpus"),
                 initial.tools().stream().map(ExtractionToolBackend.ToolDefinition::name).toList());
         assertEquals(List.of("system", "user"),
                 initial.messages().stream()
@@ -469,8 +477,7 @@ class ToolDrivenExtractionExecutorTest {
         String systemPrompt = initial.messages().get(0).content();
         assertTrue(systemPrompt.startsWith("Extract every SOURCE-supported fact"));
         assertTrue(systemPrompt.contains("submit_graph_delta"));
-        assertTrue(systemPrompt.contains("Follow its schema exactly"));
-        assertTrue(systemPrompt.contains("every supported entity"));
+        assertTrue(systemPrompt.contains("every supported entity and typed relation"));
         assertTrue(systemPrompt.contains("must copy an id"));
         assertTrue(systemPrompt.contains("recommendedFirstTool"));
         assertTrue(systemPrompt.contains("is guidance"));
@@ -478,15 +485,14 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(systemPrompt.contains("declared tools"));
         assertFalse(systemPrompt.contains("native function calls"));
         assertFalse(systemPrompt.contains("recommendedFirstTool now"));
-        assertTrue(systemPrompt.contains("On an empty graph"));
-        assertTrue(systemPrompt.contains("graph_reasoning_query may use only SCHEMA or CAPABILITIES"));
-        assertTrue(systemPrompt.contains("after the graph has facts"));
+        assertTrue(systemPrompt.contains("schema prepass"));
+        assertTrue(systemPrompt.contains("relationship type"));
         assertTrue(systemPrompt.contains("graph_reasoning_query"));
         assertTrue(systemPrompt.contains("unified_corpus"));
-        assertTrue(systemPrompt.contains("Do not perform cross-document lookup"));
+        assertTrue(systemPrompt.contains("update_ontology"));
         assertTrue(systemPrompt.contains("one unified logical corpus"));
         assertTrue(systemPrompt.contains("not evidence"));
-        assertTrue(systemPrompt.length() < 1_000,
+        assertTrue(systemPrompt.length() < 1_800,
                 () -> "the core tool prompt should stay small-model legible: "
                         + systemPrompt.length());
         assertFalse(systemPrompt.contains("Both values are"),
@@ -500,10 +506,13 @@ class ToolDrivenExtractionExecutorTest {
         assertFalse(initial.messages().get(1).content().contains("Mira [PERSON]"));
         assertFalse(initial.messages().get(1).content().contains("Project Orchid [PROJECT]"));
         String initialUser = initial.messages().get(1).content();
+        assertTrue(initialUser.contains("PROJECT EXTRACTION INSTRUCTIONS (rules, not evidence):"));
+        assertTrue(initialUser.contains(
+                "Extract the explicit REVIEWED relation and preserve exact source names."));
         assertTrue(initialUser.contains(
                 "Mira reviewed Project Orchid.\nEND SOURCE SHARD\n"));
         assertTrue(initialUser.endsWith(ToolDrivenExtractionExecutor.TOOL_USE_REQUIREMENT));
-        assertTrue(initialUser.contains("model-owned chat template defines the wire format"));
+        assertTrue(initialUser.contains("chat template owns the wire format"));
         assertFalse(initialUser.contains("<|tool_call_start|>"));
         assertFalse(initialUser.contains("<|tool_call_end|>"));
         assertFalse(initialUser.contains("<|python_tag|>"));
@@ -530,6 +539,201 @@ class ToolDrivenExtractionExecutorTest {
                 .anyMatch(message -> "assistant".equals(message.role())
                         || "tool".equals(message.role()))),
                 "audit transcript roles must never become extraction prompt memory");
+    }
+
+    @Test
+    void strictCompactPromptDirectsSubmissionAndDoesNotReplayUngroundedDrafts() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "strict-chunk",
+                "strict-document",
+                "lfm",
+                "strict-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                new CrawlCorpusSnapshot("strict-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                null,
+                false);
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        AtomicInteger round = new AtomicInteger();
+
+        ToolDrivenExtractionExecutor.Result result =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            if (round.getAndIncrement() == 0) {
+                                return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                        "<bad-submit>", "", List.of(
+                                                new ToolDrivenExtractionExecutor.ToolRequest(
+                                                        "submit-1", "submit_graph_delta", Map.of(
+                                                                "format", "indexed",
+                                                                "entities", List.of(Map.of(
+                                                                        "name", "submit_graph_delta instruction text",
+                                                                        "type", "PERSON")),
+                                                                "relations", List.of()))),
+                                        List.of());
+                            }
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<good-submit>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "submit-2", "submit_graph_delta", Map.of(
+                                                            "format", "indexed",
+                                                            "entities", List.of(
+                                                                    Map.of("name", "Alex Rivera",
+                                                                            "type", "PERSON"),
+                                                                    Map.of("name", "Acme Robotics",
+                                                                            "type", "COMPANY")),
+                                                            "relations", List.of(Map.of(
+                                                                    "source", 0,
+                                                                    "target", 1,
+                                                                    "type", "WORKS_AT"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT,
+                                4_096,
+                                8_192,
+                                1_024,
+                                3.5,
+                                "TEST"),
+                        "Extract PERSON, COMPANY, and WORKS_AT facts.");
+
+        assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(2, requests.size());
+        ToolDrivenExtractionExecutor.StructuredRequest initial = requests.get(0);
+        assertEquals(List.of("submit_graph_delta"),
+                initial.tools().stream().map(ExtractionToolBackend.ToolDefinition::name).toList());
+        String system = initial.messages().get(0).content();
+        assertEquals("Extract Text with submit_graph_delta(format=\"indexed\"). "
+                + "Copy distinct named entities once in Text order. Names come only from Text—not "
+                + "instructions, tool names, or schema. Assign stated ontology types. For each "
+                + "directed relation A to B, source is A's zero-based entity "
+                + "index and target is B's. Close both arrays and the call. No prose. Directive: "
+                + "Extract PERSON, COMPANY, and WORKS_AT facts.", system);
+        assertFalse(system.contains("schema prepass"));
+        assertFalse(system.contains("update_ontology"));
+        assertFalse(system.contains("unified_corpus"));
+        assertTrue(system.length() < 400, () -> "strict direct prompt is too large: " + system.length());
+
+        String initialUser = initial.messages().get(1).content();
+        assertEquals("Text: Alex Rivera works at Acme Robotics.", initialUser);
+        assertFalse(initialUser.contains("FINAL:"));
+        assertFalse(initialUser.contains("CURRENT GRAPH"));
+        assertFalse(initialUser.contains("SOURCE SHARD"));
+        assertFalse(initialUser.contains("TASK ROUTING CONTEXT"));
+        assertTrue(initialUser.length() < 300,
+                () -> "strict direct user prompt is too large: " + initialUser.length());
+
+        String retry = requests.get(1).messages().get(1).content();
+        assertTrue(retry.contains("[SOURCE_GROUNDING]"));
+        assertFalse(retry.contains("Rejected candidate draft"));
+        assertFalse(retry.contains("submit_graph_delta instruction text"),
+                "ungrounded model text must not be replayed into the next prompt");
+    }
+
+    @Test
+    void structuredOntologyUpdateRefreshesNextTurnPromptAndNativeTypeEnums() {
+        GraphSchema initial = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("ORGANIZATION", "An organization", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at an organization", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(ORGANIZATION)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "ontology-chunk",
+                "ontology-document",
+                "lfm",
+                "ontology-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                initial,
+                new CrawlCorpusSnapshot("ontology-corpus", List.of()),
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null));
+
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        AtomicInteger round = new AtomicInteger();
+        ToolDrivenExtractionExecutor.Result result =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "The email finance@example.com identifies Mira.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            if (round.getAndIncrement() == 0) {
+                                assertFalse(request.tools().toString().contains("EMAIL_ADDRESS"));
+                                return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                        "<update-ontology>", "", List.of(
+                                                new ToolDrivenExtractionExecutor.ToolRequest(
+                                                        "ontology-1",
+                                                        "update_ontology",
+                                                        Map.of(
+                                                                "nodeTypes", List.of(Map.of(
+                                                                        "label", "EMAIL_ADDRESS",
+                                                                        "description", "An email address identifying a graph entity")),
+                                                                "relationshipTypes", List.of(Map.of(
+                                                                        "type", "IDENTIFIES",
+                                                                        "description", "An email address identifies a person",
+                                                                        "aliases", List.of("email_for"))),
+                                                                "patterns", List.of(
+                                                                        "(EMAIL_ADDRESS)-[:IDENTIFIES]->(PERSON)")))),
+                                        List.of());
+                            }
+                            assertTrue(request.tools().toString().contains("EMAIL_ADDRESS"));
+                            assertTrue(request.tools().toString().contains("IDENTIFIES"));
+                            assertTrue(request.messages().get(1).content()
+                                    .contains("\"ontologyRevision\":2"));
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<submit-typed-relation>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "submit-1",
+                                                    "submit_graph_delta",
+                                                    Map.of(
+                                                            "entities", List.of(
+                                                                    Map.of(
+                                                                            "id", "email-finance",
+                                                                            "name", "finance@example.com",
+                                                                            "type", "EMAIL_ADDRESS"),
+                                                                    Map.of(
+                                                                            "id", "mira",
+                                                                            "name", "Mira",
+                                                                            "type", "PERSON")),
+                                                            "relations", List.of(Map.of(
+                                                                    "source", "email-finance",
+                                                                    "target", "mira",
+                                                                    "type", "IDENTIFIES"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.STANDARD,
+                                8_192,
+                                20_000,
+                                1_024,
+                                3.5,
+                                "TEST"));
+
+        assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(List.of("update_ontology", "submit_graph_delta"), result.toolsUsed());
+        assertEquals(2, requests.size());
+        assertEquals(2, result.extraction().entities().size());
+        assertEquals("IDENTIFIES", result.extraction().relations().get(0).type());
     }
 
     @Test
@@ -659,18 +863,20 @@ class ToolDrivenExtractionExecutorTest {
                         new DecomposedExtractionExecutor.PromptProfile(
                                 DecomposedPromptTier.STANDARD,
                                 2_048,
-                                4_096,
+                                8_192,
                                 512,
                                 3.5,
                                 "MODEL_CAPABILITY"));
 
         assertTrue(result.usable(), () -> result.notes().toString());
         assertEquals(1, requests.size(), "a fitting compact contract must reach the model");
-        assertEquals(2, requests.get(0).tools().size(),
-                "the unified-document workflow needs graph navigation and submission only");
-        assertTrue(requests.get(0).tools().stream().noneMatch(tool ->
+        assertEquals(4, requests.get(0).tools().size(),
+                "the unified-corpus workflow keeps graph, ontology, corpus, and submission operations executable");
+        assertTrue(requests.get(0).tools().stream().anyMatch(tool ->
                 CrawlExtractionToolBackend.UNIFIED_CORPUS.equals(tool.name())));
-        assertFalse(requests.get(0).messages().get(1).content().contains("entityDefinitions"),
+        assertTrue(requests.get(0).tools().stream().anyMatch(tool ->
+                CrawlExtractionToolBackend.UPDATE_ONTOLOGY.equals(tool.name())));
+        assertFalse(requests.get(0).messages().get(1).content().contains("nodeDefinitions"),
                 "compact presentation should omit verbose schema definitions");
         assertTrue(result.notes().stream().anyMatch(note -> note.contains(
                         "native tool presentation reduced from STANDARD to COMPACT")),
@@ -720,7 +926,7 @@ class ToolDrivenExtractionExecutorTest {
 
         ToolDrivenExtractionExecutor.Result result =
                 new ToolDrivenExtractionExecutor().extractStructured(
-                        "The ingestion inventory identifies M. Chen as VP, FP&A and J. Park as Sr. Analyst.",
+                        "The ingestion Inventory identifies M. Chen as VP, FP&A and J. Park as Sr. Analyst; Controller owns escalation.",
                         null,
                         backend,
                         (passId, request) -> {
@@ -966,6 +1172,24 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(result.notes().stream()
                 .anyMatch(note -> note.contains(
                         "without mutation or backend execution")));
+    }
+
+    @Test
+    void schemaIntegerAcceptsMathematicallyIntegralJsonNumbers() {
+        Map<String, Object> schema = Map.of(
+                "type", "object",
+                "properties", Map.of("target", Map.of("type", "integer")),
+                "required", List.of("target"));
+
+        ToolArgumentSchemaValidator.ValidationResult integralDecimal =
+                ToolArgumentSchemaValidator.validate(schema, Map.of("target", 1.0d));
+        ToolArgumentSchemaValidator.ValidationResult fractionalDecimal =
+                ToolArgumentSchemaValidator.validate(schema, Map.of("target", 1.5d));
+
+        assertTrue(integralDecimal.valid(), () -> integralDecimal.errors().toString());
+        assertFalse(fractionalDecimal.valid());
+        assertTrue(fractionalDecimal.errors().stream()
+                .anyMatch(error -> error.contains("$.target must be integer")));
     }
 
     @Test

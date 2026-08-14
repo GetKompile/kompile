@@ -93,34 +93,179 @@ public final class ExtractorUtils {
     }
 
     /**
-     * Adds an entity to the index, merging properties and taking max confidence
-     * if an entity with the same ID already exists.
+     * Adds an entity to the index, retaining all evidence exposed by duplicate observations.
+     *
+     * <p>The first entity owns the stable name/type identity used by deterministic batch
+     * extraction. Later names are retained as aliases, descriptions prefer the richer value,
+     * properties are merged, and confidence takes the maximum.</p>
      */
     public static void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {
         ExtractedEntity existing = index.get(entity.id());
         if (existing == null) {
             index.put(entity.id(), entity);
         } else {
-            Map<String, String> mergedProps = new LinkedHashMap<>();
-            if (existing.properties() != null) mergedProps.putAll(existing.properties());
-            if (entity.properties() != null) mergedProps.putAll(entity.properties());
-
-            double conf = Math.max(
-                    existing.confidence() != null ? existing.confidence() : 0.0,
-                    entity.confidence() != null ? entity.confidence() : 0.0
-            );
-
-            index.put(entity.id(), new ExtractedEntity(
-                    entity.id(), existing.name(), existing.type(),
-                    existing.aliases(), existing.description(), conf, mergedProps
-            ));
+            index.put(entity.id(), mergeEntity(existing, entity));
         }
     }
 
     /**
-     * Default batch extraction: extracts each document individually, merges entities
-     * by ID, and combines all relations. Suitable for most {@link DocumentGraphExtractor}
-     * implementations.
+     * Merge two observations of the same entity without discarding aliases or properties.
+     * The existing entity retains its canonical identity, which keeps batch output stable.
+     */
+    public static ExtractedEntity mergeEntity(ExtractedEntity existing, ExtractedEntity incoming) {
+        if (existing == null) return incoming;
+        if (incoming == null) return existing;
+        return entityWithIdentity(existing, incoming, existing, false);
+    }
+
+    /**
+     * Merge evidence while applying an explicitly corrected entity identity.
+     *
+     * <p>This is for repair/upsert flows which have already validated the incoming item. It is
+     * intentionally distinct from {@link #mergeEntity(ExtractedEntity, ExtractedEntity)} so
+     * ordinary batch order cannot silently rename or retype an entity.</p>
+     */
+    public static ExtractedEntity replaceEntity(ExtractedEntity existing, ExtractedEntity corrected) {
+        if (existing == null) return corrected;
+        if (corrected == null) return existing;
+        return entityWithIdentity(existing, corrected, corrected, true);
+    }
+
+    private static ExtractedEntity entityWithIdentity(ExtractedEntity existing,
+                                                      ExtractedEntity incoming,
+                                                      ExtractedEntity identity,
+                                                      boolean correctedDescriptionWins) {
+        String canonicalName = firstText(identity.name(), existing.name(), incoming.name());
+        String canonicalType = firstText(identity.type(), existing.type(), incoming.type());
+        LinkedHashSet<String> aliases = new LinkedHashSet<>();
+        addAliases(aliases, existing.aliases());
+        addAliases(aliases, incoming.aliases());
+        addAlternateName(aliases, canonicalName, existing.name());
+        addAlternateName(aliases, canonicalName, incoming.name());
+
+        return new ExtractedEntity(
+                firstText(identity.id(), existing.id(), incoming.id()),
+                canonicalName,
+                canonicalType,
+                List.copyOf(aliases),
+                correctedDescriptionWins
+                        ? firstText(incoming.description(), existing.description())
+                        : richerText(existing.description(), incoming.description()),
+                maxConfidence(existing.confidence(), incoming.confidence()),
+                mergeProperties(existing.properties(), incoming.properties()));
+    }
+
+    /**
+     * Add or merge a relation using its stable source/type/target atom as the key.
+     */
+    public static void addRelation(Map<String, ExtractedRelation> index, ExtractedRelation relation) {
+        String key = relationKey(relation);
+        ExtractedRelation existing = index.get(key);
+        index.put(key, existing == null ? relation : mergeRelation(existing, relation));
+    }
+
+    /**
+     * Merge duplicate relation evidence while retaining the stable atom identity.
+     */
+    public static ExtractedRelation mergeRelation(ExtractedRelation existing,
+                                                  ExtractedRelation incoming) {
+        if (existing == null) return incoming;
+        if (incoming == null) return existing;
+        return new ExtractedRelation(
+                existing.source(), existing.target(), existing.type(),
+                richerText(existing.description(), incoming.description()),
+                maxConfidence(existing.confidence(), incoming.confidence()),
+                mergeProperties(existing.properties(), incoming.properties()),
+                firstText(existing.occurredAt(), incoming.occurredAt()));
+    }
+
+    /**
+     * Merge relation evidence while applying an explicitly corrected relation value.
+     */
+    public static ExtractedRelation replaceRelation(ExtractedRelation existing,
+                                                    ExtractedRelation corrected) {
+        if (existing == null) return corrected;
+        if (corrected == null) return existing;
+        return new ExtractedRelation(
+                corrected.source(), corrected.target(), corrected.type(),
+                firstText(corrected.description(), existing.description()),
+                maxConfidence(existing.confidence(), corrected.confidence()),
+                mergeProperties(existing.properties(), corrected.properties()),
+                firstText(corrected.occurredAt(), existing.occurredAt()));
+    }
+
+    public static String relationKey(ExtractedRelation relation) {
+        return String.valueOf(relation.source()) + "\u0000"
+                + String.valueOf(relation.type()) + "\u0000"
+                + String.valueOf(relation.target());
+    }
+
+    private static Map<String, String> mergeProperties(Map<String, String> existing,
+                                                       Map<String, String> incoming) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (existing != null) merged.putAll(existing);
+        if (incoming != null) merged.putAll(incoming);
+        return merged;
+    }
+
+    private static void addAliases(Set<String> target, List<String> aliases) {
+        if (aliases == null) return;
+        aliases.stream().filter(ExtractorUtils::hasText).map(String::trim).forEach(target::add);
+    }
+
+    private static void addAlternateName(Set<String> target, String canonicalName, String candidate) {
+        if (hasText(candidate) && !sameText(candidate, canonicalName)) {
+            target.add(candidate.trim());
+        }
+    }
+
+    private static boolean sameText(String left, String right) {
+        return hasText(left) && hasText(right) && left.trim().equalsIgnoreCase(right.trim());
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String firstText(String... values) {
+        for (String value : values) {
+            if (hasText(value)) return value;
+        }
+        return null;
+    }
+
+    private static String richerText(String existing, String incoming) {
+        if (!hasText(existing)) return incoming;
+        if (!hasText(incoming)) return existing;
+        return incoming.length() > existing.length() ? incoming : existing;
+    }
+
+    private static double maxConfidence(Double existing, Double incoming) {
+        return Math.max(existing != null ? existing : 0.0, incoming != null ? incoming : 0.0);
+    }
+
+    /**
+     * Merge one extractor result into batch indexes without discarding duplicate evidence.
+     *
+     * <p>All crawl extractors should use this primitive when they need custom batch metadata or
+     * document filtering. It keeps entity and relation merge semantics identical to the default
+     * batch path.</p>
+     */
+    public static void mergeResult(Map<String, ExtractedEntity> entityIndex,
+                                   Map<String, ExtractedRelation> relationIndex,
+                                   ExtractionResult result) {
+        if (result == null) return;
+        if (result.entities() != null) {
+            result.entities().forEach(entity -> addEntity(entityIndex, entity));
+        }
+        if (result.relations() != null) {
+            result.relations().forEach(relation -> addRelation(relationIndex, relation));
+        }
+    }
+
+    /**
+     * Default batch extraction: extracts each document individually and merges duplicate entity
+     * and relation evidence. Suitable for most {@link DocumentGraphExtractor} implementations.
      *
      * @param extractor the extractor to use for individual documents
      * @param docs      the documents to process
@@ -131,19 +276,15 @@ public final class ExtractorUtils {
                                                  List<Document> docs,
                                                  String extractorName) {
         Map<String, ExtractedEntity> mergedEntities = new LinkedHashMap<>();
-        List<ExtractedRelation> mergedRelations = new ArrayList<>();
+        Map<String, ExtractedRelation> mergedRelations = new LinkedHashMap<>();
 
         for (Document doc : docs) {
-            ExtractionResult result = extractor.extract(doc);
-            for (ExtractedEntity entity : result.entities()) {
-                addEntity(mergedEntities, entity);
-            }
-            mergedRelations.addAll(result.relations());
+            mergeResult(mergedEntities, mergedRelations, extractor.extract(doc));
         }
 
         return ExtractionResult.of(
                 new ArrayList<>(mergedEntities.values()),
-                mergedRelations,
+                new ArrayList<>(mergedRelations.values()),
                 new ExtractionMetadata(null, null, extractorName, null)
         );
     }

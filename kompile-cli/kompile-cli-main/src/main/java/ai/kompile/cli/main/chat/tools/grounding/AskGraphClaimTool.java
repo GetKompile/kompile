@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -76,7 +77,7 @@ public class AskGraphClaimTool implements CliTool {
                 .put("description", "Entity id of the claim object (e.g. 'acme_corp').");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope to a specific fact sheet. Null or absent = global (0).");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("sessionId")
                 .put("type", "string")
                 .put("description", "Optional correlation id echoed in the response meta.");
@@ -113,8 +114,7 @@ public class AskGraphClaimTool implements CliTool {
         if (object.isBlank())    return ToolResult.error("object is required");
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_claim requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

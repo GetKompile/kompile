@@ -22,7 +22,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 final class CorpusSchemaResponseParser {
 
@@ -64,6 +70,107 @@ final class CorpusSchemaResponseParser {
             String message = conciseErrorMessage(exception);
             return new ParseResult(null, List.of("[SCHEMA_JSON] " + message));
         }
+    }
+
+    static ParseResult parse(Map<String, Object> toolArguments) {
+        if (toolArguments == null || toolArguments.isEmpty()) {
+            return new ParseResult(
+                    null, List.of("[SCHEMA_TOOL_CALL] Schema tool arguments were empty"));
+        }
+        try {
+            GraphSchema schema = OBJECT_MAPPER.convertValue(
+                    normalizeStructuredPatterns(toolArguments), GraphSchema.class);
+            return new ParseResult(schema, List.of());
+        } catch (IllegalArgumentException exception) {
+            return new ParseResult(
+                    null, List.of("[SCHEMA_TOOL_CALL] " + conciseErrorMessage(exception)));
+        }
+    }
+
+    private static Map<String, Object> normalizeStructuredPatterns(
+            Map<String, Object> toolArguments) {
+        Map<String, Object> normalized = new LinkedHashMap<>(toolArguments);
+        normalized.put("nodeTypes", normalizeTypeDefinitions(
+                toolArguments.get("nodeTypes"), "label", "node type"));
+        normalized.put("relationshipTypes", normalizeTypeDefinitions(
+                toolArguments.get("relationshipTypes"), "type", "relationship type"));
+        Object patterns = toolArguments.get("patterns");
+        if (!(patterns instanceof List<?> values)) {
+            return normalized;
+        }
+
+        List<Object> normalizedPatterns = new ArrayList<>(values.size());
+        for (Object value : values) {
+            if (value instanceof String) {
+                normalizedPatterns.add(value);
+                continue;
+            }
+            if (!(value instanceof Map<?, ?> endpoints)) {
+                throw new IllegalArgumentException(
+                        "patterns entries must be strings or endpoint objects");
+            }
+            String sourceType = canonicalSchemaName(
+                    requiredEndpoint(endpoints, "sourceType"));
+            String relationshipType = canonicalSchemaName(
+                    requiredEndpoint(endpoints, "relationshipType"));
+            String targetType = canonicalSchemaName(
+                    requiredEndpoint(endpoints, "targetType"));
+            normalizedPatterns.add("(" + sourceType + ")-[:" + relationshipType
+                    + "]->(" + targetType + ")");
+        }
+        normalized.put("patterns", normalizedPatterns);
+        return normalized;
+    }
+
+    private static Object normalizeTypeDefinitions(
+            Object definitions, String nameField, String kind) {
+        if (!(definitions instanceof List<?> values)) {
+            return definitions;
+        }
+        List<Object> normalized = new ArrayList<>(values.size());
+        Set<String> seenNames = new LinkedHashSet<>();
+        for (Object value : values) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            if (value instanceof String name) {
+                copy.put(nameField, canonicalSchemaName(name));
+            } else if (value instanceof Map<?, ?> definition) {
+                definition.forEach((key, fieldValue) ->
+                        copy.put(String.valueOf(key), fieldValue));
+                Object name = copy.get(nameField);
+                if (name != null) {
+                    copy.put(nameField, canonicalSchemaName(name.toString()));
+                }
+            } else {
+                normalized.add(value);
+                continue;
+            }
+            Object canonicalName = copy.get(nameField);
+            if (canonicalName != null && !seenNames.add(canonicalName.toString())) {
+                continue;
+            }
+            if (!copy.containsKey("description") || copy.get("description") == null
+                    || copy.get("description").toString().isBlank()) {
+                copy.put("description", "Corpus-derived " + kind + " " + canonicalName + ".");
+            }
+            normalized.add(copy);
+        }
+        return normalized;
+    }
+
+    private static String canonicalSchemaName(String value) {
+        return value.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]+", "_")
+                .replaceAll("^_+|_+$", "")
+                .replaceAll("_+", "_");
+    }
+
+    private static String requiredEndpoint(Map<?, ?> endpoints, String field) {
+        Object value = endpoints.get(field);
+        if (value == null || value.toString().isBlank()) {
+            throw new IllegalArgumentException(
+                    "patterns endpoint object is missing " + field);
+        }
+        return value.toString().trim();
     }
 
     private static String conciseErrorMessage(Throwable throwable) {

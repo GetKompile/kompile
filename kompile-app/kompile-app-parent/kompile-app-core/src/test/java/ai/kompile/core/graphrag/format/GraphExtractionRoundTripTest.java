@@ -22,6 +22,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -74,6 +75,24 @@ class GraphExtractionRoundTripTest {
 
         assertNull(meta.graphId());
         assertNull(meta.parentGraphId());
+    }
+
+    @Test
+    void legacyCandidateMetadataDeserializesAsProperties() throws Exception {
+        String json = """
+                {"$schema":"kompile-graph-extraction/v1","entities":[
+                  {"id":"alice","name":"Alice","type":"PERSON",
+                   "metadata":{"email":"alice@example.com"}}
+                ],"relations":[
+                  {"source":"alice","target":"company","type":"WORKS_AT",
+                   "metadata":{"source":"directory"}}
+                ]}
+                """;
+
+        ExtractionResult result = new ObjectMapper().readValue(json, ExtractionResult.class);
+
+        assertEquals("alice@example.com", result.entities().get(0).properties().get("email"));
+        assertEquals("directory", result.relations().get(0).properties().get("source"));
     }
 
     // =========================================================================

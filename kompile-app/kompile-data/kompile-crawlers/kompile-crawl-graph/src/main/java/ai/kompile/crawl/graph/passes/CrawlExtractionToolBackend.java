@@ -13,6 +13,7 @@ import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstructor.ConceptHint;
 import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
+import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
@@ -26,6 +27,7 @@ import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
+import ai.kompile.crawl.graph.CrawlOntology;
 import ai.kompile.graph.reasoning.model.GraphEntity;
 import ai.kompile.graph.reasoning.query.GraphQueryEngine;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
@@ -59,13 +61,21 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     public static final String GRAPH_REASONING_QUERY = "graph_reasoning_query";
     public static final String SUBMIT_GRAPH_DELTA = "submit_graph_delta";
     public static final String SUBMIT_ENTITIES = "submit_entities";
+    public static final String UPDATE_ONTOLOGY = "update_ontology";
 
+    private static final String COMPACT_SUBMIT_FORMAT_FIELD = "format";
+    private static final String COMPACT_SUBMIT_FORMAT = "indexed";
     private static final int MAX_CORPUS_RESULTS = 8;
     private static final int MAX_CORPUS_PAGE_CHARS = 4_000;
     private static final int MAX_GRAPH_TOP_K = 20;
     private static final int MAX_GRAPH_DEPTH = 8;
     private static final int MAX_ENTITY_NAMES_PER_CALL = 32;
     private static final int MAX_ENTITY_NAME_CHARS = 160;
+    private static final int MAX_GRAPH_ID_CHARS = 160;
+    private static final int MAX_GRAPH_TYPE_CHARS = 160;
+    private static final int MAX_DISCOVERY_TYPE_CHARS = 32;
+    private static final int MAX_GRAPH_TEXT_CHARS = 512;
+    private static final int MAX_GRAPH_TIME_CHARS = 128;
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper();
 
     private final String chunkId;
@@ -74,7 +84,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private final String graphId;
     private final String parentGraphId;
     private final GraphExtractionValidationPolicy policy;
-    private final GraphSchema schema;
+    private final CrawlOntology ontology;
     private final CrawlCorpusSnapshot corpus;
     private final Map<String, CrawlCorpusPassage> passagesById;
     private final int incompletePassagesExcluded;
@@ -83,9 +93,18 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private final Supplier<UnifiedGraph> graphSupplier;
     private final GraphReasoningQueryService reasoningService;
     private final ExtractionTarget extractionTarget;
+    private final boolean ontologyUpdatesAllowed;
+    private final Set<String> retrievedEvidence = new LinkedHashSet<>();
 
     private volatile ExtractionResult accepted;
     private volatile ExtractionTaskContext activeTaskContext;
+    private volatile Integer compactEntityMinItems;
+    private volatile Integer compactEntityMaxItems;
+    private volatile Integer compactRelationMinItems;
+    private volatile Integer compactRelationMaxItems;
+    private volatile Integer compactEntityNameMaxLength;
+    private volatile List<String> compactEntityTypeOrder = List.of();
+    private volatile List<String> compactRelationTypeOrder = List.of();
 
     public CrawlExtractionToolBackend(
             String chunkId,
@@ -135,19 +154,61 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             Supplier<UnifiedGraph> graphSupplier,
             GraphReasoningQueryService reasoningService,
             ExtractionTarget extractionTarget) {
+        this(chunkId, documentId, model, graphId, parentGraphId, policy, schema, corpus,
+                vectorStore, vectorStoreInitializationError, graphSupplier, reasoningService,
+                extractionTarget, null);
+    }
+
+    public CrawlExtractionToolBackend(
+            String chunkId,
+            String documentId,
+            String model,
+            String graphId,
+            String parentGraphId,
+            GraphExtractionValidationPolicy policy,
+            GraphSchema schema,
+            CrawlCorpusSnapshot corpus,
+            VectorStore vectorStore,
+            String vectorStoreInitializationError,
+            Supplier<UnifiedGraph> graphSupplier,
+            GraphReasoningQueryService reasoningService,
+            ExtractionTarget extractionTarget,
+            CrawlOntology crawlOntology) {
+        this(chunkId, documentId, model, graphId, parentGraphId, policy, schema, corpus,
+                vectorStore, vectorStoreInitializationError, graphSupplier, reasoningService,
+                extractionTarget, crawlOntology, true);
+    }
+
+    public CrawlExtractionToolBackend(
+            String chunkId,
+            String documentId,
+            String model,
+            String graphId,
+            String parentGraphId,
+            GraphExtractionValidationPolicy policy,
+            GraphSchema schema,
+            CrawlCorpusSnapshot corpus,
+            VectorStore vectorStore,
+            String vectorStoreInitializationError,
+            Supplier<UnifiedGraph> graphSupplier,
+            GraphReasoningQueryService reasoningService,
+            ExtractionTarget extractionTarget,
+            CrawlOntology crawlOntology,
+            boolean ontologyUpdatesAllowed) {
         this.chunkId = chunkId;
         this.documentId = documentId;
         this.model = model;
         this.graphId = graphId;
         this.parentGraphId = parentGraphId;
         this.policy = policy == null ? GraphExtractionValidationPolicy.defaults() : policy;
-        this.schema = schema;
+        this.ontology = crawlOntology == null ? new CrawlOntology(schema) : crawlOntology;
         this.vectorStore = vectorStore;
         this.vectorStoreInitializationError = vectorStoreInitializationError;
         this.graphSupplier = graphSupplier;
         this.reasoningService = reasoningService;
         this.extractionTarget = extractionTarget == null
                 ? ExtractionTarget.FULL_GRAPH : extractionTarget;
+        this.ontologyUpdatesAllowed = ontologyUpdatesAllowed;
 
         Map<String, CrawlCorpusPassage> complete = new LinkedHashMap<>();
         int incomplete = 0;
@@ -170,9 +231,51 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 new ArrayList<>(complete.values()));
     }
 
+    /**
+     * Opt-in native-schema cardinality ceilings supplied by a deterministic source inventory.
+     * The model still chooses all names, ontology types, endpoints, and relation types.
+     */
+    public void configureCompactProposalBounds(int entityMaxItems, int relationMaxItems) {
+        this.compactEntityMaxItems = Math.max(0, entityMaxItems);
+        this.compactRelationMaxItems = Math.max(0, relationMaxItems);
+    }
+
+    /**
+     * Opt-in exact cardinalities from deterministic source assertion analysis. Only counts are
+     * constrained; the model still selects every source name, ontology type, endpoint, and relation.
+     */
+    public void configureCompactProposalCardinality(int entityItems, int relationItems) {
+        this.compactEntityMinItems = Math.max(0, entityItems);
+        this.compactEntityMaxItems = Math.max(0, entityItems);
+        this.compactRelationMinItems = Math.max(0, relationItems);
+        this.compactRelationMaxItems = Math.max(0, relationItems);
+    }
+
+    /**
+     * Source-derived presentation bounds for a compact proposal. These values never add ontology
+     * labels or fix facts: preferred labels are intersected with the authoritative ontology, and
+     * the name bound carries only a length rather than any source text.
+     */
+    public void configureCompactProposalGuidance(
+            int entityNameMaxLength,
+            List<String> entityTypeOrder,
+            List<String> relationTypeOrder) {
+        this.compactEntityNameMaxLength = Math.max(
+                1, Math.min(MAX_ENTITY_NAME_CHARS, entityNameMaxLength));
+        this.compactEntityTypeOrder = entityTypeOrder == null
+                ? List.of() : List.copyOf(entityTypeOrder);
+        this.compactRelationTypeOrder = relationTypeOrder == null
+                ? List.of() : List.copyOf(relationTypeOrder);
+    }
+
     @Override
     public ExtractionTarget extractionTarget() {
         return extractionTarget;
+    }
+
+    @Override
+    public boolean ontologyUpdatesAllowed() {
+        return ontologyUpdatesAllowed;
     }
 
     @Override
@@ -189,14 +292,22 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     public String catalogJson(DecomposedPromptTier configuredTier) {
         DecomposedPromptTier tier = effectiveTier(configuredTier);
         UnifiedGraph graph = graphSnapshot();
+        boolean directCompact = !entitiesOnly()
+                && !ontologyUpdatesAllowed
+                && tier == DecomposedPromptTier.COMPACT;
 
         Map<String, Object> catalog = new LinkedHashMap<>();
-        catalog.put("version", "tiered-compact-v7");
+        catalog.put("version", "tiered-compact-v12");
         Map<String, Object> callShape = new LinkedHashMap<>();
         callShape.put("tool", entitiesOnly() ? SUBMIT_ENTITIES : SUBMIT_GRAPH_DELTA);
         callShape.put("args", entitiesOnly()
                 ? Map.of("names", List.of("<SOURCE NAME>"))
-                : Map.of("entities", List.of(), "relations", List.of()));
+                : directCompact
+                        ? Map.of(
+                                COMPACT_SUBMIT_FORMAT_FIELD, COMPACT_SUBMIT_FORMAT,
+                                "entities", List.of(),
+                                "relations", List.of())
+                        : Map.of("entities", List.of(), "relations", List.of()));
         catalog.put("callShape", callShape);
 
         boolean emptyGraph = graph.entityCount() == 0;
@@ -223,25 +334,39 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             return json(catalog);
         }
 
+        catalog.put("ontologyRevision", ontology.revision());
+        Map<String, Object> vocabulary = schemaVocabulary(graph, tier, activeTaskContext);
+        if (!vocabulary.isEmpty()) {
+            catalog.put("graphSchema", vocabulary);
+        }
+
         Map<String, Object> submit = new LinkedHashMap<>();
         submit.put("purpose", "finish by proposing all source-supported graph additions");
-        List<String> entityFields = new ArrayList<>(List.of("id", "name", "type"));
-        List<String> relationFields = new ArrayList<>(List.of("source", "target", "type"));
-        if (requiresDescriptions()) {
-            entityFields.add("description");
-            relationFields.add("description");
-        }
-        if (tierRank(tier) >= tierRank(DecomposedPromptTier.RICH)) {
-            entityFields.addAll(List.of("aliases", "confidence"));
-            relationFields.add("confidence");
-        }
-        if (tierRank(tier) >= tierRank(DecomposedPromptTier.EXPANDED)) {
-            entityFields.add("properties");
-            relationFields.addAll(List.of("properties", "occurredAt"));
-        }
-        submit.put("entityFields", List.copyOf(entityFields));
-        if (!entitiesOnly()) {
-            submit.put("relationFields", List.copyOf(relationFields));
+        if (directCompact) {
+            submit.put("entityFields", List.of("name", "type"));
+            submit.put("relationFields", List.of("source", "target", "type"));
+            submit.put("endpointRule",
+                    "relation source and target are zero-based indices into entities");
+            submit.put("engineOwned", List.of("entity ids", "metadata", "graph admission"));
+        } else {
+            List<String> entityFields = new ArrayList<>(List.of("id", "name", "type", "aliases"));
+            List<String> relationFields = new ArrayList<>(List.of("source", "target", "type"));
+            if (requiresDescriptions()) {
+                entityFields.add("description");
+                relationFields.add("description");
+            }
+            if (tierRank(tier) >= tierRank(DecomposedPromptTier.RICH)) {
+                entityFields.add("confidence");
+                relationFields.add("confidence");
+            }
+            if (tierRank(tier) >= tierRank(DecomposedPromptTier.EXPANDED)) {
+                entityFields.add("properties");
+                relationFields.addAll(List.of("properties", "occurredAt"));
+            }
+            submit.put("entityFields", List.copyOf(entityFields));
+            if (!entitiesOnly()) {
+                submit.put("relationFields", List.copyOf(relationFields));
+            }
         }
         submit.put("unlimited", true);
         catalog.put(SUBMIT_GRAPH_DELTA, submit);
@@ -269,6 +394,12 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 "SEARCH requires action,query,limit",
                 "GET requires action,chunkId,start,length"));
         catalog.put(UNIFIED_CORPUS, corpusTool);
+        if (ontologyUpdatesAllowed) {
+            catalog.put(UPDATE_ONTOLOGY, Map.of(
+                    "purpose", "add source-supported reusable node types, relationship types, aliases, properties, and directed endpoint patterns",
+                    "behavior", "validated additive update; established definitions cannot be deleted or redefined",
+                    "next", "use the refreshed ontology revision on the following turn"));
+        }
 
         return json(catalog);
     }
@@ -285,12 +416,38 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         DecomposedPromptTier tier = effectiveTier(configuredTier);
         UnifiedGraph graph = graphSnapshot();
         boolean emptyGraph = graph.entityCount() == 0;
+        if (!ontologyUpdatesAllowed
+                && !entitiesOnly()
+                && tier == DecomposedPromptTier.COMPACT) {
+            GraphSchema currentSchema = schema();
+            Map<String, Object> direct = new LinkedHashMap<>();
+            direct.put("graphState", emptyGraph ? "EMPTY" : "POPULATED");
+            direct.put("allowedEntityTypes",
+                    currentSchema.getAllNodeLabels().stream().sorted().toList());
+            direct.put("allowedRelationTypes",
+                    currentSchema.getAllRelationshipTypes().stream().sorted().toList());
+            direct.put("allowedRelationPatterns",
+                    currentSchema.getPatterns() == null ? List.of()
+                            : currentSchema.getPatterns().stream()
+                                    .filter(value -> value != null && !value.isBlank())
+                                    .map(String::trim)
+                                    .sorted()
+                                    .toList());
+            direct.put("submitTool", SUBMIT_GRAPH_DELTA);
+            direct.put("guidance", emptyGraph
+                    ? "Read SOURCE SHARD and submit its explicit facts now."
+                    : "Resolve an identity only when ambiguous, then submit explicit SOURCE facts.");
+            return json(direct);
+        }
         Map<String, Object> state = new LinkedHashMap<>();
         state.put("graphEntities", graph.entityCount());
         state.put("graphRelations", graph.relationCount());
         state.put("completeCorpusPassages", passagesById.size());
         state.put("graphState", emptyGraph ? "EMPTY" : "POPULATED");
         state.put("extractionTarget", extractionTarget.name());
+        if (!entitiesOnly()) {
+            state.put("ontologyRevision", ontology.revision());
+        }
         state.put("recommendedFirstTool", entitiesOnly()
                 ? SUBMIT_ENTITIES
                 : emptyGraph ? SUBMIT_GRAPH_DELTA : GRAPH_REASONING_QUERY);
@@ -307,8 +464,10 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         state.put("guidance", entitiesOnly()
                 ? "Call submit_entities with exact names copied from SOURCE; typing is a later phase."
                 : emptyGraph
-                        ? "Extract all source-supported additions and submit them."
-                        : "Query existing graph state when identity or relation choice is ambiguous.");
+                        ? ontologyUpdatesAllowed
+                                ? "Use the prepass ontology, update it only when SOURCE establishes a missing reusable type, then submit all typed entities and relations."
+                                : "Use the strict configured ontology and submit all typed entities and relations."
+                        : "Search names, emails, and aliases before creating identities; resolve duplicates, then submit typed entities and typed relations.");
         return json(state);
     }
 
@@ -326,25 +485,46 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                             + "stable ids, provisional records, graph admission, and later ontology typing.",
                     parameters));
         }
+        GraphSchema currentSchema = schema();
+        boolean directCompact = !ontologyUpdatesAllowed
+                && tier == DecomposedPromptTier.COMPACT;
+        boolean discoveringTypes = directCompact
+                && currentSchema.getAllNodeLabels().isEmpty()
+                && currentSchema.getAllRelationshipTypes().isEmpty();
         int inlineEnumLimit = inlineSchemaEnumLimit(tier);
         Map<String, Object> entityProperties = new LinkedHashMap<>();
-        entityProperties.put("id", stringSchema(entitiesOnly()
+        entityProperties.put("id", stringSchema(directCompact
+                ? "Short id, such as alex-rivera. Reuse it in relations."
+                : entitiesOnly()
                 ? "Stable identifier for this source-supported entity."
                 : "Stable entity identifier. Create one for every source-supported entity and "
-                        + "reuse it exactly in relations[].source and relations[].target."));
+                        + "reuse it exactly in relations[].source and relations[].target.",
+                MAX_GRAPH_ID_CHARS));
         entityProperties.put("name", stringSchema(
-                "Exact name stated in SOURCE or a retrieved passage; never copy a value that "
-                        + "appears only in graph, schema, or hints."));
+                directCompact
+                        ? "Exact name copied from the text."
+                        : "Exact name stated in SOURCE or a retrieved passage; never copy a value that "
+                                + "appears only in graph, schema, or hints.",
+                MAX_ENTITY_NAME_CHARS));
         entityProperties.put("type", standardizedTypeSchema(
-                "Entity type from CURRENT GRAPH AND CORPUS STATE.graphSchema.entityTypes; "
-                        + "query the graph SCHEMA operation when another source-supported type is needed.",
-                schema == null ? Set.of() : schema.getAllNodeLabels(), inlineEnumLimit));
+                discoveringTypes
+                        ? "Short reusable entity category inferred from the text."
+                        : directCompact
+                                ? "Allowed entity type."
+                                : "Entity type from CURRENT GRAPH AND CORPUS STATE.graphSchema.entityTypes; "
+                                        + "query the graph SCHEMA operation when another source-supported type is needed.",
+                currentSchema.getAllNodeLabels(), inlineEnumLimit));
         if (requiresDescriptions()) {
             entityProperties.put("description",
                     stringSchema("Concise source-supported description."));
         }
+        if (tierRank(tier) >= tierRank(DecomposedPromptTier.RICH)
+                || (tier == DecomposedPromptTier.STANDARD && ontology.revision() > 0)) {
+            entityProperties.put("aliases", arraySchema(
+                    stringSchema("Alternate name for this same identity.", MAX_ENTITY_NAME_CHARS),
+                    "Source-supported alternate names, emails, identifiers, or spellings for this same identity."));
+        }
         if (tierRank(tier) >= tierRank(DecomposedPromptTier.RICH)) {
-            entityProperties.put("aliases", arraySchema(stringSchema("Source-supported alias.")));
             entityProperties.put("confidence", confidenceSchema());
         }
         if (tierRank(tier) >= tierRank(DecomposedPromptTier.EXPANDED)) {
@@ -354,15 +534,25 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
         Map<String, Object> relationProperties = new LinkedHashMap<>();
         relationProperties.put("source", stringSchema(
-                "Exact source entity id copied from entities[].id in this call or an existing "
-                        + "current graph entity id; never a display name or type label."));
+                directCompact
+                        ? "Source entity id from entities."
+                        : "Exact source entity id copied from entities[].id in this call or an existing "
+                                + "current graph entity id; never a display name or type label.",
+                MAX_GRAPH_ID_CHARS));
         relationProperties.put("target", stringSchema(
-                "Exact target entity id copied from entities[].id in this call or an existing "
-                        + "current graph entity id; never a display name or type label."));
+                directCompact
+                        ? "Target entity id from entities."
+                        : "Exact target entity id copied from entities[].id in this call or an existing "
+                                + "current graph entity id; never a display name or type label.",
+                MAX_GRAPH_ID_CHARS));
         relationProperties.put("type", standardizedTypeSchema(
-                "Directed relation type from CURRENT GRAPH AND CORPUS STATE.graphSchema.relationTypes; "
-                        + "query the graph SCHEMA operation when another source-supported type is needed.",
-                schema == null ? Set.of() : schema.getAllRelationshipTypes(), inlineEnumLimit));
+                discoveringTypes
+                        ? "Short directed relation category inferred from the text."
+                        : directCompact
+                                ? "Allowed relation type."
+                                : "Directed relation type from CURRENT GRAPH AND CORPUS STATE.graphSchema.relationTypes; "
+                                        + "query the graph SCHEMA operation when another source-supported type is needed.",
+                currentSchema.getAllRelationshipTypes(), inlineEnumLimit));
         if (requiresDescriptions()) {
             relationProperties.put("description",
                     stringSchema("Concise source-supported relation description."));
@@ -373,34 +563,102 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         if (tierRank(tier) >= tierRank(DecomposedPromptTier.EXPANDED)) {
             relationProperties.put("properties", stringMapSchema());
             relationProperties.put("occurredAt",
-                    stringSchema("Optional source-supported event time."));
+                    stringSchema("Optional source-supported event time.", MAX_GRAPH_TIME_CHARS));
         }
         Map<String, Object> relation = objectSchema(relationProperties, requiredRelationFields());
         Map<String, Object> submitProperties = new LinkedHashMap<>();
-        submitProperties.put("entities", arraySchema(entity, entitiesOnly()
-                ? "Every distinct entity explicitly present in SOURCE."
-                : "Every source-supported entity. Include an entity object for every relation endpoint "
-                        + "that is not already an entity in the current graph."));
-        if (!entitiesOnly()) {
-            submitProperties.put("relations", arraySchema(relation,
-                    "Every directed relation explicitly stated in SOURCE or a retrieved passage, "
-                            + "between submitted or existing graph entity ids."));
+        if (directCompact) {
+            Map<String, Object> compactEntityType = standardizedTypeSchema(
+                    discoveringTypes
+                            ? "One uppercase reusable entity type token inferred from the text; no prose."
+                            : "Allowed entity type.",
+                    currentSchema.getAllNodeLabels(),
+                    inlineEnumLimit,
+                    compactEntityTypeOrder);
+            Map<String, Object> compactRelationType = standardizedTypeSchema(
+                    discoveringTypes
+                            ? "One uppercase directed relation type token inferred from the text; no prose."
+                            : "Allowed relation type.",
+                    currentSchema.getAllRelationshipTypes(),
+                    inlineEnumLimit,
+                    compactRelationTypeOrder);
+            if (discoveringTypes) {
+                compactEntityType.put("maxLength", MAX_DISCOVERY_TYPE_CHARS);
+                compactRelationType.put("maxLength", MAX_DISCOVERY_TYPE_CHARS);
+            }
+            Map<String, Object> compactEntity = objectSchema(
+                    Map.of(
+                            "name", stringSchema("Exact name copied from the text.",
+                                    compactEntityNameMaxLength == null
+                                            ? MAX_ENTITY_NAME_CHARS
+                                            : compactEntityNameMaxLength),
+                            "type", compactEntityType),
+                    List.of("name", "type"));
+            Map<String, Object> compactRelation = objectSchema(
+                    Map.of(
+                            "source", Map.of(
+                                    "type", "integer",
+                                    "minimum", 0,
+                                    "description", "Zero-based source index in entities."),
+                            "target", Map.of(
+                                    "type", "integer",
+                                    "minimum", 0,
+                                    "description", "Zero-based target index in entities."),
+                            "type", compactRelationType),
+                    List.of("source", "target", "type"));
+            Map<String, Object> compactEntities = new LinkedHashMap<>(arraySchema(
+                    compactEntity, "Each distinct source-supported entity once."));
+            compactEntities.put("uniqueItems", true);
+            Map<String, Object> compactRelations = new LinkedHashMap<>(arraySchema(
+                    compactRelation, "Each explicit directed relation once."));
+            compactRelations.put("uniqueItems", true);
+            if (compactEntityMinItems != null) {
+                compactEntities.put("minItems", compactEntityMinItems);
+            }
+            if (compactEntityMaxItems != null) {
+                compactEntities.put("maxItems", compactEntityMaxItems);
+            }
+            if (compactRelationMinItems != null) {
+                compactRelations.put("minItems", compactRelationMinItems);
+            }
+            if (compactRelationMaxItems != null) {
+                compactRelations.put("maxItems", compactRelationMaxItems);
+            }
+
+            submitProperties.put(COMPACT_SUBMIT_FORMAT_FIELD, Map.of(
+                    "type", "string",
+                    "const", COMPACT_SUBMIT_FORMAT,
+                    "description", "Indexed compact graph delta."));
+            submitProperties.put("entities", compactEntities);
+            submitProperties.put("relations", compactRelations);
+        } else {
+            submitProperties.put("entities", arraySchema(entity, entitiesOnly()
+                    ? "Every distinct entity explicitly present in SOURCE."
+                    : "Every source-supported entity. Include an entity object for every relation endpoint "
+                            + "that is not already an entity in the current graph."));
+            if (!entitiesOnly()) {
+                submitProperties.put("relations", arraySchema(relation,
+                        "Every directed relation explicitly stated in SOURCE or a retrieved passage, "
+                                + "between submitted or existing graph entity ids."));
+            }
         }
         Map<String, Object> submitParameters = objectSchema(
-                submitProperties, entitiesOnly()
-                        ? List.of("entities") : List.of("entities", "relations"));
+                submitProperties, directCompact
+                        ? List.of(COMPACT_SUBMIT_FORMAT_FIELD, "entities", "relations")
+                        : entitiesOnly()
+                                ? List.of("entities") : List.of("entities", "relations"));
 
         Map<String, Object> graphParameters = tier == DecomposedPromptTier.COMPACT
                 ? objectSchema(Map.ofEntries(
                         Map.entry("operation", Map.of(
                                 "type", "string",
-                                "enum", GraphReasoningQueryService.queryRequestOperations(),
-                                "description", "Graph query operation.")),
-                        Map.entry("entityId", stringSchema("Existing entity id or name.")),
-                        Map.entry("targetId", stringSchema("Optional target entity id or name.")),
-                        Map.entry("relationTypes", arraySchema(stringSchema("Relation type filter."))),
-                        Map.entry("topK", integerSchema(1, MAX_GRAPH_TOP_K, "Maximum results.")),
-                        Map.entry("queryText", stringSchema("Identity, relation, or fact query."))),
+                                "enum", GraphReasoningQueryService.queryRequestOperations())),
+                        Map.entry("entityId", Map.of("type", "string")),
+                        Map.entry("targetId", Map.of("type", "string")),
+                        Map.entry("relationTypes", arraySchema(Map.of("type", "string"))),
+                        Map.entry("topK", Map.of(
+                                "type", "integer", "minimum", 1, "maximum", MAX_GRAPH_TOP_K)),
+                        Map.entry("queryText", Map.of("type", "string"))),
                         List.of("operation"))
                 : objectSchema(Map.ofEntries(
                         Map.entry("operation", Map.of(
@@ -430,22 +688,37 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                                 "Question to answer from graph reasoning state."))),
                         List.of("operation"));
 
-        Map<String, Object> corpusParameters = objectSchema(Map.ofEntries(
-                Map.entry("action", Map.of(
-                        "type", "string",
-                        "enum", List.of("SEARCH", "GET"),
-                        "description", "SEARCH ranks passages; GET pages exact passage text.")),
-                Map.entry("query", stringSchema("Cross-source evidence query for SEARCH.")),
-                Map.entry("limit", integerSchema(1, MAX_CORPUS_RESULTS,
-                        "Maximum SEARCH results.")),
-                Map.entry("offset", integerSchema(0, Integer.MAX_VALUE,
-                        "SEARCH result offset.")),
-                Map.entry("chunkId", stringSchema("Passage identifier for GET.")),
-                Map.entry("start", integerSchema(0, Integer.MAX_VALUE,
-                        "GET character offset.")),
-                Map.entry("length", integerSchema(1, MAX_CORPUS_PAGE_CHARS,
-                        "GET page length."))),
-                List.of("action"));
+        Map<String, Object> corpusParameters = tier == DecomposedPromptTier.COMPACT
+                ? objectSchema(Map.ofEntries(
+                        Map.entry("action", Map.of(
+                                "type", "string", "enum", List.of("SEARCH", "GET"))),
+                        Map.entry("query", Map.of("type", "string")),
+                        Map.entry("limit", Map.of(
+                                "type", "integer", "minimum", 1, "maximum", MAX_CORPUS_RESULTS)),
+                        Map.entry("offset", Map.of("type", "integer", "minimum", 0)),
+                        Map.entry("chunkId", Map.of("type", "string")),
+                        Map.entry("start", Map.of("type", "integer", "minimum", 0)),
+                        Map.entry("length", Map.of(
+                                "type", "integer", "minimum", 1, "maximum", MAX_CORPUS_PAGE_CHARS))),
+                        List.of("action"))
+                : objectSchema(Map.ofEntries(
+                        Map.entry("action", Map.of(
+                                "type", "string",
+                                "enum", List.of("SEARCH", "GET"),
+                                "description", "SEARCH ranks passages; GET pages exact passage text.")),
+                        Map.entry("query", stringSchema("Cross-source evidence query for SEARCH.")),
+                        Map.entry("limit", integerSchema(1, MAX_CORPUS_RESULTS,
+                                "Maximum SEARCH results.")),
+                        Map.entry("offset", integerSchema(0, Integer.MAX_VALUE,
+                                "SEARCH result offset.")),
+                        Map.entry("chunkId", stringSchema("Passage identifier for GET.")),
+                        Map.entry("start", integerSchema(0, Integer.MAX_VALUE,
+                                "GET character offset.")),
+                        Map.entry("length", integerSchema(1, MAX_CORPUS_PAGE_CHARS,
+                                "GET page length."))),
+                        List.of("action"));
+
+        Map<String, Object> ontologyParameters = ontologyUpdateSchema(tier);
 
         ToolDefinition submit = new ToolDefinition(
                 SUBMIT_GRAPH_DELTA,
@@ -453,33 +726,49 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                         ? "Validate and stage every source-supported entity. Arguments use exactly "
                                 + "the top-level key entities; do not submit relations. Metadata and "
                                 + "graph mutation remain engine-owned."
-                        : "Validate and stage every source-supported entity and relation addition. "
-                                + "Arguments use exactly the top-level keys entities and relations. "
-                                + "Metadata and graph mutation remain engine-owned; validation feedback "
-                                + "must be corrected and resubmitted.",
+                        : directCompact
+                                ? "Submit typed entities and indexed relations; the engine creates ids."
+                                : "Validate and stage every source-supported entity and relation addition. "
+                                        + "Arguments use exactly the top-level keys entities and relations. "
+                                        + "Metadata and graph mutation remain engine-owned; validation feedback "
+                                        + "must be corrected and resubmitted.",
                 submitParameters);
         ToolDefinition graph = new ToolDefinition(
                 GRAPH_REASONING_QUERY,
-                "Inspect current graph identities, schema, embeddings, first-order logic, "
-                        + "probabilistic structure, paths, facts, and explanations before resolving "
-                        + "an ambiguous graph addition.",
+                tier == DecomposedPromptTier.COMPACT
+                        ? "Inspect current graph identities and schema."
+                        : "Inspect current graph identities, schema, embeddings, first-order logic, "
+                                + "probabilistic structure, paths, facts, and explanations before resolving "
+                                + "an ambiguous graph addition.",
                 graphParameters);
         ToolDefinition corpusTool = new ToolDefinition(
                 UNIFIED_CORPUS,
-                "Retrieve exact supporting evidence from the preassembled unified corpus when the "
-                        + "current source shard does not contain enough cross-source context.",
+                tier == DecomposedPromptTier.COMPACT
+                        ? "Retrieve supporting passages from the unified corpus."
+                        : "Retrieve exact supporting evidence from the preassembled unified corpus when the "
+                                + "current source shard does not contain enough cross-source context.",
                 corpusParameters);
+        ToolDefinition updateOntology = new ToolDefinition(
+                UPDATE_ONTOLOGY,
+                tier == DecomposedPromptTier.COMPACT
+                        ? "Add reusable graph types and directed endpoint patterns."
+                        : "Add source-supported reusable node and relationship definitions to the crawl ontology. "
+                                + "Relationship types require at least one directed source/relation/target pattern. "
+                                + "Updates are validated and additive; use the refreshed ontology on the next turn.",
+                ontologyParameters);
 
         if (entitiesOnly()) {
             return List.of(submit);
         }
         boolean emptyGraph = graphSnapshot().entityCount() == 0;
-        // The structured crawl sees every source window as one logical document and carries prior
-        // facts in the evolving graph. Keep the unified-corpus component executable for legacy/raw
-        // workflows, but do not advertise a redundant cross-document tool in this native protocol.
+        if (!ontologyUpdatesAllowed) {
+            return emptyGraph
+                    ? List.of(submit)
+                    : List.of(graph, corpusTool, submit);
+        }
         return emptyGraph
-                ? List.of(submit, graph)
-                : List.of(graph, submit);
+                ? List.of(submit, graph, updateOntology, corpusTool)
+                : List.of(graph, updateOntology, corpusTool, submit);
     }
 
     private static Map<String, Object> objectSchema(
@@ -493,6 +782,50 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
         schema.put("additionalProperties", false);
         return schema;
+    }
+
+    private static Map<String, Object> ontologyUpdateSchema(DecomposedPromptTier tier) {
+        if (tier == DecomposedPromptTier.COMPACT) {
+            Map<String, Object> nodeType = objectSchema(Map.of(
+                    "label", Map.of("type", "string"),
+                    "description", Map.of("type", "string")),
+                    List.of("label", "description"));
+            Map<String, Object> relationshipType = objectSchema(Map.of(
+                    "type", Map.of("type", "string"),
+                    "description", Map.of("type", "string")),
+                    List.of("type", "description"));
+            return objectSchema(Map.of(
+                    "nodeTypes", arraySchema(nodeType),
+                    "relationshipTypes", arraySchema(relationshipType),
+                    "patterns", arraySchema(Map.of("type", "string"))),
+                    List.of("nodeTypes", "relationshipTypes", "patterns"));
+        }
+        Map<String, Object> propertyType = objectSchema(Map.of(
+                "name", stringSchema("Reusable property name."),
+                "type", Map.of(
+                        "type", "string",
+                        "enum", List.of("String", "Integer", "Decimal", "Boolean", "Date", "Year", "YearMonth", "DateTime"),
+                        "description", "Standard property value type.")),
+                List.of("name", "type"));
+        Map<String, Object> nodeType = objectSchema(Map.of(
+                "label", stringSchema("Canonical reusable entity type label supported by the corpus."),
+                "description", stringSchema("Concise semantic definition of the entity type."),
+                "properties", arraySchema(propertyType)),
+                List.of("label", "description"));
+        Map<String, Object> relationshipType = objectSchema(Map.of(
+                "type", stringSchema("Canonical directed relationship type supported by the corpus."),
+                "description", stringSchema("Concise semantic definition of the relationship."),
+                "properties", arraySchema(propertyType),
+                "aliases", arraySchema(stringSchema("Source-language predicate or synonym."))),
+                List.of("type", "description"));
+        return objectSchema(Map.of(
+                "nodeTypes", arraySchema(nodeType,
+                        "New node definitions or missing details for established definitions."),
+                "relationshipTypes", arraySchema(relationshipType,
+                        "New directed relationship definitions or aliases for established definitions."),
+                "patterns", arraySchema(stringSchema(
+                        "Directed endpoint pattern shaped as (SOURCE_TYPE)-[:RELATION_TYPE]->(TARGET_TYPE)."))),
+                List.of("nodeTypes", "relationshipTypes", "patterns"));
     }
 
     private static DecomposedPromptTier effectiveTier(DecomposedPromptTier configuredTier) {
@@ -509,8 +842,21 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         };
     }
 
+    private static int schemaDefinitionLimit(DecomposedPromptTier tier) {
+        return switch (tier) {
+            case COMPACT -> 0;
+            case AUTO, STANDARD -> 12;
+            case RICH -> 24;
+            case EXPANDED -> 64;
+        };
+    }
+
     private boolean entitiesOnly() {
         return extractionTarget == ExtractionTarget.ENTITIES_ONLY;
+    }
+
+    private GraphSchema schema() {
+        return ontology.snapshot();
     }
 
     private boolean requiresDescriptions() {
@@ -538,12 +884,13 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Set<String> entityTypes = new LinkedHashSet<>();
         Set<String> relationTypes = new LinkedHashSet<>();
         Set<String> relationPatterns = new LinkedHashSet<>();
-        boolean standardizedEntityTypes = schema != null && !schema.getAllNodeLabels().isEmpty();
+        GraphSchema currentSchema = schema();
+        boolean standardizedEntityTypes = !currentSchema.getAllNodeLabels().isEmpty();
         boolean standardizedRelationTypes =
-                schema != null && !schema.getAllRelationshipTypes().isEmpty();
+                !currentSchema.getAllRelationshipTypes().isEmpty();
 
         if (standardizedEntityTypes) {
-            entityTypes.addAll(schema.getAllNodeLabels());
+            entityTypes.addAll(currentSchema.getAllNodeLabels());
         } else {
             for (GraphEntity entity : graph.entities()) {
                 if (entity != null && entity.type() != null && !entity.type().isBlank()) {
@@ -552,7 +899,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             }
         }
         if (standardizedRelationTypes) {
-            relationTypes.addAll(schema.getAllRelationshipTypes());
+            relationTypes.addAll(currentSchema.getAllRelationshipTypes());
         } else {
             graph.relations().forEach(relation -> {
                 if (relation != null && relation.type() != null && !relation.type().isBlank()) {
@@ -560,8 +907,8 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 }
             });
         }
-        if (schema != null && schema.getPatterns() != null) {
-            schema.getPatterns().stream()
+        if (currentSchema.getPatterns() != null) {
+            currentSchema.getPatterns().stream()
                     .filter(value -> value != null && !value.isBlank())
                     .map(String::trim)
                     .forEach(relationPatterns::add);
@@ -580,6 +927,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         SchemaFocus focus = schemaFocus(
                 taskContext, allEntityTypes, allRelationTypes, allRelationPatterns);
         Map<String, Object> vocabulary = new LinkedHashMap<>();
+        vocabulary.put("ontologyRevision", ontology.revision());
         // Initial context is vocabulary, not a source of candidate facts. Keep every
         // authoritative label, but leave descriptions, aliases, examples, and (at the compact
         // tier) the long endpoint-signature list behind the deterministic SCHEMA operation.
@@ -598,6 +946,23 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                     "operation", "SCHEMA"));
         } else {
             vocabulary.put("relationPatterns", allRelationPatterns);
+            int definitionLimit = schemaDefinitionLimit(tier);
+            List<Map<String, Object>> nodeDefinitions =
+                    entityDefinitions(tier, definitionLimit, null);
+            List<Map<String, Object>> relationshipDefinitions =
+                    relationDefinitions(tier, definitionLimit, null);
+            if (!nodeDefinitions.isEmpty()) {
+                vocabulary.put("nodeDefinitions", nodeDefinitions);
+            }
+            if (!relationshipDefinitions.isEmpty()) {
+                vocabulary.put("relationshipDefinitions", relationshipDefinitions);
+            }
+            if (nodeDefinitions.size() < allEntityTypes.size()
+                    || relationshipDefinitions.size() < allRelationTypes.size()) {
+                vocabulary.put("detailedDefinitionsAvailableVia", Map.of(
+                        "tool", GRAPH_REASONING_QUERY,
+                        "operation", "SCHEMA"));
+            }
         }
         vocabulary.put("authoritative",
                 standardizedEntityTypes || standardizedRelationTypes);
@@ -731,10 +1096,11 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
     private List<Map<String, Object>> entityDefinitions(
             DecomposedPromptTier tier, int limit, Set<String> includedTypes) {
-        if (schema.getNodeTypes() == null) {
+        GraphSchema currentSchema = schema();
+        if (currentSchema.getNodeTypes() == null) {
             return List.of();
         }
-        return schema.getNodeTypes().stream()
+        return currentSchema.getNodeTypes().stream()
                 .filter(type -> type != null && type.getLabel() != null
                         && !type.getLabel().isBlank())
                 .filter(type -> includedTypes == null || includedTypes.isEmpty()
@@ -760,10 +1126,11 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
     private List<Map<String, Object>> relationDefinitions(
             DecomposedPromptTier tier, int limit, Set<String> includedTypes) {
-        if (schema.getRelationshipTypes() == null) {
+        GraphSchema currentSchema = schema();
+        if (currentSchema.getRelationshipTypes() == null) {
             return List.of();
         }
-        return schema.getRelationshipTypes().stream()
+        return currentSchema.getRelationshipTypes().stream()
                 .filter(type -> type != null && type.getType() != null
                         && !type.getType().isBlank())
                 .filter(type -> includedTypes == null || includedTypes.isEmpty()
@@ -805,21 +1172,52 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     }
 
     private static Map<String, Object> stringSchema(String description) {
-        return Map.of("type", "string", "description", description);
+        return stringSchema(description, MAX_GRAPH_TEXT_CHARS);
+    }
+
+    private static Map<String, Object> stringSchema(String description, int maxLength) {
+        return Map.of(
+                "type", "string",
+                "description", description,
+                "maxLength", maxLength);
     }
 
     private static Map<String, Object> standardizedTypeSchema(
             String description, Set<String> allowedTypes, int inlineEnumLimit) {
+        return standardizedTypeSchema(
+                description, allowedTypes, inlineEnumLimit, List.of());
+    }
+
+    private static Map<String, Object> standardizedTypeSchema(
+            String description,
+            Set<String> allowedTypes,
+            int inlineEnumLimit,
+            List<String> preferredOrder) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("type", "string");
         result.put("description", description);
+        result.put("maxLength", MAX_GRAPH_TYPE_CHARS);
         if (allowedTypes != null && !allowedTypes.isEmpty()
                 && allowedTypes.size() <= inlineEnumLimit) {
-            result.put("enum", allowedTypes.stream()
+            List<String> normalizedAllowed = allowedTypes.stream()
                     .filter(value -> value != null && !value.isBlank())
                     .map(String::trim)
                     .sorted()
-                    .toList());
+                    .toList();
+            LinkedHashSet<String> ordered = new LinkedHashSet<>();
+            if (preferredOrder != null) {
+                for (String preferred : preferredOrder) {
+                    if (preferred == null) {
+                        continue;
+                    }
+                    String normalized = preferred.trim();
+                    if (normalizedAllowed.contains(normalized)) {
+                        ordered.add(normalized);
+                    }
+                }
+            }
+            ordered.addAll(normalizedAllowed);
+            result.put("enum", List.copyOf(ordered));
         }
         return result;
     }
@@ -854,7 +1252,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
     private static Map<String, Object> stringMapSchema() {
         return Map.of(
                 "type", "object",
-                "additionalProperties", Map.of("type", "string"));
+                "additionalProperties", Map.of(
+                        "type", "string",
+                        "maxLength", MAX_GRAPH_TEXT_CHARS));
     }
 
     private static Map<String, Object> confidenceSchema() {
@@ -888,20 +1288,26 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
 
     @Override
     public ToolExecution execute(String toolName, JsonNode arguments) {
+        return execute(toolName, arguments, null);
+    }
+
+    @Override
+    public ToolExecution execute(String toolName, JsonNode arguments, String sourceText) {
         String normalized = toolName == null ? "" : toolName.trim().toLowerCase(Locale.ROOT);
         JsonNode args = arguments == null ? MAPPER.createObjectNode() : arguments;
         return switch (normalized) {
             case UNIFIED_CORPUS -> corpus(args);
             case GRAPH_REASONING_QUERY -> graphQuery(args);
-            case SUBMIT_GRAPH_DELTA -> submit(args);
-            case SUBMIT_ENTITIES -> submitEntities(args);
+            case UPDATE_ONTOLOGY -> updateOntology(args);
+            case SUBMIT_GRAPH_DELTA -> submit(args, sourceText);
+            case SUBMIT_ENTITIES -> submitEntities(args, sourceText);
             default -> ToolExecution.continuing(json(Map.of(
                     "ok", false,
                     "error", "unknown_tool",
                     "tool", toolName == null ? "" : toolName,
                     "available", entitiesOnly()
                             ? List.of(SUBMIT_ENTITIES)
-                            : List.of(UNIFIED_CORPUS, GRAPH_REASONING_QUERY, SUBMIT_GRAPH_DELTA))));
+                            : List.of(UNIFIED_CORPUS, GRAPH_REASONING_QUERY, UPDATE_ONTOLOGY, SUBMIT_GRAPH_DELTA))));
         };
     }
 
@@ -995,7 +1401,9 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             row.put("score", hit.rankScore);
             row.put("semanticScore", hit.semanticScore);
             row.put("lexicalScore", hit.lexicalScore);
-            row.put("exactExcerpt", excerpt(hit.passage.content(), query, 900));
+            String exactExcerpt = excerpt(hit.passage.content(), query, 900);
+            row.put("exactExcerpt", exactExcerpt);
+            retrievedEvidence.add(exactExcerpt);
             row.put("completeTextAvailable", true);
             row.put("metadata", hit.passage.metadata());
             results.add(row);
@@ -1038,12 +1446,80 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         response.put("end", end);
         response.put("totalChars", passage.content().length());
         response.put("hasMore", end < passage.content().length());
-        response.put("exactText", passage.content().substring(start, end));
+        String exactText = passage.content().substring(start, end);
+        response.put("exactText", exactText);
+        retrievedEvidence.add(exactText);
         response.put("metadata", passage.metadata());
         return ToolExecution.continuing(json(response));
     }
 
+    private ToolExecution updateOntology(JsonNode args) {
+        if (!ontologyUpdatesAllowed) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "ontology_update_disabled_by_strict_schema")));
+        }
+        if (entitiesOnly()) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "ontology_update_unavailable_for_entities_only")));
+        }
+        if (args == null || !args.isObject()) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "invalid_ontology_update",
+                    "detail", "Arguments must be an ontology overlay object.")));
+        }
+        try {
+            GraphSchema overlay = MAPPER.treeToValue(args, GraphSchema.class);
+            CrawlOntology.UpdateResult result = ontology.update(overlay);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("ok", result.valid());
+            response.put("updated", result.updated());
+            response.put("ontologyRevision", result.revision());
+            response.put("errors", result.errors());
+            response.put("ontology", result.schema());
+            response.put("guidance", result.valid()
+                    ? "The ontology is authoritative immediately. Use the refreshed tool context and type enums on the next turn."
+                    : "Correct the ontology definitions and endpoint patterns, then call update_ontology again.");
+            return ToolExecution.continuing(json(response));
+        } catch (Exception e) {
+            return ToolExecution.continuing(json(Map.of(
+                    "ok", false,
+                    "error", "invalid_ontology_update",
+                    "detail", message(e))));
+        }
+    }
+
+    private ToolExecution ontologySchema() {
+        GraphSchema currentSchema = schema();
+        UnifiedGraph graph = graphSnapshot();
+        Map<String, Object> schemaResult = new LinkedHashMap<>();
+        schemaResult.put("ontologyRevision", ontology.revision());
+        schemaResult.put("authoritative", true);
+        schemaResult.put("nodeTypes", currentSchema.getNodeTypes() == null
+                ? List.of() : currentSchema.getNodeTypes());
+        schemaResult.put("relationshipTypes", currentSchema.getRelationshipTypes() == null
+                ? List.of() : currentSchema.getRelationshipTypes());
+        schemaResult.put("patterns", currentSchema.getPatterns() == null
+                ? List.of() : currentSchema.getPatterns());
+        schemaResult.put("observedGraphEntities", graph.entityCount());
+        schemaResult.put("observedGraphRelations", graph.relationCount());
+        schemaResult.put("guidance", "Use nodeTypes for entities and relationshipTypes plus directed patterns for relations. "
+                + "SEARCH names, emails, and aliases before creating a duplicate identity.");
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("ok", true);
+        response.put("graphEntities", graph.entityCount());
+        response.put("graphRelations", graph.relationCount());
+        response.put("result", schemaResult);
+        return ToolExecution.continuing(json(response));
+    }
+
     private ToolExecution graphQuery(JsonNode args) {
+        if ("SCHEMA".equalsIgnoreCase(text(args, "operation", ""))) {
+            return ontologySchema();
+        }
         if (reasoningService == null) {
             return ToolExecution.continuing(json(Map.of(
                     "ok", false,
@@ -1088,7 +1564,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
     }
 
-    private ToolExecution submitEntities(JsonNode args) {
+    private ToolExecution submitEntities(JsonNode args, String sourceText) {
         if (!entitiesOnly()) {
             return ToolExecution.continuing(json(Map.of(
                     "ok", false,
@@ -1122,6 +1598,14 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
             if (!name.isEmpty()) {
                 distinctNames.putIfAbsent(canonicalEntityName(name), name);
             }
+        }
+
+        List<String> unsupportedNames = distinctNames.values().stream()
+                .filter(name -> !sourceSupports(name, sourceText))
+                .toList();
+        if (!unsupportedNames.isEmpty()) {
+            return invalidEntitySubmission(
+                    "Names are not present in SOURCE or retrieved evidence: " + unsupportedNames);
         }
 
         List<ExtractedEntity> entities = distinctNames.values().stream()
@@ -1173,6 +1657,29 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 .toLowerCase(Locale.ROOT);
     }
 
+    private boolean sourceSupports(String value, String sourceText) {
+        if (sourceText == null || sourceText.isBlank()) {
+            return true;
+        }
+        String needle = normalizedEvidence(value);
+        if (needle.isBlank()) {
+            return false;
+        }
+        if (normalizedEvidence(sourceText).contains(needle)) {
+            return true;
+        }
+        return retrievedEvidence.stream()
+                .map(CrawlExtractionToolBackend::normalizedEvidence)
+                .anyMatch(evidence -> evidence.contains(needle));
+    }
+
+    private static String normalizedEvidence(String value) {
+        return value == null ? "" : Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ")
+                .strip();
+    }
+
     private static String stableEntityId(String name) {
         String canonical = canonicalEntityName(name);
         String slug = Normalizer.normalize(canonical, Normalizer.Form.NFKD)
@@ -1189,12 +1696,21 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         return slug + "-" + fingerprint;
     }
 
-    private ToolExecution submit(JsonNode args) {
+    private ToolExecution submit(JsonNode args, String sourceText) {
         JsonNode submitted = args.has("delta") && args.get("delta").isObject()
                 ? args.get("delta") : args;
-        ToolExecution shapeError = validateSubmitShape(submitted);
-        if (shapeError != null) {
-            return shapeError;
+        boolean compactWire = isCompactSubmission(submitted);
+        if (compactWire) {
+            ToolExecution shapeError = validateCompactSubmitShape(submitted);
+            if (shapeError != null) {
+                return shapeError;
+            }
+            submitted = expandCompactSubmission(submitted);
+        } else {
+            ToolExecution shapeError = validateSubmitShape(submitted);
+            if (shapeError != null) {
+                return shapeError;
+            }
         }
         JsonNode delta = entitiesOnly() ? withEmptyRelations(submitted) : submitted;
         final ExtractionResult parsed;
@@ -1212,23 +1728,38 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 parsed.relations(),
                 metadata);
         ValidationResult validation = GraphExtractionValidator.validate(
-                staged, policy, schema, knownEntityTypes());
-        Admission admission = admitValidatorCleanItems(delta, staged);
+                staged, policy, schema(), knownEntityTypes());
+        List<String> errors = new ArrayList<>(validation.errors());
+        List<String> groundingErrors = sourceGroundingErrors(staged, sourceText);
+        errors.addAll(groundingErrors);
+        boolean valid = validation.valid() && groundingErrors.isEmpty();
+        Admission admission = groundingErrors.isEmpty()
+                ? admitValidatorCleanItems(delta, staged)
+                : new Admission(accepted, 0, 0);
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("ok", validation.valid());
+        response.put("ok", valid);
         response.put("entities", staged.entities().size());
         response.put("relations", staged.relations().size());
-        response.put("errors", validation.errors());
+        response.put("errors", errors);
         response.put("warnings", validation.warnings());
-        if (!validation.valid()) {
-            response.put("requiredShape", submitContract());
-            Map<String, Object> correction = correctionContext(delta);
-            addValidatorCleanRepairSeed(correction, delta, staged, admission);
-            response.put("correction", correction);
-            response.put("guidance",
-                    "If correction.alreadyRetained is present, it is accepted, not evidence. Recheck SOURCE; "
-                            + "repair or omit only rejected items, then resubmit with exact keys.");
+        if (!valid) {
+            if (compactWire) {
+                response.put("requiredShape", compactSubmitContract());
+                response.put("correction", compactCorrectionContext());
+                response.put("guidance",
+                        "Recheck the text and resubmit named entities and relations with exact names and allowed types.");
+            } else {
+                response.put("requiredShape", submitContract());
+                Map<String, Object> correction = correctionContext(delta);
+                if (groundingErrors.isEmpty()) {
+                    addValidatorCleanRepairSeed(correction, delta, staged, admission);
+                }
+                response.put("correction", correction);
+                response.put("guidance",
+                        "If correction.alreadyRetained is present, it is accepted, not evidence. Recheck SOURCE; "
+                                + "repair or omit only rejected items, then resubmit with exact keys.");
+            }
             return ToolExecution.continuing(json(response));
         }
 
@@ -1236,6 +1767,189 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         response.put("accepted", true);
         response.put("metadataOwnedByEngine", true);
         return ToolExecution.terminal(json(response));
+    }
+
+    private static boolean isCompactSubmission(JsonNode submitted) {
+        if (submitted == null || !submitted.isObject()) {
+            return false;
+        }
+        return COMPACT_SUBMIT_FORMAT.equals(
+                submitted.path(COMPACT_SUBMIT_FORMAT_FIELD).asText());
+    }
+
+    private ToolExecution validateCompactSubmitShape(JsonNode submitted) {
+        if (submitted == null || !submitted.isObject()) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape", "Arguments must be an object.", submitted);
+        }
+        List<String> keys = new ArrayList<>();
+        submitted.fieldNames().forEachRemaining(keys::add);
+        List<String> unexpected = keys.stream()
+                .filter(key -> !Set.of(
+                        COMPACT_SUBMIT_FORMAT_FIELD, "entities", "relations").contains(key))
+                .sorted()
+                .toList();
+        if (!unexpected.isEmpty()) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape",
+                    "Unexpected top-level argument keys: " + unexpected,
+                    submitted);
+        }
+        if (!COMPACT_SUBMIT_FORMAT.equals(
+                submitted.path(COMPACT_SUBMIT_FORMAT_FIELD).asText())) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape",
+                    "format must be indexed.",
+                    submitted);
+        }
+        JsonNode entities = submitted.get("entities");
+        JsonNode relations = submitted.get("relations");
+        if (entities == null || !entities.isArray()
+                || relations == null || !relations.isArray()) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape",
+                    "entities and relations must be arrays.",
+                    submitted);
+        }
+
+        Map<String, String> idsByName = new LinkedHashMap<>();
+        Set<String> generatedIds = new LinkedHashSet<>();
+        for (int index = 0; index < entities.size(); index++) {
+            JsonNode entity = entities.get(index);
+            ToolExecution error = validateCompactObject(
+                    entity, Set.of("name", "type"), "entities[" + index + "]", submitted);
+            if (error != null) {
+                return error;
+            }
+            String name = entity.path("name").asText().trim();
+            String type = entity.path("type").asText().trim();
+            if (name.isBlank() || type.isBlank()) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "entities[" + index + "] name and type must be nonblank.",
+                        submitted);
+            }
+            if (idsByName.containsKey(name)) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "entities contains a duplicate exact name: " + name,
+                        submitted);
+            }
+            String id = stableEntityId(name);
+            if (!generatedIds.add(id)) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "entities contains names that normalize to the same identity.",
+                        submitted);
+            }
+            idsByName.put(name, id);
+        }
+
+        Set<String> relationKeys = new LinkedHashSet<>();
+        for (int index = 0; index < relations.size(); index++) {
+            JsonNode relation = relations.get(index);
+            ToolExecution error = validateCompactObject(
+                    relation, Set.of("source", "target", "type"),
+                    "relations[" + index + "]", submitted);
+            if (error != null) {
+                return error;
+            }
+            JsonNode sourceNode = relation.path("source");
+            JsonNode targetNode = relation.path("target");
+            String type = relation.path("type").asText().trim();
+            if (!sourceNode.canConvertToInt() || !targetNode.canConvertToInt() || type.isBlank()) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "relations[" + index + "] source and target must be integer entity indices "
+                                + "and type must be nonblank.",
+                        submitted);
+            }
+            int source = sourceNode.asInt();
+            int target = targetNode.asInt();
+            if (source < 0 || source >= entities.size()
+                    || target < 0 || target >= entities.size()) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "relations[" + index + "] endpoint indices must reference entities.",
+                        submitted);
+            }
+            String relationKey = source + ":" + type.length() + ":" + type + ":" + target;
+            if (!relationKeys.add(relationKey)) {
+                return invalidCompactSubmission(
+                        "invalid_compact_graph_delta_shape",
+                        "relations contains a duplicate relation at index " + index + ".",
+                        submitted);
+            }
+        }
+        return null;
+    }
+
+    private ToolExecution validateCompactObject(
+            JsonNode value,
+            Set<String> expectedKeys,
+            String path,
+            JsonNode submitted) {
+        if (value == null || !value.isObject()) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape",
+                    path + " must be an object.",
+                    submitted);
+        }
+        List<String> keys = new ArrayList<>();
+        value.fieldNames().forEachRemaining(keys::add);
+        Set<String> actual = new LinkedHashSet<>(keys);
+        if (!actual.equals(expectedKeys)) {
+            return invalidCompactSubmission(
+                    "invalid_compact_graph_delta_shape",
+                    path + " must contain exactly " + expectedKeys + ".",
+                    submitted);
+        }
+        return null;
+    }
+
+    private static JsonNode expandCompactSubmission(JsonNode submitted) {
+        ObjectNode canonical = MAPPER.createObjectNode();
+        var entities = canonical.putArray("entities");
+        List<String> idsByIndex = new ArrayList<>();
+        for (JsonNode entity : submitted.path("entities")) {
+            String name = entity.path("name").asText().trim();
+            String id = stableEntityId(name);
+            idsByIndex.add(id);
+            entities.addObject()
+                    .put("id", id)
+                    .put("name", name)
+                    .put("type", entity.path("type").asText().trim());
+        }
+        var relations = canonical.putArray("relations");
+        for (JsonNode relation : submitted.path("relations")) {
+            int source = relation.path("source").asInt();
+            int target = relation.path("target").asInt();
+            relations.addObject()
+                    .put("source", idsByIndex.get(source))
+                    .put("target", idsByIndex.get(target))
+                    .put("type", relation.path("type").asText().trim());
+        }
+        return canonical;
+    }
+
+    private List<String> sourceGroundingErrors(
+            ExtractionResult staged, String sourceText) {
+        if (sourceText == null || sourceText.isBlank() || staged == null) {
+            return List.of();
+        }
+        Set<String> knownIds = knownEntityTypes().keySet();
+        List<String> errors = new ArrayList<>();
+        for (int index = 0; index < staged.entities().size(); index++) {
+            ExtractedEntity entity = staged.entities().get(index);
+            if (entity == null || knownIds.contains(entity.id())) {
+                continue;
+            }
+            if (!sourceSupports(entity.name(), sourceText)) {
+                errors.add("[SOURCE_GROUNDING] entities[" + index
+                        + "].name must be copied exactly from SOURCE or retrieved evidence.");
+            }
+        }
+        return List.copyOf(errors);
     }
 
     private ToolExecution validateSubmitShape(JsonNode delta) {
@@ -1288,6 +2002,60 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         response.put("guidance",
                 "Call submit_graph_delta again using the exact field names and omit unsupported optional fields.");
         return ToolExecution.continuing(json(response));
+    }
+
+    private ToolExecution invalidCompactSubmission(
+            String code, String detail, JsonNode received) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("ok", false);
+        response.put("error", code);
+        response.put("detail", detail == null ? "" : detail);
+        response.put("requiredShape", compactSubmitContract());
+        response.put("correction", compactCorrectionContext());
+        if (received != null && received.isObject()) {
+            List<String> keys = new ArrayList<>();
+            received.fieldNames().forEachRemaining(keys::add);
+            response.put("receivedTopLevelKeys", keys);
+        }
+        response.put("guidance",
+                "Call submit_graph_delta again with format indexed plus typed entities and indexed relations.");
+        return ToolExecution.continuing(json(response));
+    }
+
+    private Map<String, Object> compactSubmitContract() {
+        Map<String, Object> contract = new LinkedHashMap<>();
+        contract.put("topLevel",
+                List.of(COMPACT_SUBMIT_FORMAT_FIELD, "entities", "relations"));
+        contract.put("format", COMPACT_SUBMIT_FORMAT);
+        contract.put("entityRequired", List.of("name", "type"));
+        contract.put("relationRequired", List.of("source", "target", "type"));
+        contract.put("endpointDomain",
+                "relation endpoints are zero-based indices into submitted entities");
+        contract.put("argumentTemplate", Map.of(
+                COMPACT_SUBMIT_FORMAT_FIELD, COMPACT_SUBMIT_FORMAT,
+                "entities", List.of(Map.of(
+                        "name", "<exact text name>",
+                        "type", "<allowed entity type>")),
+                "relations", List.of(Map.of(
+                        "source", 0,
+                        "target", 1,
+                        "type", "<allowed relation type>"))));
+        contract.put("entityIdsOwnedByEngine", true);
+        contract.put("metadataOwnedByEngine", true);
+        return contract;
+    }
+
+    private Map<String, Object> compactCorrectionContext() {
+        GraphSchema currentSchema = schema();
+        Map<String, Object> correction = new LinkedHashMap<>();
+        correction.put("action", "correct_and_resubmit_indexed_graph_delta");
+        correction.put("allowedEntityTypes",
+                currentSchema.getAllNodeLabels().stream().sorted().toList());
+        correction.put("allowedRelationTypes",
+                currentSchema.getAllRelationshipTypes().stream().sorted().toList());
+        correction.put("endpointRule",
+                "relation endpoints are zero-based indices into entities");
+        return correction;
     }
 
     private Map<String, Object> submitContract() {
@@ -1501,7 +2269,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         }
         ExtractionResult merged = new ExtractionResult(GraphExtractionSchema.SCHEMA_VERSION,
                 List.copyOf(entities), List.copyOf(relations), staged.metadata());
-        if (!GraphExtractionValidator.validate(merged, policy, schema, knownTypes).valid()) {
+        if (!GraphExtractionValidator.validate(merged, policy, schema(), knownTypes).valid()) {
             return new Admission(accepted, 0, 0);
         }
         if (!merged.entities().isEmpty() || !merged.relations().isEmpty()) {
@@ -1522,7 +2290,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         ValidationResult validation = GraphExtractionValidator.validate(
                 merged,
                 policy,
-                entitiesOnly() ? null : schema,
+                entitiesOnly() ? null : schema(),
                 entitiesOnly() ? Map.of() : knownEntityTypes());
         if (!validation.valid()) {
             throw new IllegalStateException("merged accepted result failed validation: "
@@ -1561,12 +2329,12 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Map<String, ExtractedEntity> byId = new LinkedHashMap<>();
         for (ExtractedEntity entity : existing) {
             if (entity != null && entity.id() != null && !entity.id().isBlank()) {
-                byId.putIfAbsent(entity.id(), entity);
+                ExtractorUtils.addEntity(byId, entity);
             }
         }
         for (ExtractedEntity entity : additions) {
             if (entity != null && entity.id() != null && !entity.id().isBlank()) {
-                byId.putIfAbsent(entity.id(), entity);
+                byId.merge(entity.id(), entity, ExtractorUtils::replaceEntity);
             }
         }
         return List.copyOf(byId.values());
@@ -1577,19 +2345,19 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
         Map<String, ExtractedRelation> byAtom = new LinkedHashMap<>();
         for (ExtractedRelation relation : existing) {
             if (relation != null) {
-                byAtom.putIfAbsent(relationAtom(relation), relation);
+                ExtractorUtils.addRelation(byAtom, relation);
             }
         }
         for (ExtractedRelation relation : additions) {
             if (relation != null) {
-                byAtom.putIfAbsent(relationAtom(relation), relation);
+                byAtom.merge(relationAtom(relation), relation, ExtractorUtils::replaceRelation);
             }
         }
         return List.copyOf(byAtom.values());
     }
 
     private static String relationAtom(ExtractedRelation relation) {
-        return relation.source() + "\u0000" + relation.type() + "\u0000" + relation.target();
+        return ExtractorUtils.relationKey(relation);
     }
 
     private record Admission(ExtractionResult accepted, int admittedEntityItems,
@@ -1605,7 +2373,7 @@ public final class CrawlExtractionToolBackend implements ExtractionToolBackend {
                 List.copyOf(entities),
                 List.copyOf(relations),
                 metadata);
-        return GraphExtractionValidator.validate(candidate, policy, schema, knownTypes);
+        return GraphExtractionValidator.validate(candidate, policy, schema(), knownTypes);
     }
 
     private Map<String, Object> rejectedItem(int index, ValidationResult validation) {

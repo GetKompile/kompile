@@ -19,7 +19,7 @@ case "${VARIANT}" in
     cli-only|hosted)
         exit 0
         ;;
-    full|cpu-intel|cpu-arm|cuda|zluda|amd-zluda|android|compat|vulkan|vulkan-compile|hexagon|tpu)
+    full|local|cpu-intel|cpu-arm|cuda|zluda|amd-zluda|android|compat|vulkan|vulkan-compile|hexagon|tpu)
         # Backend-specific requirements are selected below after optional defaults.
         ;;
     *)

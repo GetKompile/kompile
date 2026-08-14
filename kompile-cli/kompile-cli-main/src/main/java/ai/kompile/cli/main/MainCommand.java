@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main;
 
+import ai.kompile.utils.NativeLibraryResolver;
 import ai.kompile.cli.main.a2a.A2ACommand;
 import ai.kompile.cli.main.auth.AuthCommand;
 import ai.kompile.cli.main.app.AppCommand;
@@ -42,10 +43,12 @@ import ai.kompile.cli.main.config.ConfigMain;
 import ai.kompile.cli.main.configure.ConfigureCommand;
 import ai.kompile.cli.main.graph.GraphCommand;
 import ai.kompile.cli.main.install.InstallMain;
+import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.kclaw.KclawCommand;
 import ai.kompile.cli.main.knowledge.KnowledgeCommand;
 import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
+import ai.kompile.cli.main.project.LocalCrawlSubprocessMain;
 import ai.kompile.cli.main.project.ProjectCommand;
 import ai.kompile.cli.main.run.RunCommand;
 import ai.kompile.cli.main.sdk.SdkMain;
@@ -143,6 +146,17 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
+        // Native payloads are deliberately excluded from every Graal image. Load the
+        // complete distribution-owned JNI set before plugins, commands, or SQLite can
+        // initialize a native class. JVM execution keeps its normal classpath behavior.
+        NativeLibraryResolver.bootstrapOrThrow();
+
+        if (args != null && args.length == 2
+                && "--subprocess=local-crawl".equalsIgnoreCase(args[0])) {
+            LocalCrawlSubprocessMain.main(new String[]{args[1]});
+            System.exit(0);
+            return;
+        }
         CommandLine commandLine = new CommandLine(new MainCommand());
 
         // Discover and register plugin commands via ServiceLoader
@@ -210,6 +224,15 @@ public class MainCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            // Distribution-local binaries win. ComponentRegistry resolves custom
+            // install roots and the running native image's sibling bin/ directory,
+            // while user state remains under ~/.kompile.
+            File distributionBinary = new ComponentRegistry()
+                    .getDistributionBinaryPath(binaryName);
+            if (distributionBinary != null) {
+                return execBinary(distributionBinary);
+            }
+
             // Search for the binary on PATH
             String path = System.getenv("PATH");
             if (path != null) {
@@ -249,6 +272,17 @@ public class MainCommand implements Callable<Integer> {
 
             ProcessBuilder pb = new ProcessBuilder(cmd)
                     .inheritIO();
+
+            // A delegated native CLI is a fresh process and cannot inherit Java
+            // system properties or this process's resolved ComponentRegistry. When
+            // the binary belongs to a distribution, carry that concrete root across
+            // the process boundary so the companion cannot silently fall back to
+            // stale artifacts under ~/.kompile.
+            File distributionHome = ComponentRegistry.inferDistributionHome(binary.toPath());
+            if (distributionHome != null) {
+                pb.environment().put("KOMPILE_INSTALL_DIR", distributionHome.getAbsolutePath());
+            }
+
             Process process = pb.start();
             try {
                 return process.waitFor();

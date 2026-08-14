@@ -109,6 +109,8 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
@@ -171,9 +173,10 @@ public class McpStdioCommand implements Callable<Integer> {
             description = "Base URL of the authoritative kompile-graph-service for graph-owned tools")
     private String graphUrl;
 
-    @CommandLine.Option(names = {"--no-daemon"}, description = "Skip daemon bridge, always run in-process",
-            defaultValue = "true")
-    private boolean noDaemon;
+    @CommandLine.Option(names = {"--daemon"}, negatable = true,
+            description = "Opt into the shared daemon bridge; stdio runs in-process by default",
+            defaultValue = "false")
+    private boolean daemon;
 
     @CommandLine.Option(names = {"--profile"},
             description = "Tool profile: full (default, all tools), core (file I/O + search + workflow), " +
@@ -325,16 +328,12 @@ public class McpStdioCommand implements Callable<Integer> {
         PrintStream originalErr = System.err;
         System.setErr(stderrLogger.getPrintStream());
         try {
-            // NOTE: we intentionally do NOT probe for a kompile-app backend here. A blanket
-            // startup probe (4 ports x connect+read timeouts) added latency to EVERY stdio
-            // session — including local-only ones that only ever call grep/glob/read and never
-            // touch the HTTP backend. Detection is now lazy: the backend-dependent tools (RAG,
-            // GraphRAG, code_search, ask_graph*) resolve the URL on first use via
-            // KompileBackendClient, which caches the hit and rate-limits re-probes (30s
-            // cooldown) when nothing is listening. An explicit --url still seeds the URL below.
+            // Stdio is self-contained by default. No application endpoint is probed or required
+            // at startup; RAG, graph, crawl, code search, and history tools use project-local
+            // implementations. An explicit --url remains an opt-in remote override.
 
-            // Auto-start daemon if needed, then bridge — collapses N MCP processes into one
-            if (!noDaemon) {
+            // Daemon sharing is explicit opt-in. Plain stdio and --no-daemon stay in-process.
+            if (daemon) {
                 DaemonClient client =
                         DaemonClient.ensureDaemon("mcp", wd);
                 if (client != null) {
@@ -1293,12 +1292,20 @@ public class McpStdioCommand implements Callable<Integer> {
         long t0 = System.currentTimeMillis();
         Map<String, ToolDef> tools = new LinkedHashMap<>();
         GraphServiceRouting.Resolution graphRoute = GraphServiceRouting.resolve(graphUrl);
-        String graphBaseUrl = graphRoute.baseUrl();
+        boolean graphRemoteConfigured = switch (graphRoute.source()) {
+            case EXPLICIT, SYSTEM_PROPERTY, ENVIRONMENT -> true;
+            case MANAGED_INSTANCE, DEFAULT -> false;
+        };
+        String graphBaseUrl = (baseUrl == null || baseUrl.isBlank()) && !graphRemoteConfigured
+                ? null
+                : graphRoute.baseUrl();
         String crawlBaseUrl = baseUrl == null || baseUrl.isBlank()
                 ? null
                 : KompileServiceEndpoints.resolve(KompileService.CRAWL, baseUrl).baseUrl();
-        System.err.println("[MCP] Authoritative graph contracts routed to " + graphBaseUrl
-                + " (source: " + graphRoute.source() + ")");
+        System.err.println(graphBaseUrl == null
+                ? "[MCP] Graph contracts use the in-process project archive"
+                : "[MCP] Graph contracts routed to " + graphBaseUrl
+                        + " (source: " + graphRoute.source() + ")");
 
         // Reuse SharedResourcePool to avoid duplicating registry/config construction
         // that the daemon path already consolidates. Saves ~35MB of redundant class loading.
@@ -1401,14 +1408,14 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new ToolCallCatalogTool(), om, wd);
         registerCliTool(tools, new DiffIndexTool(baseUrl, om), om, wd);
 
-        // ── RAG & Graph search (require kompile-app backend) ──────────────
+        // ── RAG & graph search (in-process by default; --url selects remote) ──
         registerCliTool(tools, new RagSearchTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphRagSearchTool(baseUrl, om), om, wd);
 
         // ── Full knowledge graph CRUD + graph capabilities ─────────────────
         registerCliTool(tools, new KnowledgeGraphTool(baseUrl, om), om, wd);
 
-        // ── KB Grounding tools (most still require the kompile-app compatibility backend) ──
+        // ── KB grounding (in-process by default; configured URLs select remote) ──
         registerCliTool(tools, new AskGraphVerifyTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphQueryTool(baseUrl, om), om, wd);
         registerCliTool(tools, new AskGraphExplainTool(baseUrl, om), om, wd);
@@ -1424,9 +1431,11 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new CrawlSourceTool(crawlBaseUrl, om), om, wd);
         registerCliTool(tools, new CrawlDocumentsTool(crawlBaseUrl, om), om, wd);
         registerCliTool(tools, new CrawlDiscoveryTool(crawlBaseUrl, om), om, wd);
+        registerCliTool(tools, new ModelRuntimeTool(om), om, wd);
         registerCliTool(tools, new CrawlControlTool(crawlBaseUrl, om), om, wd);
+        registerCliTool(tools, new CrawlResultTool(crawlBaseUrl, om), om, wd);
 
-        // ── Graph analytics (require kompile-app backend) ─────────────────
+        // ── Graph analytics (in-process by default; --url selects remote) ──
         registerCliTool(tools, new GraphAggregateTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphForecastTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphCentralityTool(baseUrl, om), om, wd);
@@ -1438,7 +1447,7 @@ public class McpStdioCommand implements Callable<Integer> {
         registerCliTool(tools, new GraphEmbeddingsTool(baseUrl, om), om, wd);
         registerCliTool(tools, new GraphSimulateTool(baseUrl, om), om, wd);
 
-        // ── Process mining (require kompile-app backend) ───────────────────
+        // ── Process mining (in-process by default; --url selects remote) ───
         registerCliTool(tools, new ProcessMiningCliTool(baseUrl, om), om, wd);
 
         // ── Process management ─────────────────────────────────────────────

@@ -54,11 +54,13 @@ public class GraphCentralityTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public GraphCentralityTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -75,7 +77,7 @@ public class GraphCentralityTool implements CliTool {
                 + "'pagerank' (iterative convergence, finds globally influential nodes), "
                 + "or 'betweenness' (BFS-based, finds bridge nodes between communities). "
                 + "Returns the top-K nodes ranked by score. "
-                + "Use graphId to scope to a specific fact-sheet graph; omit for the full graph.";
+                + "Local stdio initializes and uses the current folder's knowledge base; graphId is an explicit remote/legacy override.";
     }
 
     @Override
@@ -88,8 +90,7 @@ public class GraphCentralityTool implements CliTool {
         ObjectNode graphId = props.putObject("graphId");
         graphId.put("type", "string");
         graphId.put("description",
-                "Graph identifier (factSheetId as a numeric string, or a named graphId). "
-                        + "Omit to query the full graph.");
+                "Optional remote/legacy graph identifier. Omit locally to use the current folder's knowledge base.");
 
         ObjectNode algorithm = props.putObject("algorithm");
         algorithm.put("type", "string");
@@ -119,10 +120,12 @@ public class GraphCentralityTool implements CliTool {
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
         context.checkPermission(permissionKey(), "Compute graph centrality");
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable()) {
-            return ToolResult.error(
-                    "graph_centrality requires a running kompile-app instance. "
-                            + "Start kompile-app or set --url to connect.");
+            return ToolResult.error("The explicitly configured remote centrality service is unavailable at "
+                    + backend.baseUrlFor("/api/graph/algorithms/centrality") + ". Remove --url to use the in-process graph.");
         }
 
         String graphId = params.path("graphId").asText(null);
@@ -143,7 +146,8 @@ public class GraphCentralityTool implements CliTool {
             JsonNode body = objectMapper.readTree(response.body());
             return formatResult(algorithm, graphId, body, topK);
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app: " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote centrality service became unavailable. "
+                    + "Remove --url to continue with the in-process graph. " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
             return ToolResult.error("Centrality request timed out after 60s. "
                     + "The graph may be very large — try scoping with graphId.");

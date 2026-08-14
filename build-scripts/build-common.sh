@@ -13,7 +13,7 @@
 #   - kompile_build_java_modules()     — Maven install for kompile
 #   - kompile_build_native_image()     — Build a single native image
 #   - kompile_build_all_native()       — Build all native image targets
-#   - kompile_assemble_dist()          — Package distribution tarball
+#   - kompile_assemble_dist()          — Package publishable ZIP/tar Maven assemblies
 #   - kompile_build_for_platform()     — End-to-end: DL4J backend + kompile
 #
 # Variables (set before sourcing or accept defaults):
@@ -38,7 +38,7 @@ if [ -z "${KOMPILE_ROOT:-}" ]; then
   KOMPILE_ROOT="$(cd "${_KOMPILE_COMMON_DIR}/.." && pwd)"
 fi
 
-# Branch defaults (override with env vars or CLI flags)
+# Clone branch defaults (existing source checkouts are never switched)
 DL4J_BRANCH="${DL4J_BRANCH:-master}"
 KOMPILE_BRANCH="${KOMPILE_BRANCH:-main}"
 
@@ -104,8 +104,19 @@ kompile_ensure_dl4j() {
   export DL4J_PROJECT_ROOT
 }
 
-# Ensure kompile repo is on the right branch (only useful in CI / fresh clones).
+# Build the checkout that owns these scripts. Never fetch or switch branches in an
+# existing checkout: local distributions are commonly built from dirty feature
+# branches, and changing that checkout would discard the caller's chosen source.
+# Cloning remains available only when an explicit external KOMPILE_ROOT is absent.
 kompile_ensure_kompile() {
+  if [ -f "${KOMPILE_ROOT}/pom.xml" ] && [ -d "${KOMPILE_ROOT}/build-scripts" ]; then
+    log "Using existing Kompile checkout: ${KOMPILE_ROOT}"
+    return 0
+  fi
+  if [ -e "${KOMPILE_ROOT}" ]; then
+    log "ERROR: KOMPILE_ROOT exists but is not a Kompile source checkout: ${KOMPILE_ROOT}"
+    return 1
+  fi
   kompile_ensure_repo "${KOMPILE_ROOT}" "${KOMPILE_REPO_URL}" "${KOMPILE_BRANCH}"
 }
 
@@ -144,6 +155,7 @@ KOMPILE_DEPLOY_REPOSITORY_ID="${KOMPILE_DEPLOY_REPOSITORY_ID:-}"
 if [ -z "${GRAALVM_HOME:-}" ]; then
   for _candidate in \
     "${HOME}/.sdkman/candidates/java/21.0.10-graal" \
+    "${HOME}/.sdkman/candidates/java/17.0.12-graal" \
     "${HOME}/.kompile/graalvm" \
     "${JAVA_HOME:-}"; do
     if [ -n "${_candidate}" ] && [ -x "${_candidate}/bin/native-image" ]; then
@@ -162,6 +174,8 @@ GRAALVM_HOME="${GRAALVM_HOME:-}"
 #   app            — RAG server (kompile-sample / generated project)
 #   app-lite       — lightweight RAG server (kompile-app-lite)
 #   staging        — model staging orchestrator (kompile-model-staging)
+#   model-serving  — request-scoped model serving (kompile-app-subprocess-serving)
+#   pipeline-serving — request-scoped unified pipeline execution (kompile-pipeline-serving)
 #   ingest         — document ingest subprocess (kompile-app-main -Pnative-ingest)
 #   vector         — vector population subprocess (kompile-app-main -Pnative-vector)
 #   embedding      — embedding subprocess (kompile-app-main -Pnative-embedding)
@@ -178,6 +192,27 @@ VARIANT="${VARIANT:-}"
 # Output directory
 KOMPILE_OUTPUT_DIR="${KOMPILE_OUTPUT_DIR:-${KOMPILE_ROOT}/dist}"
 
+# Content-addressed native-image cache. Set KOMPILE_NATIVE_CACHE=0 to disable
+# reuse or KOMPILE_NATIVE_FORCE_REBUILD=1 to bypass an otherwise valid hit.
+KOMPILE_NATIVE_CACHE="${KOMPILE_NATIVE_CACHE:-1}"
+KOMPILE_NATIVE_FORCE_REBUILD="${KOMPILE_NATIVE_FORCE_REBUILD:-0}"
+KOMPILE_NATIVE_CACHE_DIR="${KOMPILE_NATIVE_CACHE_DIR:-${HOME}/.cache/kompile/native-images}"
+KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR="${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR:-${KOMPILE_NATIVE_CACHE_DIR}/dependency-manifests}"
+
+# Developer builds default to GraalVM quick build (-Ob). Set
+# KOMPILE_NATIVE_QUICK_BUILD=0 for optimized/release images. The resolved value
+# is passed to Maven and therefore participates in the native cache fingerprint.
+KOMPILE_NATIVE_QUICK_BUILD="${KOMPILE_NATIVE_QUICK_BUILD:-1}"
+case "${KOMPILE_NATIVE_QUICK_BUILD}" in
+  1|true|TRUE|yes|YES) KOMPILE_NATIVE_QUICK_BUILD_PROPERTY=true ;;
+  0|false|FALSE|no|NO) KOMPILE_NATIVE_QUICK_BUILD_PROPERTY=false ;;
+  *)
+    printf 'ERROR: KOMPILE_NATIVE_QUICK_BUILD must be 1/0 or true/false (got %s)\n' \
+      "${KOMPILE_NATIVE_QUICK_BUILD}" >&2
+    return 1 2>/dev/null || exit 1
+    ;;
+esac
+
 # SDX bindings output — mirrors DL4J's SDX_OUTPUT_DIR, collected into kompile dist
 KOMPILE_SDX_OUTPUT_DIR="${KOMPILE_SDX_OUTPUT_DIR:-${KOMPILE_OUTPUT_DIR}/sdx-sdk}"
 # Repository-only builds cannot derive the non-Maven runtime SDK packages from
@@ -187,7 +222,12 @@ DL4J_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR:-}"
 
 # Maven flags for Kompile Java builds. Keep these as an array so repository
 # URLs and local repository paths are never reparsed by the shell.
-KOMPILE_MVN_ARGS=(--batch-mode --no-transfer-progress -Dmaven.test.skip=true)
+KOMPILE_MVN_ARGS=(
+  --batch-mode
+  --no-transfer-progress
+  -Dmaven.test.skip=true
+  "-Dnative.quickBuild=${KOMPILE_NATIVE_QUICK_BUILD_PROPERTY}"
+)
 
 # Classifiers attested by ../deeplearning4j/release. Keep this list closed:
 # requesting a missing classifier must fail instead of silently using a base JAR.
@@ -199,6 +239,8 @@ KOMPILE_PLATFORMS=(
   "linux-x86_64-onednn-avx2"
   "linux-x86_64-onednn-avx512"
   "linux-x86_64-compile"
+  "linux-x86_64-compile-avx2"
+  "linux-x86_64-compile-avx512"
   "linux-x86_64-compat"
   "linux-arm64"
   "linux-arm64-armcompute"
@@ -209,6 +251,7 @@ KOMPILE_PLATFORMS=(
   "android-arm64-nnapi"
   "android-arm64-compile"
   "android-arm64-compile-nnapi"
+  "android-arm64-vulkan"
   "android-x86_64"
   "android-x86_64-onednn"
   "android-x86_64-compile"
@@ -222,6 +265,8 @@ KOMPILE_PLATFORMS=(
   "windows-x86_64-onednn"
   "windows-x86_64-onednn-avx2"
   "windows-x86_64-onednn-avx512"
+  "windows-x86_64-compile"
+  "windows-x86_64-vulkan"
   "linux-x86_64-cuda-12.6"
   "linux-x86_64-cuda-12.6-cudnn"
   "linux-x86_64-cuda-12.6-compile"
@@ -230,8 +275,10 @@ KOMPILE_PLATFORMS=(
   "linux-x86_64-cuda-12.9-compile"
   "windows-x86_64-cuda-12.6"
   "windows-x86_64-cuda-12.6-cudnn"
+  "windows-x86_64-cuda-12.6-compile"
   "windows-x86_64-cuda-12.9"
   "windows-x86_64-cuda-12.9-cudnn"
+  "windows-x86_64-cuda-12.9-compile"
   "linux-x86_64-cuda-12.9-zluda"
   "windows-x86_64-cuda-12.9-zluda"
   "linux-x86_64-vulkan"
@@ -286,33 +333,36 @@ kompile_check_graalvm() {
 
 # Resolve the public Kompile backend alias from an attested classifier.
 _resolve_backend_from_platform() {
-  local platform="$1"
+  local platform="$1" backend_type cuda_version backend_profile
   case "$platform" in
-    *cuda-12.9-zluda)  echo "cuda" "12.9" "zluda" ;;
-    *cuda-12.9-cudnn)  echo "cuda" "12.9" "cuda-12.9-cudnn" ;;
-    *cuda-12.9-compile) echo "cuda" "12.9" "cuda-12.9-compile" ;;
-    *cuda-12.9)        echo "cuda" "12.9" "cuda-12.9" ;;
-    *cuda-12.6-cudnn)  echo "cuda" "12.6" "cuda-12.6-cudnn" ;;
-    *cuda-12.6-compile) echo "cuda" "12.6" "cuda-12.6-compile" ;;
-    *cuda-12.6)        echo "cuda" "12.6" "cuda-12.6" ;;
-    *vulkan-compile)   echo "vulkan" "" "vulkan-compile" ;;
-    *vulkan)           echo "vulkan" "" "vulkan" ;;
-    *hexagon)          echo "hexagon" "" "hexagon" ;;
-    *tpu)              echo "tpu" "" "tpu" ;;
-    *onednn-avx512)    echo "cpu" "" "cpu-onednn-avx512" ;;
-    *onednn-avx2)      echo "cpu" "" "cpu-onednn-avx2" ;;
-    *onednn)           echo "cpu" "" "cpu-onednn" ;;
-    *avx512)           echo "cpu" "" "cpu-avx512" ;;
-    *avx2)             echo "cpu" "" "cpu-avx2" ;;
-    *armcompute)       echo "cpu" "" "cpu-armcompute" ;;
-    *mps-compile)      echo "cpu" "" "cpu-mps-compile" ;;
-    *mps)              echo "cpu" "" "cpu-mps" ;;
-    *compile-nnapi)    echo "cpu" "" "cpu-compile-nnapi" ;;
-    *nnapi)            echo "cpu" "" "cpu-nnapi" ;;
-    *compat)           echo "cpu" "" "cpu-compat" ;;
-    *compile)          echo "cpu" "" "cpu-compile" ;;
-    *)                 echo "cpu" "" "cpu" ;;
+    *cuda-12.9-zluda)  backend_type="cuda"; cuda_version="12.9"; backend_profile="zluda" ;;
+    *cuda-12.9-cudnn)  backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-cudnn" ;;
+    *cuda-12.9-compile) backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9-compile" ;;
+    *cuda-12.9)        backend_type="cuda"; cuda_version="12.9"; backend_profile="cuda-12.9" ;;
+    *cuda-12.6-cudnn)  backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6-cudnn" ;;
+    *cuda-12.6-compile) backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6-compile" ;;
+    *cuda-12.6)        backend_type="cuda"; cuda_version="12.6"; backend_profile="cuda-12.6" ;;
+    *vulkan-compile)   backend_type="vulkan"; cuda_version=""; backend_profile="vulkan-compile" ;;
+    *vulkan)           backend_type="vulkan"; cuda_version=""; backend_profile="vulkan" ;;
+    *hexagon)          backend_type="hexagon"; cuda_version=""; backend_profile="hexagon" ;;
+    *tpu)              backend_type="tpu"; cuda_version=""; backend_profile="tpu" ;;
+    *compile-avx512)   backend_type="cpu"; cuda_version=""; backend_profile="cpu-compile-avx512" ;;
+    *compile-avx2)     backend_type="cpu"; cuda_version=""; backend_profile="cpu-compile-avx2" ;;
+    *onednn-avx512)    backend_type="cpu"; cuda_version=""; backend_profile="cpu-onednn-avx512" ;;
+    *onednn-avx2)      backend_type="cpu"; cuda_version=""; backend_profile="cpu-onednn-avx2" ;;
+    *onednn)           backend_type="cpu"; cuda_version=""; backend_profile="cpu-onednn" ;;
+    *avx512)           backend_type="cpu"; cuda_version=""; backend_profile="cpu-avx512" ;;
+    *avx2)             backend_type="cpu"; cuda_version=""; backend_profile="cpu-avx2" ;;
+    *armcompute)       backend_type="cpu"; cuda_version=""; backend_profile="cpu-armcompute" ;;
+    *mps-compile)      backend_type="cpu"; cuda_version=""; backend_profile="cpu-mps-compile" ;;
+    *mps)              backend_type="cpu"; cuda_version=""; backend_profile="cpu-mps" ;;
+    *compile-nnapi)    backend_type="cpu"; cuda_version=""; backend_profile="cpu-compile-nnapi" ;;
+    *nnapi)            backend_type="cpu"; cuda_version=""; backend_profile="cpu-nnapi" ;;
+    *compat)           backend_type="cpu"; cuda_version=""; backend_profile="cpu-compat" ;;
+    *compile)          backend_type="cpu"; cuda_version=""; backend_profile="cpu-compile" ;;
+    *)                 backend_type="cpu"; cuda_version=""; backend_profile="cpu" ;;
   esac
+  printf '%s|%s|%s\n' "${backend_type}" "${cuda_version}" "${backend_profile}"
 }
 
 _resolve_javacpp_platform() {
@@ -454,6 +504,9 @@ kompile_collect_sdx_bindings() {
   # API/platform JARs for the lane and only the requested platform classifier.
   local maven_repository
   maven_repository="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}"
+  # Runtime package directories may contain jars/ from an older collection. Replace
+  # that directory so a new shard cannot inherit timestamped SNAPSHOT artifacts.
+  rm -rf "${dest}/jars"
   mkdir -p "${dest}/jars"
   local -a sdk_artifact_ids
   case "${platform}" in
@@ -482,22 +535,20 @@ kompile_collect_sdx_bindings() {
       ;;
     *) log "ERROR: no release-plan artifact set for ${platform}"; return 1 ;;
   esac
-  local namespace artifact_id artifact_dir jar_name f
+  local namespace artifact_id artifact_dir f
   for namespace in org/eclipse/deeplearning4j org/nd4j; do
     for artifact_id in "${sdk_artifact_ids[@]}"; do
       artifact_dir="${maven_repository}/${namespace}/${artifact_id}/${ND4J_VERSION}"
       [ -d "${artifact_dir}" ] || continue
-      while IFS= read -r -d '' f; do
-        jar_name="$(basename "${f}")"
-        case "${jar_name}" in
-          *-sources.jar|*-javadoc.jar|*-tests.jar) continue ;;
-        esac
-        if [[ "${jar_name}" =~ (linux-|windows-|macosx-|android-|ios-) ]] \
-            && [[ "${jar_name}" != *-"${sdk_classifier}".jar ]]; then
-          continue
-        fi
+      # A Maven SNAPSHOT directory can retain timestamped downloads for years. The
+      # locally installed canonical filenames are the only release inputs; copying
+      # every *.jar makes runtime classpath selection depend on directory ordering.
+      for f in \
+          "${artifact_dir}/${artifact_id}-${ND4J_VERSION}.jar" \
+          "${artifact_dir}/${artifact_id}-${ND4J_VERSION}-${sdk_classifier}.jar"; do
+        [ -f "${f}" ] || continue
         cp -p "${f}" "${dest}/jars/"
-      done < <(find "${artifact_dir}" -type f -name '*.jar' -print0 2>/dev/null)
+      done
     done
   done
 
@@ -510,7 +561,7 @@ kompile_collect_sdx_bindings() {
   fi
 
   local backend_type lane_cuda_version backend_profile backend_artifact validation_cuda_version
-  read -r backend_type lane_cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
+  IFS='|' read -r backend_type lane_cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
   case "${backend_profile}" in
     cpu*) backend_artifact=nd4j-native ;;
     cuda-12.6*) backend_artifact=nd4j-cuda-12.6 ;;
@@ -562,6 +613,381 @@ kompile_build_java_modules() {
 # 5. NATIVE IMAGE BUILDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+# Compute SHA-256 without depending on a particular output formatter.
+kompile_sha256_file() {
+  local digest_output
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest_output="$(sha256sum "$1")" || return 1
+  else
+    digest_output="$(shasum -a 256 "$1")" || return 1
+  fi
+  printf '%s' "${digest_output%% *}"
+}
+
+kompile_sha256_stdin() {
+  local digest_output
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest_output="$(sha256sum)" || return 1
+  else
+    digest_output="$(shasum -a 256)" || return 1
+  fi
+  printf '%s' "${digest_output%% *}"
+}
+
+# Hash the source/configuration closure consumed by one standalone native-image
+# build. Hashing the whole repository makes an unrelated edit invalidate every
+# native worker, even though these builds run from a single module and consume
+# the rest of Kompile through resolved Maven artifacts.
+kompile_native_source_hash() {
+  local module_dir="$1"
+  local module_rel ancestor_dir ancestor_rel source_file
+  local -a source_paths=()
+
+  case "${module_dir}" in
+    "${KOMPILE_ROOT}") module_rel="." ;;
+    "${KOMPILE_ROOT}/"*) module_rel="${module_dir#${KOMPILE_ROOT}/}" ;;
+    *)
+      printf 'Native module is outside the Kompile repository: %s\n' "${module_dir}" >&2
+      return 1
+      ;;
+  esac
+  source_paths+=("${module_rel}")
+
+  # Maven parent POMs and root build configuration can change the effective
+  # native profile even when the leaf module itself is untouched.
+  ancestor_dir="${module_dir}"
+  while :; do
+    if [ -f "${ancestor_dir}/pom.xml" ]; then
+      if [ "${ancestor_dir}" = "${KOMPILE_ROOT}" ]; then
+        ancestor_rel="pom.xml"
+      else
+        ancestor_rel="${ancestor_dir#${KOMPILE_ROOT}/}/pom.xml"
+      fi
+      source_paths+=("${ancestor_rel}")
+    fi
+    [ "${ancestor_dir}" = "${KOMPILE_ROOT}" ] && break
+    ancestor_dir="${ancestor_dir%/*}"
+  done
+  source_paths+=(".mvn" "build-scripts/build-common.sh" "build-scripts/NativeImageDependencyFingerprint.java")
+
+  {
+    printf 'source-schema=kompile-native-source-v2\n'
+    # Android source receipts deliberately use the same path+content identity
+    # before and after a new file is committed. Preserve that property here so
+    # promoting a validated helper from untracked to tracked cannot fork AOT.
+    git -C "${KOMPILE_ROOT}" ls-files -z --cached --others --exclude-standard -- \
+      "${source_paths[@]}" \
+      | sort -zu \
+      | while IFS= read -r -d '' source_file; do
+          [ -f "${KOMPILE_ROOT}/${source_file}" ] || continue
+          printf 'path=%s\nsha256=%s\n' "${source_file}" \
+            "$(kompile_sha256_file "${KOMPILE_ROOT}/${source_file}")"
+        done
+  } | kompile_sha256_stdin
+}
+
+# Split the resolved runtime classpath into the same independent stages used
+# by the Android builders: semantic Java/resources consumed by Native Image and
+# binary payloads side-loaded by the distribution. The helper hashes uncompressed
+# archive members, so ZIP timestamps/compression and native-only rebuilds do not
+# invalidate Graal analysis.
+kompile_native_dependency_fingerprints() {
+  local classpath_file="$1"
+  local helper="${KOMPILE_ROOT}/build-scripts/NativeImageDependencyFingerprint.java"
+  local output schema="" aot="" runtime="" aot_dependencies="" runtime_dependencies="" native_members=""
+  local key value
+
+  [ -f "${helper}" ] || {
+    printf 'Native dependency fingerprint helper is missing: %s\n' "${helper}" >&2
+    return 1
+  }
+  output="$("${GRAALVM_HOME}/bin/java" --source 17 "${helper}" "${classpath_file}" \
+    "${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR}")" || return 1
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      schema)
+        [ -z "${schema}" ] || return 1
+        schema="${value}"
+        ;;
+      aot)
+        [ -z "${aot}" ] || return 1
+        aot="${value}"
+        ;;
+      runtime)
+        [ -z "${runtime}" ] || return 1
+        runtime="${value}"
+        ;;
+      aot_dependencies)
+        [ -z "${aot_dependencies}" ] || return 1
+        aot_dependencies="${value}"
+        ;;
+      runtime_dependencies)
+        [ -z "${runtime_dependencies}" ] || return 1
+        runtime_dependencies="${value}"
+        ;;
+      native_members)
+        [ -z "${native_members}" ] || return 1
+        native_members="${value}"
+        ;;
+      *)
+        printf 'Unknown native dependency fingerprint field: %s\n' "${key}" >&2
+        return 1
+        ;;
+    esac
+  done <<< "${output}"
+
+  [ "${schema}" = "kompile-native-dependency-fingerprints-v1" ] || return 1
+  [[ "${aot}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${runtime}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${aot_dependencies}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${runtime_dependencies}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${native_members}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s %s\n' "${aot}" "${runtime}"
+}
+
+# Fingerprint every input that can change a native image while avoiding a full
+# Java/package build. Module sources and effective parent configuration are
+# hashed directly. Resolved dependencies use independent semantic-AOT and
+# side-loaded-runtime identities, matching the Android stage/receipt model.
+kompile_native_fingerprint() {
+  local target="$1"
+  local module_dir="$2"
+  local profile="$3"
+  local image_name="$4"
+  shift 4
+  local -a fingerprint_args=("$@")
+
+  mkdir -p "${KOMPILE_OUTPUT_DIR}"
+  local probe_dir classpath_file probe_log
+  probe_dir="$(mktemp -d "${KOMPILE_OUTPUT_DIR}/.native-cache-probe.XXXXXX")" || return 1
+  classpath_file="${probe_dir}/dependencies.classpath"
+  probe_log="${probe_dir}/maven.log"
+
+  local -a dependency_cmd=(
+    "${MVN}" -q "-P${profile}" -DskipTests
+    "${KOMPILE_MVN_ARGS[@]}"
+    "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
+    "${fingerprint_args[@]}"
+    dependency:build-classpath
+    "-Dmdep.outputFile=${classpath_file}"
+    -Dmdep.includeScope=runtime
+  )
+  if ! (cd "${module_dir}" && JAVA_HOME="${GRAALVM_HOME}" "${dependency_cmd[@]}")       >"${probe_log}" 2>&1; then
+    printf 'Native cache fingerprint dependency resolution failed; see %s\n'       "${probe_log}" >&2
+    rm -rf "${probe_dir}"
+    return 1
+  fi
+
+  local source_hash dependency_fingerprints aot_dependency_hash runtime_dependency_hash graal_version
+  if git -C "${KOMPILE_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    source_hash="$(kompile_native_source_hash "${module_dir}")" || {
+      rm -rf "${probe_dir}"
+      return 1
+    }
+  else
+    source_hash="$(
+      find "${KOMPILE_ROOT}" -type f         ! -path '*/target/*' ! -path '*/dist/*' ! -path '*/.git/*' -print0         | sort -z         | while IFS= read -r -d '' source_file; do
+            printf 'path=%s\nsha256=%s\n' "${source_file#${KOMPILE_ROOT}/}"               "$(kompile_sha256_file "${source_file}")"
+          done         | kompile_sha256_stdin
+    )"
+  fi
+
+  dependency_fingerprints="$(kompile_native_dependency_fingerprints "${classpath_file}")" || {
+    rm -rf "${probe_dir}"
+    return 1
+  }
+  read -r aot_dependency_hash runtime_dependency_hash <<< "${dependency_fingerprints}"
+  if [[ ! "${aot_dependency_hash}" =~ ^[0-9a-f]{64}$ ]] \
+      || [[ ! "${runtime_dependency_hash}" =~ ^[0-9a-f]{64}$ ]]; then
+    rm -rf "${probe_dir}"
+    return 1
+  fi
+  graal_version="$("${GRAALVM_HOME}/bin/native-image" --version 2>&1)"
+
+  local aot_fingerprint runtime_fingerprint
+  aot_fingerprint="$({
+    printf 'schema=kompile-native-aot-cache-v3\n'
+    printf 'target=%s\nmodule=%s\nprofile=%s\nimage=%s\n' \
+      "${target}" "${module_dir#${KOMPILE_ROOT}/}" "${profile}" "${image_name}"
+    printf 'nd4j=%s\nvariant=%s\ngraal-home=%s\ngraal=%s\n' \
+      "${ND4J_VERSION}" "${VARIANT}" "${GRAALVM_HOME}" "${graal_version}"
+    printf 'sources=%s\naot-dependencies=%s\n' "${source_hash}" "${aot_dependency_hash}"
+    printf 'maven-arg=%q\n' "${KOMPILE_MVN_ARGS[@]}"
+    printf 'dependency-arg=%q\n' "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
+    printf 'arg=%q\n' "${fingerprint_args[@]}"
+  } | kompile_sha256_stdin)" || {
+    rm -rf "${probe_dir}"
+    return 1
+  }
+
+  runtime_fingerprint="$({
+    printf 'schema=kompile-native-runtime-cache-v1\n'
+    printf 'target=%s\nmodule=%s\nprofile=%s\nimage=%s\n' \
+      "${target}" "${module_dir#${KOMPILE_ROOT}/}" "${profile}" "${image_name}"
+    printf 'nd4j=%s\nvariant=%s\nruntime-payloads=%s\n' \
+      "${ND4J_VERSION}" "${VARIANT}" "${runtime_dependency_hash}"
+    printf 'dependency-arg=%q\n' "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
+    printf 'arg=%q\n' "${fingerprint_args[@]}"
+  } | kompile_sha256_stdin)" || {
+    rm -rf "${probe_dir}"
+    return 1
+  }
+
+  rm -rf "${probe_dir}"
+  printf '%s %s\n' "${aot_fingerprint}" "${runtime_fingerprint}"
+}
+
+KOMPILE_NATIVE_CACHE_RECEIPT_SCHEMA=kompile-native-cache-receipt-v3
+KOMPILE_NATIVE_RECEIPT_RUNTIME=""
+KOMPILE_NATIVE_RECEIPT_CHECKSUM=""
+
+kompile_native_write_cache_receipt() {
+  local receipt="$1"
+  local aot_fingerprint="$2"
+  local runtime_fingerprint="$3"
+  local checksum="$4"
+  local temporary_receipt="${receipt}.tmp.$$"
+
+  [[ "${aot_fingerprint}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${runtime_fingerprint}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${checksum}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  {
+    printf 'schema=%s\n' "${KOMPILE_NATIVE_CACHE_RECEIPT_SCHEMA}"
+    printf 'aot_fingerprint=%s\n' "${aot_fingerprint}"
+    printf 'runtime_fingerprint=%s\n' "${runtime_fingerprint}"
+    printf 'artifact_sha256=%s\n' "${checksum}"
+  } > "${temporary_receipt}" || {
+    rm -f "${temporary_receipt}"
+    return 1
+  }
+  mv -f "${temporary_receipt}" "${receipt}"
+}
+
+kompile_native_validate_cache_receipt() {
+  local receipt="$1"
+  local expected_aot="$2"
+  local schema="" aot_fingerprint="" runtime_fingerprint="" checksum=""
+  local key value
+
+  [ -f "${receipt}" ] && [ ! -L "${receipt}" ] && [ -s "${receipt}" ] || return 1
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      schema)
+        [ -z "${schema}" ] || return 1
+        schema="${value}"
+        ;;
+      aot_fingerprint)
+        [ -z "${aot_fingerprint}" ] || return 1
+        aot_fingerprint="${value}"
+        ;;
+      runtime_fingerprint)
+        [ -z "${runtime_fingerprint}" ] || return 1
+        runtime_fingerprint="${value}"
+        ;;
+      artifact_sha256)
+        [ -z "${checksum}" ] || return 1
+        checksum="${value}"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < "${receipt}"
+
+  [ "${schema}" = "${KOMPILE_NATIVE_CACHE_RECEIPT_SCHEMA}" ] || return 1
+  [ "${aot_fingerprint}" = "${expected_aot}" ] || return 1
+  [[ "${runtime_fingerprint}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${checksum}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  KOMPILE_NATIVE_RECEIPT_RUNTIME="${runtime_fingerprint}"
+  KOMPILE_NATIVE_RECEIPT_CHECKSUM="${checksum}"
+}
+
+kompile_restore_cached_native_image() {
+  local target="$1"
+  local image_path="$2"
+  local aot_fingerprint="$3"
+  local runtime_fingerprint="$4"
+  local target_metadata="${image_path}.native-cache"
+  local actual_checksum
+
+  if [ -x "${image_path}" ] && [ ! -L "${image_path}" ] \
+      && kompile_native_validate_cache_receipt "${target_metadata}" "${aot_fingerprint}"; then
+    actual_checksum="$(kompile_sha256_file "${image_path}")"
+    if [ "${actual_checksum}" = "${KOMPILE_NATIVE_RECEIPT_CHECKSUM}" ]; then
+      kompile_native_write_cache_receipt "${target_metadata}" \
+        "${aot_fingerprint}" "${runtime_fingerprint}" "${actual_checksum}" || return 1
+      log "CACHE HIT: reusing native image ${target} from ${image_path} (AOT ${aot_fingerprint}, runtime ${runtime_fingerprint})"
+      return 0
+    fi
+  fi
+
+  local cache_dir="${KOMPILE_NATIVE_CACHE_DIR}/${target}/${aot_fingerprint}"
+  local cached_image="${cache_dir}/$(basename "${image_path}")"
+  local cached_metadata="${cached_image}.native-cache"
+  local temporary_image
+  if [ ! -x "${cached_image}" ] || [ -L "${cached_image}" ] \
+      || ! kompile_native_validate_cache_receipt "${cached_metadata}" "${aot_fingerprint}"; then
+    return 1
+  fi
+  actual_checksum="$(kompile_sha256_file "${cached_image}")"
+  [ "${actual_checksum}" = "${KOMPILE_NATIVE_RECEIPT_CHECKSUM}" ] || return 1
+
+  mkdir -p "$(dirname "${image_path}")"
+  temporary_image="$(mktemp "$(dirname "${image_path}")/.$(basename "${image_path}").native-cache.XXXXXXXX")" || return 1
+  if ! cp -p "${cached_image}" "${temporary_image}" \
+      || [ "$(kompile_sha256_file "${temporary_image}")" != "${actual_checksum}" ]; then
+    rm -f "${temporary_image}"
+    return 1
+  fi
+  chmod +x "${temporary_image}"
+  mv -f "${temporary_image}" "${image_path}"
+  kompile_native_write_cache_receipt "${target_metadata}" \
+    "${aot_fingerprint}" "${runtime_fingerprint}" "${actual_checksum}" || return 1
+  log "CACHE HIT: restored native image ${target} from ${cache_dir} (runtime ${runtime_fingerprint})"
+}
+
+kompile_publish_cached_native_image() {
+  local target="$1"
+  local image_path="$2"
+  local aot_fingerprint="$3"
+  local runtime_fingerprint="$4"
+  local checksum cache_dir cached_image cached_metadata temporary_image
+
+  [ -x "${image_path}" ] && [ ! -L "${image_path}" ] || return 1
+  checksum="$(kompile_sha256_file "${image_path}")" || return 1
+  kompile_native_write_cache_receipt "${image_path}.native-cache" \
+    "${aot_fingerprint}" "${runtime_fingerprint}" "${checksum}" || return 1
+
+  cache_dir="${KOMPILE_NATIVE_CACHE_DIR}/${target}/${aot_fingerprint}"
+  cached_image="${cache_dir}/$(basename "${image_path}")"
+  cached_metadata="${cached_image}.native-cache"
+  mkdir -p "${cache_dir}"
+  [ -d "${cache_dir}" ] && [ ! -L "${cache_dir}" ] || return 1
+
+  if [ -x "${cached_image}" ] && [ ! -L "${cached_image}" ] \
+      && kompile_native_validate_cache_receipt "${cached_metadata}" "${aot_fingerprint}" \
+      && [ "$(kompile_sha256_file "${cached_image}")" = "${checksum}" ]; then
+    kompile_native_write_cache_receipt "${cached_metadata}" \
+      "${aot_fingerprint}" "${runtime_fingerprint}" "${checksum}" || return 1
+    log "Native AOT cache already contains ${target}: ${cache_dir}"
+    return 0
+  fi
+
+  temporary_image="${cached_image}.tmp.$$"
+  if ! cp -p "${image_path}" "${temporary_image}" \
+      || [ "$(kompile_sha256_file "${temporary_image}")" != "${checksum}" ]; then
+    rm -f "${temporary_image}"
+    return 1
+  fi
+  chmod +x,a-w "${temporary_image}"
+  mv -f "${temporary_image}" "${cached_image}"
+  kompile_native_write_cache_receipt "${cached_metadata}" \
+    "${aot_fingerprint}" "${runtime_fingerprint}" "${checksum}" || return 1
+  log "Cached native image ${target}: ${cache_dir} (runtime ${runtime_fingerprint})"
+}
+
 # Build a single native image target.
 #   $1 = target name (see NATIVE_TARGETS comment above for valid values)
 #   remaining arguments = extra Maven arguments (optional)
@@ -572,13 +998,16 @@ kompile_build_native_image() {
 
   kompile_check_graalvm || return 1
 
-  local module_dir profile image_name log_file
+  local module_dir profile image_name image_path log_file
   case "${target}" in
     # ── Standalone CLIs ────────────────────────────────────────────────
     cli)
       module_dir="${KOMPILE_ROOT}/kompile-cli"
       profile="native"
       image_name="kompile-cli-main"
+      # Select the actual CLI module instead of activating every sibling
+      # native profile in the kompile-cli aggregator.
+      extra_args+=("-pl" "kompile-cli-main" "-am")
       ;;
     component-cli)
       module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-component-cli"
@@ -587,6 +1016,24 @@ kompile_build_native_image() {
       ;;
     # ── Application servers ────────────────────────────────────────────
     app)
+      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main"
+      profile="native"
+      image_name="kompile-app"
+      extra_args+=("-Dkompile.dist=true" "-Dkompile.uber")
+      ;;
+    chat)
+      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-chat"
+      profile="native"
+      image_name="kompile-chat"
+      extra_args+=("-Dkompile.dist=true")
+      ;;
+    crawl-manager)
+      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-crawl-manager"
+      profile="native"
+      image_name="kompile-crawl-manager"
+      extra_args+=("-Dkompile.dist=true")
+      ;;
+    sample)
       module_dir="${KOMPILE_ROOT}/kompile-rag-builds/kompile-sample/project"
       profile="native"
       image_name="kompile-sample-native"
@@ -601,8 +1048,25 @@ kompile_build_native_image() {
       module_dir="${KOMPILE_ROOT}/kompile-app/kompile-models/kompile-model-staging"
       profile="native"
       image_name="kompile-model-staging"
+      # The request-scoped staging worker has no public UI. Avoid rebuilding the
+      # Angular application before every native metadata iteration.
+      extra_args+=("-Dskip.ui")
       ;;
-    # ── Subprocess native images (built from kompile-app-main) ─────────
+    # ── Standalone request-scoped subprocess runtimes ─────────────────
+    model-serving)
+      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving"
+      profile="native"
+      image_name="kompile-model-serving"
+      # The native image consumes target/classes plus its resolved dependency
+      # classpath; rebuilding the 2+ GiB executable JAR adds no native inputs.
+      extra_args+=("-Dshade.skip=true")
+      ;;
+    pipeline-serving)
+      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving"
+      profile="native"
+      image_name="kompile-pipeline-serving"
+      ;;
+    # ── Legacy subprocess native images (built from kompile-app-main) ────
     ingest)
       module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main"
       profile="native-ingest"
@@ -635,10 +1099,20 @@ kompile_build_native_image() {
       ;;
     *)
       log "ERROR: Unknown native target '${target}'"
-      log "Valid targets: cli, component-cli, app, app-lite, staging, ingest, vector, embedding, model-init, vlm-test, training"
+      log "Valid targets: cli, component-cli, app, chat, crawl-manager, sample, app-lite, staging, model-serving, pipeline-serving, ingest, vector, embedding, model-init, vlm-test, training"
       return 1
       ;;
   esac
+  case "${target}" in
+    ingest|vector|embedding|model-init|vlm-test|training)
+      extra_args+=("-Dkompile.native.side-load=true")
+      ;;
+  esac
+  case "${target}" in
+    cli) image_path="${module_dir}/kompile-cli-main/target/${image_name}" ;;
+    *) image_path="${module_dir}/target/${image_name}" ;;
+  esac
+  mkdir -p "${KOMPILE_OUTPUT_DIR}"
   log_file="${KOMPILE_OUTPUT_DIR}/native-${target}.log"
 
   log "Building native image: ${target} (${image_name})"
@@ -647,8 +1121,36 @@ kompile_build_native_image() {
   log "  GraalVM: ${GRAALVM_HOME}"
 
   kompile_prepare_dependency_maven_args
+
+  local native_fingerprints="" native_aot_fingerprint="" native_runtime_fingerprint=""
+  if [ "${KOMPILE_NATIVE_CACHE}" = "1" ]; then
+    if native_fingerprints="$(kompile_native_fingerprint \
+        "${target}" "${module_dir}" "${profile}" "${image_name}" \
+        "${extra_args[@]}")"; then
+      read -r native_aot_fingerprint native_runtime_fingerprint <<< "${native_fingerprints}"
+      if [[ ! "${native_aot_fingerprint}" =~ ^[0-9a-f]{64}$ ]] \
+          || [[ ! "${native_runtime_fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then
+        log "WARNING: native cache returned malformed independent-stage fingerprints; building ${target} normally"
+        native_aot_fingerprint=""
+        native_runtime_fingerprint=""
+      elif [ "${KOMPILE_NATIVE_FORCE_REBUILD}" != "1" ] \
+          && kompile_restore_cached_native_image \
+            "${target}" "${image_path}" "${native_aot_fingerprint}" \
+            "${native_runtime_fingerprint}"; then
+        return 0
+      else
+        log "CACHE MISS: native image ${target} (AOT ${native_aot_fingerprint}, runtime ${native_runtime_fingerprint})"
+      fi
+    else
+      log "WARNING: native cache fingerprint unavailable; building ${target} normally"
+      native_aot_fingerprint=""
+      native_runtime_fingerprint=""
+    fi
+  fi
+
   local -a cmd=(
     "${MVN}" package "-P${profile}" -DskipTests
+    "${KOMPILE_MVN_ARGS[@]}"
     "${KOMPILE_DEPENDENCY_MAVEN_ARGS[@]}"
     "${extra_args[@]}"
   )
@@ -663,11 +1165,21 @@ kompile_build_native_image() {
     log "FAILED: native image ${target} (exit ${rc}). See ${log_file}"
     return 1
   fi
+  if [ ! -x "${image_path}" ]; then
+    log "FAILED: native image ${target} reported success but ${image_path} is missing"
+    return 1
+  fi
+  if [ -n "${native_aot_fingerprint}" ] && [ -n "${native_runtime_fingerprint}" ]; then
+    kompile_publish_cached_native_image \
+      "${target}" "${image_path}" "${native_aot_fingerprint}" \
+      "${native_runtime_fingerprint}" \
+      || log "WARNING: could not publish native cache entry for ${target}"
+  fi
   log "DONE: native image ${target}"
 }
 
 # All valid native image target names
-ALL_NATIVE_TARGETS="cli,component-cli,app,app-lite,staging,ingest,vector,embedding,model-init,vlm-test,training"
+ALL_NATIVE_TARGETS="cli,component-cli,app,chat,crawl-manager,sample,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,vlm-test,training"
 
 # Build all requested native image targets.
 # Reads NATIVE_TARGETS (comma-separated, or "all" for everything)
@@ -716,7 +1228,7 @@ kompile_assemble_dist() {
   local javacpp_platform backend_type cuda_version backend_profile sdk_classifier distribution_classifier
   javacpp_platform="$(_resolve_javacpp_platform "${platform}")" || return 1
   sdk_classifier="$(_resolve_sdk_classifier "${platform}")" || return 1
-  read -r backend_type cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
+  IFS='|' read -r backend_type cuda_version backend_profile < <(_resolve_backend_from_platform "${platform}")
   distribution_classifier="${VARIANT}-${platform}"
   local -a args=(
     "${VARIANT}" --skip-java-build --skip-native
@@ -726,6 +1238,9 @@ kompile_assemble_dist() {
     --distribution-classifier "${distribution_classifier}"
     --output-dir "${KOMPILE_OUTPUT_DIR}"
   )
+  if [ -n "${KOMPILE_VERSION:-}" ]; then
+    args+=(--version "${KOMPILE_VERSION}")
+  fi
   if [ -n "${KOMPILE_ACTIVE_SDX_ASSETS_DIR:-}" ]; then
     args+=(--sdx-assets "${KOMPILE_ACTIVE_SDX_ASSETS_DIR}")
   fi
@@ -733,7 +1248,7 @@ kompile_assemble_dist() {
     *cuda-12.6*) args+=(--cuda-version 12.6) ;;
     *cuda-12.9*) args+=(--cuda-version 12.9) ;;
   esac
-  log "Assembling canonical ${distribution_classifier} distribution ZIP"
+  log "Assembling canonical ${distribution_classifier} distribution archives"
   (
     cd "${KOMPILE_ROOT}"
     KOMPILE_MAVEN_REPO="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}" \
@@ -751,7 +1266,7 @@ kompile_assemble_dist() {
 #   2. Collect SDX runtime SDK bindings from DL4J build output
 #   3. Build kompile Java modules (picks up the nd4j-* JARs)
 #   4. Build kompile native images
-#   5. Assemble and install the complete distribution ZIP
+#   5. Assemble and install the complete ZIP/tar Maven distribution artifacts
 #
 # Usage:
 #   kompile_build_for_platform linux-x86_64-cuda-12.9
@@ -778,7 +1293,7 @@ kompile_build_for_platform() {
   mkdir -p "${KOMPILE_OUTPUT_DIR}"
 
   if [ "${KOMPILE_PUBLISH}" -eq 1 ] && [ "${skip_dist}" -ne 0 ]; then
-    log "ERROR: --publish requires distribution assembly so the ZIP is published with the reactor"
+    log "ERROR: --publish requires distribution assembly so ZIP/tar artifacts are published with the reactor"
     return 1
   fi
 
@@ -801,7 +1316,7 @@ kompile_build_for_platform() {
 
   # Resolve an exact backend profile and classifier from the release matrix.
   local backend_type cuda_version backend_alias javacpp_platform sdk_classifier
-  read -r backend_type cuda_version backend_alias < <(_resolve_backend_from_platform "$platform")
+  IFS='|' read -r backend_type cuda_version backend_alias < <(_resolve_backend_from_platform "$platform")
   javacpp_platform="$(_resolve_javacpp_platform "$platform")" || return 1
   sdk_classifier="$(_resolve_sdk_classifier "$platform")" || return 1
 
@@ -825,19 +1340,17 @@ kompile_build_for_platform() {
     fi
   fi
 
-  # Step 2: Resolve the complete DL4J SDK shard.
+  # Step 2: Resolve the complete DL4J SDK shard only when assembling a
+  # distribution. Native-image-only builds consume their exact Maven classpath
+  # and must not be blocked on ZIP/AAR payloads they never package.
   KOMPILE_ACTIVE_SDX_ASSETS_DIR=""
-  if [ "${skip_dl4j}" -eq 0 ] && [ -n "${DL4J_PROJECT_ROOT:-}" ]; then
+  if [ "${skip_dist}" -ne 0 ]; then
+    log "Step 2/5: Skipped DL4J SDK asset collection (distribution assembly disabled)"
+  elif [ "${skip_dl4j}" -eq 0 ] && [ -n "${DL4J_PROJECT_ROOT:-}" ]; then
     log "Step 2/5: Collecting complete DL4J SDK assets (${platform})"
     kompile_collect_sdx_bindings "${platform}" || return 1
     KOMPILE_ACTIVE_SDX_ASSETS_DIR="${KOMPILE_SDX_OUTPUT_DIR}/${platform}"
   elif [ -n "${DL4J_SDX_ASSETS_DIR}" ]; then
-    # Repository lanes always need their exact Maven JAR set. Only runtime
-    # lanes additionally require ZIP/AAR payloads, which the validator enforces.
-    if [ -z "${DL4J_SDX_ASSETS_DIR}" ]; then
-      log "ERROR: repository-only backend builds require --dl4j-sdk-assets DIR"
-      return 1
-    fi
     if [ -d "${DL4J_SDX_ASSETS_DIR}/${platform}" ]; then
       KOMPILE_ACTIVE_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR}/${platform}"
     else
@@ -849,7 +1362,7 @@ kompile_build_for_platform() {
     fi
     log "Step 2/5: Using repository companion SDK assets from ${KOMPILE_ACTIVE_SDX_ASSETS_DIR}"
   elif _kompile_lane_requires_runtime "${platform}"; then
-    log "ERROR: repository-only ${platform} builds require --dl4j-sdk-assets DIR"
+    log "ERROR: repository-only ${platform} distribution builds require --dl4j-sdk-assets DIR"
     log "       DL4J publishes runtime ZIP/AAR payloads beside Maven, not inside it."
     return 1
   else
@@ -876,7 +1389,7 @@ kompile_build_for_platform() {
 
   # Step 5: Assemble distribution
   if [ "${skip_dist}" -eq 0 ]; then
-    log "Step 5/5: Assembling and installing complete distribution ZIP"
+    log "Step 5/5: Assembling complete ZIP/tar Maven distribution artifacts"
     kompile_assemble_dist "${platform}" || return 1
   else
     log "Step 5/5: Skipped distribution assembly"
@@ -886,7 +1399,7 @@ kompile_build_for_platform() {
     local version
     version="$(grep -m1 '<version>' "${KOMPILE_ROOT}/pom.xml" \
       | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')"
-    log "Publishing installed reactor and distribution ZIP artifacts"
+    log "Publishing installed reactor and distribution ZIP/tar artifacts"
     MAVEN_REPO_LOCAL="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}" \
       KOMPILE_VERSION="${version}" \
       "${KOMPILE_ROOT}/build-scripts/publish-maven.sh" || return 1

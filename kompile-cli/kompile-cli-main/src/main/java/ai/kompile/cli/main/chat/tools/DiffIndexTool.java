@@ -16,18 +16,23 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.app.services.diffindex.DiffIndexEntry;
+import ai.kompile.app.services.diffindex.DiffIndexService;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.net.ConnectException;
+import java.net.URI;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -57,7 +62,9 @@ public class DiffIndexTool implements CliTool {
     private final BackendGateway backend;
 
     public DiffIndexTool(String baseUrl, ObjectMapper objectMapper) {
-        this(objectMapper, sharedBackend(baseUrl));
+        this(objectMapper, baseUrl == null || baseUrl.isBlank()
+                ? new LocalBackendGateway(objectMapper)
+                : sharedBackend(baseUrl));
     }
 
     DiffIndexTool(ObjectMapper objectMapper, BackendGateway backend) {
@@ -229,8 +236,8 @@ public class DiffIndexTool implements CliTool {
 
     private BackendResponse request(String path) {
         if (!backend.isAvailable(path)) {
-            return BackendResponse.error("Diff index requires a running kompile admin service. "
-                    + "Start it with 'kompile manage start kompile-app-main' or connect with --url.");
+            return BackendResponse.error("The explicitly configured remote diff-index backend is unavailable. "
+                    + "Remove --url to use the in-process stdio index, or restore that remote endpoint.");
         }
 
         try {
@@ -430,6 +437,101 @@ public class DiffIndexTool implements CliTool {
                 return new BackendResponse(response.statusCode(), response.body(), null);
             }
         };
+    }
+
+    /** In-process adapter over the same persisted diff index used by the application UI. */
+    static final class LocalBackendGateway implements BackendGateway {
+        private final ObjectMapper mapper;
+        private final DiffIndexService service;
+        private boolean initialized;
+
+        LocalBackendGateway(ObjectMapper mapper) {
+            this(mapper, new DiffIndexService());
+        }
+
+        LocalBackendGateway(ObjectMapper mapper, DiffIndexService service) {
+            this.mapper = Objects.requireNonNull(mapper, "mapper");
+            this.service = Objects.requireNonNull(service, "service");
+        }
+
+        @Override
+        public boolean isAvailable(String path) {
+            return true;
+        }
+
+        @Override
+        public synchronized BackendResponse get(String path, Duration timeout) {
+            try {
+                ensureIndexed();
+                URI uri = URI.create("http://stdio.local" + path);
+                String route = uri.getRawPath();
+                Map<String, String> query = query(uri.getRawQuery());
+                Object value;
+                int status = 200;
+                if ((API_ROOT + "/search").equals(route)) {
+                    value = service.search(
+                            query.get("agent"), query.get("projectDirectory"), query.get("filePath"),
+                            query.get("contentQuery"), query.get("source"), query.get("since"),
+                            query.get("until"), integer(query.get("limit")), query.get("sortBy"),
+                            query.get("sortDir"));
+                } else if ((API_ROOT + "/projects").equals(route)) {
+                    value = service.listProjects();
+                } else if ((API_ROOT + "/agents").equals(route)) {
+                    value = service.listAgents();
+                } else if ((API_ROOT + "/sessions").equals(route)) {
+                    value = service.listSessions();
+                } else if ((API_ROOT + "/stats").equals(route)) {
+                    value = service.getStats();
+                } else if (route.startsWith(API_ROOT + "/entries/")) {
+                    String id = decode(route.substring((API_ROOT + "/entries/").length()));
+                    DiffIndexEntry entry = service.get(id);
+                    value = entry == null ? Map.of("error", "Diff entry not found: " + id) : entry;
+                    status = entry == null ? 404 : 200;
+                } else if (route.startsWith(API_ROOT + "/sessions/")) {
+                    String sessionId = decode(route.substring((API_ROOT + "/sessions/").length()));
+                    value = service.sessionEntries(sessionId);
+                } else {
+                    value = Map.of("error", "Unknown local diff-index route: " + route);
+                    status = 404;
+                }
+                return new BackendResponse(status, mapper.writeValueAsString(value), null);
+            } catch (Exception e) {
+                return BackendResponse.error("Local diff-index request failed: " + e.getMessage());
+            }
+        }
+
+        private void ensureIndexed() {
+            if (initialized) {
+                return;
+            }
+            service.init();
+            Thread refresh = new Thread(service::reindexAll, "kompile-diff-index-refresh");
+            refresh.setDaemon(true);
+            refresh.start();
+            initialized = true;
+        }
+
+        private static Map<String, String> query(String rawQuery) {
+            Map<String, String> values = new HashMap<>();
+            if (rawQuery == null || rawQuery.isBlank()) {
+                return values;
+            }
+            for (String pair : rawQuery.split("&")) {
+                int separator = pair.indexOf('=');
+                String key = separator < 0 ? pair : pair.substring(0, separator);
+                String value = separator < 0 ? "" : pair.substring(separator + 1);
+                values.put(decode(key), decode(value));
+            }
+            return values;
+        }
+
+        private static Integer integer(String value) {
+            return value == null || value.isBlank() ? null : Integer.valueOf(value);
+        }
+
+        private static String decode(String value) {
+            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        }
     }
 
     interface BackendGateway {

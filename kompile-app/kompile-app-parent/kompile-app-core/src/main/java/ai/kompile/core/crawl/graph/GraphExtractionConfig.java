@@ -400,6 +400,14 @@ public class GraphExtractionConfig {
     @Builder.Default
     private int decomposedMaxPropositions = 0;
 
+    /**
+     * Apply the explicit decomposed entity/relation limits to native compact proposal arrays.
+     * Disabled by default so ordinary crawl extraction remains unbounded; bounded prepasses can
+     * opt in when a deterministic source inventory provides an exact proposal ceiling.
+     */
+    @Builder.Default
+    private boolean decomposedBoundNativeProposalArrays = false;
+
     /** Entity candidates the engine retrieves and offers the model per mention. */
     @Builder.Default
     private int decomposedEntityCandidateLimit = 8;

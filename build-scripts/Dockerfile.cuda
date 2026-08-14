@@ -120,7 +120,7 @@ RUN --mount=type=cache,target=/root/.m2/repository \
 
 # ── Build native images ────────────────────────────────────────────────────
 RUN --mount=type=cache,target=/root/.m2/repository \
-    ALL="cli,component-cli,app,app-lite,staging,ingest,vector,embedding,model-init,vlm-test,training" && \
+    ALL="cli,component-cli,app,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,vlm-test,training" && \
     TARGETS="${NATIVE_TARGETS}" && \
     [ "${TARGETS}" = "all" ] && TARGETS="${ALL}" && \
     IFS=',' read -ra T <<< "${TARGETS}" && \
@@ -131,6 +131,8 @@ RUN --mount=type=cache,target=/root/.m2/repository \
         app)           dir=/build/kompile/kompile-rag-builds/kompile-sample/project;       prof=native ;; \
         app-lite)      dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-lite; prof=native ;; \
         staging)       dir=/build/kompile/kompile-app/kompile-models/kompile-model-staging; prof=native ;; \
+        model-serving) dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving; prof=native ;; \
+        pipeline-serving) dir=/build/kompile/kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving; prof=native ;; \
         ingest)        dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-ingest ;; \
         vector)        dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-vector ;; \
         embedding)     dir=/build/kompile/kompile-app/kompile-app-parent/kompile-app-main; prof=native-embedding ;; \
@@ -155,6 +157,8 @@ RUN mkdir -p /dist/bin /dist/lib /dist/build-scripts /dist/data /dist/sdx-sdk &&
       "kompile-rag-builds/kompile-sample/project/target/kompile-sample-native:kompile-app" \
       "kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite-native:kompile-app-lite" \
       "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging:kompile-model-staging" \
+      "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving:kompile-model-serving" \
+      "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving:kompile-pipeline-serving" \
       "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-ingest:kompile-ingest" \
       "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vector:kompile-vector" \
       "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-embedding:kompile-embedding" \

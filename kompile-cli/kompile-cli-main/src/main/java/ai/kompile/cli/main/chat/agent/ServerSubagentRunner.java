@@ -76,11 +76,15 @@ public class ServerSubagentRunner implements SubagentRunner {
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
-        System.out.println(renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)));
         if (lifecycleListener != null) {
             lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
         }
+        emitActivity(subagentId, "connecting",
+                renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
+                parentContext);
 
+        notifyStatus(subagentId, "connecting");
+        try {
         // Build the system prompt with available tools
         String systemPrompt = agent.getSystemPrompt() + "\n\n" +
                 toolRegistry.buildToolDescriptionsText(agent);
@@ -108,11 +112,12 @@ public class ServerSubagentRunner implements SubagentRunner {
                 httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
         if (response.statusCode() != 200) {
-            long durationMs = System.currentTimeMillis() - startTime;
-            System.out.println(renderer.renderSubagentError(agent.getName(),
-                    "HTTP " + response.statusCode()));
+            emitActivity(subagentId, "failed · HTTP " + response.statusCode(),
+                    renderer.renderSubagentError(agent.getName(),
+                            "HTTP " + response.statusCode()), parentContext);
             throw new Exception("Subagent HTTP " + response.statusCode());
         }
+        notifyStatus(subagentId, "thinking");
 
         // Parse SSE stream and collect response
         StringBuilder fullResponse = new StringBuilder();
@@ -124,8 +129,9 @@ public class ServerSubagentRunner implements SubagentRunner {
 
             while ((line = reader.readLine()) != null) {
                 if (parentContext.isAborted()) {
-                    long durationMs = System.currentTimeMillis() - startTime;
-                    System.out.println(renderer.renderSubagentError(agent.getName(), "Aborted"));
+                    emitActivity(subagentId, "aborted",
+                            renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
+                    notifyStatus(subagentId, "aborted");
                     return fullResponse + "\n[Subagent aborted]";
                 }
 
@@ -137,16 +143,19 @@ public class ServerSubagentRunner implements SubagentRunner {
                     String data = dataBuffer.toString();
                     switch (eventType) {
                         case "chunk":
+                            notifyStatus(subagentId, "responding");
                             String chunk = data;
                             if (chunk.startsWith("\"") && chunk.endsWith("\"")) {
                                 try { chunk = objectMapper.readValue(chunk, String.class); }
                                 catch (Exception ignored) {}
                             }
                             fullResponse.append(chunk);
+                            emitOutput(subagentId, chunk);
                             break;
 
                         case "tool_call":
-                            String toolResult = handleToolCall(data, agent, parentContext);
+                            String toolResult = handleToolCall(
+                                    data, subagentId, agent, parentContext);
                             break;
 
                         case "error":
@@ -154,10 +163,13 @@ public class ServerSubagentRunner implements SubagentRunner {
                                 JsonNode error = objectMapper.readTree(data);
                                 String errMsg = error.path("message").asText(data);
                                 fullResponse.append("\n[Error: ").append(errMsg).append("]");
-                                System.out.println(renderer.renderSubagentError(
-                                        agent.getName(), errMsg));
+                                emitActivity(subagentId, "failed · "
+                                                + TerminalRenderer.truncatePreview(errMsg, 72),
+                                        renderer.renderSubagentError(agent.getName(), errMsg), parentContext);
+                                notifyStatus(subagentId, "failed · " + errMsg);
                             } catch (Exception e) {
                                 fullResponse.append("\n[Error: ").append(data).append("]");
+                                notifyStatus(subagentId, "failed");
                             }
                             break;
                     }
@@ -170,31 +182,61 @@ public class ServerSubagentRunner implements SubagentRunner {
         long durationMs = System.currentTimeMillis() - startTime;
         String result = fullResponse.toString().trim();
 
-        System.out.println(renderer.renderSubagentComplete(agent.getName(), durationMs));
-
-        if (lifecycleListener != null) {
-            lifecycleListener.onSubagentEnd(subagentId);
-        }
+        if (!result.isBlank()) emitActivity(subagentId, "responded", "", parentContext);
+        notifyStatus(subagentId, "completed");
+        emitActivity(subagentId, "completed",
+                renderer.renderSubagentComplete(agent.getName(), durationMs), parentContext);
 
         return result.isEmpty() ? "(subagent returned empty response)" : result;
+        } catch (Exception e) {
+            if (parentContext.isAborted() || e instanceof InterruptedException) {
+                notifyStatus(subagentId, "aborted");
+                emitActivity(subagentId, "aborted",
+                        renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
+                return "[Subagent aborted]";
+            }
+            notifyStatus(subagentId, "failed · " + e.getClass().getSimpleName());
+            emitActivity(subagentId, "failed · " + e.getClass().getSimpleName(),
+                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
+            throw e;
+        } finally {
+            if (lifecycleListener != null) {
+                lifecycleListener.onSubagentEnd(subagentId);
+            }
+        }
     }
 
-    private String handleToolCall(String data, AgentConfig agent, ToolContext parentContext) {
+    private void notifyStatus(String subagentId, String status) {
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentStatus(subagentId, status);
+        }
+    }
+
+    private String handleToolCall(String data, String subagentId,
+                                  AgentConfig agent, ToolContext parentContext) {
         try {
             JsonNode toolCall = objectMapper.readTree(data);
             String toolName = toolCall.path("name").asText("");
             JsonNode arguments = toolCall.path("arguments");
+            String rawInput = arguments == null ? "" : arguments.toString();
+            String callSummary = TerminalRenderer.summarizeToolCall(toolName, rawInput, 88);
+            emitActivity(subagentId, callSummary + " …",
+                    renderer.renderToolCallStart(toolName, rawInput), parentContext);
 
             CliTool tool = toolRegistry.get(toolName);
             if (tool == null) {
-                System.out.println(renderer.renderSubagentToolCall(toolName, true));
+                ToolResult failed = ToolResult.error("Tool not found: " + toolName);
+                emitActivity(subagentId, callSummary + " ✗ unknown tool",
+                        renderer.renderSubagentToolCall(toolName, rawInput, failed), parentContext);
                 return "Tool not found: " + toolName;
             }
 
             List<CliTool> allowed = toolRegistry.getToolsForAgent(agent);
             boolean hasAccess = allowed.stream().anyMatch(t -> t.id().equals(toolName));
             if (!hasAccess) {
-                System.out.println(renderer.renderSubagentToolCall(toolName, true));
+                ToolResult failed = ToolResult.error("Tool not available to subagent: " + toolName);
+                emitActivity(subagentId, callSummary + " ✗ unavailable",
+                        renderer.renderSubagentToolCall(toolName, rawInput, failed), parentContext);
                 return "Tool not available to subagent: " + toolName;
             }
 
@@ -205,16 +247,40 @@ public class ServerSubagentRunner implements SubagentRunner {
                     parentContext.getWorkingDirectory(),
                     toolRegistry
             );
+            subContext.linkAbortSignal(parentContext.getAbortSignal());
+            subContext.setOutputConsumer(parentContext.getOutputConsumer());
 
             ToolResult result = tool.execute(arguments, subContext);
-            System.out.println(renderer.renderSubagentToolCall(toolName, result.isError()));
+            String outcome = TerminalRenderer.summarizeToolResult(result, 72);
+            emitActivity(subagentId,
+                    callSummary + (result.isError() ? " ✗ " : " ✓ ") + outcome,
+                    renderer.renderSubagentToolCall(toolName, rawInput, result), parentContext);
             return result.getOutput();
 
         } catch (ToolExecutionException e) {
+            emitActivity(subagentId, "tool failed · "
+                            + TerminalRenderer.truncatePreview(e.getMessage(), 72),
+                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
             return "Tool execution failed: " + e.getMessage();
         } catch (Exception e) {
+            emitActivity(subagentId, "tool event malformed",
+                    renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
             return "Error parsing tool call: " + e.getMessage();
         }
+    }
+
+    private void emitActivity(String subagentId, String summary, String detail,
+                              ToolContext parentContext) {
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentActivity(subagentId, summary, detail);
+        } else {
+            parentContext.emitOutput(detail);
+        }
+    }
+
+    private void emitOutput(String subagentId, String chunk) {
+        LifecycleListener listener = lifecycleListener;
+        if (listener != null) listener.onSubagentOutput(subagentId, chunk);
     }
 
 }

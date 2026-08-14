@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-local-dist</artifactId>
+    <packaging>pom</packaging>
+    <name>Kompile :: Local Execution Distribution</name>
+    <description>
+        Lean native distribution for standard CLI chat and folder-local MCP execution.
+        It contains the CLI, model staging, model serving, pipeline serving, the
+        document-model worker, and one validated side-loaded backend. It deliberately
+        excludes the web, persona, batch, JVM fallback, C/Python, and app-server tiers.
+    </description>
+
+    <properties>
+        <kompile.local.backend.profile>cpu</kompile.local.backend.profile>
+        <kompile.local.cuda.version>12.9</kompile.local.cuda.version>
+        <kompile.local.sdk.classifier>${javacpp.platform}${javacpp.platform.extension}</kompile.local.sdk.classifier>
+        <kompile.local.distribution.classifier>local-${kompile.distribution.platform.classifier}</kompile.local.distribution.classifier>
+        <kompile.local.output.dir>${project.build.directory}/release</kompile.local.output.dir>
+        <kompile.local.zip.archive>${kompile.local.output.dir}/kompile-dist-${project.version}-${kompile.local.distribution.classifier}.zip</kompile.local.zip.archive>
+        <kompile.local.tar.archive>${kompile.local.output.dir}/kompile-dist-${project.version}-${kompile.local.distribution.classifier}.tar.gz</kompile.local.tar.archive>
+    </properties>
+
+    <!-- Reactor ordering only: the packager consumes the native images from target/. -->
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-main</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-staging</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-subprocess-serving</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-serving</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <!-- app-main currently owns only the dedicated VLM native entrypoint. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-main</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Reuse the canonical packager so full and local archives share the
+                 exact classifier, portability, side-load, SDK, checksum, and
+                 installer contracts. Native images must already be built; use
+                 build-scripts/build-kompile-local.sh for end-to-end builds. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>package-local-distribution</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>bash</executable>
+                            <workingDirectory>${project.parent.basedir}</workingDirectory>
+                            <arguments>
+                                <argument>${project.parent.basedir}/build-dist.sh</argument>
+                                <argument>local</argument>
+                                <argument>--skip-java-build</argument>
+                                <argument>--skip-native</argument>
+                                <argument>--skip-maven-install</argument>
+                                <argument>--output-dir</argument>
+                                <argument>${kompile.local.output.dir}</argument>
+                                <argument>--platform</argument>
+                                <argument>${javacpp.platform}</argument>
+                                <argument>--backend-profile</argument>
+                                <argument>${kompile.local.backend.profile}</argument>
+                                <argument>--sdk-classifier</argument>
+                                <argument>${kompile.local.sdk.classifier}</argument>
+                                <argument>--distribution-classifier</argument>
+                                <argument>${kompile.local.distribution.classifier}</argument>
+                                <argument>--cuda-version</argument>
+                                <argument>${kompile.local.cuda.version}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-local-distribution</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>attach-artifact</goal>
+                        </goals>
+                        <configuration>
+                            <artifacts>
+                                <artifact>
+                                    <file>${kompile.local.zip.archive}</file>
+                                    <type>zip</type>
+                                    <classifier>${kompile.local.distribution.classifier}</classifier>
+                                </artifact>
+                                <artifact>
+                                    <file>${kompile.local.tar.archive}</file>
+                                    <type>tar.gz</type>
+                                    <classifier>${kompile.local.distribution.classifier}</classifier>
+                                </artifact>
+                            </artifacts>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

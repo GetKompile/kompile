@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
@@ -32,7 +33,8 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(name = "ai.kompile.staging.catalog.CatalogService")
-@ConditionalOnProperty(name = "kompile.staging.app.enabled", havingValue = "true")
+@ConditionalOnExpression(
+        "${kompile.staging.app.enabled:false} && ${kompile.staging.mcp.enabled:true}")
 public class StagingMcpServerConfig implements ApplicationListener<ApplicationReadyEvent> {
 
     private static final Logger log = LoggerFactory.getLogger(StagingMcpServerConfig.class);

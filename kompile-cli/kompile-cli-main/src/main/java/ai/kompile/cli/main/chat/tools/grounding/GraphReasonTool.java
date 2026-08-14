@@ -73,7 +73,7 @@ public class GraphReasonTool implements CliTool {
                 "no knowledge of the underlying reasoning engine is required. " +
                 "Use when you need traceable evidence behind a fact, want to understand why " +
                 "the knowledge base believes something, or need to audit a claim. " +
-                "Requires a running kompile-app.";
+                "Runs against the project-local graph unless a remote URL is explicitly configured.";
     }
 
     @Override
@@ -91,8 +91,7 @@ public class GraphReasonTool implements CliTool {
                         "The system auto-detects the best reasoning approach.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope the reasoning to a specific fact sheet. " +
-                        "Absent or null = reason over all fact sheets.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("depth")
                 .put("type", "integer")
                 .put("description", "How many reasoning steps deep to trace. Default: 3. Maximum: 5.")

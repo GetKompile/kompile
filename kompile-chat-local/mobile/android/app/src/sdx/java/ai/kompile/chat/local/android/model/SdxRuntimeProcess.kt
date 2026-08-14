@@ -426,7 +426,10 @@ internal fun encodeSdxRuntimeMessages(messages: List<Message>): String = MiniJso
         linkedMapOf<String, Any>(
             "role" to message.role(),
             "content" to message.content()
-        )
+        ).apply {
+            message.toolCallId()?.let { put("tool_call_id", it) }
+            message.toolName()?.let { put("name", it) }
+        }
     }
 )
 
@@ -439,7 +442,15 @@ internal fun decodeSdxRuntimeMessages(json: String): List<Message> {
             ?: throw IllegalArgumentException("SDX runtime message $index omitted string role.")
         val content = value["content"] as? String
             ?: throw IllegalArgumentException("SDX runtime message $index omitted string content.")
-        Message(role, content)
+        val toolCallId = value["tool_call_id"]?.let {
+            it as? String
+                ?: throw IllegalArgumentException("SDX runtime message $index has non-string tool_call_id.")
+        }
+        val toolName = value["name"]?.let {
+            it as? String
+                ?: throw IllegalArgumentException("SDX runtime message $index has non-string name.")
+        }
+        Message(role, content, emptyList(), toolCallId, toolName)
     }
 }
 

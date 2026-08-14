@@ -111,6 +111,10 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--memory"}, negatable = true, description = "Enable memory (default: true)", defaultValue = "true")
     private boolean memory;
 
+    @CommandLine.Option(names = {"--dangerously-skip-permissions"}, defaultValue = "false",
+            description = "Allow every standard-chat tool permission for this session without prompting")
+    private boolean dangerouslySkipPermissions;
+
     @CommandLine.Option(names = {"--local"}, description = "Force no-instance mode (Kompile serving subprocess or direct model API)", defaultValue = "false")
     private boolean forceLocal;
 
@@ -143,6 +147,10 @@ public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--judge-model"}, description = "Judge LLM model for real-time enforcement")
     private String judgeModel;
+
+    boolean dangerouslySkipsPermissions() {
+        return dangerouslySkipPermissions;
+    }
 
     @Override
     public Integer call() {
@@ -443,6 +451,7 @@ public class ChatCommand implements Callable<Integer> {
             System.out.println("Type /help for commands, /quit to exit.\n");
 
             ChatRepl repl = new ChatRepl(client, targetUrl, sessionId, rag, agentName, memory);
+            repl.setDangerouslySkipPermissions(dangerouslySkipPermissions);
 
             // Assign role if specified
             if (assignedRole != null && !assignedRole.isBlank()) {
@@ -501,6 +510,7 @@ public class ChatCommand implements Callable<Integer> {
                     memory,
                     config      // LLM config for direct calls
             );
+            repl.setDangerouslySkipPermissions(dangerouslySkipPermissions);
 
             // Assign role if specified
             if (assignedRole != null && !assignedRole.isBlank()) {

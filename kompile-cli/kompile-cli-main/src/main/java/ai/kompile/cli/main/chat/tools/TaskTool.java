@@ -101,7 +101,7 @@ public class TaskTool implements CliTool {
             desc.append("\n");
         }
 
-        desc.append("\nThe subagent runs once and returns — it cannot send follow-up messages.");
+        desc.append("\nIn standard chat, open the subagent activity and type to continue its retained conversation.");
         return desc.toString();
     }
 
@@ -169,7 +169,7 @@ public class TaskTool implements CliTool {
                     ". Available: " + available);
         }
 
-        System.out.println("  [Spawning " + agentType + " subagent: " + desc + "]");
+        context.emitOutput("  [Spawning " + agentType + " subagent: " + desc + "]");
 
         try {
             String result = subagentRunner.runSubagent(subagentConfig, prompt, context);

@@ -28,7 +28,6 @@ import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -60,7 +59,7 @@ class GraphExportToolTest {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_export", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     @Test
@@ -96,9 +95,8 @@ class GraphExportToolTest {
         ObjectNode params = om.createObjectNode();
         params.put("path", tempDir.resolve("out.kgraph").toString());
         ToolResult result = tool.execute(params, ctx);
-        assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("graph_export local error"));
-        assertTrue(result.getOutput().contains("project-local"));
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(java.nio.file.Files.isRegularFile(tempDir.resolve("out.kgraph")));
     }
 
     @Test

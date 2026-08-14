@@ -26,6 +26,7 @@ class PermissionServiceTest {
     @Test
     void jlineBridgeRoutesTheNextInputLineToABackgroundPermissionRequest() throws Exception {
         PermissionService service = new PermissionService();
+        service.setUserOverride("knowledge_graph", PermissionService.PermissionLevel.ASK);
         CountDownLatch prompted = new CountDownLatch(1);
         AtomicReference<PermissionService.PermissionPrompt> seen = new AtomicReference<>();
         service.setPromptListener(prompt -> {
@@ -54,6 +55,7 @@ class PermissionServiceTest {
     @Test
     void explicitNoIsRejectedByToolContext() {
         PermissionService service = new PermissionService();
+        service.setUserOverride("graph_simulate", PermissionService.PermissionLevel.ASK);
         service.setPromptListener(prompt -> assertTrue(service.submitPromptResponse("n")));
         ToolContext context = new ToolContext("permission-test", null, service, tempDir, null);
 
@@ -64,6 +66,7 @@ class PermissionServiceTest {
     @Test
     void allowForSessionAppliesToLaterChecksWithoutPromptingAgain() {
         PermissionService service = new PermissionService();
+        service.setUserOverride("crawl_source", PermissionService.PermissionLevel.ASK);
         service.setPromptListener(prompt -> assertTrue(service.submitPromptResponse("a")));
 
         assertEquals(PermissionService.PermissionResult.ASKED_AND_ALLOWED,
@@ -76,27 +79,34 @@ class PermissionServiceTest {
     }
 
     @Test
-    void safeDiscoveryAndKnowledgeStatusAreAllowedByDefault() {
+    void allMcpToolKeysAreAllowedByDefault() {
         PermissionService service = new PermissionService();
 
         assertEquals(PermissionService.PermissionResult.ALLOWED,
                 service.check(null, "crawl_discover", "Discover crawl capabilities"));
         assertEquals(PermissionService.PermissionResult.ALLOWED,
                 service.check(null, "knowledge_status", "Check knowledge base status"));
-        assertEquals(PermissionService.PermissionLevel.ASK,
+        assertEquals(PermissionService.PermissionLevel.ALLOW,
                 service.getEffectiveLevel(null, "knowledge_graph"));
+        assertEquals(PermissionService.PermissionLevel.ALLOW,
+                service.getEffectiveLevel(null, "external_directory"));
+        assertEquals(PermissionService.PermissionLevel.ALLOW,
+                service.getEffectiveLevel(null, "future_tool_key"));
     }
 
     @Test
-    void allowAllCoversUnknownToolKeysAndResetRestoresAsk() {
+    void allowAllBypassesExplicitRulesAndResetRestoresPermissiveDefault() {
         PermissionService service = new PermissionService();
+        service.setUserOverride("future_tool_key", PermissionService.PermissionLevel.DENY);
+        assertEquals(PermissionService.PermissionResult.DENIED,
+                service.check(null, "future_tool_key", "Future tool"));
 
         service.allowAll();
         assertEquals(PermissionService.PermissionResult.ALLOWED,
                 service.check(null, "future_tool_key", "Future tool"));
 
         service.resetSessionOverrides();
-        assertEquals(PermissionService.PermissionLevel.ASK,
+        assertEquals(PermissionService.PermissionLevel.ALLOW,
                 service.getEffectiveLevel(null, "future_tool_key"));
     }
 

@@ -30,7 +30,6 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Map;
 import java.util.Set;
 
@@ -84,7 +83,7 @@ class AskGraphToolsTest {
         perms.setUserOverride("ask_graph_retract",    PermissionService.PermissionLevel.ALLOW);
         perms.setUserOverride("knowledge_graph",      PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     // ── ask_graph_verify ──────────────────────────────────────────────────────────
@@ -127,13 +126,13 @@ class AskGraphToolsTest {
         }
 
         @Test
-        @DisplayName("backend unavailable returns descriptive error")
-        void backendUnavailable_returnsError() throws Exception {
-            // null baseUrl → isAvailable()==false deterministically, no server needed
+        @DisplayName("missing project-local graph is bootstrapped for verification")
+        void missingProjectLocalGraph_returnsError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.put("atom", "isEmployedBy(Alice, Acme)");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when backend not available");
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("project-local"), result.getOutput());
         }
 
         @Test
@@ -289,12 +288,13 @@ class AskGraphToolsTest {
         }
 
         @Test
-        @DisplayName("backend unavailable returns descriptive error")
-        void backendUnavailable_returnsError() throws Exception {
+        @DisplayName("missing project-local graph is bootstrapped for synthesis")
+        void missingProjectLocalGraph_returnsError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.put("query", "who leads Acme?");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when backend not available");
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("project-local"), result.getOutput());
         }
     }
 
@@ -655,15 +655,14 @@ class AskGraphToolsTest {
         }
 
         @Test
-        @DisplayName("backend unavailable returns descriptive error")
-        void backendUnavailable_returnsError() throws Exception {
-            // null baseUrl → isAvailable()==false, no network I/O, fully deterministic
+        @DisplayName("missing project-local graph is bootstrapped before node resolution")
+        void missingProjectLocalGraph_returnsError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.put("nodeId", "node_42");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when kompile-app not running");
-            assertTrue(result.getOutput().contains("kompile-app"),
-                    "Error should mention kompile-app");
+            assertTrue(result.isError(), "Expected error when no local graph exists");
+            assertTrue(result.getOutput().contains("node not found"), result.getOutput());
+            assertFalse(result.getOutput().contains("kompile-app"));
         }
 
         @Test
@@ -907,13 +906,11 @@ class AskGraphToolsTest {
         @Test
         @DisplayName("atomKey without factSheetId reaches backend (no schema-level block)")
         void atomKeyWithoutFactSheetId_reachesBackend() throws Exception {
-            // With a real backend (null baseUrl) it will fail with isAvailable==false,
-            // NOT with a factSheetId validation error — this proves the pre-check is gone.
             ObjectNode params = om.createObjectNode();
             params.put("atomKey", "worksFor(Alice, Acme)");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error (backend unavailable)");
-            // The error should be the backend-unavailable message, NOT a factSheetId complaint
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("project-local"), result.getOutput());
             assertFalse(result.getOutput().toLowerCase().contains("factsheetid"),
                     "factSheetId must not appear in the error when it is simply absent");
         }

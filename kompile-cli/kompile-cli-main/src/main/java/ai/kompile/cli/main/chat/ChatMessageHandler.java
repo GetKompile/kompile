@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -66,6 +67,7 @@ public class ChatMessageHandler {
     private final AtomicBoolean cancelSignal;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
     private final Object turnDispatchLock = new Object();
+    private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
 
     // Mutable llmBusy flag — read/written by ChatRepl main loop as well
     // We access it via ChatRepl accessors to keep a single source of truth.
@@ -120,6 +122,7 @@ public class ChatMessageHandler {
         // Crawl/headless runs deliberately stay synchronous so callers do not
         // tear down the transcript before the one requested turn completes.
         if (repl.isForceAgentic()) {
+            cancelSignal.set(false);
             handleAcceptedChatMessage(message);
             return;
         }
@@ -133,16 +136,37 @@ public class ChatMessageHandler {
             // Reserve the turn before starting the worker. Without this, a fast
             // second Enter can race the worker and launch two model turns.
             repl.setLlmBusy(true);
-            Thread dispatchThread = new Thread(
-                    () -> handleAcceptedChatMessage(message),
-                    "standard-chat-dispatch");
+            cancelSignal.set(false);
+            Thread dispatchThread = new Thread(() -> {
+                try {
+                    handleAcceptedChatMessage(message);
+                } finally {
+                    activeDispatchThread.compareAndSet(Thread.currentThread(), null);
+                }
+            }, "standard-chat-dispatch");
             dispatchThread.setDaemon(true);
+            activeDispatchThread.set(dispatchThread);
             dispatchThread.start();
         }
     }
 
+    /**
+     * Cancels the currently accepted turn. The shared signal cooperatively stops
+     * stream parsers and tools; interrupting the owner thread also wakes blocking
+     * HTTP sends and process waits immediately.
+     */
+    public boolean requestCancel() {
+        cancelSignal.set(true);
+        Thread active = activeDispatchThread.get();
+        if (active != null && active != Thread.currentThread()) {
+            active.interrupt();
+        }
+        return active != null;
+    }
+
     private void enqueueChatMessage(String message) {
         messageQueue.enqueue(message);
+        repl.requestStatusRedraw();
         sessionMetrics.recordMessageQueued();
         int queueSize = messageQueue.size();
         emitLine("");
@@ -158,10 +182,6 @@ public class ChatMessageHandler {
     }
 
     private void handleAcceptedChatMessage(String message) {
-
-        // Reset cancel signal for this new message
-        cancelSignal.set(false);
-
         sessionMetrics.recordUserTurn(message);
         if (!repl.isForceAgentic()) {
             chatHistory.logUserMessage(message);
@@ -179,6 +199,7 @@ public class ChatMessageHandler {
             }
         } finally {
             ChatCompleter.setActivity(null);
+            repl.requestStatusRedraw();
             synchronized (turnDispatchLock) {
                 // completeTaskWithAutoDequeue may synchronously call back into
                 // handleChatMessage. The re-entrant lock keeps llmBusy reserved
@@ -194,6 +215,7 @@ public class ChatMessageHandler {
 
     private void startActivityIndicator() {
         ChatCompleter.setActivity("Thinking");
+        repl.requestStatusRedraw();
         // With an active LineReader the persistent status bar renders the
         // foreground RUNNING task. A carriage-return spinner would overwrite
         // the draft the user is typing for the queue.
@@ -335,7 +357,7 @@ public class ChatMessageHandler {
 
         repl.setLlmBusy(true);
         BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Streaming LLM response: " + StringUtils.truncate(message, 40));
-        repl.printGeneratingIndicator();
+        startActivityIndicator();
         try {
             ObjectNode request = objectMapper.createObjectNode();
             request.put("message", enrichedMessage);
@@ -369,6 +391,8 @@ public class ChatMessageHandler {
             }
 
             repl.stopGeneratingSpinner();
+            ChatCompleter.setActivity("Responding");
+            repl.requestStatusRedraw();
             emitLine("");
 
             // Accumulate full response for transcript
@@ -413,8 +437,11 @@ public class ChatMessageHandler {
             repl.stopGeneratingSpinner();
             emitLine(renderer.red("Error in agent stream: " + e.getMessage()));
             task.setError(e);
+        } finally {
+            ChatCompleter.setActivity(null);
+            repl.requestStatusRedraw();
+            repl.completeTaskWithAutoDequeue();
         }
-        repl.completeTaskWithAutoDequeue();
     }
 
     // ========================================================================
@@ -426,6 +453,7 @@ public class ChatMessageHandler {
             runAgenticChat(message);
         } finally {
             ChatCompleter.setActivity(null);
+            repl.requestStatusRedraw();
             synchronized (turnDispatchLock) {
                 repl.completeTaskWithAutoDequeue();
             }

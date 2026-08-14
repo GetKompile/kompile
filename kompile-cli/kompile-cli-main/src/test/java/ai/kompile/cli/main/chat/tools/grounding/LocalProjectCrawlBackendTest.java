@@ -12,15 +12,21 @@ import ai.kompile.cli.main.chat.tools.KnowledgeStatusCliTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.BufferedReader;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,9 +39,12 @@ class LocalProjectCrawlBackendTest {
 
     private ObjectMapper mapper;
     private ToolContext context;
+    private String previousLocalCrawlExecution;
 
     @BeforeEach
     void setUp() {
+        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
+        System.setProperty("kompile.local.crawl.execution", "inline");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("offline-worker")
                 .enabledTools(Set.of("*"))
@@ -48,11 +57,165 @@ class LocalProjectCrawlBackendTest {
                 "crawl_control",
                 "knowledge_search",
                 "knowledge_status",
+                "ask_graph_assert",
+                "ask_graph_verify",
                 "external_directory")) {
             permissions.setUserOverride(tool, PermissionService.PermissionLevel.ALLOW);
         }
         context = new ToolContext("offline-crawl-test", agent, permissions, projectRoot,
                 new ToolRegistry(mapper));
+    }
+
+    @AfterEach
+    void restoreLocalCrawlExecution() {
+        if (previousLocalCrawlExecution == null) {
+            System.clearProperty("kompile.local.crawl.execution");
+        } else {
+            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
+        }
+    }
+
+    @Test
+    void emptyRequestBootstrapsAndSearchesTheCurrentFolder() throws Exception {
+        Files.writeString(projectRoot.resolve("folder-note.md"),
+                "The folder bootstrap contains the silver osprey marker.\n",
+                StandardCharsets.UTF_8);
+
+        CrawlDocumentsTool crawl = new CrawlDocumentsTool((String) null, mapper);
+        assertFalse(crawl.parameterSchema().has("anyOf"),
+                "The local folder bootstrap must not require documents or codeProjects selectors.");
+
+        ToolResult bootstrapped = crawl.execute(mapper.createObjectNode(), context);
+
+        assertFalse(bootstrapped.isError(), bootstrapped.getOutput());
+        assertEquals("project-local", bootstrapped.getMetadata().get("backend"));
+        String knowledgeBase = (String) bootstrapped.getMetadata().get("knowledgeBase");
+        assertFalse(knowledgeBase.isBlank());
+        assertFalse(bootstrapped.getMetadata().containsKey("factSheetId"));
+        JsonNode projectManifest = mapper.readTree(projectRoot.resolve("kompile.project.json").toFile());
+        JsonNode directoryProject = projectManifest.path("codingProjects").get(0);
+        assertEquals(projectRoot.toAbsolutePath().normalize().toString(),
+                directoryProject.path("rootPath").asText());
+        assertTrue(Files.isRegularFile(projectRoot.resolve(
+                directoryProject.path("metadataPath").asText()).resolve("project.json")));
+        assertTrue(Files.isRegularFile(projectRoot.resolve(
+                directoryProject.path("metadataPath").asText()).resolve("index-plan.json")));
+        assertTrue(knowledgeBase.startsWith(directoryProject.path("codeProjectId").asText()));
+        assertTrue(Files.isRegularFile(projectRoot.resolve("data/crawls")
+                .resolve(knowledgeBase).resolve(LocalProjectGraphBackend.GRAPH_FILE)));
+
+        ObjectNode searchParams = mapper.createObjectNode().put("query", "silver osprey");
+        searchParams.put("topic", "bootstrap behavior");
+        ToolResult search = new KnowledgeSearchCliTool((String) null, mapper)
+                .execute(searchParams, context);
+        assertFalse(search.isError(), search.getOutput());
+        assertTrue(search.getOutput().contains("folder-note.md"), search.getOutput());
+
+        ToolResult status = new KnowledgeStatusCliTool((String) null, mapper)
+                .execute(mapper.createObjectNode(), context);
+        assertFalse(status.isError(), status.getOutput());
+        assertEquals(1, ((Number) status.getMetadata().get("knowledgeBaseCount")).intValue());
+
+        ObjectNode assertion = mapper.createObjectNode()
+                .put("atom", "containsMarker(folderBootstrap, silverOsprey)")
+                .put("value", 0.9);
+        ToolResult asserted = new AskGraphAssertTool((String) null, mapper)
+                .execute(assertion, context);
+        assertFalse(asserted.isError(), asserted.getOutput());
+
+        ObjectNode verification = mapper.createObjectNode()
+                .put("atom", "containsMarker(folderBootstrap, silverOsprey)");
+        ToolResult verified = new AskGraphVerifyTool((String) null, mapper)
+                .execute(verification, context);
+        assertFalse(verified.isError(), verified.getOutput());
+    }
+
+    @Test
+    void knowledgeStatusSkipsUnsupportedSparseArtifactsDuringFolderBootstrap() throws Exception {
+        Files.writeString(projectRoot.resolve("folder-note.md"),
+                "The safe folder bootstrap contains the copper kestrel marker.\n",
+                StandardCharsets.UTF_8);
+        Path sparseBinary = projectRoot.resolve("cached-model.bin");
+        try (SeekableByteChannel channel = Files.newByteChannel(sparseBinary,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            channel.position((long) Integer.MAX_VALUE + 1024L);
+            channel.write(ByteBuffer.wrap(new byte[]{0}));
+        }
+
+        ToolResult status = new KnowledgeStatusCliTool((String) null, mapper)
+                .execute(mapper.createObjectNode(), context);
+
+        assertFalse(status.isError(), status.getOutput());
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper);
+        String knowledgeBase = backend.defaultKnowledgeBaseId(projectRoot);
+        String documents = Files.readString(projectRoot.resolve("data/crawls")
+                .resolve(knowledgeBase).resolve("documents.jsonl"));
+        assertTrue(documents.contains("folder-note.md"), documents);
+        assertFalse(documents.contains("cached-model.bin"), documents);
+    }
+
+    @Test
+    void knowledgeStatusStreamsRecognizedTextLargerThanTheFormerLimit() throws Exception {
+        Path large = projectRoot.resolve("large.json");
+        try (SeekableByteChannel channel = Files.newByteChannel(large,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            ByteBuffer spaces = ByteBuffer.allocate(64 * 1024);
+            while (spaces.hasRemaining()) spaces.put((byte) ' ');
+            spaces.flip();
+            for (int block = 0; block < 26 * 16; block++) {
+                while (spaces.hasRemaining()) channel.write(spaces);
+                spaces.rewind();
+            }
+            ByteBuffer marker = ByteBuffer.wrap("streamed-heron-marker".getBytes(StandardCharsets.UTF_8));
+            while (marker.hasRemaining()) channel.write(marker);
+        }
+
+        ToolResult result = new KnowledgeStatusCliTool((String) null, mapper)
+                .execute(mapper.createObjectNode(), context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals(1, ((Number) result.getMetadata().get("knowledgeBaseCount")).intValue());
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper);
+        String knowledgeBase = backend.defaultKnowledgeBaseId(projectRoot);
+        Path crawl = projectRoot.resolve("data/crawls").resolve(knowledgeBase);
+        String documents = Files.readString(crawl.resolve("documents.jsonl"));
+        String chunks = Files.readString(crawl.resolve("chunks.jsonl"));
+        assertTrue(documents.contains("\"extractionStatus\":\"EXTRACTED\""), documents);
+        assertTrue(documents.contains("large.json"), documents);
+        assertTrue(chunks.contains("streamed-heron-marker"), chunks);
+    }
+
+    @Test
+    void streamingChunksPreserveOverlapAcrossIoBatchBoundaries() throws Exception {
+        String marker = "boundary-heron-marker";
+        String content = "a".repeat(16 * 1024 - 10) + marker + "b".repeat(16 * 1024);
+        Files.writeString(projectRoot.resolve("boundary.txt"), content, StandardCharsets.UTF_8);
+        ObjectNode request = documentRequest("boundary.txt", "boundary-kb");
+        ObjectNode document = (ObjectNode) request.withArray("documents").get(0);
+        document.put("chunkSize", 256);
+        document.put("chunkOverlap", 32);
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        boolean foundMarker = false;
+        boolean foundOverlap = false;
+        long previousEnd = -1;
+        try (BufferedReader chunks = Files.newBufferedReader(
+                projectRoot.resolve("data/crawls/boundary-kb/chunks.jsonl"), StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = chunks.readLine()) != null) {
+                JsonNode chunk = mapper.readTree(line);
+                String text = chunk.path("text").asText();
+                assertTrue(text.length() <= 256, "physical chunks must stay bounded");
+                long start = chunk.path("start").asLong();
+                if (previousEnd >= 0 && start < previousEnd) foundOverlap = true;
+                previousEnd = chunk.path("end").asLong();
+                if (text.contains(marker)) foundMarker = true;
+            }
+        }
+        assertTrue(foundOverlap, "neighboring chunks should retain configured overlap");
+        assertTrue(foundMarker, "a marker split at the input batch edge must remain searchable");
     }
 
     @Test
@@ -235,6 +398,10 @@ class LocalProjectCrawlBackendTest {
         assertTrue(result.getOutput().contains("\"KEYWORD_ONLY\""));
         assertTrue(result.getOutput().contains("documentModelWorker"));
         assertTrue(result.getOutput().contains("pipelineTemplates"));
+        assertTrue(result.getOutput().contains("\"id\" : \"ENRICHMENT\""), result.getOutput());
+        assertTrue(result.getOutput().contains("UnifiedGraphReasoningLifecycle"), result.getOutput());
+        assertFalse(result.getOutput().contains("ENRICHMENT requires the model-backed distributed crawl manager"),
+                result.getOutput());
         assertTrue(result.getOutput().contains("recursive-character"));
         assertTrue(result.getOutput().contains("\"pdf\""));
         assertTrue(result.getOutput().contains("subprocess"));
@@ -259,7 +426,7 @@ class LocalProjectCrawlBackendTest {
         ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
 
         assertFalse(result.isError(), result.getOutput());
-        assertEquals("subprocess", result.getMetadata().get("executionMode"));
+        assertEquals("in-process-explicit", result.getMetadata().get("executionMode"));
         Path knowledgeBase = projectRoot.resolve("data/crawls/configured-kb");
         String documents = Files.readString(knowledgeBase.resolve("documents.jsonl"));
         String chunks = Files.readString(knowledgeBase.resolve("chunks.jsonl"));
@@ -302,6 +469,57 @@ class LocalProjectCrawlBackendTest {
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("unknown project-local loader"), result.getOutput());
         assertFalse(Files.exists(projectRoot.resolve("data/crawls/invalid-kb/crawl-result.json")));
+    }
+
+    @Test
+    void surfacesPartialAndTotalDocumentExtractionFailures() throws Exception {
+        Files.writeString(projectRoot.resolve("good.md"), "The good local document is indexed.\n",
+                StandardCharsets.UTF_8);
+        Files.writeString(projectRoot.resolve("bad.md"), "This document selects a broken pipeline.\n",
+                StandardCharsets.UTF_8);
+
+        ObjectNode partialRequest = mapper.createObjectNode();
+        partialRequest.putObject("knowledgeBase").put("name", "partial-failure");
+        partialRequest.putArray("documents").addObject().put("path", "good.md");
+        partialRequest.withArray("documents").addObject()
+                .put("path", "bad.md").put("pipelineId", "broken");
+        partialRequest.putArray("pipelines").addObject()
+                .put("pipelineId", "broken")
+                .put("pipelineType", "CUSTOM")
+                .put("loaderName", "markdown")
+                .put("chunkerName", "no-op")
+                .put("pipelineDefinitionPath", "missing-pipeline.json");
+
+        ToolResult partial = new CrawlDocumentsTool((String) null, mapper)
+                .execute(partialRequest, context);
+
+        assertFalse(partial.isError(), partial.getOutput());
+        assertEquals("COMPLETED_WITH_ERRORS", partial.getMetadata().get("status"));
+        assertEquals(1, ((Number) partial.getMetadata().get("failedDocumentCount")).intValue());
+        assertTrue(partial.getOutput().contains("bad.md"), partial.getOutput());
+        assertTrue(partial.getOutput().contains("missing-pipeline.json"), partial.getOutput());
+        String partialSummary = Files.readString(
+                projectRoot.resolve("data/crawls/partial-failure/crawl-result.json"));
+        assertTrue(partialSummary.contains("\"status\" : \"COMPLETED_WITH_ERRORS\""), partialSummary);
+        assertTrue(partialSummary.contains("\"failedDocumentCount\" : 1"), partialSummary);
+        assertTrue(partialSummary.contains("\"documentFailures\""), partialSummary);
+
+        ObjectNode failedRequest = mapper.createObjectNode();
+        failedRequest.putObject("knowledgeBase").put("name", "total-failure");
+        failedRequest.putArray("documents")
+                .addObject().put("path", "bad.md").put("pipelineId", "broken");
+        failedRequest.set("pipelines", partialRequest.path("pipelines").deepCopy());
+
+        ToolResult failed = new CrawlDocumentsTool((String) null, mapper)
+                .execute(failedRequest, context);
+
+        assertTrue(failed.isError(), failed.getOutput());
+        assertEquals("FAILED", failed.getMetadata().get("status"));
+        assertEquals(1, ((Number) failed.getMetadata().get("failedDocumentCount")).intValue());
+        assertTrue(failed.getOutput().contains("bad.md"), failed.getOutput());
+        String failedSummary = Files.readString(
+                projectRoot.resolve("data/crawls/total-failure/crawl-result.json"));
+        assertTrue(failedSummary.contains("\"status\" : \"FAILED\""), failedSummary);
     }
 
     private ObjectNode documentRequest(String path, String knowledgeBase) {

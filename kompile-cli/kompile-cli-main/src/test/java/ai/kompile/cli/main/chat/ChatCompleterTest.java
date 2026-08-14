@@ -132,7 +132,7 @@ class ChatCompleterTest {
         List<String> allCases = List.of(
                 "/quit", "/exit", "/help", "/setup", "/tools", "/subagents",
                 "/local-tools", "/tool", "/local-tool", "/status", "/history",
-                "/clear", "/compact", "/rag", "/agents", "/local-agents",
+                "/clear", "/compact", "/auto-compact", "/rag", "/agents", "/local-agents",
                 "/agent", "/local-agent", "/config", "/sessions", "/ask",
                 "/agent-chat", "/conversations", "/transcript", "/memory",
                 "/recall", "/permissions", "/todos", "/plan", "/queue",

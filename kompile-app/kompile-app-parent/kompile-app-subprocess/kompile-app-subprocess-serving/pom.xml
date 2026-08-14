@@ -28,10 +28,16 @@
     <artifactId>kompile-app-subprocess-serving</artifactId>
     <name>Kompile App - Subprocess: Serving</name>
     <description>
-        ServingSubprocessMain — the child JVM that serves the local SameDiff language model
-        (samediff-llm) over loopback HTTP, off the main heap. Bundled into the app-main uber jar;
-        launched by app-main's ServingSubprocessLauncher.
+        Standalone ServingSubprocessMain runtime for local SameDiff language models over
+        loopback HTTP. Packaged as its own executable JAR/native component and launched directly
+        by request-scoped clients such as the stdio MCP crawl.
     </description>
+
+    <properties>
+        <!-- Native-image consumes the regular classes/dependency classpath, not the
+             multi-gigabyte executable JAR. Distribution JVM packaging leaves this false. -->
+        <shade.skip>false</shade.skip>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -51,9 +57,146 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-core</artifactId>
         </dependency>
+        <!-- The serving executable owns ND4J initialization, so its native image must
+             contain the Java backend implementation as well as the side-loaded native
+             libraries. Keep this closure aligned with kompile-model-staging. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.native.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
         </dependency>
     </dependencies>
+
+    <!-- Ship the model server as its own runnable artifact. Local MCP crawls launch this
+         narrow binary/JAR directly; they never route through kompile-app-main. -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${shade.skip}</skip>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>exec</shadedClassifierName>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>ai.kompile.app.subprocess.ServingSubprocessMain</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.1</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-model-serving</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.app.subprocess.ServingSubprocessMain</mainClass>
+                            <imageName>kompile-model-serving</imageName>
+                            <fallback>false</fallback>
+                            <quickBuild>${native.quickBuild}</quickBuild>
+                            <metadataRepository>
+                                <enabled>true</enabled>
+                            </metadataRepository>
+                            <buildArgs>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--enable-url-protocols=http,https</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <!-- ND4J installs its deallocator classes lazily while native-image
+                                     writes the image heap unless this cache is fully initialized
+                                     before analysis. Keep the same split used by the established
+                                     ingest/training native subprocesses. -->
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.shade.protobuf</buildArg>
+                                <buildArg>--initialize-at-build-time=com.google.protobuf</buildArg>
+                                <buildArg>--initialize-at-build-time=com.google.gson</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp,org.nd4j,org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- CUDA distributions retain the CPU backend classes too, matching the
+             staging worker and allowing the existing backend manager to fall back
+             when CUDA is hidden or unavailable. Native payloads remain side-loaded. -->
+        <profile>
+            <id>cuda-dual-backend</id>
+            <activation>
+                <property>
+                    <name>kompile.cuda</name>
+                </property>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-native</artifactId>
+                    <version>${nd4j.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

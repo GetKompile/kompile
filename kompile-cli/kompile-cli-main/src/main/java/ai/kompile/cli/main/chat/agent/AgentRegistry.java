@@ -54,10 +54,13 @@ public class AgentRegistry {
                 .displayName("Crawler")
                 .description("Production crawl, code-index, graph-learning, and reasoning operator")
                 .systemPrompt("You operate a project-owned, crawl-backed knowledge graph. Start with crawl_discover. "
+                        + "Use model_runtime to inspect, bootstrap, or import folder-owned models before a crawl when needed. "
                         + "For ACTIVE Kompile code projects, refresh or reuse local_code_index and code_graph so AST "
                         + "symbols and dependencies are projected into the same fact sheet as crawled semantic evidence. "
                         + "Use crawl_documents or crawl_source for content-hash incremental updates and crawl_control "
-                        + "to monitor every pipeline step, including embedding/model training. Use knowledge_graph and "
+                        + "to monitor every pipeline step, including embedding/model training. Read the returned crawlResult "
+                        + "handle, then call crawl_result and execute its selector-safe nextActions against that same corpus. "
+                        + "Use knowledge_status and knowledge_search to inspect extracted content. Use knowledge_graph and "
                         + "ask_graph_* primitives for assertions and retractions, graph_reason and graph_reasoning_query "
                         + "for evidence-backed inference, graph_embeddings for TransE/RotatE training and predictions, "
                         + "and graph analysis tools for search, centrality, simulation, aggregation, forecasting, "
@@ -66,7 +69,8 @@ public class AgentRegistry {
                         + "Prefer incremental updates; request destructive clear/full recrawls only with operator "
                         + "approval. Report project ids, fact-sheet ids, job/model ids, changed/deleted evidence, "
                         + "step state, and reasoning traces.")
-                .enabledTools(Set.of("crawl_discover", "crawl_documents", "crawl_source", "crawl_control",
+                .enabledTools(Set.of("crawl_discover", "model_runtime", "crawl_documents", "crawl_source", "crawl_control",
+                        "crawl_result", "knowledge_status", "knowledge_search",
                         "local_code_index", "code_graph", "knowledge_graph", "graph_embeddings",
                         "graph_reason", "graph_reasoning_query", "graph_import", "graph_export",
                         "graph_search", "graph_aggregate", "graph_forecast", "graph_centrality",
@@ -89,7 +93,9 @@ public class AgentRegistry {
                         + "identifiers. Call crawl_discover before choosing loaders or pipelines unless the request "
                         + "explicitly fixes them. Use crawl_documents for an explicit document set, crawl_source only "
                         + "for a single inline source, and crawl_control for preflight, status, transcript, and graph "
-                        + "statistics. The normal Kompile and workspace MCP tools remain available; use them when "
+                        + "statistics. Carry the crawlResult handle returned by every start call, use crawl_result for the "
+                        + "terminal result, then execute its nextActions to inspect, search, reason over, or update that graph. "
+                        + "The normal Kompile and workspace MCP tools remain available; use them when "
                         + "they help complete or verify the indexing task. Do not claim success until the crawl "
                         + "service reports completion; preserve diagnostics on failure.")
                 .enabledTools(Set.of("*"))
@@ -107,8 +113,7 @@ public class AgentRegistry {
                 .permissionOverrides(Map.of(
                         "edit", PermissionService.PermissionLevel.DENY,
                         "write", PermissionService.PermissionLevel.DENY,
-                        "patch", PermissionService.PermissionLevel.DENY,
-                        "bash", PermissionService.PermissionLevel.ASK
+                        "patch", PermissionService.PermissionLevel.DENY
                 ))
                 .canSpawnSubagents(true)
                 .maxSteps(30)

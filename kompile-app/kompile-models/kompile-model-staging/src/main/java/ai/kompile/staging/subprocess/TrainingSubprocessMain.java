@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.staging.training.TranscriptJsonlDatasetSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -102,6 +103,7 @@ public class TrainingSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         originalStdout = System.out;
         System.setOut(System.err);
 

@@ -39,7 +39,8 @@ import java.util.List;
 public class CompactionService {
 
     private static final int DEFAULT_MAX_TOKENS = 128_000;
-    private static final int MAX_COMPACTION_BUFFER = 20_000;
+    private static final int DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
+    private static final double DEFAULT_TRIGGER_RATIO = 0.85d;
     private static final int MAX_PRESERVE_RECENT_TOKENS = 40_000;
     private static final double CHARS_PER_TOKEN = 4.0; // rough estimate
 
@@ -49,6 +50,10 @@ public class CompactionService {
      * so the trigger tracks the model actually being chatted with.
      */
     private volatile int maxTokens;
+    private volatile int maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS;
+    private volatile boolean autoCompactEnabled = true;
+    private volatile double triggerRatio = DEFAULT_TRIGGER_RATIO;
+    private volatile int explicitReserveTokens = 0;
     private final ObjectMapper objectMapper;
 
     public CompactionService(ObjectMapper objectMapper) {
@@ -60,26 +65,55 @@ public class CompactionService {
         this.maxTokens = sanitizeMaxTokens(maxTokens);
     }
 
-    /** Update the context budget (in tokens) for the active model. Non-positive resets to the default. */
+    /** Update only the context budget, retaining the current policy. */
     public void setMaxTokens(int maxTokens) {
         this.maxTokens = sanitizeMaxTokens(maxTokens);
     }
 
-    public int getMaxTokens() {
-        return maxTokens;
+    /** Configure the provider-neutral policy for the active provider/model. */
+    public void configure(boolean enabled, double threshold, int maxOutputTokens,
+                          int explicitReserveTokens) {
+        this.autoCompactEnabled = enabled;
+        this.triggerRatio = sanitizeRatio(threshold);
+        this.maxOutputTokens = maxOutputTokens > 0
+                ? maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
+        this.explicitReserveTokens = Math.max(0, explicitReserveTokens);
     }
+
+    public int getMaxTokens() { return maxTokens; }
+    public int getMaxOutputTokens() { return maxOutputTokens; }
+    public boolean isAutoCompactEnabled() { return autoCompactEnabled; }
+    public double getTriggerRatio() { return triggerRatio; }
 
     private static int sanitizeMaxTokens(int maxTokens) {
         return maxTokens > 0 ? Math.max(1_024, maxTokens) : DEFAULT_MAX_TOKENS;
     }
 
-    /**
-     * Headroom kept free below the context window before compaction triggers.
-     * Proportional to the window so small local models don't sit permanently
-     * past the trigger line (a fixed 20K buffer exceeds a 4K window entirely).
-     */
+    private static double sanitizeRatio(double ratio) {
+        if (!Double.isFinite(ratio)) return DEFAULT_TRIGGER_RATIO;
+        return Math.max(0.50d, Math.min(0.95d, ratio));
+    }
+
+    /** Effective headroom, derived from output capacity unless explicitly configured. */
+    public int effectiveReserveTokens() {
+        int reserve = explicitReserveTokens;
+        if (reserve <= 0) {
+            int safety = Math.max(256, Math.min(8_192, maxTokens / 20));
+            long automatic = (long) maxOutputTokens + safety;
+            reserve = (int) Math.min(Integer.MAX_VALUE, automatic);
+        }
+        return Math.min(reserve, Math.max(0, maxTokens - 1_024));
+    }
+
+    /** Input-token ceiling at which auto-compaction begins. */
+    public int triggerTokens() {
+        long ratioLimit = (long) Math.floor(maxTokens * triggerRatio);
+        long reserveLimit = (long) maxTokens - effectiveReserveTokens();
+        return (int) Math.max(1_024L, Math.min(ratioLimit, reserveLimit));
+    }
+
     int compactionBuffer() {
-        return Math.min(MAX_COMPACTION_BUFFER, Math.max(256, maxTokens / 8));
+        return maxTokens - triggerTokens();
     }
 
     /**
@@ -105,8 +139,12 @@ public class CompactionService {
      * tool definitions the char estimate can't see, so take the max of both signals.
      */
     public boolean needsCompaction(List<ConversationEntry> entries, long reportedInputTokens) {
-        long estimatedTokens = Math.max(estimateTokens(entries), reportedInputTokens);
-        return estimatedTokens >= (long) maxTokens - compactionBuffer();
+        return needsCompaction(Math.max(estimateTokens(entries), reportedInputTokens));
+    }
+
+    /** Check an already-projected provider context occupancy. */
+    public boolean needsCompaction(long projectedInputTokens) {
+        return autoCompactEnabled && projectedInputTokens >= triggerTokens();
     }
 
     /**
@@ -116,9 +154,14 @@ public class CompactionService {
      * @return compacted entries with tool output summaries
      */
     public CompactionResult compact(List<ConversationEntry> entries) {
+        return compact(entries, estimateTokens(entries));
+    }
+
+    /** Compact using a provider-aware projected occupancy as the trigger signal. */
+    public CompactionResult compact(List<ConversationEntry> entries, long projectedInputTokens) {
         int totalBefore = estimateTokens(entries);
 
-        if (!needsCompaction(entries)) {
+        if (!needsCompaction(Math.max(totalBefore, projectedInputTokens))) {
             return new CompactionResult(entries, totalBefore, totalBefore, false);
         }
 
@@ -174,16 +217,22 @@ public class CompactionService {
      * Estimate total tokens for a list of entries.
      */
     public int estimateTokens(List<ConversationEntry> entries) {
-        int total = 0;
+        long total = 0;
         for (ConversationEntry entry : entries) {
             total += estimateEntryTokens(entry);
+            if (total >= Integer.MAX_VALUE) return Integer.MAX_VALUE;
         }
-        return total;
+        return (int) total;
+    }
+
+    /** Estimate a pending message that is not yet present in tracked history. */
+    public int estimateTextTokens(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        return Math.max(1, (int) Math.ceil(text.length() / CHARS_PER_TOKEN));
     }
 
     private int estimateEntryTokens(ConversationEntry entry) {
-        if (entry.content == null) return 0;
-        return (int) (entry.content.length() / CHARS_PER_TOKEN);
+        return entry == null ? 0 : estimateTextTokens(entry.content);
     }
 
     /**

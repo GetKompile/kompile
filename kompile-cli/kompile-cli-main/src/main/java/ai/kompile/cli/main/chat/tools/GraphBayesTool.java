@@ -72,13 +72,13 @@ public class GraphBayesTool implements CliTool {
                 "'stats' (network topology: node count, edge count, connected components). " +
                 "All actions accept seedNodeIds or a single nodeId. " +
                 "evidence/hypotheticalEvidence are maps from node identifier to observed state (0/1). " +
-                "factSheetId scopes MEBN inference to one sheet.";
+                "Local stdio automatically initializes and uses the current folder's knowledge base.";
     }
 
     @Override
     public String compactHint() {
         return "Probabilistic what-if & explanation over the graph: action=query|mpe|sensitivity|whatif|stats; " +
-                "nodeId from knowledge_graph search; factSheetId from list_fact_sheets. " +
+                "nodeId from knowledge_graph search; local stdio uses the current folder automatically. " +
                 "evidence is {\"nodeId\":0} or {\"nodeId\":1}. " +
                 "Minimal call: {action:\"query\", nodeId:\"<id>\"}";
     }
@@ -96,7 +96,7 @@ public class GraphBayesTool implements CliTool {
         addArrayStringProp(props, "seed_node_ids",
                 "Multiple KG node IDs to seed the network; alternative to node_id");
         addLongProp(props, "fact_sheet_id",
-                "Fact sheet ID to scope MEBN inference; omit for global scope");
+                "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         addObjectProp(props, "evidence",
                 "Observed evidence: map of {nodeId: 0 or 1} for variables with known state");
         addObjectProp(props, "hypothetical_evidence",
@@ -126,8 +126,8 @@ public class GraphBayesTool implements CliTool {
         if (action.isEmpty()) {
             return ToolResult.error("action is required");
         }
-        if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("graph_bayes requires a running kompile-app. Use --url to connect.");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {
@@ -141,7 +141,8 @@ public class GraphBayesTool implements CliTool {
                         ". Valid actions: query, mpe, sensitivity, whatif, stats");
             };
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
+            return ToolResult.error("The explicitly configured remote Bayesian graph service became unavailable at "
+                    + baseUrl + ". Remove --url to continue with in-process inference.");
         } catch (Exception e) {
             return ToolResult.error("graph_bayes error: " + e.getMessage());
         }

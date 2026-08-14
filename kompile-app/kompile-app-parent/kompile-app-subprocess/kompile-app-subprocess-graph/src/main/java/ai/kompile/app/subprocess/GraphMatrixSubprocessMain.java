@@ -15,6 +15,7 @@
  */
 package ai.kompile.app.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.maintenance.model.GraphPruneResult;
@@ -137,6 +138,7 @@ public class GraphMatrixSubprocessMain {
     private static final ConcurrentHashMap<String, Object> serviceCache = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws InterruptedException {
+        NativeLibraryResolver.bootstrapOrThrow();
         int port = 8094;
         for (String arg : args) {
             if (arg.startsWith("--port=")) {

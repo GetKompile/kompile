@@ -2,7 +2,10 @@ package ai.kompile.chat.local.android.viewmodel
 
 import ai.kompile.chat.local.ChatEngine
 import ai.kompile.chat.local.ChatModel
+import ai.kompile.chat.local.ChatRequest
+import ai.kompile.chat.local.ChatResponse
 import ai.kompile.chat.local.GenOptions
+import ai.kompile.chat.local.GraphToolBackend
 import ai.kompile.chat.local.InferenceRouter
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.prefs.HuggingFaceImportCheckpoint
@@ -95,6 +98,9 @@ class ModelImportAcceptanceTest {
             override fun generate(messages: List<Message>, opts: GenOptions): String =
                 "Hello from the imported SDX model"
 
+            override fun generate(request: ChatRequest, opts: GenOptions): ChatResponse =
+                ChatResponse.content("Hello from the imported SDX model")
+
             override fun isAvailable(): Boolean = true
 
             override fun modelId(): String = "sdx-local:${downloaded.name}"
@@ -142,7 +148,13 @@ class ModelImportAcceptanceTest {
         val activeSteps = huggingFaceStepPresentations(activeState)
         assertEquals("Private app storage: ${downloaded.absolutePath}", presentation.storage)
 
-        val engine = ChatEngine(InferenceRouter(activated.model, null), null, 1)
+        val noTools = object : GraphToolBackend {
+            override fun catalogJson(): String = "[]"
+            override fun execute(toolName: String, argsJson: String): String =
+                error("The imported model acceptance path must not dispatch tools")
+            override fun close() = Unit
+        }
+        val engine = ChatEngine(InferenceRouter(activated.model, null), noTools, 1)
         val answer = engine.chat(mutableListOf(), "Say hello", GenOptions.defaults()).answer()
 
         assertEquals("Hello from the imported SDX model", answer)

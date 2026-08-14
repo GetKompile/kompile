@@ -135,6 +135,64 @@ class ToolRegistryTest {
     }
 
     @Test
+    void progressiveDefinitionsStartSmallAndExposeOnlyTheActivatedGroup() {
+        registry.register(namedTool("read"));
+        registry.register(namedTool("crawl_discover"));
+        registry.register(namedTool("knowledge_graph"));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        AgentConfig agent = AgentConfig.builder("local-small")
+                .enabledTools(Set.of("*"))
+                .build();
+
+        ArrayNode initial = registry.buildProgressiveDirectToolDefinitions(agent);
+        assertEquals(List.of("read", "activate_tools"), directToolNames(initial));
+        assertEquals(4, registry.buildDirectToolDefinitions(agent).size(),
+                "the ordinary full-capability surface must remain unchanged");
+
+        assertEquals(List.of("crawl_discover"),
+                registry.getDynamicToolManager().activateGroup("crawl"));
+        ArrayNode activated = registry.buildProgressiveDirectToolDefinitions(agent);
+        assertEquals(List.of("read", "activate_tools", "crawl_discover"),
+                directToolNames(activated));
+        assertFalse(directToolNames(activated).contains("knowledge_graph"),
+                "activating crawl must not leak the graph catalog");
+    }
+
+    @Test
+    void progressiveDefinitionsKeepNewUngroupedToolsBehindOtherGroup() {
+        registry.register(namedTool("read"));
+        registry.register(namedTool("future_special_tool"));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
+        AgentConfig agent = AgentConfig.builder("local-small")
+                .enabledTools(Set.of("*"))
+                .build();
+
+        assertFalse(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                .contains("future_special_tool"));
+        assertTrue(registry.getDynamicToolManager().availableGroupNames().contains("other"));
+
+        assertEquals(List.of("future_special_tool"),
+                registry.getDynamicToolManager().activateGroup("other"));
+        assertTrue(directToolNames(registry.buildProgressiveDirectToolDefinitions(agent))
+                .contains("future_special_tool"));
+    }
+
+    @Test
+    void activationToolSchemaTeachesTheSmallModelValidActionsAndGroups() {
+        registry.register(namedTool("crawl_discover"));
+        ActivateToolsTool activation = new ActivateToolsTool(registry.getDynamicToolManager());
+        registry.register(activation);
+
+        var schema = activation.parameterSchema();
+        assertEquals(List.of("list", "describe", "activate"),
+                values(schema.path("properties").path("action").path("enum")));
+        assertTrue(values(schema.path("properties").path("group").path("enum"))
+                .containsAll(List.of("crawl", "all")));
+        assertTrue(activation.description().contains("group=crawl"));
+        assertTrue(activation.description().contains("next step"));
+    }
+
+    @Test
     void rejectsBlankToolIdsBeforeTheyReachProviderRequests() {
         CliTool unnamed = new CliTool() {
             @Override public String id() { return " "; }
@@ -195,5 +253,32 @@ class ToolRegistryTest {
         SidePanelManager.Snapshot hidden = manager.snapshot();
         assertFalse(hidden.visible());
         assertTrue(hidden.version() > shown.version());
+    }
+
+    private CliTool namedTool(String id) {
+        return new CliTool() {
+            @Override public String id() { return id; }
+            @Override public String description() { return "Use " + id + " for its focused capability."; }
+            @Override public com.fasterxml.jackson.databind.JsonNode parameterSchema() {
+                return om.createObjectNode().put("type", "object");
+            }
+            @Override public String permissionKey() { return "read"; }
+            @Override public ToolResult execute(
+                    com.fasterxml.jackson.databind.JsonNode params, ToolContext context) {
+                return ToolResult.success(id, "ok");
+            }
+        };
+    }
+
+    private static List<String> directToolNames(ArrayNode definitions) {
+        java.util.ArrayList<String> names = new java.util.ArrayList<>();
+        definitions.forEach(definition -> names.add(definition.path("name").asText()));
+        return names;
+    }
+
+    private static List<String> values(com.fasterxml.jackson.databind.JsonNode array) {
+        java.util.ArrayList<String> values = new java.util.ArrayList<>();
+        array.forEach(value -> values.add(value.asText()));
+        return values;
     }
 }

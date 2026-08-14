@@ -307,7 +307,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Extra JVM arguments (user-specified)
         private List<String> extraJvmArgs = new ArrayList<>();
 
-        // System environment variables (LD_PRELOAD, MALLOC_CHECK_, ASAN_OPTIONS, etc.)
+        // System environment variables; native-loader overrides are rejected.
         private Map<String, String> systemEnvironmentVariables = new HashMap<>();
 
         // ND4J environment configuration (Nd4j.getEnvironment() settings)
@@ -433,13 +433,16 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         public List<String> getExtraJvmArgs() { return extraJvmArgs; }
         public void setExtraJvmArgs(List<String> extraJvmArgs) { this.extraJvmArgs = extraJvmArgs; }
 
-        // System environment variables (for process - LD_PRELOAD, MALLOC_CHECK_, etc.)
+        // System environment variables for the child process.
         public Map<String, String> getSystemEnvironmentVariables() { return systemEnvironmentVariables; }
-        public void setSystemEnvironmentVariables(Map<String, String> vars) { this.systemEnvironmentVariables = vars; }
+        public void setSystemEnvironmentVariables(Map<String, String> vars) {
+            this.systemEnvironmentVariables = vars == null ? new HashMap<>() : new HashMap<>(vars);
+            this.systemEnvironmentVariables.keySet().removeIf("LD_PRELOAD"::equalsIgnoreCase);
+        }
 
         // For backwards compatibility
         public Map<String, String> getEnvironmentVariables() { return systemEnvironmentVariables; }
-        public void setEnvironmentVariables(Map<String, String> vars) { this.systemEnvironmentVariables = vars; }
+        public void setEnvironmentVariables(Map<String, String> vars) { setSystemEnvironmentVariables(vars); }
 
         // ND4J environment configuration (Nd4j.getEnvironment() settings)
         public Map<String, Object> getNd4jEnvironmentConfig() { return nd4jEnvironmentConfig; }
@@ -816,10 +819,12 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         /**
          * Build system environment variables for the process.
-         * These affect the subprocess (LD_PRELOAD, MALLOC_CHECK_, ASAN_OPTIONS, etc.)
+         * Native libraries are resolved by the packaged runtime, never by
+         * subprocess environment injection.
          */
         public Map<String, String> buildEnvironmentVariables() {
             Map<String, String> env = new HashMap<>(systemEnvironmentVariables);
+            env.keySet().removeIf("LD_PRELOAD"::equalsIgnoreCase);
             String timestamp = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
             Path logDir = Paths.get(logDirectory).toAbsolutePath();
@@ -830,11 +835,6 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                     env.put("LIBC_FATAL_STDERR_", "1");
                     break;
                 case ASAN:
-                    // Find libasan.so
-                    String libasanPath = findLibasan();
-                    if (libasanPath != null) {
-                        env.put("LD_PRELOAD", libasanPath);
-                    }
                     env.put("ASAN_OPTIONS",
                         "alloc_dealloc_mismatch=0:detect_leaks=1:new_delete_type_mismatch=0:" +
                         "halt_on_error=0:exitcode=0:report_objects=1:use_stacks=1:use_registers=1:" +
@@ -842,39 +842,13 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                         logDir.resolve("asan_" + timestamp + ".log"));
                     break;
                 case EFENCE:
-                    env.put("LD_PRELOAD", "/usr/lib64/libefence.so");
-                    env.put("EF_PROTECT_BELOW", "0");
-                    env.put("EF_PROTECT_FREE", "1");
-                    env.put("EF_ALLOW_MALLOC_0", "1");
+                    // Electric Fence must be linked or launched explicitly; subprocess
+                    // environment injection is intentionally unsupported.
                     break;
                 default:
                     break;
             }
             return env;
-        }
-
-        /**
-         * Find libasan.so in standard library paths.
-         */
-        private String findLibasan() {
-            String[] searchPaths = {
-                "/usr/lib64/libasan.so.8",
-                "/usr/lib64/libasan.so.6",
-                "/usr/lib64/libasan.so",
-                "/usr/lib/x86_64-linux-gnu/libasan.so.8",
-                "/usr/lib/x86_64-linux-gnu/libasan.so.6",
-                "/usr/lib/x86_64-linux-gnu/libasan.so",
-                "/lib64/libasan.so.8",
-                "/lib64/libasan.so"
-            };
-
-            for (String path : searchPaths) {
-                if (Files.exists(Paths.get(path))) {
-                    return path;
-                }
-            }
-            logger.warn("libasan.so not found. Install with: sudo dnf install libasan (Fedora/RHEL) or sudo apt-get install libasan6 (Debian/Ubuntu)");
-            return null;
         }
 
         /**

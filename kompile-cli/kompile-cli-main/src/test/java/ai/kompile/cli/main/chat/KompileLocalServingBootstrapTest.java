@@ -27,10 +27,10 @@ class KompileLocalServingBootstrapTest {
     void resolvesInstalledNativeServingExecutableFirst() throws Exception {
         Path install = tempDir.resolve("dist");
         Path component = install.resolve("components")
-                .resolve("kompile-app-main").resolve("1");
+                .resolve("kompile-model-serving").resolve("1");
         Files.createDirectories(component);
         Path executable = executable(install.resolve("bin")
-                .resolve(applicationBinaryName()));
+                .resolve(servingBinaryName()));
 
         KompileLocalServingBootstrap.LauncherArtifact resolved =
                 KompileLocalServingBootstrap.resolveLauncher(
@@ -44,9 +44,9 @@ class KompileLocalServingBootstrapTest {
     void resolvesInstalledFatApplicationJarAsJvmFallback() throws Exception {
         Path install = tempDir.resolve("dist");
         Path component = install.resolve("components")
-                .resolve("kompile-app-main").resolve("1");
+                .resolve("kompile-model-serving").resolve("1");
         Files.createDirectories(component);
-        Path jar = component.resolve("kompile-app-main-1-exec.jar");
+        Path jar = component.resolve("kompile-model-serving-1-exec.jar");
         Files.writeString(jar, "fat-jar");
 
         KompileLocalServingBootstrap.LauncherArtifact resolved =
@@ -58,12 +58,29 @@ class KompileLocalServingBootstrapTest {
     }
 
     @Test
+    void nativeParentRejectsInstalledExecutableJarFallback() throws Exception {
+        Path install = tempDir.resolve("native-dist");
+        Path component = install.resolve("components")
+                .resolve("kompile-model-serving").resolve("1");
+        Files.createDirectories(component);
+        Path jar = component.resolve("kompile-model-serving-1-exec.jar");
+        Files.writeString(jar, "fat-jar");
+
+        Exception error = assertThrows(Exception.class,
+                () -> KompileLocalServingBootstrap.resolveLauncher(
+                        install, component, new Properties(), Map.of(), true));
+
+        assertTrue(error.getMessage().contains("bin/kompile-model-serving"));
+        assertTrue(error.getMessage().contains("Refusing to fall back"));
+    }
+
+    @Test
     void explicitServingExecutableOverrideWins() throws Exception {
         Path install = tempDir.resolve("dist");
         Path component = install.resolve("components")
-                .resolve("kompile-app-main").resolve("1");
+                .resolve("kompile-model-serving").resolve("1");
         Files.createDirectories(component);
-        executable(install.resolve("bin").resolve(applicationBinaryName()));
+        executable(install.resolve("bin").resolve(servingBinaryName()));
         Path override = executable(tempDir.resolve("custom-serving"));
         Properties properties = new Properties();
         properties.setProperty(
@@ -79,23 +96,20 @@ class KompileLocalServingBootstrapTest {
     }
 
     @Test
-    void nativeAndJvmCommandsUseServingDispatcher() throws Exception {
+    void nativeAndExecutableJarCommandsUseStandaloneServingEntrypoint() throws Exception {
         Path args = tempDir.resolve("args.json");
         Files.writeString(args, "{}");
-        Path nativeApp = executable(tempDir.resolve(applicationBinaryName()));
+        Path nativeApp = executable(tempDir.resolve(servingBinaryName()));
         List<String> nativeCommand = KompileLocalServingBootstrap.buildCommand(
                 new KompileLocalServingBootstrap.LauncherArtifact(nativeApp, true),
                 args, new Properties());
 
-        assertEquals(nativeApp.toString(), nativeCommand.get(0));
-        assertEquals("--subprocess=serving",
-                nativeCommand.get(nativeCommand.size() - 2));
-        assertEquals(args.toAbsolutePath().toString(),
-                nativeCommand.get(nativeCommand.size() - 1));
+        assertEquals(List.of(nativeApp.toString(), args.toAbsolutePath().toString()), nativeCommand);
         assertFalse(nativeCommand.contains("-jar"));
+        assertFalse(nativeCommand.contains("-cp"));
 
         Path java = executable(tempDir.resolve(javaBinaryName()));
-        Path jar = tempDir.resolve("kompile-app-main.jar");
+        Path jar = tempDir.resolve("kompile-model-serving-exec.jar");
         Files.writeString(jar, "jar");
         Properties properties = new Properties();
         properties.setProperty(
@@ -109,8 +123,9 @@ class KompileLocalServingBootstrapTest {
         assertEquals(java.toString(), jvmCommand.get(0));
         assertTrue(jvmCommand.contains("-jar"));
         assertTrue(jvmCommand.contains(jar.toAbsolutePath().toString()));
-        assertEquals("--subprocess=serving",
-                jvmCommand.get(jvmCommand.size() - 2));
+        assertEquals(args.toAbsolutePath().toString(), jvmCommand.get(jvmCommand.size() - 1));
+        assertFalse(jvmCommand.contains("-cp"));
+        assertFalse(jvmCommand.contains("--subprocess=serving"));
     }
 
     @Test
@@ -186,7 +201,7 @@ class KompileLocalServingBootstrapTest {
     void startupResultInjectsOnlyThePrivateServingEndpoint() throws Exception {
         Path model = tempDir.resolve("model.gguf");
         Files.writeString(model, "model");
-        Path app = executable(tempDir.resolve(applicationBinaryName()));
+        Path app = executable(tempDir.resolve(servingBinaryName()));
         URI endpoint = URI.create("http://127.0.0.1:43123");
 
         ChatConfig config = new ChatConfig(
@@ -227,9 +242,9 @@ class KompileLocalServingBootstrapTest {
         return path.toAbsolutePath();
     }
 
-    private static String applicationBinaryName() {
+    private static String servingBinaryName() {
         return System.getProperty("os.name", "").toLowerCase().contains("win")
-                ? "kompile-app-main.exe" : "kompile-app-main";
+                ? "kompile-model-serving.exe" : "kompile-model-serving";
     }
 
     private static String javaBinaryName() {

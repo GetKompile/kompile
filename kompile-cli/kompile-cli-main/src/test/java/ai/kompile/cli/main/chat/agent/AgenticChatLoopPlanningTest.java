@@ -67,6 +67,65 @@ class AgenticChatLoopPlanningTest {
     }
 
     @Test
+    void folderLocalModelsUseProgressiveToolsByDefault() {
+        ChatConfig config = new ChatConfig(
+                "kompile-local", null, "lfm2.5-1.2b-instruct", null);
+        AgenticChatLoop localLoop = new AgenticChatLoop(
+                null, om, toolRegistry, perms, agentRegistry, Paths.get("."),
+                new DirectLlmClient(config, om), null);
+
+        assertTrue(localLoop.usesProgressiveToolLoading());
+    }
+
+    @Test
+    void realCoderRegistryStartsWithCompactCoreInsteadOfFullCatalog() {
+        AgentConfig coder = agentRegistry.get("coder");
+        var full = toolRegistry.buildDirectToolDefinitions(coder);
+        var progressive = toolRegistry.buildProgressiveDirectToolDefinitions(coder);
+
+        assertTrue(full.size() > 40, "the regression fixture must contain the real broad catalog");
+        assertTrue(progressive.size() <= 10,
+                () -> "local small-model core unexpectedly contains " + progressive.size() + " tools");
+        assertTrue(ToolSchemaOptimizer.estimateTokens(progressive) < 2_500,
+                () -> "local small-model core still costs about "
+                        + ToolSchemaOptimizer.estimateTokens(progressive) + " schema tokens");
+        assertTrue(hasDirectTool(progressive, "activate_tools"));
+        assertTrue(hasDirectTool(progressive, "read"));
+        assertFalse(hasDirectTool(progressive, "crawl_discover"));
+        assertFalse(hasDirectTool(progressive, "knowledge_graph"));
+
+        toolRegistry.getDynamicToolManager().activateGroup("crawl");
+        var crawlEnabled = toolRegistry.buildProgressiveDirectToolDefinitions(coder);
+        assertTrue(hasDirectTool(crawlEnabled, "crawl_discover"));
+        assertTrue(hasDirectTool(crawlEnabled, "model_runtime"));
+        assertFalse(hasDirectTool(crawlEnabled, "knowledge_graph"),
+                "a crawl activation must not load the graph-query bundle");
+    }
+
+    @Test
+    void progressiveToolPropertyCanOverrideAnyProvider() {
+        String property = "kompile.chat.progressiveTools";
+        String previous = System.getProperty(property);
+        try {
+            System.setProperty(property, "true");
+            ChatConfig config = new ChatConfig("openai", "test-key", "gpt-4o", null);
+            AgenticChatLoop directLoop = new AgenticChatLoop(
+                    null, om, toolRegistry, perms, agentRegistry, Paths.get("."),
+                    new DirectLlmClient(config, om), null);
+            assertTrue(directLoop.usesProgressiveToolLoading());
+
+            System.setProperty(property, "false");
+            assertFalse(directLoop.usesProgressiveToolLoading());
+        } finally {
+            if (previous == null) {
+                System.clearProperty(property);
+            } else {
+                System.setProperty(property, previous);
+            }
+        }
+    }
+
+    @Test
     void testPlanningModeDefaultOff() {
         assertFalse(loop.isPlanningMode());
     }
@@ -175,6 +234,16 @@ class AgenticChatLoopPlanningTest {
         AgentConfig planner = agentRegistry.get("planner");
         loop.setAgentConfig(planner);
         assertEquals("planner", loop.getCurrentAgentConfig().getName());
+    }
+
+    private static boolean hasDirectTool(
+            com.fasterxml.jackson.databind.node.ArrayNode tools, String name) {
+        for (var tool : tools) {
+            if (name.equals(tool.path("name").asText())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Test

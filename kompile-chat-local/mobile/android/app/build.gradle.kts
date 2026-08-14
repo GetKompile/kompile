@@ -5,6 +5,7 @@ import java.nio.ByteBuffer
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.time.LocalDateTime
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -49,6 +50,9 @@ val tensorG5Aar = providers.gradleProperty("sdxTensorG5Aar")
 val tensorG3Aar = providers.gradleProperty("sdxTensorG3Aar")
     .orElse(providers.environmentVariable("SDX_TENSOR_G3_AAR"))
     .orElse(defaultTensorG3Aar)
+val tensorG3SourceSha256 = providers.gradleProperty("sdxTensorG3SourceSha256")
+val tensorG3ProvenanceSha256 = providers.gradleProperty("sdxTensorG3ProvenanceSha256")
+val sdxAotSdkProvenanceSha256 = providers.gradleProperty("sdxAotSdkProvenanceSha256")
 val sdxArtifactMode = providers.gradleProperty("sdxArtifactMode").orElse("source-build")
 val generatedJniLibsDir = providers.gradleProperty("kompileJniLibsDir")
 // Optional prepared-artifact handoff for SDZ/KProject only. Public Hugging Face
@@ -69,18 +73,41 @@ val apkBuildIdLiteral = apkBuildId.map { value ->
 val apkVersionCode = providers.gradleProperty("apkVersionCode")
     .map { value -> value.toInt() }
     .orElse(1)
+val requestedTaskNames = gradle.startParameter.taskNames.joinToString(" ")
+val validateTensorG3Provenance = tasks.register("validateTensorG3Provenance") {
+    group = "verification"
+    description = "Rejects every Tensor G3 task unless exact runtime provenance is supplied."
+    doLast {
+    mapOf(
+        "sdxTensorG3SourceSha256" to tensorG3SourceSha256,
+        "sdxTensorG3ProvenanceSha256" to tensorG3ProvenanceSha256,
+        "sdxAotSdkProvenanceSha256" to sdxAotSdkProvenanceSha256
+    ).forEach { (propertyName, provider) ->
+        if (!provider.isPresent || !provider.get().matches(Regex("[0-9a-f]{64}"))) {
+            throw GradleException("Tensor G3 builds require -P$propertyName with a lowercase SHA-256 digest")
+        }
+    }
+    }
+}
+tasks.configureEach {
+    if (name != validateTensorG3Provenance.name && name.contains("TensorG3", ignoreCase = true)) {
+        dependsOn(validateTensorG3Provenance)
+    }
+}
+val tensorG3SourceSha256Literal = tensorG3SourceSha256.orElse("not-applicable").map { "\"$it\"" }
+val tensorG3ProvenanceSha256Literal = tensorG3ProvenanceSha256.orElse("not-applicable").map { "\"$it\"" }
+val sdxAotSdkProvenanceSha256Literal = sdxAotSdkProvenanceSha256.orElse("not-applicable").map { "\"$it\"" }
 
 if (sdxArtifactMode.get() !in setOf("source-build", "release-consumer")) {
     throw GradleException("sdxArtifactMode must be source-build or release-consumer")
 }
 if (sdxArtifactMode.get() == "release-consumer") {
-    val requestedTasks = gradle.startParameter.taskNames.joinToString(" ")
     mapOf(
         "Vulkan" to ("sdxVulkanAar" to vulkanAar),
         "Hexagon" to ("sdxHexagonAar" to hexagonAar),
         "TensorG3" to ("sdxTensorG3Aar" to tensorG3Aar),
         "TensorG5" to ("sdxTensorG5Aar" to tensorG5Aar)
-    ).filterKeys { flavor -> requestedTasks.contains(flavor, ignoreCase = true) }
+    ).filterKeys { flavor -> requestedTaskNames.contains(flavor, ignoreCase = true) }
         .forEach { (_, handoff) ->
             val (propertyName, provider) = handoff
             if (!providers.gradleProperty(propertyName).isPresent) {
@@ -159,7 +186,9 @@ val sdxSharedNative: Configuration by configurations.creating {
 
 fun registerSdxAarNormalization(
     variant: String,
-    providerAar: Provider<String>
+    providerAar: Provider<String>,
+    expectedSourceSha256: Provider<String> = providers.provider { "not-applicable" },
+    refreshSharedLayers: Boolean = true
 ): TaskProvider<NormalizeSdxProviderAar> {
     val taskSuffix = variant.split('-')
         .joinToString("") { part -> part.replaceFirstChar(Char::uppercaseChar) }
@@ -167,8 +196,12 @@ fun registerSdxAarNormalization(
         description = "Refreshes the provider-independent SDX Java and tokenizer " +
             "layers in the $variant AAR from canonical Maven artifacts."
         sourceAar.set(layout.file(providerAar.map { file(it) }))
-        sharedJavaClasses.from(sdxSharedJava)
-        sharedNativeLibraries.from(sdxSharedNative)
+        sourceAarSha256.set(expectedSourceSha256)
+        refreshCanonicalLayers.set(refreshSharedLayers)
+        if (refreshSharedLayers) {
+            sharedJavaClasses.from(sdxSharedJava)
+            sharedNativeLibraries.from(sdxSharedNative)
+        }
         providerVariant.set(variant)
         sharedPackages.set(sdxSharedPackages)
         nativePairedPackages.set(sdxNativePairedPackages)
@@ -181,7 +214,12 @@ fun registerSdxAarNormalization(
 
 val normalizedVulkanAar = registerSdxAarNormalization("vulkan", vulkanAar)
 val normalizedHexagonAar = registerSdxAarNormalization("hexagon", hexagonAar)
-val normalizedTensorG3Aar = registerSdxAarNormalization("tensor-g3", tensorG3Aar)
+val normalizedTensorG3Aar = registerSdxAarNormalization(
+    "tensor-g3",
+    tensorG3Aar,
+    tensorG3SourceSha256.orElse("not-applicable"),
+    refreshSharedLayers = false
+)
 val normalizedTensorG5Aar = registerSdxAarNormalization("tensor-g5", tensorG5Aar)
 
 android {
@@ -197,6 +235,9 @@ android {
         versionName = "0.1.0-SNAPSHOT-${apkBuildId.get()}"
         buildConfigField("String", "APK_BUILD_ID", apkBuildIdLiteral.get())
         buildConfigField("String", "MODEL_STAGING_URL", modelStagingUrlLiteral.get())
+        buildConfigField("String", "SOURCE_RUNTIME_AAR_SHA256", "\"not-applicable\"")
+        buildConfigField("String", "RUNTIME_PROVENANCE_SHA256", "\"not-applicable\"")
+        buildConfigField("String", "SDX_AOT_PROVENANCE_SHA256", "\"not-applicable\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -245,6 +286,9 @@ android {
             versionNameSuffix = "-tensor-g3-nnapi"
             buildConfigField("String", "ACCELERATOR_PROVIDER", "\"google-tensor-g3-nnapi\"")
             buildConfigField("String", "SDX_TARGET_PROFILE", "\"android-arm64-nnapi-accelerator\"")
+            buildConfigField("String", "SOURCE_RUNTIME_AAR_SHA256", tensorG3SourceSha256Literal.get())
+            buildConfigField("String", "RUNTIME_PROVENANCE_SHA256", tensorG3ProvenanceSha256Literal.get())
+            buildConfigField("String", "SDX_AOT_PROVENANCE_SHA256", sdxAotSdkProvenanceSha256Literal.get())
             buildConfigField("boolean", "DEVICE_ONLY", "true")
         }
     }
@@ -277,6 +321,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            testProguardFiles("proguard-test-rules.pro")
             applicationIdSuffix = ".debug"
         }
     }
@@ -326,6 +371,10 @@ android {
             // so native libraries must be extracted beside the host runtime at install time.
             useLegacyPackaging = true
             keepDebugSymbols += setOf("**/*.so")
+            // Tensor G3's provider and CPU importer use the same NDK OpenMP runtime (same
+            // Build ID and dynamic exports). The importer SDK owns the deployment copy
+            // after removing only DWARF, so package exactly that audited byte sequence.
+            pickFirsts += "**/libomp.so"
         }
     }
 
@@ -465,6 +514,9 @@ abstract class NormalizeSdxProviderAar : DefaultTask() {
     @get:InputFile
     abstract val sourceAar: RegularFileProperty
 
+    @get:Input
+    abstract val sourceAarSha256: Property<String>
+
     @get:InputFiles
     abstract val sharedJavaClasses: ConfigurableFileCollection
 
@@ -473,6 +525,9 @@ abstract class NormalizeSdxProviderAar : DefaultTask() {
 
     @get:Input
     abstract val providerVariant: Property<String>
+
+    @get:Input
+    abstract val refreshCanonicalLayers: Property<Boolean>
 
     @get:Input
     abstract val sharedPackages: SetProperty<String>
@@ -490,6 +545,25 @@ abstract class NormalizeSdxProviderAar : DefaultTask() {
     fun normalize() {
         val variant = providerVariant.get()
         val source = sourceAar.get().asFile
+        val expectedSourceSha256 = sourceAarSha256.get()
+        if (expectedSourceSha256 != "not-applicable") {
+            val digest = MessageDigest.getInstance("SHA-256")
+            source.inputStream().buffered().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            val actualSourceSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+            if (actualSourceSha256 != expectedSourceSha256) {
+                throw GradleException(
+                    "The $variant source AAR changed before normalization: " +
+                        "expected=$expectedSourceSha256 actual=$actualSourceSha256 file=$source"
+                )
+            }
+        }
         val bundled = readClassesJar(source, variant)
 
         // A provider is only held to the layers it actually ships. The LiteRT-LM runtime
@@ -497,6 +571,25 @@ abstract class NormalizeSdxProviderAar : DefaultTask() {
         val carried = sharedPackages.get().filter { pkg ->
             bundled.keys.any { it.startsWith(pkg) && it.endsWith(".class") }
         }.toSet()
+
+        if (!refreshCanonicalLayers.get()) {
+            verifyRequiredClasses(bundled, carried, variant)
+            val target = normalizedAar.get().asFile
+            target.parentFile.mkdirs()
+            source.copyTo(target, overwrite = true)
+            val copiedSha256 = sha256(target)
+            val sourceSha256 = sha256(source)
+            if (copiedSha256 != sourceSha256) {
+                throw GradleException(
+                    "The provenance-bound $variant AAR changed during exact staging: " +
+                        "source=$sourceSha256 staged=$copiedSha256"
+                )
+            }
+            logger.lifecycle(
+                "Staged provenance-bound $variant SDX AAR without Maven overlays: $copiedSha256"
+            )
+            return
+        }
 
         val canonical = readCanonicalClasses(carried)
         if (carried.isNotEmpty() && canonical.isEmpty()) {
@@ -652,6 +745,19 @@ abstract class NormalizeSdxProviderAar : DefaultTask() {
             }
         }
         return entries
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun readCanonicalClasses(carried: Set<String>): Map<String, ByteArray> {

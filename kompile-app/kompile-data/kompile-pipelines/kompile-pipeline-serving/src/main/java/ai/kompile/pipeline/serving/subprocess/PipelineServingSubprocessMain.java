@@ -16,6 +16,7 @@
 
 package ai.kompile.pipeline.serving.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipelines.framework.api.Pipeline;
 import ai.kompile.pipelines.framework.api.PipelineExecutor;
@@ -64,6 +65,7 @@ public class PipelineServingSubprocessMain {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         if (args.length < 1) {
             System.err.println("Usage: PipelineServingSubprocessMain <args-json-file>");
             System.exit(1);

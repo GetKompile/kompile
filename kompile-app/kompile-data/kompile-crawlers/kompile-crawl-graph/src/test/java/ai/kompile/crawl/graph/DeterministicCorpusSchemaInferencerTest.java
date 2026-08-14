@@ -76,18 +76,23 @@ class DeterministicCorpusSchemaInferencerTest {
     }
 
     @Test
-    void instanceNamesAndGenericCategoriesAreNotPromotedToOntologyTypes() {
+    void instanceNamesAndStatisticalCategoriesAreNotPromotedToOntologyTypes() {
         CorpusSchemaCandidates.Inventory inventory =
                 CorpusSchemaCandidateCollector.collect(Map.of(
                         "window", extraction(
                                 new ConceptExtractor.ExtractedConcept(
-                                        "Mira Chen", "mira chen", "ENTITY",
-                                        0.99d, 5, "person name"))));
+                                        "Mira Chen", "mira chen", "KEYWORD",
+                                        0.99d, 5, "person name"),
+                                new ConceptExtractor.ExtractedConcept(
+                                        "variance bridge", "variance bridge", "TECHNICAL",
+                                        0.91d, 3, "technical phrase"),
+                                new ConceptExtractor.ConceptRelationship(
+                                        "Mira Chen", "variance bridge", "CO_OCCURS", 0.88d))));
 
-        assertEquals(1, inventory.nodeCandidates().size(),
-                "entity recovery remains permissive at candidate collection");
+        assertEquals(2, inventory.nodeCandidates().size(),
+                "candidate collection remains permissive for fallback observations");
         assertNull(DeterministicCorpusSchemaInferencer.infer(inventory, null),
-                "generic category and proper name must not become ontology types");
+                "statistical categories and co-occurrence must not become ontology types");
     }
 
     private static ConceptExtractor.ExtractionResult extraction(

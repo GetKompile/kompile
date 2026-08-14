@@ -584,22 +584,16 @@ public class ConfluenceGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> entityMap = new LinkedHashMap<>();
-        Set<String> relKeys = new LinkedHashSet<>();
-        List<ExtractedRelation> allRels = new ArrayList<>();
+        Map<String, ExtractedRelation> relationMap = new LinkedHashMap<>();
 
         for (Document doc : docs) {
             ExtractionResult result = extract(doc);
-            for (ExtractedEntity e : result.entities()) {
-                ExtractorUtils.addEntity(entityMap, e);
-            }
-            for (ExtractedRelation r : result.relations()) {
-                if (relKeys.add(r.source() + "|" + r.target() + "|" + r.type())) {
-                    allRels.add(r);
-                }
-            }
+            ExtractorUtils.mergeResult(entityMap, relationMap, result);
         }
 
-        return ExtractionResult.of(new ArrayList<>(entityMap.values()), allRels,
+        return ExtractionResult.of(
+                new ArrayList<>(entityMap.values()),
+                new ArrayList<>(relationMap.values()),
                 ExtractionMetadata.forChunk(null, null, GraphConstants.SOURCE_CONFLUENCE_EXTRACTOR));
     }
 

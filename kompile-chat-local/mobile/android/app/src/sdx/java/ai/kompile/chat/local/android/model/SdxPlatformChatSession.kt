@@ -9,8 +9,6 @@ import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
 import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
-import org.bytedeco.javacpp.BytePointer
-import org.bytedeco.javacpp.Pointer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -65,8 +63,8 @@ internal object SdxPlatformRuntimeOwner {
         }
 
         var native: SdxAndroidLlmAbi? = null
-        var runtime: Pointer? = null
-        var model: Pointer? = null
+        var runtime: SdxNativeHandle? = null
+        var model: SdxNativeHandle? = null
         try {
             val source = File(modelPath).canonicalFile
             require(source.isFile && source.canRead()) {
@@ -272,27 +270,27 @@ internal object SdxPlatformRuntimeOwner {
 
     private fun readAndFree(
         native: SdxAndroidLlmAbi,
-        runtime: Pointer,
-        pointer: Pointer?,
+        runtime: SdxNativeHandle,
+        pointer: SdxNativeHandle?,
         description: String
     ): String {
         val value = pointer
             ?: throw ChatException("SDX returned a null $description pointer")
         return try {
-            BytePointer(value).string ?: ""
+            native.sdxLlmReadUtf8(value)
         } finally {
             native.sdxLlmFree(runtime, value)
         }
     }
 
-    private fun lastError(native: SdxAndroidLlmAbi, runtime: Pointer): String =
+    private fun lastError(native: SdxAndroidLlmAbi, runtime: SdxNativeHandle): String =
         readCompleteSdxLastError { buffer ->
             native.sdxLlmGetLastError(runtime, buffer, buffer.size)
         }
 
     private fun requireStatus(
         native: SdxAndroidLlmAbi,
-        runtime: Pointer,
+        runtime: SdxNativeHandle,
         status: Int,
         action: String
     ) {
@@ -303,8 +301,8 @@ internal object SdxPlatformRuntimeOwner {
 
     private class Session(
         private val native: SdxAndroidLlmAbi,
-        private val runtime: Pointer,
-        private val model: Pointer,
+        private val runtime: SdxNativeHandle,
+        private val model: SdxNativeHandle,
         override val routeName: String,
         override val modelId: String,
         private val trace: SmokeDecodeTraceLog
@@ -360,7 +358,7 @@ internal object SdxPlatformRuntimeOwner {
             val chunkCallback = if (onChunk == null) null else
                 SdxAndroidLlmAbi.ChunkCallback { chunk ->
                     try {
-                        val text = chunk?.let { BytePointer(it).string }.orEmpty()
+                        val text = chunk.orEmpty()
                         if (text.isNotEmpty()) {
                             val count = chunkCount.incrementAndGet()
                             val chars = chunkChars.addAndGet(text.length.toLong())

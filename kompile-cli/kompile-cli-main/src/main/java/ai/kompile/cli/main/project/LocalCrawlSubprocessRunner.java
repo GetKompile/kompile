@@ -5,6 +5,8 @@
  */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.cli.main.chat.mcp.McpToolInjectionSupport;
+import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import ai.kompile.project.KompileProjectCrawlProfile;
 import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,67 +17,69 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
-/** Launches the project-local crawl engine in an isolated JVM, like Kompile's serving workers. */
+/**
+ * Launches one complete project-local crawl lifecycle in an isolated worker JVM.
+ * Model-backed stages may launch Kompile's nested one-shot workers; all descendants are bounded by
+ * this command and are terminated with the worker on timeout or interruption.
+ */
 public final class LocalCrawlSubprocessRunner {
     private static final String EXECUTION_PROPERTY = "kompile.local.crawl.execution";
-    private static final String MAIN_CLASS = LocalCrawlSubprocessMain.class.getName();
 
     private LocalCrawlSubprocessRunner() {
     }
 
     public static String executionMode() {
-        if (NativeImageInfo.isRunningInNativeImage()) return "in-process-native";
         if ("inline".equalsIgnoreCase(System.getProperty(EXECUTION_PROPERTY, "subprocess"))) {
-            return "in-process";
+            return NativeImageInfo.isRunningInNativeImage()
+                    ? "in-process-native-explicit" : "in-process-explicit";
         }
-        return "subprocess";
+        return NativeImageInfo.isRunningInNativeImage()
+                ? "subprocess-native" : "subprocess";
     }
 
-    public static ProjectCrawlCommand.LocalCrawlExecution execute(
+    public static ExecutionResult execute(
             KompileProjectCrawlProfile profile,
             Path projectRoot,
             boolean dryRun,
             JsonNode request,
+            GraphContext graphContext,
             ObjectMapper mapper) throws IOException {
-        if (!"subprocess".equals(executionMode())) {
-            return ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request);
+        if (executionMode().startsWith("in-process")) {
+            return executeInline(profile, projectRoot, dryRun, request, graphContext, mapper);
         }
 
         Path tempDirectory = Files.createTempDirectory("kompile-local-crawl-");
         Path requestFile = tempDirectory.resolve("request.json");
         Path resultFile = tempDirectory.resolve("result.json");
         Path logFile = tempDirectory.resolve("worker.log");
+        Process process = null;
         try {
             ObjectNode payload = mapper.createObjectNode();
             payload.put("projectRoot", projectRoot.toAbsolutePath().normalize().toString());
             payload.put("dryRun", dryRun);
             payload.set("profile", mapper.valueToTree(profile));
             payload.set("request", request == null ? mapper.createObjectNode() : request.deepCopy());
+            if (graphContext != null) {
+                payload.set("graphContext", mapper.valueToTree(graphContext));
+            }
             payload.put("resultFile", resultFile.toString());
             mapper.writerWithDefaultPrettyPrinter().writeValue(requestFile.toFile(), payload);
 
-            String classpath = System.getProperty("surefire.test.class.path",
-                    System.getProperty("java.class.path", ""));
-            if (classpath.isBlank()) {
-                return ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request);
-            }
-            Path java = Path.of(System.getProperty("java.home"), "bin",
-                    System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java");
-            List<String> command = List.of(java.toString(), "-cp", classpath, MAIN_CLASS,
-                    requestFile.toString());
+            List<String> command = workerCommand(requestFile);
             ProcessBuilder builder = new ProcessBuilder(command)
                     .directory(projectRoot.toAbsolutePath().normalize().toFile())
                     .redirectErrorStream(true)
                     .redirectOutput(logFile.toFile());
-            Process process = builder.start();
+            process = builder.start();
             long timeoutMinutes = Math.max(1, profile.getTimeoutMin());
             if (!process.waitFor(timeoutMinutes, TimeUnit.MINUTES)) {
-                process.destroyForcibly();
+                terminateProcessTree(process);
                 throw new IOException("Project-local crawl subprocess timed out after "
                         + timeoutMinutes + " minute(s).");
             }
@@ -88,20 +92,124 @@ public final class LocalCrawlSubprocessRunner {
                 String error = result.path("error").asText(readLog(logFile));
                 throw new IOException("Project-local crawl subprocess failed: " + error);
             }
-            return new ProjectCrawlCommand.LocalCrawlExecution(
+            List<ProjectCrawlCommand.LocalCrawlFailure> failures = new ArrayList<>();
+            JsonNode failureNodes = result.path("documentFailures");
+            if (failureNodes.isArray()) {
+                for (JsonNode failure : failureNodes) {
+                    failures.add(new ProjectCrawlCommand.LocalCrawlFailure(
+                            failure.path("documentId").asText(null),
+                            failure.path("source").asText(null),
+                            failure.path("relativePath").asText(null),
+                            failure.path("message").asText(null),
+                            failure.path("pipelineId").asText(null),
+                            failure.path("pipelineType").asText(null)));
+                }
+            }
+            ProjectCrawlCommand.LocalCrawlExecution crawlExecution =
+                    new ProjectCrawlCommand.LocalCrawlExecution(
                     result.path("crawlId").asText(),
                     Path.of(result.path("outputDirectory").asText()),
                     Path.of(result.path("markdownDirectory").asText()),
                     result.path("documentCount").asInt(),
                     result.path("chunkCount").asInt(),
                     result.path("markdownCount").asInt(),
+                    result.path("status").asText(dryRun ? "DRY_RUN" : "COMPLETED"),
+                    failures,
                     result.path("dryRun").asBoolean());
+            LocalProjectGraphBackend.GraphUpdate graphUpdate = result.path("graphUpdate").isObject()
+                    ? mapper.treeToValue(result.path("graphUpdate"),
+                            LocalProjectGraphBackend.GraphUpdate.class)
+                    : null;
+            return new ExecutionResult(crawlExecution, graphUpdate);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while waiting for project-local crawl subprocess.", e);
         } finally {
+            if (process != null && process.isAlive()) {
+                terminateProcessTree(process);
+            }
             deleteTree(tempDirectory);
         }
+    }
+
+    private static List<String> workerCommand(Path requestFile) throws IOException {
+        List<String> command = McpToolInjectionSupport.buildCliProcessCommand(List.of(
+                "--subprocess=local-crawl",
+                requestFile.toAbsolutePath().normalize().toString()));
+        if (command == null) {
+            throw new IOException(
+                    "Cannot launch the project-local crawl worker: no native Kompile CLI or "
+                            + "executable CLI JAR was found. Set KOMPILE_CLI_BINARY or "
+                            + "KOMPILE_CLI_JAR.");
+        }
+        return command;
+    }
+
+    private static ExecutionResult executeInline(
+            KompileProjectCrawlProfile profile,
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            GraphContext graphContext,
+            ObjectMapper mapper) throws IOException {
+        ProjectCrawlCommand.LocalCrawlExecution execution =
+                ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request);
+        LocalProjectGraphBackend.GraphUpdate graphUpdate =
+                updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper);
+        return new ExecutionResult(execution, graphUpdate);
+    }
+
+    static LocalProjectGraphBackend.GraphUpdate updateGraph(
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            GraphContext graphContext,
+            ProjectCrawlCommand.LocalCrawlExecution execution,
+            ObjectMapper mapper) throws IOException {
+        if (dryRun || graphContext == null || "FAILED".equals(execution.status())) return null;
+        try {
+            return new LocalProjectGraphBackend(mapper).updateCrawlGraph(
+                    projectRoot,
+                    graphContext.knowledgeBaseId(),
+                    graphContext.knowledgeBaseName(),
+                    graphContext.factSheetId(),
+                    graphContext.projectId(),
+                    graphContext.codeProjects(),
+                    request);
+        } catch (Exception e) {
+            throw new IOException("Project-local graph lifecycle failed: " + rootMessage(e), e);
+        }
+    }
+
+    private static void terminateProcessTree(Process process) {
+        if (process == null) return;
+        List<ProcessHandle> descendants = process.descendants()
+                .sorted(Comparator.comparingLong(ProcessHandle::pid).reversed())
+                .toList();
+        descendants.forEach(ProcessHandle::destroy);
+        process.destroy();
+        try {
+            if (!process.waitFor(3, TimeUnit.SECONDS)) {
+                descendants.stream().filter(ProcessHandle::isAlive)
+                        .forEach(ProcessHandle::destroyForcibly);
+                process.destroyForcibly();
+                process.waitFor(3, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            descendants.stream().filter(ProcessHandle::isAlive)
+                    .forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+        }
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current.getMessage() == null
+                ? current.getClass().getSimpleName() : current.getMessage();
     }
 
     private static String readLog(Path logFile) {
@@ -128,5 +236,19 @@ public final class LocalCrawlSubprocessRunner {
         } catch (IOException ignored) {
             // Temporary subprocess files are best-effort cleanup only.
         }
+    }
+
+    public record GraphContext(String knowledgeBaseId,
+                               String knowledgeBaseName,
+                               Long factSheetId,
+                               String projectId,
+                               List<LocalProjectGraphBackend.CodeProjectSource> codeProjects) {
+        public GraphContext {
+            codeProjects = codeProjects == null ? List.of() : List.copyOf(codeProjects);
+        }
+    }
+
+    public record ExecutionResult(ProjectCrawlCommand.LocalCrawlExecution crawlExecution,
+                                  LocalProjectGraphBackend.GraphUpdate graphUpdate) {
     }
 }

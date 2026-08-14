@@ -86,25 +86,18 @@ public class GoogleDocsGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> entityMap = new LinkedHashMap<>();
-        Set<String> relationshipKeys = new LinkedHashSet<>();
-        List<ExtractedRelation> allRelationships = new ArrayList<>();
+        Map<String, ExtractedRelation> relationshipMap = new LinkedHashMap<>();
 
         for (Document doc : docs) {
             ExtractionResult result = extract(doc);
 
-            for (ExtractedEntity entity : result.entities()) {
-                ExtractorUtils.addEntity(entityMap, entity);
-            }
-
-            for (ExtractedRelation rel : result.relations()) {
-                String key = rel.source() + "|" + rel.target() + "|" + rel.type();
-                if (relationshipKeys.add(key)) {
-                    allRelationships.add(rel);
-                }
-            }
+            ExtractorUtils.mergeResult(entityMap, relationshipMap, result);
         }
 
-        return ExtractionResult.of(new ArrayList<>(entityMap.values()), allRelationships, null);
+        return ExtractionResult.of(
+                new ArrayList<>(entityMap.values()),
+                new ArrayList<>(relationshipMap.values()),
+                null);
     }
 
     // ── Document graph extraction ─────────────────────────────────────────

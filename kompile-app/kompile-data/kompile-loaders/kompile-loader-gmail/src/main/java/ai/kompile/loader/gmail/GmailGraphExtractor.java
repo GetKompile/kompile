@@ -17,6 +17,7 @@
 package ai.kompile.loader.gmail;
 
 import ai.kompile.core.graphrag.DocumentGraphExtractor;
+import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.*;
@@ -113,25 +114,18 @@ public class GmailGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> entityMap = new LinkedHashMap<>();
-        Set<String> relationshipKeys = new LinkedHashSet<>();
-        List<ExtractedRelation> allRelationships = new ArrayList<>();
+        Map<String, ExtractedRelation> relationshipMap = new LinkedHashMap<>();
 
         for (Document doc : docs) {
             ExtractionResult result = extract(doc);
 
-            for (ExtractedEntity entity : result.entities()) {
-                entityMap.putIfAbsent(entity.id(), entity);
-            }
-
-            for (ExtractedRelation rel : result.relations()) {
-                String key = rel.source() + "|" + rel.target() + "|" + rel.type();
-                if (relationshipKeys.add(key)) {
-                    allRelationships.add(rel);
-                }
-            }
+            ExtractorUtils.mergeResult(entityMap, relationshipMap, result);
         }
 
-        return ExtractionResult.of(new ArrayList<>(entityMap.values()), allRelationships, null);
+        return ExtractionResult.of(
+                new ArrayList<>(entityMap.values()),
+                new ArrayList<>(relationshipMap.values()),
+                null);
     }
 
     private void extractMessageGraph(Map<String, Object> meta,

@@ -74,18 +74,26 @@ class ReleasePlanTest(unittest.TestCase):
             if shard["build"]["kind"] == "distribution":
                 self.assertIn("maven", shard["workloads"], shard["id"])
 
-    def test_cpu_classifier_matrix_is_the_real_seven(self):
-        expected = {"base", "avx2", "avx512", "onednn", "onednn-avx2", "onednn-avx512", "compile"}
-        for shard_id in ("native-linux-x86_64", "native-windows-x86_64"):
-            actual = {item["name"] for item in self.shards[shard_id]["build"]["variants"]}
-            self.assertEqual(expected, actual)
-            self.assertNotIn("compile-avx2", actual)
-            self.assertNotIn("compile-avx512", actual)
+    def test_cpu_classifier_matrix_matches_dl4j_release(self):
+        common = {
+            "base", "avx2", "avx512", "onednn", "onednn-avx2",
+            "onednn-avx512", "compile",
+        }
+        linux = {
+            item["name"]
+            for item in self.shards["native-linux-x86_64"]["build"]["variants"]
+        }
+        windows = {
+            item["name"]
+            for item in self.shards["native-windows-x86_64"]["build"]["variants"]
+        }
+        self.assertEqual(common | {"compile-avx2", "compile-avx512"}, linux)
+        self.assertEqual(common, windows)
 
     def test_parent_and_classifier_selection(self):
         parent = MODULE.selected_executions(self.plan, ["native-linux-x86_64"])
         self.assertEqual(1, len(parent))
-        self.assertEqual(7, len(parent[0]["build"]["variants"]))
+        self.assertEqual(9, len(parent[0]["build"]["variants"]))
         classifier = MODULE.selected_executions(self.plan, ["native-linux-x86_64--avx2"])
         self.assertEqual("native-linux-x86_64--avx2", classifier[0]["id"])
         self.assertEqual(["avx2"], [item["name"] for item in classifier[0]["build"]["variants"]])
@@ -154,6 +162,109 @@ class ReleasePlanTest(unittest.TestCase):
 
 
 class BuildPlatformParityTest(unittest.TestCase):
+    def test_dl4j_checkout_fetches_branch_and_verifies_tip(self):
+        branch = "release/snapshot"
+        commit = "b" * 40
+        config = {
+            "dl4jRepository": "https://example.test/deeplearning4j.git",
+            "dl4jBranch": branch,
+            "dl4jCommit": commit,
+        }
+        completed = Mock(stdout=commit + "\n")
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(BUILD_MODULE, "run") as run, \
+                patch.object(
+                    BUILD_MODULE.subprocess, "run",
+                    side_effect=[completed, completed],
+                ):
+            checkout = BUILD_MODULE.ensure_dl4j_checkout(
+                config, pathlib.Path(temporary)
+            )
+        self.assertEqual(
+            pathlib.Path(temporary) / "deeplearning4j", checkout
+        )
+        commands = [item.args[0] for item in run.call_args_list]
+        self.assertIn(
+            [
+                "git", "fetch", "--depth=1", "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
+            commands,
+        )
+        self.assertIn(
+            ["git", "checkout", "--detach", commit],
+            commands,
+        )
+
+    def test_sdk_jars_are_hydrated_from_configured_snapshot_repository(self):
+        config = {
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jMavenRepositoryUrl": (
+                "https://central.sonatype.com/repository/maven-snapshots/"
+            ),
+            "dl4jMavenRepositoryId": "sonatype-snapshots",
+            "shard": {
+                "build": {
+                    "backend": "cpu",
+                    "javacppPlatform": "windows-x86_64",
+                },
+            },
+        }
+        classifier = "windows-x86_64-compile"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            repository = root / "m2"
+            destination = root / "sdk"
+            jars = destination / "jars"
+            jars.mkdir(parents=True)
+            (jars / "nd4j-native-1.0.0-windows-x86_64-compile.jar").write_bytes(
+                b"stale-release"
+            )
+
+            def copy_snapshot(command, _cwd):
+                coordinate = next(
+                    item.removeprefix("-Dartifact=")
+                    for item in command if item.startswith("-Dartifact=")
+                )
+                parts = coordinate.split(":")
+                artifact_id = parts[1]
+                version = parts[2]
+                artifact_classifier = parts[4] if len(parts) == 5 else ""
+                suffix = (
+                    f"-{artifact_classifier}" if artifact_classifier else ""
+                )
+                (jars / f"{artifact_id}-{version}{suffix}.jar").write_bytes(
+                    b"snapshot"
+                )
+
+            with patch.object(BUILD_MODULE, "run", side_effect=copy_snapshot) as run:
+                BUILD_MODULE.hydrate_dl4j_sdk_jars(
+                    config, source, repository, destination, classifier
+                )
+
+            self.assertFalse(
+                (jars / "nd4j-native-1.0.0-windows-x86_64-compile.jar").exists()
+            )
+            self.assertTrue(
+                (
+                    jars /
+                    "nd4j-native-1.0.0-SNAPSHOT-windows-x86_64-compile.jar"
+                ).is_file()
+            )
+            self.assertTrue(
+                (jars / "nd4j-native-platform-1.0.0-SNAPSHOT.jar").is_file()
+            )
+            commands = [item.args[0] for item in run.call_args_list]
+            self.assertEqual(8, len(commands))
+            for command in commands:
+                self.assertIn(
+                    "-Ddl4j.repository.url="
+                    "https://central.sonatype.com/repository/maven-snapshots/",
+                    command,
+                )
+
     def test_graalvm_community_resolution_matches_latest_java_21_tag(self):
         response = MagicMock()
         response.read.return_value = (
@@ -393,6 +504,127 @@ class BuildPlatformParityTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unsafe SDK archive member"):
                 BUILD_MODULE.extract_sdk_archive(malicious, root / "malicious-output")
 
+    def test_azure_sdk_archive_can_use_adjacent_shard_manifest_attestation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = root / "source-sdk.zip"
+            with zipfile.ZipFile(archive, "w") as contents:
+                contents.writestr("runtime.zip", b"PK\x03\x04runtime")
+                contents.writestr("jars/nd4j-native-linux-x86_64.jar", b"jar")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+            def retrieve(url, destination):
+                destination = pathlib.Path(destination)
+                if url.endswith(".sha256"):
+                    raise BUILD_MODULE.urllib.error.HTTPError(
+                        url, 404, "missing", {}, None,
+                    )
+                if url.endswith("shard-manifest.json"):
+                    destination.write_text(json.dumps({
+                        "files": [{
+                            "path": "sdk-assets.tar.gz",
+                            "sha256": digest,
+                            "size": archive.stat().st_size,
+                        }],
+                    }), encoding="utf-8")
+                else:
+                    shutil.copy2(archive, destination)
+                return str(destination), None
+
+            output = root / "output"
+            with patch.object(
+                BUILD_MODULE.urllib.request, "urlretrieve", side_effect=retrieve,
+            ):
+                BUILD_MODULE.download_dl4j_sdk_assets(
+                    {
+                        "snapshotVersion": "1.0.0-SNAPSHOT",
+                        "dl4jSdkAssetsUrl": (
+                            "https://builds.blob.core.windows.net/releases/"
+                            "{lane}/sdk-assets.tar.gz"
+                        ),
+                        "shard": {
+                            "build": {"javacppPlatform": "linux-x86_64"},
+                        },
+                    },
+                    "linux-x86_64-cpu",
+                    "base",
+                    output,
+                )
+            self.assertTrue((output / "runtime.zip").is_file())
+
+    def test_cli_only_distribution_installs_zip_and_tar_maven_assemblies(self):
+        maven = shutil.which("mvn")
+        configured_maven = pathlib.Path("/home/agibsonccc/dev-apps/mvn/bin/mvn")
+        if maven is None and configured_maven.is_file():
+            maven = str(configured_maven)
+        if maven is None:
+            self.skipTest("Maven is required to verify classified distribution installation")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            shutil.copy2(REPOSITORY / "build-dist.sh", root / "build-dist.sh")
+            (root / "build-dist.sh").chmod(0o755)
+            (root / "pom.xml").write_text(
+                "<project><modelVersion>4.0.0</modelVersion>"
+                "<groupId>ai.kompile</groupId><artifactId>synthetic-root</artifactId>"
+                "<version>0.1.0-SNAPSHOT</version></project>\n",
+                encoding="utf-8",
+            )
+            build_helpers = root / "kompile-dist" / "src" / "main" / "build"
+            build_helpers.mkdir(parents=True)
+            normalizer = build_helpers / "normalize-elf-portability.sh"
+            normalizer.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            normalizer.chmod(0o755)
+            native_stager = build_helpers / "stage-native-libs.sh"
+            shutil.copy2(
+                REPOSITORY / "kompile-dist" / "src" / "main" / "build" /
+                "stage-native-libs.sh",
+                native_stager,
+            )
+            native_stager.chmod(0o755)
+            (root / "kompile-dist" / "pom.xml").write_text(
+                "<project><modelVersion>4.0.0</modelVersion>"
+                "<groupId>ai.kompile</groupId><artifactId>kompile-dist</artifactId>"
+                "<version>0.1.0-SNAPSHOT</version><packaging>pom</packaging></project>\n",
+                encoding="utf-8",
+            )
+            cli = root / "kompile-cli" / "kompile-cli-main" / "target" / "kompile-cli-main"
+            cli.parent.mkdir(parents=True)
+            cli.write_bytes(b"native-cli")
+            cli.chmod(0o755)
+            (cli.parent / "native-libs").mkdir()
+            output = root / "output"
+            repository = root / "m2"
+            env = os.environ.copy()
+            env.update({
+                "KOMPILE_MAVEN_REPO": str(repository),
+                "MVN": maven,
+            })
+            result = subprocess.run(
+                [
+                    "bash", "./build-dist.sh", "cli-only",
+                    "--skip-java-build", "--skip-native",
+                    "--platform", "linux-x86_64",
+                    "--output-dir", str(output),
+                    "--version", "0.1.0-SNAPSHOT",
+                ],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            classifier = "cli-only-linux-x86_64"
+            base = f"kompile-dist-0.1.0-SNAPSHOT-{classifier}"
+            self.assertTrue((output / f"{base}.zip").is_file())
+            self.assertTrue((output / f"{base}.tar.gz").is_file())
+            installed = (
+                repository / "ai" / "kompile" / "kompile-dist" /
+                "0.1.0-SNAPSHOT"
+            )
+            self.assertTrue((installed / f"{base}.zip").is_file())
+            self.assertTrue((installed / f"{base}.tar.gz").is_file())
+
     def test_repository_only_backend_assembly_produces_self_contained_zip(self):
         maven = shutil.which("mvn")
         configured_maven = pathlib.Path("/home/agibsonccc/dev-apps/mvn/bin/mvn")
@@ -422,6 +654,13 @@ class BuildPlatformParityTest(unittest.TestCase):
                 validator,
             )
             validator.chmod(0o755)
+            native_stager = normalizer / "stage-native-libs.sh"
+            shutil.copy2(
+                REPOSITORY / "kompile-dist" / "src" / "main" / "build" /
+                "stage-native-libs.sh",
+                native_stager,
+            )
+            native_stager.chmod(0o755)
             (root / "kompile-dist" / "pom.xml").write_text(
                 "<project><modelVersion>4.0.0</modelVersion>"
                 "<groupId>ai.kompile</groupId><artifactId>kompile-dist</artifactId>"
@@ -431,9 +670,16 @@ class BuildPlatformParityTest(unittest.TestCase):
 
             files = {
                 "kompile-cli/kompile-cli-main/target/kompile-cli-main": b"native-cli",
+                "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app": b"native-app",
                 "kompile-app/kompile-app-parent/kompile-app-main/target/app-exec.jar": b"app",
+                "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test": b"native-vlm",
+                "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging": b"native-staging",
                 "kompile-app/kompile-models/kompile-model-staging/target/staging-exec.jar": b"staging",
+                "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving": b"native-model-serving",
+                "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving": b"native-pipeline-serving",
+                "kompile-app/kompile-app-parent/kompile-app-chat/target/kompile-chat": b"native-chat",
                 "kompile-app/kompile-app-parent/kompile-app-chat/target/chat-exec.jar": b"chat",
+                "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/kompile-crawl-manager": b"native-crawl",
                 "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/crawl-exec.jar": b"crawl",
                 "kompile-app/kompile-data/kompile-compute-graphs/kompile-compute-graph-scripting/target/scripting-exec.jar": b"scripting",
             }
@@ -441,7 +687,35 @@ class BuildPlatformParityTest(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
-            (root / "kompile-cli/kompile-cli-main/target/kompile-cli-main").chmod(0o755)
+                if not relative.endswith(".jar"):
+                    path.chmod(0o755)
+            (
+                root / "kompile-cli" / "kompile-cli-main" / "target" /
+                "native-libs"
+            ).mkdir()
+            app_native_libraries = (
+                root / "kompile-app" / "kompile-app-parent" /
+                "kompile-app-main" / "target" / "native-libs"
+            )
+            backend_manifest = (
+                app_native_libraries / "org" / "nd4j" / "linalg" / "cpu" /
+                "nativecpu" / "bindings" / "linux-x86_64-avx2" /
+                "shared-runtime-manifest.txt"
+            )
+            backend_manifest.parent.mkdir(parents=True)
+            backend_manifest.write_text(
+                "# nd4j-shared-runtime-manifest-v1\n"
+                "# runtime-count=2\n"
+                "libnd4jcpu.so\n"
+                "libjnind4jcpu.so\n",
+                encoding="utf-8",
+            )
+            shutil.copy2(
+                "/bin/true", backend_manifest.parent / "libnd4jcpu.so"
+            )
+            shutil.copy2(
+                "/bin/true", backend_manifest.parent / "libjnind4jcpu.so"
+            )
 
             sdk = root / "sdk-assets"
             (sdk / "jars").mkdir(parents=True)
@@ -467,7 +741,7 @@ class BuildPlatformParityTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "bash", "./build-dist.sh", "cpu-intel",
-                    "--skip-java-build", "--jars-only",
+                    "--skip-java-build", "--skip-native",
                     "--platform", "linux-x86_64", "--sdx-assets", str(sdk),
                     "--output-dir", str(output), "--version", "0.1.0-SNAPSHOT",
                 ],
@@ -493,12 +767,20 @@ class BuildPlatformParityTest(unittest.TestCase):
                 manifest = contents.read(prefix + "manifest.sha256").decode()
                 self.assertIn("sdx-sdk/runtime.zip", manifest)
                 self.assertIn("lib/kompile-server.jar", manifest)
-            installed = (
+            installed_directory = (
                 root / "m2" / "ai" / "kompile" / "kompile-dist" /
-                "0.1.0-SNAPSHOT" /
+                "0.1.0-SNAPSHOT"
+            )
+            installed_zip = (
+                installed_directory /
                 "kompile-dist-0.1.0-SNAPSHOT-cpu-intel-linux-x86_64-avx2.zip"
             )
-            self.assertTrue(installed.is_file())
+            installed_tar = (
+                installed_directory /
+                "kompile-dist-0.1.0-SNAPSHOT-cpu-intel-linux-x86_64-avx2.tar.gz"
+            )
+            self.assertTrue(installed_zip.is_file())
+            self.assertTrue(installed_tar.is_file())
 
     def test_collector_surfaces_verified_inner_distribution_zip(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1007,6 +1289,21 @@ class GithubWorkflowParityTest(unittest.TestCase):
             (dl4j / "pom.xml").write_text(
                 "<project><version>1.0.0-SNAPSHOT</version></project>\n",
                 encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(dl4j), "init", "-q"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(dl4j), "add", "pom.xml"], check=True
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(dl4j),
+                    "-c", "user.name=Kompile Release Test",
+                    "-c", "user.email=release-test@example.invalid",
+                    "commit", "-q", "-m", "fixture",
+                ],
+                check=True,
             )
             local_repository = root / "maven repo"
             libnd4j = root / "lib nd4j"

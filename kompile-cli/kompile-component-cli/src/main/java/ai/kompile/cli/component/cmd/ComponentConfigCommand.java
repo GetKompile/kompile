@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.component.cmd;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.component.output.OutputFormatter;
 import ai.kompile.cli.component.output.OutputFormatter.Format;
 import picocli.CommandLine.Command;
@@ -39,9 +40,10 @@ public class ComponentConfigCommand implements Callable<Integer> {
     @Parameters(index = "0", arity = "0..1", description = "Component ID (use --all for all components)")
     private String componentId;
 
-    @Option(names = {"--format", "-f"}, 
+    @Option(names = {"--format", "-f"},
             description = "Output format: text, json, yaml, csv, table",
-            defaultValue = "text")
+            defaultValue = "text",
+            converter = ComponentListCommand.FormatConverter.class)
     private Format format = Format.TEXT;
 
     @Option(names = {"--all"}, 
@@ -152,9 +154,10 @@ public class ComponentConfigCommand implements Callable<Integer> {
 
     private Map<String, Object> getGlobalConfig() {
         Map<String, Object> global = new LinkedHashMap<>();
-        global.put("kompileHome", System.getProperty("user.home") + "/.kompile");
-        global.put("componentsDirectory", System.getProperty("user.home") + "/.kompile/components");
-        global.put("instancesDirectory", System.getProperty("user.home") + "/.kompile/instances");
+        global.put("kompileHome", KompileHome.homeDirectory().getAbsolutePath());
+        global.put("installDirectory", KompileHome.installDirectory().getAbsolutePath());
+        global.put("componentsDirectory", new File(KompileHome.installDirectory(), "components").getAbsolutePath());
+        global.put("instancesDirectory", new File(KompileHome.homeDirectory(), "instances").getAbsolutePath());
         global.put("defaultReleaseSource", "github");
         global.put("defaultGithubRepo", "KonduitAI/kompile");
         global.put("defaultMavenRepo", "https://repo1.maven.org/maven2/");
@@ -203,22 +206,16 @@ public class ComponentConfigCommand implements Callable<Integer> {
     }
 
     private String getInstallPath(String componentId) {
-        String homeDir = System.getProperty("user.home");
-        File componentsDir = new File(homeDir, ".kompile/components/" + componentId);
-        
-        if (!componentsDir.exists()) {
-            return null;
-        }
-
-        File[] versions = componentsDir.listFiles(File::isDirectory);
-        if (versions == null || versions.length == 0) {
-            return null;
-        }
-
-        return versions[0].getAbsolutePath();
+        ComponentInstallPaths.InstallInfo install = ComponentInstallPaths.findInstallInfo(componentId);
+        return install.installed() && install.path() != null
+                ? install.path().getAbsolutePath()
+                : null;
     }
 
     private long getFileSize(File dir) {
+        if (dir.isFile()) {
+            return dir.length();
+        }
         long size = 0;
         File[] files = dir.listFiles();
         if (files != null) {
@@ -234,6 +231,9 @@ public class ComponentConfigCommand implements Callable<Integer> {
     }
 
     private File findJarFile(File directory) {
+        if (directory.isFile()) {
+            return directory.getName().endsWith(".jar") ? directory : null;
+        }
         File[] jars = directory.listFiles((dir, name) -> name.endsWith(".jar"));
         if (jars != null && jars.length > 0) {
             return jars[0];

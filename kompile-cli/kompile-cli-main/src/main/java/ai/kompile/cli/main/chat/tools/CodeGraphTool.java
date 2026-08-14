@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -919,8 +920,7 @@ public class CodeGraphTool implements CliTool {
                 case "signatures" -> doSignaturesLocal(params, projectId, cwd);
                 case "health" -> doHealthLocal(params, projectId, cwd);
                 case "routing" -> doRoutingLocal(params, projectId, cwd);
-                case "remove_directory" -> ToolResult.error(
-                        "Action 'remove_directory' requires a running kompile-app instance.");
+                case "remove_directory" -> doRemoveDirectoryLocal(params, projectId);
                 default -> ToolResult.error("Unknown action: '" + action + "'. " +
                         "Supported local actions: build, search, ranked_search, blended_search, signatures, " +
                         "impact, health, routing, stats, list_directories, symbol, file, connectivity.");
@@ -928,6 +928,40 @@ public class CodeGraphTool implements CliTool {
         } catch (Exception e) {
             return ToolResult.error("Local code index error: " + e.getMessage());
         }
+    }
+
+    private ToolResult doRemoveDirectoryLocal(JsonNode params, String projectId) throws Exception {
+        String dirPath = params.path("directory_path").asText("");
+        if (dirPath.isBlank()) {
+            return ToolResult.error("directory_path is required for remove_directory");
+        }
+
+        Path baseIndexDir = LocalCodeIndexer.getBaseIndexDir().toAbsolutePath().normalize();
+        Path indexDir = LocalCodeIndexer.getIndexDir(projectId).toAbsolutePath().normalize();
+        if (indexDir.equals(baseIndexDir) || !indexDir.startsWith(baseIndexDir)) {
+            return ToolResult.error("Refusing to remove an index outside the local code-index directory");
+        }
+        if (!Files.exists(indexDir)) {
+            return ToolResult.success("remove_directory: " + dirPath,
+                    "No local index was tracked for project '" + projectId + "'.");
+        }
+
+        Map<String, Object> stats = new LocalCodeIndexer().getStats(projectId);
+        Path indexedRoot = Path.of(String.valueOf(stats.getOrDefault("rootPath", "")))
+                .toAbsolutePath().normalize();
+        Path requestedRoot = Path.of(dirPath).toAbsolutePath().normalize();
+        if (!requestedRoot.equals(indexedRoot)) {
+            return ToolResult.error("Directory is not tracked by the local index for project '"
+                    + projectId + "': " + requestedRoot);
+        }
+
+        try (var paths = Files.walk(indexDir)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+        return ToolResult.success("remove_directory: " + dirPath,
+                "Local index removed for directory: " + requestedRoot);
     }
 
     /**

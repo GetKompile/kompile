@@ -1,11 +1,11 @@
 name: Package Distribution
 description: >
-  Package a complete Kompile ZIP containing CLI binaries, application JARs,
-  native libraries, configuration, and the matching DL4J runtime SDK shard.
+  Package a complete Kompile ZIP containing native executables, selected product
+  JARs, side-loaded native libraries, configuration, and the matching DL4J runtime SDK shard.
 
   Distribution layout:
-    bin/              CLI native binaries (kompile-cli, kompile-agent, ...)
-    lib/              Application JARs (kompile-app-main.jar, kompile-model-staging.jar)
+    bin/              Native executables (CLI plus local MCP workers)
+    lib/              Side-loaded native libraries and selected product JARs
     conf/             Default application.properties
     data/             Seed data directories (prompt-templates, input_documents, etc.)
     sdx-sdk/          DL4J runtime packages and platform SDK JARs
@@ -29,7 +29,7 @@ inputs:
     required: false
     default: ''
   extra-libs-dir:
-    description: 'Directory containing extra shared libraries (.so/.dylib/.dll) to include in bin/'
+    description: 'Directory containing side-loaded shared libraries (.so/.dylib/.dll) to include in lib/'
     required: false
     default: ''
   sdx-assets-dir:
@@ -183,13 +183,13 @@ runs:
             ;;
         esac
 
-        # ── bin/ — Extra shared libraries ──
+        # ── lib/ — Side-loaded shared libraries ──
         if [ -n "${EXTRA_DIR}" ] && [ -d "${EXTRA_DIR}" ]; then
           echo "Copying extra libraries from ${EXTRA_DIR}"
           shopt -s nullglob
           for lib in "${EXTRA_DIR}"/*.{so,dylib,dll}; do
-            cp "${lib}" "${DIST_DIR}/bin/"
-            echo "  bin/$(basename "${lib}")"
+            cp "${lib}" "${DIST_DIR}/lib/"
+            echo "  lib/$(basename "${lib}")"
           done
           shopt -u nullglob
         fi

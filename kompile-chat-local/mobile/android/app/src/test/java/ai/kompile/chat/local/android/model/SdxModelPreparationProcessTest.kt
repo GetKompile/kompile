@@ -216,7 +216,7 @@ class SdxModelPreparationProcessTest {
         assertCheckpointBeforeCall(importer, "native.sdxLlmGetLastError(", "QUERY_IMPORTER_LAST_ERROR")
         assertCheckpointBeforeCall(importer, "native.sdxLlmFree(", "FREE_IMPORTER_RESULT")
         assertCheckpointBeforeCall(importer, "native.sdxLlmDestroyRuntime(runtime)", "DESTROY_IMPORTER_RUNTIME")
-        assertEquals(6, Regex("native\\.sdxLlm[A-Za-z0-9]+\\(").findAll(importer).count())
+        assertEquals(7, Regex("native\\.sdxLlm[A-Za-z0-9]+\\(").findAll(importer).count())
         assertTrue(importer.contains("internal object SdxGgufModelImporter"))
         assertFalse(importer.contains(": PlatformLocalChatSession"))
         assertFalse(importer.contains("PlatformLocalChatModelFactory.open("))
@@ -259,7 +259,8 @@ class SdxModelPreparationProcessTest {
         assertFalse(sdx.contains("ai.kompile.chat.local.sdx.SdxLlmAbi"))
         assertTrue(sdx.contains("SdxAndroidLlmAbi"))
         assertFalse(sdx.contains("MobileModelArtifactResolver"))
-        assertTrue(sdx.contains("import org.bytedeco.javacpp.Pointer"))
+        assertFalse(sdx.contains("org.bytedeco.javacpp"))
+        assertTrue(sdx.contains("SdxNativeHandle"))
         assertFalse(sdx.contains("import org.nd4j.dsp.runtime.SdxRuntime"))
         assertFalse(sdx.contains("SdxRuntime.create()"))
         assertFalse(sdx.contains("NativeTokenizer"))
@@ -317,12 +318,19 @@ class SdxModelPreparationProcessTest {
         val androidAbi = File(
             "src/main/java/ai/kompile/chat/local/android/model/SdxAndroidLlmAbi.kt"
         ).readText()
-        assertTrue(androidAbi.contains("const val ABI_VERSION = SdxLlmNative.SDX_LLM_ABI_VERSION"))
-        assertTrue(androidAbi.contains("SdxLlmNative.sdxLlmPrepareGguf("))
-        assertTrue(androidAbi.contains("SdxLlmNative.sdxLlmResolveModelBundle("))
-        assertTrue(androidAbi.contains("SdxLlmNative.sdxLlmLoadCompiledModel("))
-        assertTrue(androidAbi.contains("SdxLlmNative.sdxLlmRenderChatPrompt("))
-        assertTrue(androidAbi.contains("SdxLlmNative.sdxLlmGenerateStreaming("))
+        assertTrue(
+            androidAbi.contains(
+                "const val ABI_VERSION = SdxAndroidLlmNative.SDX_LLM_ABI_VERSION"
+            )
+        )
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativePrepareGguf("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeResolveModelBundle("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeLoadCompiledModel("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeRenderChatPrompt("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeGenerateStreaming("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeReadUtf8("))
+        assertFalse(androidAbi.contains("org.bytedeco.javacpp"))
+        assertFalse(androidAbi.contains("SdxLlmNative"))
         assertFalse(androidAbi.contains("com.sun.jna"))
         assertFalse(androidAbi.contains("Native.load"))
 
@@ -449,6 +457,9 @@ class SdxModelPreparationProcessTest {
         val expected = PreparedModelInfo(
             cacheHit = true,
             sourceSha256 = "a".repeat(64),
+            sourceBytes = 987_654_321L,
+            canonicalSdzLogicalSha256 = "b".repeat(64),
+            canonicalSdzLogicalBytes = 112_233_445L,
             canonicalSdzPath = "/data/user/0/app/no_backup/sdx-model-cache/v1/model.sdz",
             canonicalSdzBytes = 123_456_789L,
             modelPath = "/data/user/0/app/no_backup/sdx-model-cache/v1/target/model.sdz",

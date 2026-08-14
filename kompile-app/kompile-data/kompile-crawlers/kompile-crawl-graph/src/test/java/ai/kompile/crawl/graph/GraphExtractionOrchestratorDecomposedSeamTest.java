@@ -23,6 +23,8 @@ import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
+import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.crawl.graph.passes.ToolDrivenExtractionExecutor;
@@ -160,6 +162,11 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
             List<CrawlLlmDispatcher.LlmCallScope> scopes) {
     }
 
+    private record StructuredHarness(
+            GraphExtractionOrchestrator orchestrator,
+            List<StructuredChatLanguageModel.Request> requests) {
+    }
+
     private static Harness harness(String... scriptedAnswers) {
         GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.pipelineStepTracker = new PipelineStepTracker();
@@ -183,6 +190,38 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
 
     private static Harness successfulHarness() {
         return harness(CORPUS_SEARCH, GRAPH_SEARCH, SUBMIT_EXISTING_RELATION);
+    }
+
+    private static StructuredHarness structuredHarness(
+            StructuredChatLanguageModel.Response response) {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
+        orchestrator.pipelineStepTracker = new PipelineStepTracker();
+        orchestrator.documentTracker = new CrawlDocumentTracker();
+        orchestrator.graphReasoningQueryService = new GraphReasoningQueryService(null);
+
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        List<StructuredChatLanguageModel.Request> requests = new CopyOnWriteArrayList<>();
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                anyString(),
+                any(UnifiedCrawlJob.class),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    requests.add(invocation.getArgument(0));
+                    return response;
+                });
+        orchestrator.llmDispatcher = dispatcher;
+        return new StructuredHarness(orchestrator, requests);
+    }
+
+    @Test
+    void everyPresentationTierKeepsTheModelOwnedNativeToolCallFormat() {
+        ToolDrivenExtractionExecutor.StructuredRequest request =
+                new ToolDrivenExtractionExecutor.StructuredRequest(List.of(), List.of());
+
+        assertEquals(StructuredChatLanguageModel.ToolCallFormat.MODEL,
+                GraphExtractionOrchestrator.toStructuredChatRequest(request).toolCallFormat());
     }
 
     @Test
@@ -216,6 +255,138 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
         assertEquals("primary",
                 effective.getRelationshipTypes().get(0).getProperties().get(0).getName());
         assertEquals(List.of("(PERSON)-[:HAS_ROLE]->(ROLE)"), effective.getPatterns());
+    }
+
+    @Test
+    void strictConfiguredSchemaSkipsSemanticSchemaInduction() {
+        GraphExtractionConfig config = decomposedConfig();
+        config.setSchemaMode(SchemaEnforcementMode.STRICT);
+
+        assertFalse(successfulHarness().orchestrator().shouldDeriveCorpusSchema(config));
+
+        config.setSchemaMode(SchemaEnforcementMode.LENIENT);
+        assertTrue(successfulHarness().orchestrator().shouldDeriveCorpusSchema(config));
+    }
+
+    @Test
+    void singlePassAndDecomposedExtractionShareTheCorpusSchemaPrepass() {
+        GraphExtractionConfig singlePass = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.SINGLE_PASS)
+                .schemaMode(SchemaEnforcementMode.LENIENT)
+                .build();
+
+        assertTrue(successfulHarness().orchestrator().shouldDeriveCorpusSchema(singlePass));
+    }
+
+    @Test
+    void establishedPrepassOntologyIsFrozenForEveryExtractionWindow() {
+        GraphExtractionConfig lenient = decomposedConfig();
+        GraphSchema established = new GraphSchema(
+                List.of(new NodeType("CORPUS_TYPE", "A corpus-derived type.", null)),
+                null,
+                null);
+
+        assertFalse(GraphExtractionOrchestrator.ontologyUpdatesAllowed(lenient, established));
+        assertTrue(GraphExtractionOrchestrator.ontologyUpdatesAllowed(lenient, null));
+    }
+
+    @Test
+    void optInCompactProposalInventoryIsDerivedAtTheOrdinaryDocumentSeam() {
+        String source = "Jordan Lee is a person. Helios Dynamics is a company. "
+                + "Jordan Lee founded Helios Dynamics.";
+        GraphExtractionConfig bounded = GraphExtractionConfig.builder()
+                .decomposedBoundNativeProposalArrays(true)
+                .build();
+
+        ExplicitAssertionSchemaInferencer.Analysis analysis =
+                GraphExtractionOrchestrator.compactProposalAnalysis(
+                        source, chunk("founding-1", source, "founding.md"), bounded);
+
+        assertNotNull(analysis);
+        assertEquals(2, analysis.explicitEntityCount());
+        assertEquals(1, analysis.explicitRelationCount());
+        assertEquals(List.of("Jordan Lee", "Helios Dynamics"),
+                analysis.entityAssertions().stream().map(
+                        ExplicitAssertionSchemaInferencer.EntityAssertion::name).toList());
+        assertNull(GraphExtractionOrchestrator.compactProposalAnalysis(
+                source, chunk("founding-1", source, "founding.md"), decomposedConfig()),
+                "ordinary crawl extraction must remain unbounded without the explicit opt-in");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void ordinaryStructuredRequestCarriesSourceDerivedBoundsWithoutLiteralFacts() {
+        String source = "Jordan Lee is a person. Helios Dynamics is a company. "
+                + "Jordan Lee founded Helios Dynamics.";
+        GraphSchema corpusSchema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person.", null),
+                        new NodeType("COMPANY", "A company.", null)),
+                List.of(new RelationshipType(
+                        "FOUNDED", "A person founded a company.", null, null)),
+                List.of("(PERSON)-[:FOUNDED]->(COMPANY)"));
+        GraphExtractionConfig bounded = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .decomposedPromptTier(GraphExtractionConfig.DecomposedPromptTier.COMPACT)
+                .decomposedBoundNativeProposalArrays(true)
+                .build();
+        Map<String, Object> arguments = Map.of(
+                "format", "indexed",
+                "entities", List.of(
+                        Map.of("name", "Jordan Lee", "type", "PERSON"),
+                        Map.of("name", "Helios Dynamics", "type", "COMPANY")),
+                "relations", List.of(
+                        Map.of("source", 0, "target", 1, "type", "FOUNDED")));
+        StructuredHarness harness = structuredHarness(
+                new StructuredChatLanguageModel.Response(
+                        "<native>", "",
+                        List.of(new StructuredChatLanguageModel.ToolCall(
+                                "call-1", "submit_graph_delta", arguments)),
+                        List.of()));
+        Graph target = new Graph();
+        target.setId("graph-founding");
+        target.setEntities(new ArrayList<>());
+        target.setRelationships(new ArrayList<>());
+
+        String json = harness.orchestrator().extractViaDecomposedPasses(
+                source,
+                chunk("founding-1", source, "founding.md"),
+                bounded,
+                corpusSchema,
+                target,
+                job(),
+                null);
+
+        assertNotNull(json);
+        assertEquals(1, harness.requests().size());
+        StructuredChatLanguageModel.Tool submit = harness.requests().get(0).tools().stream()
+                .filter(tool -> "submit_graph_delta".equals(tool.name()))
+                .findFirst()
+                .orElseThrow();
+        Map<String, Object> properties =
+                (Map<String, Object>) submit.parameters().get("properties");
+        Map<String, Object> entities = (Map<String, Object>) properties.get("entities");
+        Map<String, Object> relations = (Map<String, Object>) properties.get("relations");
+        assertEquals(2, entities.get("maxItems"));
+        assertEquals(1, relations.get("maxItems"));
+        assertEquals(2, entities.get("minItems"));
+        assertFalse(entities.containsKey("prefixItems"));
+        assertEquals(1, relations.get("minItems"));
+        assertFalse(relations.containsKey("prefixItems"));
+        Map<String, Object> entityItem = (Map<String, Object>) entities.get("items");
+        Map<String, Object> entityProperties =
+                (Map<String, Object>) entityItem.get("properties");
+        assertFalse(((Map<String, Object>) entityProperties.get("name")).containsKey("const"));
+        assertFalse(((Map<String, Object>) entityProperties.get("type")).containsKey("const"));
+        Map<String, Object> relationItem = (Map<String, Object>) relations.get("items");
+        Map<String, Object> relationProperties =
+                (Map<String, Object>) relationItem.get("properties");
+        assertFalse(((Map<String, Object>) relationProperties.get("source")).containsKey("const"));
+        assertFalse(((Map<String, Object>) relationProperties.get("target")).containsKey("const"));
+        assertFalse(((Map<String, Object>) relationProperties.get("type")).containsKey("const"));
+        assertEquals(15, ((Map<String, Object>) entityProperties.get("name")).get("maxLength"));
+        assertEquals(List.of("PERSON", "COMPANY"),
+                ((Map<String, Object>) entityProperties.get("type")).get("enum"));
     }
 
     @Test
@@ -260,7 +431,8 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
         harness.orchestrator().admissionComparisonSink = comparisons::add;
 
         String json = harness.orchestrator().extractViaDecomposedPasses(
-                SOURCE, chunk(), config, graph(), job());
+                SOURCE + " New Corporation was also reviewed.",
+                chunk(), config, graph(), job());
 
         ExtractionResult result = GraphExtractionValidator.fromJson(json);
         assertEquals(List.of("ent-acme", "ent-new"), result.entities().stream()

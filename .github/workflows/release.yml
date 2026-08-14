@@ -336,7 +336,7 @@ jobs:
 
           DIST_ROOT="${OUTPUT_DIR}/${NAME}"
           for asset in kompile-cli.jar kompile-server.jar kompile-chat.jar \
-                       kompile-crawl-manager.jar kompile-model-staging.jar; do
+                       kompile-crawl-manager.jar; do
             test -f "${DIST_ROOT}/lib/${asset}"
             cp "${DIST_ROOT}/lib/${asset}" "${asset}"
           done
@@ -359,7 +359,6 @@ jobs:
             kompile-server.jar
             kompile-chat.jar
             kompile-crawl-manager.jar
-            kompile-model-staging.jar
           if-no-files-found: error
 
   # ── Smoke-test the full-dist archive before publishing ───────────────────
@@ -461,27 +460,23 @@ jobs:
           done
           echo "project init assertions passed"
 
-      - name: Smoke-test staging server startup
+      - name: Smoke-test native staging server startup
         shell: bash
         run: |
           set -euo pipefail
           STAGING_LOG="$RUNNER_TEMP/staging-server.log"
-          STAGING_JAR="$HOME/.kompile/lib/kompile-model-staging.jar"
-          if [ ! -f "${STAGING_JAR}" ]; then
-            echo "INFO: ${STAGING_JAR} not found in dist — skipping staging server smoke test"
-            exit 0
+          STAGING_BIN="$HOME/.kompile/bin/kompile-model-staging"
+          if [ ! -x "${STAGING_BIN}" ]; then
+            echo "ERROR: required native staging worker is missing: ${STAGING_BIN}" >&2
+            exit 1
           fi
 
-          # Prefer the bundled runtime java; fall back to system java
-          if [ -x "$HOME/.kompile/runtime/bin/java" ]; then
-            JAVA="$HOME/.kompile/runtime/bin/java"
-          else
-            JAVA="java"
-          fi
-          echo "Java: $("${JAVA}" -version 2>&1 | head -1)"
+          export KOMPILE_DIST_HOME="$HOME/.kompile"
+          export KOMPILE_NATIVE_LIB_DIR="$HOME/.kompile/lib"
+          export LD_LIBRARY_PATH="$HOME/.kompile/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-          echo "Starting staging server on port 18090 (log: ${STAGING_LOG}) ..."
-          "${JAVA}" -jar "${STAGING_JAR}" \
+          echo "Starting native staging server on port 18090 (log: ${STAGING_LOG}) ..."
+          "${STAGING_BIN}" \
             --server.port=18090 \
             --spring.main.web-application-type=servlet \
             >> "${STAGING_LOG}" 2>&1 &

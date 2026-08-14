@@ -5,15 +5,20 @@
  */
 package ai.kompile.cli.main.chat.tools.grounding;
 
+import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.project.LocalCrawlCapabilities;
 import ai.kompile.cli.main.project.LocalCrawlSubprocessRunner;
 import ai.kompile.cli.main.project.LocalModelPipelineRunner;
+import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
+import ai.kompile.cli.main.project.ProjectAutoDetection;
 import ai.kompile.cli.main.project.ProjectCrawlCommand;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectCrawlProfile;
+import ai.kompile.project.KompileProjectInitRequest;
 import ai.kompile.project.KompileProjectManifest;
+import ai.kompile.project.KompileProjectPipeline;
 import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,9 +26,15 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -47,6 +58,7 @@ import java.util.stream.Stream;
  * {@code crawl_documents} has additive "put these documents in this KB" semantics.</p>
  */
 public final class LocalProjectCrawlBackend {
+    private static final int MAX_REMOTE_SOURCE_BYTES = 25 * 1024 * 1024;
     private static final List<String> DEFAULT_CODE_EXCLUDES = List.of(
             "**/.git/**", "**/.kompile/**", "**/target/**", "**/build/**",
             "**/.gradle/**", "**/.idea/**", "**/node_modules/**",
@@ -58,14 +70,21 @@ public final class LocalProjectCrawlBackend {
     private final LocalProjectGraphBackend graphBackend;
 
     public LocalProjectCrawlBackend(ObjectMapper mapper) {
+        this(mapper, new LocalProjectGraphBackend(mapper));
+    }
+
+    LocalProjectCrawlBackend(ObjectMapper mapper, LocalProjectGraphBackend graphBackend) {
         this.mapper = mapper;
         this.store = new KompileProjectStore();
-        this.graphBackend = new LocalProjectGraphBackend(mapper);
+        this.graphBackend = graphBackend;
     }
 
     public ToolResult crawlDocuments(JsonNode params, ToolContext context) {
+        List<Path> temporarySources = new ArrayList<>();
         try {
-            ProjectState project = project(context.getWorkingDirectory());
+            ProjectState project = dryRun(params)
+                    ? project(context.getWorkingDirectory())
+                    : ensureDirectoryProject(context.getWorkingDirectory());
             KnowledgeBaseRef knowledgeBase = knowledgeBase(params.get("knowledgeBase"), project);
             if (knowledgeBase.error() != null) {
                 return ToolResult.error(knowledgeBase.error());
@@ -95,17 +114,31 @@ public final class LocalProjectCrawlBackend {
                         return ToolResult.error(
                                 "documents[" + i + "] must provide exactly one of path or url.");
                     }
+                    Path resolved;
                     if (url != null) {
-                        return ToolResult.error("The project-local crawl backend accepts files and directories. "
-                                + "URL source '" + url + "' requires a configured distributed crawl manager.");
+                        String label = firstNonBlank(text(document, "label"), url);
+                        resolved = materializeRemoteSource(
+                                url, label, project, knowledgeBase, dryRun(params));
+                        if (dryRun(params)) {
+                            temporarySources.add(resolved);
+                        }
+                    } else {
+                        resolved = context.resolvePath(path).toAbsolutePath().normalize();
                     }
-                    Path resolved = context.resolvePath(path).toAbsolutePath().normalize();
                     if (!Files.exists(resolved)) {
                         return ToolResult.error("Local crawl source does not exist: " + resolved);
                     }
                     sources.add(resolved.toString());
                     ObjectNode sourceConfig = mapper.createObjectNode().put("path", resolved.toString());
                     copyDocumentOptions(document, sourceConfig);
+                    if (url != null) {
+                        JsonNode configuredProperties = sourceConfig.get("properties");
+                        ObjectNode properties = configuredProperties != null && configuredProperties.isObject()
+                                ? (ObjectNode) configuredProperties
+                                : mapper.createObjectNode();
+                        properties.put("sourceUrl", url);
+                        sourceConfig.set("properties", properties);
+                    }
                     sourceConfigs.put(resolved.toString(), sourceConfig);
                     explicitDocuments++;
                     List<String> selectedIncludes = strings(document.get("includePatterns"));
@@ -118,15 +151,23 @@ public final class LocalProjectCrawlBackend {
                 }
             }
 
+            JsonNode codeProjectSelectors = params.get("codeProjects");
+            boolean noDocuments = documents == null || documents.isNull() || documents.isEmpty();
+            boolean noCodeProjects = codeProjectSelectors == null
+                    || codeProjectSelectors.isNull() || codeProjectSelectors.isEmpty();
+            boolean folderBootstrap = noDocuments && noCodeProjects;
+            if (folderBootstrap) {
+                String folder = project.root().toString();
+                sources.add(folder);
+                sourceConfigs.putIfAbsent(folder, mapper.createObjectNode().put("path", folder));
+                unrestrictedSource = true;
+                excludePatterns.addAll(DEFAULT_CODE_EXCLUDES);
+                codeProjectSelectors = mapper.createArrayNode().add(project.id());
+            }
             CodeProjectSelection selectedProjects = selectCodeProjects(
-                    params.get("codeProjects"), project);
+                    codeProjectSelectors, project);
             if (selectedProjects.error() != null) {
                 return ToolResult.error(selectedProjects.error());
-            }
-            knowledgeBase = alignKnowledgeBase(
-                    knowledgeBase, selectedProjects, params.hasNonNull("knowledgeBase"));
-            if (knowledgeBase.error() != null) {
-                return ToolResult.error(knowledgeBase.error());
             }
             for (SelectedCodeProject selected : selectedProjects.projects()) {
                 if (!Files.exists(selected.root())) {
@@ -134,9 +175,11 @@ public final class LocalProjectCrawlBackend {
                             + selected.root());
                 }
                 sources.add(selected.root().toString());
-                sourceConfigs.computeIfAbsent(selected.root().toString(), ignored -> mapper.createObjectNode()
-                                .put("path", selected.root().toString()))
-                        .put("pipelineId", LocalCrawlCapabilities.CODE_PIPELINE);
+                ObjectNode sourceConfig = sourceConfigs.computeIfAbsent(selected.root().toString(),
+                        ignored -> mapper.createObjectNode().put("path", selected.root().toString()));
+                if (!folderBootstrap) {
+                    sourceConfig.put("pipelineId", LocalCrawlCapabilities.CODE_PIPELINE);
+                }
                 includePatterns.addAll(selected.includePatterns());
                 excludePatterns.addAll(DEFAULT_CODE_EXCLUDES);
                 excludePatterns.addAll(selected.excludePatterns());
@@ -156,9 +199,18 @@ public final class LocalProjectCrawlBackend {
             ObjectNode executionRequest = params.deepCopy();
             ArrayNode normalizedDocuments = executionRequest.putArray("documents");
             sourceConfigs.values().forEach(normalizedDocuments::add);
+            String projectPipelineError = registerProjectPipelines(executionRequest, project);
+            if (projectPipelineError != null) {
+                return ToolResult.error(projectPipelineError);
+            }
             String validationError = LocalCrawlCapabilities.validationError(executionRequest);
             if (validationError != null) {
                 return ToolResult.error(validationError);
+            }
+            String workerValidationError =
+                    LocalModelPipelineRunner.validateWorkerConfiguration(project.root(), executionRequest);
+            if (workerValidationError != null) {
+                return ToolResult.error(workerValidationError);
             }
             addUnsupportedWarnings(executionRequest, warnings);
 
@@ -187,43 +239,68 @@ public final class LocalProjectCrawlBackend {
             ReentrantLock lock = CRAWL_LOCKS.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
             lock.lock();
             try {
-                ProjectCrawlCommand.LocalCrawlExecution execution =
+                List<LocalProjectGraphBackend.CodeProjectSource> graphCodeProjects =
+                        selectedProjects.projects().stream()
+                                .map(selected -> new LocalProjectGraphBackend.CodeProjectSource(
+                                        selected.root(), selected.codeProjectId(), selected.name(),
+                                        selected.includePatterns(), selected.excludePatterns()))
+                                .toList();
+                LocalCrawlSubprocessRunner.GraphContext graphContext =
+                        new LocalCrawlSubprocessRunner.GraphContext(
+                                knowledgeBase.id(), knowledgeBase.name(), knowledgeBase.factSheetId(),
+                                project.id(), graphCodeProjects);
+                LocalCrawlSubprocessRunner.ExecutionResult lifecycle =
                         LocalCrawlSubprocessRunner.execute(
-                                profile, project.root(), dryRun, executionRequest, mapper);
-                LocalProjectGraphBackend.GraphUpdate graphUpdate = null;
+                                profile, project.root(), dryRun, executionRequest,
+                                graphContext, mapper);
+                ProjectCrawlCommand.LocalCrawlExecution execution = lifecycle.crawlExecution();
+                LocalProjectGraphBackend.GraphUpdate graphUpdate = lifecycle.graphUpdate();
                 if (!dryRun) {
-                    List<LocalProjectGraphBackend.CodeProjectSource> graphCodeProjects =
-                            selectedProjects.projects().stream()
-                                    .map(selected -> new LocalProjectGraphBackend.CodeProjectSource(
-                                            selected.root(), selected.codeProjectId(), selected.name(),
-                                            selected.includePatterns(), selected.excludePatterns()))
-                                    .toList();
-                    graphUpdate = graphBackend.updateCrawlGraph(
-                            project.root(), knowledgeBase.id(), knowledgeBase.name(),
-                            knowledgeBase.factSheetId(), project.id(), graphCodeProjects, executionRequest);
                     persistRequest(execution.outputDirectory(), executionRequest, project, knowledgeBase);
-                    persistProjectGraphProfile(project, profile, knowledgeBase,
-                            selectedProjects.projects(), graphUpdate);
+                    if (graphUpdate != null) {
+                        persistProjectGraphProfile(project, profile, knowledgeBase,
+                                selectedProjects.projects(), graphUpdate);
+                    }
                 }
                 ObjectNode summary = dryRun
                         ? dryRunSummary(profile, execution)
                         : readSummary(project.root(), knowledgeBase.id());
+                String effectiveStatus = execution.status();
+                if (graphUpdate != null && !graphUpdate.semanticExtractionErrors().isEmpty()
+                        && !"FAILED".equals(effectiveStatus)) {
+                    effectiveStatus = "COMPLETED_WITH_ERRORS";
+                }
                 summary.put("backend", "project-local");
                 summary.put("distributed", false);
+                summary.put("projectRoot", project.root().toString());
+                summary.put("codeProjectId", project.id());
+                summary.put("projectManifest", project.root().resolve("kompile.project.json").toString());
                 summary.put("jobId", knowledgeBase.id());
+                summary.put("status", effectiveStatus);
 
                 Map<String, Object> metadata = new LinkedHashMap<>();
                 metadata.put("jobId", knowledgeBase.id());
-                metadata.put("status", dryRun ? "DRY_RUN" : "COMPLETED");
+                metadata.put("status", effectiveStatus);
                 metadata.put("backend", "project-local");
                 metadata.put("distributed", false);
                 metadata.put("executionMode", LocalCrawlSubprocessRunner.executionMode());
+                metadata.put("projectRoot", project.root().toString());
+                metadata.put("codeProjectId", project.id());
+                metadata.put("projectManifest", project.root().resolve("kompile.project.json").toString());
+                KompileCodingProject directoryProject =
+                        findDirectoryCodingProject(project.manifest(), project.root());
+                if (directoryProject != null && firstNonBlank(directoryProject.getMetadataPath()) != null) {
+                    metadata.put("projectMetadata", project.root()
+                            .resolve(directoryProject.getMetadataPath()).normalize().toString());
+                }
                 metadata.put("knowledgeBase", knowledgeBase.id());
                 metadata.put("sourceCount", sources.size());
                 metadata.put("addedDocumentSelectors", explicitDocuments);
                 metadata.put("codeProjectCount", selectedProjects.projects().size());
                 metadata.put("documentCount", execution.documentCount());
                 metadata.put("chunkCount", execution.chunkCount());
+                metadata.put("failedDocumentCount", execution.documentFailures().size());
+                metadata.put("documentFailures", execution.documentFailures());
                 if (knowledgeBase.factSheetId() != null) {
                     metadata.put("factSheetId", knowledgeBase.factSheetId());
                 }
@@ -232,20 +309,44 @@ public final class LocalProjectCrawlBackend {
                     metadata.put("graphEntityCount", graphUpdate.entities());
                     metadata.put("graphRelationCount", graphUpdate.relations());
                     metadata.put("codeEntityCount", graphUpdate.codeEntities());
+                    metadata.put("semanticEntityCount", graphUpdate.semanticEntities());
+                    metadata.put("semanticRelationCount", graphUpdate.semanticRelations());
+                    metadata.put("semanticExtractionErrors", graphUpdate.semanticExtractionErrors());
+                    metadata.put("entityResolutionEnabled", graphUpdate.entityResolutionEnabled());
+                    metadata.put("entityResolutionMergedCount", graphUpdate.entitiesMerged());
+                    metadata.put("entityResolutionTypeCorrectionCount",
+                            graphUpdate.entityTypesCorrected());
+                    metadata.put("entityResolutionIdentifierLinkCount",
+                            graphUpdate.identifierLinksCreated());
                     metadata.put("embeddingVectorCount", graphUpdate.embeddingVectors());
                     if (graphUpdate.embeddingAlgorithm() != null) {
-                        metadata.put("embeddingAlgorithm", graphUpdate.embeddingAlgorithm());
+                    metadata.put("embeddingAlgorithm", graphUpdate.embeddingAlgorithm());
                     }
+                    metadata.put("enrichmentRequested", graphUpdate.enrichmentRequested());
+                    metadata.put("reasoningLearningEnabled",
+                            graphUpdate.reasoningLearningEnabled());
+                    metadata.put("folPslLearned", graphUpdate.folPslLearned());
+                    metadata.put("mebnLearned", graphUpdate.mebnLearned());
+                    metadata.put("reasoningModelsTrained",
+                            graphUpdate.reasoningModelsTrained());
+                    metadata.put("pslRuleCount", graphUpdate.pslRuleCount());
+                    metadata.put("mebnFragmentCount", graphUpdate.mebnFragmentCount());
                 }
                 metadata.put("warnings", warnings);
                 metadata.put("nextTools", List.of(
-                        "knowledge_search", "knowledge_status", "crawl_control",
-                        "graph_reasoning_query", "graph_reason", "graph_embeddings",
+                        "knowledge_search", "knowledge_status", "crawl_control", "crawl_result",
+                        "graph_reasoning_query", "graph_reason", "ask_graph_mebn", "graph_embeddings",
                         "graph_export", "graph_import", "memory"));
+                CrawlResultHandle.from(summary, "project-local", knowledgeBase.id(),
+                        knowledgeBase.id()).attachTo(metadata);
 
                 StringBuilder output = new StringBuilder();
-                output.append(dryRun ? "Project-local crawl preview complete." :
-                                "Project-local knowledge base updated.")
+                output.append(dryRun ? "Project-local crawl preview complete."
+                                : "FAILED".equals(effectiveStatus)
+                                ? "Project-local crawl failed."
+                                : "COMPLETED_WITH_ERRORS".equals(effectiveStatus)
+                                ? "Project-local knowledge base updated with extraction errors."
+                                : "Project-local knowledge base updated.")
                         .append(" Knowledge base: ").append(knowledgeBase.id()).append(". ")
                         .append("Sources: ").append(sources.size()).append(". ");
                 if (!dryRun) {
@@ -254,16 +355,41 @@ public final class LocalProjectCrawlBackend {
                     if (graphUpdate != null) {
                         output.append("Graph entities: ").append(graphUpdate.entities()).append(". ")
                                 .append("Relations: ").append(graphUpdate.relations()).append(". ")
-                                .append("Embedding vectors: ").append(graphUpdate.embeddingVectors()).append(". ");
+                                .append("Semantic entities: ").append(graphUpdate.semanticEntities()).append(". ")
+                                .append("Semantic relations: ").append(graphUpdate.semanticRelations()).append(". ")
+                                .append("Entity merges: ").append(graphUpdate.entitiesMerged()).append(". ")
+                                .append("Entity type corrections: ")
+                                .append(graphUpdate.entityTypesCorrected()).append(". ")
+                                .append("Identifier links: ")
+                                .append(graphUpdate.identifierLinksCreated()).append(". ")
+                                .append("Embedding vectors: ").append(graphUpdate.embeddingVectors()).append(". ")
+                                .append("FOL/PSL learned: ").append(graphUpdate.folPslLearned()).append(". ")
+                                .append("MEBN learned: ").append(graphUpdate.mebnLearned()).append(". ");
                     }
                 }
-                output.append("Backend: synchronous project-local MCP worker ("
+                if (!execution.documentFailures().isEmpty()) {
+                    output.append(" Failed documents: ").append(execution.documentFailures().size()).append(".");
+                    for (ProjectCrawlCommand.LocalCrawlFailure failure : execution.documentFailures()) {
+                        output.append("\n- ")
+                                .append(firstNonBlank(failure.relativePath(), failure.source(), failure.documentId()))
+                                .append(": ").append(firstNonBlank(failure.message(), "Document extraction failed"));
+                    }
+                }
+                if (graphUpdate != null && !graphUpdate.semanticExtractionErrors().isEmpty()) {
+                    output.append(" Semantic extraction errors: ")
+                            .append(graphUpdate.semanticExtractionErrors().size()).append(".");
+                    for (String error : graphUpdate.semanticExtractionErrors()) {
+                        output.append("\n- ").append(error);
+                    }
+                }
+                output.append(" Backend: synchronous project-local MCP worker ("
                         + LocalCrawlSubprocessRunner.executionMode() + ").");
                 if (!warnings.isEmpty()) {
                     output.append(" Warnings: ").append(String.join(" ", warnings));
                 }
                 output.append("\n").append(summary.toPrettyString());
-                return ToolResult.success("crawl_documents", output.toString(), metadata);
+                return new ToolResult("crawl_documents", output.toString(), metadata,
+                        "FAILED".equals(effectiveStatus));
             } finally {
                 lock.unlock();
                 if (!lock.hasQueuedThreads()) {
@@ -272,6 +398,14 @@ public final class LocalProjectCrawlBackend {
             }
         } catch (Exception e) {
             return ToolResult.error("Project-local crawl failed: " + message(e));
+        } finally {
+            for (Path temporarySource : temporarySources) {
+                try {
+                    Files.deleteIfExists(temporarySource);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup of a dry-run download.
+                }
+            }
         }
     }
 
@@ -280,20 +414,25 @@ public final class LocalProjectCrawlBackend {
         String url = text(params, "url");
         String inline = text(params, "text");
         boolean dryRun = params.path("dryRun").asBoolean(false);
-        if (url != null) {
-            return ToolResult.error("URL crawling requires a configured distributed crawl manager. "
-                    + "The project-local MCP worker accepts path or text.");
-        }
 
         try {
-            ObjectNode request = mapper.createObjectNode();
+            ObjectNode request = params.deepCopy();
+            request.remove("path");
+            request.remove("url");
+            request.remove("text");
+            request.remove("title");
+            request.remove("factSheetId");
             request.put("dryRun", dryRun);
-            String title = firstNonBlank(text(params, "title"), "inline knowledge");
+            String title = firstNonBlank(text(params, "title"), path, url, "inline knowledge");
             if (params.hasNonNull("factSheetId")) {
                 request.putObject("knowledgeBase").put("id", params.path("factSheetId").asInt());
             }
             if (path != null) {
                 request.putArray("documents").addObject().put("path", path).put("label", title);
+                return crawlDocuments(request, context);
+            }
+            if (url != null) {
+                request.putArray("documents").addObject().put("url", url).put("label", title);
                 return crawlDocuments(request, context);
             }
             if (inline == null) {
@@ -305,7 +444,7 @@ public final class LocalProjectCrawlBackend {
                         Map.of("backend", "project-local", "status", "DRY_RUN", "persisted", false));
             }
 
-            ProjectState project = project(context.getWorkingDirectory());
+            ProjectState project = ensureDirectoryProject(context.getWorkingDirectory());
             KnowledgeBaseRef kb = knowledgeBase(request.get("knowledgeBase"), project);
             if (kb.error() != null) {
                 return ToolResult.error(kb.error());
@@ -332,14 +471,23 @@ public final class LocalProjectCrawlBackend {
     public ToolResult discover(String section, Path workingDirectory) {
         try {
             ProjectState project = project(workingDirectory);
+            LocalModelPipelineRunner.DocumentModelWorkerStatus documentWorker =
+                    LocalModelPipelineRunner.documentModelWorkerStatus(project.root(), null);
             ObjectNode catalog = mapper.createObjectNode();
             catalog.put("section", section);
-            catalog.putObject("backend")
+            ObjectNode backend = catalog.putObject("backend")
                     .put("mode", "project-local")
                     .put("projectRoot", project.root().toString())
+                    .put("codeProjectId", project.id())
+                    .put("projectManifest", project.root().resolve("kompile.project.json").toString())
                     .put("distributed", false)
                     .put("coordination", "synchronous MCP-controlled crawl subprocess")
-                    .put("executionMode", LocalCrawlSubprocessRunner.executionMode());
+                    .put("executionMode", LocalCrawlSubprocessRunner.executionMode())
+                    .put("autoConfigureDirectoryMetadataOnWrite", true);
+            KompileCodingProject directoryProject =
+                    findDirectoryCodingProject(project.manifest(), project.root());
+            backend.put("directoryMetadataConfigured", directoryProject != null
+                    && !requiresDirectoryProjectMetadata(project.root(), directoryProject));
 
             if (matches(section, "sources")) {
                 ArrayNode types = catalog.putArray("sourceTypes");
@@ -347,42 +495,59 @@ public final class LocalProjectCrawlBackend {
                 sourceType(types, "DIRECTORY", true, "A local directory tree.");
                 sourceType(types, "CODE_PROJECT", true,
                         "A code project registered in kompile.project.json, or the current directory.");
-                sourceType(types, "URL", false,
-                        "Requires the distributed crawl manager and its network loader.");
+                sourceType(types, "URL", true,
+                        "Fetched directly by the in-process MCP worker over HTTP or HTTPS.");
                 sourceType(types, "INLINE_TEXT", true, "Use crawl_source text=... .");
             }
             if (matches(section, "pipelines")) {
                 ObjectNode capabilities = LocalCrawlCapabilities.catalog(
-                        mapper, LocalCrawlSubprocessRunner.executionMode());
+                        mapper, LocalCrawlSubprocessRunner.executionMode(), documentWorker.available());
                 ArrayNode pipelines = catalog.putArray("pipelineTypes");
-                localPipeline(pipelines, "STANDARD_TEXT", true,
-                        "Format-aware loading, configurable chunking, and lexical indexing.");
-                localPipeline(pipelines, "CODE", true,
-                        "Code loading, routing, configurable chunking, and project filters.");
-                localPipeline(pipelines, "CUSTOM", true,
-                        "Discovered loaders/chunkers or a caller-supplied unified pipeline definition.");
-                localPipeline(pipelines, "OCR", true,
-                        "Traditional or VLM-backed OCR in the isolated document-model subprocess.");
-                localPipeline(pipelines, "VLM", true,
-                        "Model-backed PDF extraction in the isolated document-model subprocess.");
-                localPipeline(pipelines, "TABLE_AWARE", true,
-                        "Local table preservation with optional model-backed extraction.");
-                localPipeline(pipelines, "KEYWORD_ONLY", true,
-                        "Lexical indexing without embeddings.");
+                JsonNode builtinTypes = capabilities.path("pipelineRegistry").path("builtinPipelineTypes");
+                if (builtinTypes.isArray()) {
+                    for (JsonNode type : builtinTypes) {
+                        localPipeline(pipelines, type.asText(), true, "Registered built-in crawl preset.");
+                    }
+                }
+                localPipeline(pipelines, "*", true,
+                        "Arbitrary portable pipeline type; execution is selected by its registered processor.");
+                ArrayNode projectPipelines = projectPipelineDefaults(project);
+                catalog.set("projectRegisteredPipelines", projectPipelines);
+                for (JsonNode registered : projectPipelines) {
+                    String type = registered.path("pipelineType").asText("CUSTOM");
+                    boolean alreadyListed = false;
+                    for (JsonNode existing : pipelines) {
+                        if (type.equalsIgnoreCase(existing.path("id").asText())) {
+                            alreadyListed = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyListed) localPipeline(pipelines, type, true, "Project-registered crawl pipeline.");
+                }
                 ArrayNode steps = (ArrayNode) capabilities.remove("steps");
-                for (String id : List.of("GRAPH_EXTRACTION", "VECTOR_INDEXING",
-                        "ENTITY_RESOLUTION", "LEARNING")) {
+                steps.addObject().put("id", "GRAPH_EXTRACTION").put("available", true)
+                        .put("backend", "project-local")
+                        .put("engine", "GraphExtractionOrchestrator")
+                        .put("configuration", "graphExtraction + processingRoute")
+                        .put("modelExecution", "request-scoped CLI_AGENT or API_AGENT")
+                        .put("artifact", "data/crawls/<knowledge-base>/graph.kgraph");
+                for (String id : List.of("VECTOR_INDEXING", "ENTITY_RESOLUTION", "LEARNING")) {
                     steps.addObject().put("id", id).put("available", true)
                             .put("backend", "project-local")
                             .put("artifact", "data/crawls/<knowledge-base>/graph.kgraph");
                 }
-                steps.addObject().put("id", "ENRICHMENT").put("available", false)
-                        .put("requires", "model-backed distributed crawl manager");
+                steps.addObject().put("id", "ENRICHMENT").put("available", true)
+                        .put("local", true)
+                        .put("engine", "UnifiedGraphReasoningLifecycle")
+                        .put("orchestration", "FinalGraphLearningResolutionPipeline")
+                        .put("configuration", "steps + hydration + reasoningLearning + runtimeConfig")
+                        .put("artifact", "data/crawls/<knowledge-base>/graph.kgraph");
                 catalog.set("steps", steps);
                 catalog.set("pipelineTemplates", capabilities.remove("pipelineTemplates"));
                 catalog.set("loaders", capabilities.remove("loaders"));
                 catalog.set("chunkers", capabilities.remove("chunkers"));
                 catalog.set("routing", capabilities.remove("routing"));
+                catalog.set("modelProcessing", capabilities.remove("modelProcessing"));
                 catalog.put("executionMode", LocalCrawlSubprocessRunner.executionMode());
                 catalog.set("requestShape", localRequestShape());
             }
@@ -392,7 +557,11 @@ public final class LocalProjectCrawlBackend {
                         .put("synchronous", true)
                         .put("distributed", false)
                         .put("workers", 1)
-                        .put("documentModelWorker", LocalModelPipelineRunner.documentModelWorkerAvailable())
+                        .put("builtinDocumentProcessor", documentWorker.available())
+                        .put("builtinDocumentProcessorSource", documentWorker.source())
+                        .put("builtinDocumentProcessorExecutable",
+                                firstNonBlank(documentWorker.executable(), "not configured"))
+                        .put("registeredProjectPipelines", projectPipelineDefaults(project).size())
                         .put("executionMode", LocalCrawlSubprocessRunner.executionMode());
                 catalog.putObject("runtimeConfig")
                         .put("incrementalSources", true)
@@ -402,6 +571,21 @@ public final class LocalProjectCrawlBackend {
                         .put("reasoning", "in-process UnifiedGraph query engine")
                         .put("embeddingTraining", "in-process TRANSE or ROTATE with portable model artifacts")
                         .put("memory", ".kompile/memory via memory and semantic_memory MCP tools");
+            }
+            if (matches(section, "models")) {
+                catalog.set("models", mapper.valueToTree(
+                        LocalProjectModelBootstrap.inventory(project.root())));
+                boolean nativeChildren = CliProcessLauncher.requiresNativeChildren();
+                catalog.putObject("modelRuntime")
+                        .put("tool", "model_runtime")
+                        .put("artifactMode", nativeChildren ? "native-only" : "jvm-development")
+                        .put("artifactTiers", nativeChildren
+                                ? "native child executables required"
+                                : "native executable or packaged executable JAR")
+                        .put("developmentClasspath", false)
+                        .put("centralizedService", false)
+                        .put("storage", "data/models")
+                        .put("lifecycle", "request-scoped staging and serving subprocesses");
             }
             if (matches(section, "knowledge_bases")) {
                 catalog.set("knowledgeBases", listKnowledgeBases(project.root()));
@@ -491,6 +675,30 @@ public final class LocalProjectCrawlBackend {
         }
     }
 
+    public ToolResult result(String jobId, ToolContext context) {
+        if (jobId == null || jobId.isBlank()) {
+            return ToolResult.error("crawl_result requires jobId");
+        }
+        try {
+            ProjectState project = project(context.getWorkingDirectory());
+            return localJobResult("result", project.root(), jobId);
+        } catch (Exception e) {
+            return ToolResult.error("Project-local crawl_result failed: " + message(e));
+        }
+    }
+
+    public ToolResult search(String query, String knowledgeBase, int limit, ToolContext context) {
+        String selected = knowledgeBase;
+        if (selected == null || selected.isBlank()) {
+            selected = defaultKnowledgeBaseId(context.getWorkingDirectory());
+            ToolResult bootstrap = ensureFolderKnowledgeBase(context);
+            if (bootstrap.isError()) {
+                return bootstrap;
+            }
+        }
+        return search(query, selected, limit, context.getWorkingDirectory());
+    }
+
     public ToolResult search(String query, String knowledgeBase, int limit, Path workingDirectory) {
         try {
             ProjectState project = project(workingDirectory);
@@ -577,6 +785,18 @@ public final class LocalProjectCrawlBackend {
         } catch (Exception e) {
             return ToolResult.error("Project-local knowledge search failed: " + message(e));
         }
+    }
+
+    public ToolResult status(String knowledgeBase, ToolContext context) {
+        String selected = knowledgeBase;
+        if (selected == null || selected.isBlank()) {
+            selected = defaultKnowledgeBaseId(context.getWorkingDirectory());
+            ToolResult bootstrap = ensureFolderKnowledgeBase(context);
+            if (bootstrap.isError()) {
+                return bootstrap;
+            }
+        }
+        return status(selected, context.getWorkingDirectory());
     }
 
     public ToolResult status(String knowledgeBase, Path workingDirectory) {
@@ -683,9 +903,14 @@ public final class LocalProjectCrawlBackend {
         }
         summary.put("backend", "project-local");
         summary.put("distributed", false);
-        summary.put("jobId", slug(stripLocalPrefix(jobId)));
-        return ToolResult.success("crawl_" + operation, summary.toPrettyString(),
-                Map.of("backend", "project-local", "jobId", slug(stripLocalPrefix(jobId))));
+        String normalizedJobId = slug(stripLocalPrefix(jobId));
+        summary.put("jobId", normalizedJobId);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("backend", "project-local");
+        metadata.put("jobId", normalizedJobId);
+        CrawlResultHandle.from(summary, "project-local", normalizedJobId,
+                normalizedJobId).attachTo(metadata);
+        return ToolResult.success("crawl_" + operation, summary.toPrettyString(), metadata);
     }
 
     private ToolResult localTranscript(Path root, String jobId) throws IOException {
@@ -792,31 +1017,6 @@ public final class LocalProjectCrawlBackend {
         return projects;
     }
 
-    private KnowledgeBaseRef alignKnowledgeBase(KnowledgeBaseRef knowledgeBase,
-                                                CodeProjectSelection selection,
-                                                boolean explicitlySelected) {
-        LinkedHashSet<Long> bindings = new LinkedHashSet<>();
-        selection.projects().stream().map(SelectedCodeProject::factSheetId)
-                .filter(java.util.Objects::nonNull).forEach(bindings::add);
-        if (bindings.size() > 1) {
-            return new KnowledgeBaseRef(null, null, null,
-                    "Selected code projects are bound to different fact sheets: " + bindings + ".");
-        }
-        Long bound = bindings.isEmpty() ? null : bindings.iterator().next();
-        if (bound == null) {
-            return knowledgeBase;
-        }
-        if (knowledgeBase.factSheetId() != null && !bound.equals(knowledgeBase.factSheetId())) {
-            return new KnowledgeBaseRef(null, null, null,
-                    "knowledgeBase.id " + knowledgeBase.factSheetId()
-                            + " conflicts with code project factSheetId " + bound + ".");
-        }
-        if (!explicitlySelected) {
-            return new KnowledgeBaseRef("kb-" + bound, "Knowledge base " + bound, bound, null);
-        }
-        return new KnowledgeBaseRef(knowledgeBase.id(), knowledgeBase.name(), bound, null);
-    }
-
     private ArrayNode codeProjects(ProjectState project) {
         ArrayNode result = mapper.createArrayNode();
         for (SelectedCodeProject selected : availableCodeProjects(project)) {
@@ -885,6 +1085,7 @@ public final class LocalProjectCrawlBackend {
     private void copyDocumentOptions(JsonNode source, ObjectNode target) {
         for (String field : List.of("label", "sourceType", "pipelineId", "loaderName",
                 "chunkerName", "chunkSize", "chunkOverlap", "chunkerOptions",
+                "executorId", "processor", "pipelineDefinitionId", "pipelineDefinitionPath",
                 "allowedContentTypes", "properties", "includePatterns", "excludePatterns")) {
             copy(source, target, field);
         }
@@ -915,8 +1116,8 @@ public final class LocalProjectCrawlBackend {
 
     private void addUnsupportedWarnings(JsonNode params, List<String> warnings) {
         List<String> configured = new ArrayList<>();
-        for (String field : List.of("distribution", "hydration",
-                "processingRoute", "preprocessing", "archivedSteps")) {
+        for (String field : List.of("distribution",
+                "preprocessing", "archivedSteps")) {
             if (params.hasNonNull(field)) {
                 configured.add(field);
             }
@@ -930,9 +1131,7 @@ public final class LocalProjectCrawlBackend {
             List<String> unsupported = new ArrayList<>();
             for (JsonNode step : steps) {
                 String id = step.asText("").toUpperCase(Locale.ROOT);
-                if (!LocalCrawlCapabilities.supportedSteps().contains(id)
-                        && !Set.of("GRAPH_EXTRACTION", "VECTOR_INDEXING",
-                        "ENTITY_RESOLUTION", "LEARNING").contains(id)) {
+                if (!LocalCrawlCapabilities.supportedSteps().contains(id)) {
                     unsupported.add(id);
                 }
             }
@@ -996,14 +1195,106 @@ public final class LocalProjectCrawlBackend {
         try {
             manifest = store.load(root);
         } catch (Exception ignored) {
-            // Any code directory can act as an implicit project in offline mode.
+            // Read-only discovery can describe an uninitialized directory without mutating it.
         }
+        return projectState(root, manifest);
+    }
+
+    private ProjectState ensureDirectoryProject(Path workingDirectory) {
+        ProjectState existing = project(workingDirectory);
+        Path root = existing.root();
+        KompileProjectManifest manifest = existing.manifest();
+        if (manifest == null) {
+            KompileProjectInitRequest request = new KompileProjectInitRequest();
+            String name = root.getFileName() != null ? root.getFileName().toString() : "project";
+            request.setName(name);
+            request.setIncludeStandardComponents(false);
+            request.setTags(List.of("auto-detected", "code", "directory-project", "local-stdio"));
+            request.getCodingProjects().add(ProjectAutoDetection.buildDirectoryCodingProject(root));
+            manifest = store.init(root, request);
+        } else {
+            KompileCodingProject directoryProject = findDirectoryCodingProject(manifest, root);
+            if (directoryProject == null) {
+                manifest = store.registerCodingProject(
+                        root, ProjectAutoDetection.buildDirectoryCodingProject(root));
+            } else if (requiresDirectoryProjectMetadata(root, directoryProject)) {
+                manifest = store.registerCodingProject(root, directoryProject);
+            }
+        }
+        return projectState(root, manifest);
+    }
+
+    private ProjectState projectState(Path root, KompileProjectManifest manifest) {
         String fallback = root.getFileName() != null ? root.getFileName().toString() : "project";
-        String id = manifest != null
-                ? firstNonBlank(manifest.getProjectId(), fallback) : fallback;
-        String name = manifest != null
-                ? firstNonBlank(manifest.getName(), id) : id;
+        KompileCodingProject directoryProject = findDirectoryCodingProject(manifest, root);
+        String id = directoryProject == null
+                ? fallback
+                : firstNonBlank(directoryProject.getCodeProjectId(), directoryProject.getId(), fallback);
+        String name = manifest == null
+                ? id : firstNonBlank(manifest.getName(),
+                directoryProject == null ? null : directoryProject.getName(), id);
         return new ProjectState(root, manifest, id, name);
+    }
+
+    private KompileCodingProject findDirectoryCodingProject(
+            KompileProjectManifest manifest, Path projectRoot) {
+        if (manifest == null || manifest.getCodingProjects() == null) return null;
+        for (KompileCodingProject candidate : manifest.getCodingProjects()) {
+            if (candidate == null || candidate.getLifecycle() != null
+                    && !"ACTIVE".equalsIgnoreCase(candidate.getLifecycle().name())) {
+                continue;
+            }
+            String configuredRoot = firstNonBlank(candidate.getRootPath());
+            if (configuredRoot == null) continue;
+            try {
+                Path candidateRoot = Path.of(configuredRoot);
+                if (!candidateRoot.isAbsolute()) candidateRoot = projectRoot.resolve(candidateRoot);
+                if (projectRoot.equals(candidateRoot.toAbsolutePath().normalize())) return candidate;
+            } catch (Exception ignored) {
+                // Invalid external registrations do not replace the current directory identity.
+            }
+        }
+        return null;
+    }
+
+    private boolean requiresDirectoryProjectMetadata(Path root, KompileCodingProject project) {
+        if (firstNonBlank(project.getContextPath()) == null
+                || firstNonBlank(project.getAgentsMdPath()) == null
+                || firstNonBlank(project.getChatsPath()) == null
+                || firstNonBlank(project.getMetadataPath()) == null
+                || firstNonBlank(project.getIndexPath()) == null) {
+            return true;
+        }
+        try {
+            Path metadata = Path.of(project.getMetadataPath());
+            if (!metadata.isAbsolute()) metadata = root.resolve(metadata);
+            metadata = metadata.toAbsolutePath().normalize();
+            return !metadata.startsWith(root)
+                    || !Files.isRegularFile(metadata.resolve("project.json"))
+                    || !Files.isRegularFile(metadata.resolve("index-plan.json"));
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    String defaultKnowledgeBaseId(Path workingDirectory) {
+        ProjectState project = project(workingDirectory);
+        return knowledgeBase(null, project).id();
+    }
+
+    ToolResult ensureFolderKnowledgeBase(ToolContext context) {
+        ProjectState project = ensureDirectoryProject(context.getWorkingDirectory());
+        String id = knowledgeBase(null, project).id();
+        Path graph = project.root().resolve("data/crawls").resolve(id)
+                .resolve(LocalProjectGraphBackend.GRAPH_FILE);
+        if (Files.isRegularFile(graph)) {
+            return ToolResult.success("knowledge_bootstrap",
+                    "Using folder knowledge base " + id + ".",
+                    Map.of("backend", "project-local", "knowledgeBase", id,
+                            "projectRoot", project.root().toString(),
+                            "graphPath", graph.toString(), "bootstrapped", false));
+        }
+        return crawlDocuments(mapper.createObjectNode(), context);
     }
 
     private KnowledgeBaseRef knowledgeBase(JsonNode selected, ProjectState project) {
@@ -1063,7 +1354,19 @@ public final class LocalProjectCrawlBackend {
         metadata.put("graphPath", project.root().relativize(graphUpdate.graphPath()).toString());
         metadata.put("graphEntityCount", Integer.toString(graphUpdate.entities()));
         metadata.put("graphRelationCount", Integer.toString(graphUpdate.relations()));
+        metadata.put("entityResolutionMergedCount",
+                Integer.toString(graphUpdate.entitiesMerged()));
+        metadata.put("entityResolutionTypeCorrectionCount",
+                Integer.toString(graphUpdate.entityTypesCorrected()));
+        metadata.put("entityResolutionIdentifierLinkCount",
+                Integer.toString(graphUpdate.identifierLinksCreated()));
         metadata.put("embeddingVectorCount", Integer.toString(graphUpdate.embeddingVectors()));
+        metadata.put("reasoningLearningEnabled",
+                Boolean.toString(graphUpdate.reasoningLearningEnabled()));
+        metadata.put("folPslLearned", Boolean.toString(graphUpdate.folPslLearned()));
+        metadata.put("mebnLearned", Boolean.toString(graphUpdate.mebnLearned()));
+        metadata.put("reasoningModelsTrained",
+                Integer.toString(graphUpdate.reasoningModelsTrained()));
         if (knowledgeBase.factSheetId() != null) {
             metadata.put("factSheetId", Long.toString(knowledgeBase.factSheetId()));
         }
@@ -1175,20 +1478,114 @@ public final class LocalProjectCrawlBackend {
                 || ("kb-" + normalized).equals(candidateId);
     }
 
+    private String registerProjectPipelines(ObjectNode request, ProjectState project) {
+        ArrayNode projectDefaults = projectPipelineDefaults(project);
+        if (projectDefaults.isEmpty()) return null;
+        JsonNode existing = request.get("pipelineRegistry");
+        ObjectNode registry;
+        if (existing == null || existing.isNull()) {
+            registry = request.putObject("pipelineRegistry");
+        } else if (existing.isObject()) {
+            registry = (ObjectNode) existing;
+        } else {
+            return "pipelineRegistry must be an object.";
+        }
+        JsonNode defaultsValue = registry.get("defaults");
+        ArrayNode defaults;
+        if (defaultsValue == null || defaultsValue.isNull()) {
+            defaults = registry.putArray("defaults");
+        } else if (defaultsValue.isArray()) {
+            defaults = (ArrayNode) defaultsValue;
+        } else {
+            return "pipelineRegistry.defaults must be an array.";
+        }
+        Set<String> ids = new LinkedHashSet<>();
+        for (JsonNode definition : defaults) {
+            String id = text(definition, "pipelineId");
+            if (id != null) ids.add(id);
+        }
+        JsonNode requestPipelines = request.get("pipelines");
+        if (requestPipelines != null && requestPipelines.isArray()) {
+            for (JsonNode definition : requestPipelines) {
+                String id = text(definition, "pipelineId");
+                if (id != null) ids.add(id);
+            }
+        }
+        for (JsonNode definition : projectDefaults) {
+            String id = text(definition, "pipelineId");
+            if (id != null && ids.add(id)) defaults.add(definition.deepCopy());
+        }
+        return null;
+    }
+
+    private ArrayNode projectPipelineDefaults(ProjectState project) {
+        ArrayNode result = mapper.createArrayNode();
+        if (project == null || project.manifest() == null || project.manifest().getPipelines() == null) {
+            return result;
+        }
+        for (KompileProjectPipeline pipeline : project.manifest().getPipelines()) {
+            if (pipeline == null || !pipeline.isActive()) continue;
+            String id = firstNonBlank(pipeline.getPipelineId(), pipeline.getId());
+            if (id == null) continue;
+            ObjectNode registered = result.addObject();
+            registered.put("pipelineId", id);
+            registered.put("displayName", firstNonBlank(pipeline.getName(), id));
+            String pipelineType = pipeline.getMetadata() == null ? null
+                    : firstNonBlank(pipeline.getMetadata().get("pipelineType"),
+                    pipeline.getMetadata().get("type"));
+            registered.put("pipelineType", firstNonBlank(pipelineType, "CUSTOM"));
+            ObjectNode options = registered.putObject("options");
+            options.put("projectRegistered", true);
+            if (pipeline.getRole() != null) options.put("role", pipeline.getRole());
+            if (pipeline.getVersion() != null) options.put("version", pipeline.getVersion());
+            if (pipeline.getRegistryPath() != null) options.put("registryPath", pipeline.getRegistryPath());
+            if (pipeline.getModelRefs() != null && !pipeline.getModelRefs().isEmpty()) {
+                ArrayNode refs = options.putArray("modelRefs");
+                pipeline.getModelRefs().forEach(refs::add);
+            }
+            if (pipeline.getMetadata() != null) {
+                pipeline.getMetadata().forEach(options::put);
+                copyMetadataField(pipeline, registered, "loaderName");
+                copyMetadataField(pipeline, registered, "chunkerName");
+            }
+            ObjectNode processor = registered.putObject("processor");
+            processor.put("type", "UNIFIED_PIPELINE");
+            if (firstNonBlank(pipeline.getDefinitionPath()) != null) {
+                processor.put("pipelineDefinitionPath", pipeline.getDefinitionPath());
+            } else if (firstNonBlank(pipeline.getRegistryPath()) != null
+                    && pipeline.getRegistryPath().endsWith(".json")) {
+                processor.put("pipelineDefinitionPath", pipeline.getRegistryPath());
+            } else {
+                processor.put("pipelineDefinitionId", id);
+            }
+            processor.put("registeredBy", "kompile.project.json");
+        }
+        return result;
+    }
+
+    private void copyMetadataField(KompileProjectPipeline pipeline, ObjectNode target, String field) {
+        String value = pipeline.getMetadata().get(field);
+        if (value != null && !value.isBlank()) target.put(field, value);
+    }
+
     private ObjectNode localRequestShape() {
         ObjectNode shape = mapper.createObjectNode();
         shape.put("startTool", "crawl_documents");
-        shape.put("documents", "documents=[{path, pipelineId?, loaderName?, chunkerName?, chunkSize?, chunkOverlap?, chunkerOptions?, includePatterns?, excludePatterns?}]");
-        shape.put("pipelines", "pipelines=[{pipelineId,pipelineType,loaderName?,chunkerName?,chunkSize?,chunkOverlap?,options?,pipelineDefinition?,pipelineDefinitionPath?}]");
-        shape.put("modelPipelineOptions", "vlmModel/modelId/modelSetId, outputFormat, generation/runtime limits, OCR model ids, table/layout flags, or an executable UnifiedPipelineDefinition");
+        shape.put("documents", "documents=[{path|url, pipelineId?, loaderName?, chunkerName?, chunkSize?, chunkOverlap?, chunkerOptions?, includePatterns?, excludePatterns?}]");
+        shape.put("pipelines", "pipelines=[{pipelineId,pipelineType:any-portable-id,registeredPipelineId?,executorId?,processor?,loaderName?,chunkerName?,options?}]");
+        shape.put("pipelineRegistry", "pipelineRegistry={defaults:[ingest pipeline defaults], definitions:[UnifiedPipelineDefinition], executors:[{executorId,type:UNIFIED_PIPELINE|KOMPILE_SUBPROCESS|EXECUTABLE,...}]} ; active kompile.project.json pipelines are registered automatically");
+        shape.put("pipelineExecution", "processor definitions select request-scoped one-shot unified pipeline serving, a Kompile --subprocess mode, or another executable; VLM/OCR are compatibility presets, not privileged executor types");
+        shape.put("runtimeConfig", "generic crawl/runtime tuning; legacy documentModelExecutable aliases remain accepted for the registered vlm-test preset");
+        shape.put("modelRuntime", "modelRuntime={autoBootstrap?,localPath?,source?,repository?,revision?,format?,type?,stagingExecutable?,stagingJar?,servingExecutable?,servingJar?,javaExecutable?,heapSize?,timeoutMinutes?,environment?}; native parents require native staging/serving children; executable JARs are JVM-development-only");
         shape.put("routing", "document.pipelineId > routeRules > defaultPipelineId > automatic file routing");
-        shape.put("codeProjects", "codeProjects=[id|name|*]");
+        shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");
         shape.put("knowledgeBase", "knowledgeBase={name:<string>} or {id:<number>}; repeated calls add sources");
-        shape.put("execution", "synchronous subprocess; result status is COMPLETED");
+        shape.put("execution", "synchronous local subprocess; result status is COMPLETED, COMPLETED_WITH_ERRORS, or FAILED");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
         shape.put("embeddingTraining", "embeddingTraining={enabled?,algorithm:TRANSE|ROTATE,embeddingDim?,epochs?}");
+        shape.put("reasoningLearning", "reasoningLearning={enabled?,pslSteps?,mebnEpochs?,consensusRounds?,consensusWeight?,maxRelationTypes?}; FOL/PSL/MEBN artifacts are stored in graph.kgraph");
         shape.put("retrieval", "knowledge_search query=... knowledgeBase=<name-or-id>");
-        shape.put("reasoning", "graph_reasoning_query and graph_reason run in-process when no manager URL is configured");
+        shape.put("reasoning", "graph_reasoning_query, graph_reason, and ask_graph_mebn query the folder .kgraph directly when no manager URL is configured");
         shape.put("portability", "graph_export and graph_import read/write .kgraph locally");
         shape.put("memory", "memory and semantic_memory remain available in the same stdio MCP session");
         return shape;
@@ -1200,6 +1597,100 @@ public final class LocalProjectCrawlBackend {
 
     private void localPipeline(ArrayNode target, String id, boolean available, String useWhen) {
         target.addObject().put("id", id).put("available", available).put("useWhen", useWhen);
+    }
+
+    private Path materializeRemoteSource(String rawUrl,
+                                         String label,
+                                         ProjectState project,
+                                         KnowledgeBaseRef knowledgeBase,
+                                         boolean temporary) throws Exception {
+        URI uri = URI.create(rawUrl);
+        String scheme = uri.getScheme();
+        if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+            throw new IllegalArgumentException("Project-local URL crawl supports only http and https: " + rawUrl);
+        }
+
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(60))
+                .header("Accept", "text/html,application/xhtml+xml,application/pdf,text/plain,text/markdown,application/json,*/*;q=0.5")
+                .header("User-Agent", "Kompile-MCP/0.1")
+                .GET()
+                .build();
+        HttpResponse<InputStream> response = RemoteHttpClientHolder.CLIENT.send(
+                request, HttpResponse.BodyHandlers.ofInputStream());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            response.body().close();
+            throw new IOException("URL crawl returned HTTP " + response.statusCode() + " for " + rawUrl);
+        }
+        long declaredLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+        if (declaredLength > MAX_REMOTE_SOURCE_BYTES) {
+            response.body().close();
+            throw new IOException("URL crawl source exceeds the 25 MiB in-process limit: " + rawUrl);
+        }
+
+        byte[] content;
+        try (InputStream input = response.body()) {
+            content = input.readNBytes(MAX_REMOTE_SOURCE_BYTES + 1);
+        }
+        if (content.length > MAX_REMOTE_SOURCE_BYTES) {
+            throw new IOException("URL crawl source exceeds the 25 MiB in-process limit: " + rawUrl);
+        }
+        if (content.length == 0) {
+            throw new IOException("URL crawl returned an empty response: " + rawUrl);
+        }
+
+        String suffix = remoteSuffix(uri, response.headers().firstValue("Content-Type").orElse(""));
+        Path destination;
+        if (temporary) {
+            destination = Files.createTempFile("kompile-url-crawl-", suffix);
+        } else {
+            Path sourceDirectory = project.root().resolve("data/knowledge-sources")
+                    .resolve(knowledgeBase.id()).normalize();
+            if (!sourceDirectory.startsWith(project.root())) {
+                throw new IOException("Remote knowledge source escapes the project root.");
+            }
+            Files.createDirectories(sourceDirectory);
+            String stem = slug(firstNonBlank(label, uri.getHost(), "remote-source"));
+            if (stem.length() > 80) {
+                stem = stem.substring(0, 80);
+            }
+            destination = sourceDirectory.resolve(stem + "-"
+                    + Integer.toUnsignedString(rawUrl.hashCode(), 16) + suffix);
+        }
+        Files.write(destination, content);
+        return destination.toAbsolutePath().normalize();
+    }
+
+    private String remoteSuffix(URI uri, String contentType) {
+        String path = uri.getPath();
+        if (path != null) {
+            int slash = path.lastIndexOf('/');
+            String name = slash >= 0 ? path.substring(slash + 1) : path;
+            int dot = name.lastIndexOf('.');
+            if (dot >= 0) {
+                String suffix = name.substring(dot).toLowerCase(Locale.ROOT);
+                if (suffix.matches("\\.[a-z0-9]{1,8}")) {
+                    return suffix;
+                }
+            }
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        if (normalized.contains("html")) return ".html";
+        if (normalized.contains("pdf")) return ".pdf";
+        if (normalized.contains("markdown")) return ".md";
+        if (normalized.contains("json")) return ".json";
+        return ".txt";
+    }
+
+    private boolean dryRun(JsonNode params) {
+        return params.path("dryRun").asBoolean(false);
+    }
+
+    private static final class RemoteHttpClientHolder {
+        private static final HttpClient CLIENT = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
     }
 
     private boolean matches(String requested, String candidate) {

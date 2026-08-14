@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -51,7 +52,7 @@ public class AskGraphQueryTool implements CliTool {
                 + "returns rows like {x: \"Alice\", confidence: 0.91}. "
                 + "Multi-conjunct: [{\"predicate\":\"worksFor\",\"args\":[\"?x\",\"?org\"]},{\"predicate\":\"locatedIn\",\"args\":[\"?org\",\"London\"]}] "
                 + "finds all people whose employer is in London. "
-                + "factSheetId optional — discover via knowledge_graph list_fact_sheets. "
+                + "Local stdio queries the current folder; factSheetId is an optional remote/legacy override. "
                 + "minConfidence default 0.3; raise to 0.7+ to see only well-supported facts. "
                 + "Zero results? Check predicate names with knowledge_graph list_predicates.";
     }
@@ -92,7 +93,7 @@ public class AskGraphQueryTool implements CliTool {
 
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope to a fact sheet. Null = all.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("asOf")
                 .put("type", "string")
                 .put("description", "ISO-8601 snapshot time. Absent = current truth.");
@@ -126,7 +127,7 @@ public class AskGraphQueryTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_query requires a running kompile-app.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

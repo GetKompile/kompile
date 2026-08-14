@@ -38,7 +38,8 @@ final class CorpusSchemaOverlayValidator {
     private static final Pattern TYPE_NAME = Pattern.compile("[A-Z][A-Z0-9_]*");
     private static final Set<String> GENERIC_TYPE_NAMES = Set.of(
             "NODE_LABEL", "SOURCE_TYPE", "TARGET_TYPE", "ENTITY_TYPE", "REL_TYPE",
-            "TYPE", "UNKNOWN", "ENTITY", "RELATIONSHIP", "RELATIONS"
+            "TYPE", "UNKNOWN", "ENTITY", "TOPIC", "THEME", "KEYWORD", "TECHNICAL",
+            "PHRASE", "RELATIONSHIP", "RELATIONS", "CO_OCCURS"
     );
     private static final List<String> ALLOWED_PROPERTY_TYPES = List.of(
             "String",

@@ -86,16 +86,23 @@ stage_binary "kompile-cli/kompile-model-cli/target/kompile-model" "kompile-model
 stage_binary "kompile-cli/kompile-component-cli/target/kompile-component" "kompile-component" true
 stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app" "kompile-server" true
 
-# Optional native images are copied only when their opt-in profiles produced them.
-stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test" "kompile-vlm-test" false
+# Local MCP execution is native-only. A distribution without any one of these
+# workers would silently cross into a JVM/server path, so fail assembly early.
+stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test" "kompile-vlm-test" true
+stage_binary "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" "kompile-model-staging" true
+stage_binary "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving" "kompile-model-serving" true
+stage_binary "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving" "kompile-pipeline-serving" true
+
+# Non-MCP product images remain optional.
 stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-training" "kompile-training" false
-stage_binary "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" "kompile-model-staging" false
 stage_binary "kompile-app/kompile-app-parent/kompile-app-chat/target/kompile-chat" "kompile-chat" false
 stage_binary "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/kompile-crawl-manager" "kompile-crawl-manager" false
 stage_binary "kompile-app/kompile-app-parent/kompile-app-lite/target/kompile-app-lite" "kompile-app-lite" false
 
 stage_shims "kompile-app/kompile-app-parent/kompile-app-main/target"
 stage_shims "kompile-app/kompile-models/kompile-model-staging/target"
+stage_shims "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target"
+stage_shims "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target"
 stage_shims "kompile-app/kompile-app-parent/kompile-app-chat/target"
 stage_shims "kompile-app/kompile-app-parent/kompile-app-crawl-manager/target"
 

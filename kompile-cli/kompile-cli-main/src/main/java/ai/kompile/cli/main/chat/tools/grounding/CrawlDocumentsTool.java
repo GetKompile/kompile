@@ -69,7 +69,10 @@ public final class CrawlDocumentsTool implements CliTool {
 
     @Override
     public String description() {
-        return "Add explicit documents and/or registered Kompile code projects to a knowledge base. "
+        return "Initialize or update the knowledge base for the current MCP folder. "
+                + "With no documents, codeProjects, or knowledgeBase selector, the local stdio backend "
+                + "indexes the current project folder into a deterministic folder-scoped knowledge base. "
+                + "Explicit documents and code projects can be added when narrower control is needed. "
                 + "With a configured crawl manager this schedules an asynchronous distributed crawl; "
                 + "otherwise the same MCP call updates a synchronous project-local knowledge base. Each document may select a named pipeline, "
                 + "loader, chunker, limits, filters, and properties. The request can also configure custom "
@@ -81,17 +84,15 @@ public final class CrawlDocumentsTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Crawl documents=[{path|url,...}] and/or codeProjects=[id|name|*] into knowledgeBase={id|name}. "
-                + "Call crawl_discover first; local runs complete synchronously.";
+        return "Use {} to auto-configure and bootstrap the current directory locally, or provide "
+                + "documents=[{path|url,...}], explicit additional codeProjects=[id|name|*], and an optional "
+                + "knowledgeBase={id|name}. Local runs complete synchronously.";
     }
 
     @Override
     public JsonNode parameterSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
-        ArrayNode anyOf = schema.putArray("anyOf");
-        anyOf.addObject().putArray("required").add("documents");
-        anyOf.addObject().putArray("required").add("codeProjects");
         ObjectNode props = schema.putObject("properties");
 
         props.putObject("name")
@@ -119,6 +120,12 @@ public final class CrawlDocumentsTool implements CliTool {
         addStringArray(documentProps, "allowedContentTypes", "Accepted MIME types.");
         documentProps.putObject("pipelineId").put("type", "string")
                 .put("description", "Optional named pipeline override for this document.");
+        documentProps.putObject("executorId").put("type", "string")
+                .put("description", "Optional processor registered in pipelineRegistry.executors.");
+        documentProps.putObject("processor").put("type", "object")
+                .put("description", "Per-document registered processor override.");
+        documentProps.putObject("pipelineDefinitionId").put("type", "string");
+        documentProps.putObject("pipelineDefinitionPath").put("type", "string");
         documentProps.putObject("loaderName").put("type", "string");
         documentProps.putObject("chunkerName").put("type", "string");
         documentProps.putObject("chunkSize").put("type", "integer").put("minimum", 1);
@@ -133,13 +140,16 @@ public final class CrawlDocumentsTool implements CliTool {
         codeProjects.put("type", "array");
         codeProjects.put("minItems", 1);
         codeProjects.putObject("items").put("type", "string");
-        codeProjects.put("description", "Registered Kompile code-project ids or names to crawl. "
-                + "Use '*' to include every ACTIVE project discovered from kompile.project.json.");
+        codeProjects.put("description", "Optional explicit Kompile code-project ids or names to add. "
+                + "Omit for the normal local workflow: the current directory is auto-registered through the "
+                + "project protocol and used as the folder identity. Use '*' only to opt into every ACTIVE "
+                + "additional registration from kompile.project.json.");
 
         ObjectNode knowledgeBase = props.putObject("knowledgeBase");
         knowledgeBase.put("type", "object");
         knowledgeBase.put("description",
-                "Target knowledge base/fact sheet. Supply exactly one of id or name; omit to use the active default.");
+                "Optional explicit knowledge-base selector. Omit locally to use the deterministic knowledge base for the current folder. "
+                        + "Numeric ids are retained for remote/legacy compatibility.");
         ObjectNode kbProps = knowledgeBase.putObject("properties");
         kbProps.putObject("id").put("type", "integer").put("minimum", 0);
         kbProps.putObject("name").put("type", "string");
@@ -157,6 +167,21 @@ public final class CrawlDocumentsTool implements CliTool {
         embeddingProps.putObject("batchSize").put("type", "integer").put("minimum", 1);
         embeddingProps.putObject("warmStartEpochs").put("type", "integer").put("minimum", 0);
 
+        ObjectNode reasoningLearning = props.putObject("reasoningLearning");
+        reasoningLearning.put("type", "object");
+        reasoningLearning.put("description", "Final corpus-wide portable reasoning learning. "
+                + "The request-scoped local crawl worker jointly learns grounded FOL/PSL and MEBN "
+                + "against one hybrid consensus, persists the models in the folder .kgraph, and "
+                + "relearns after entity canonicalization when identities changed.");
+        ObjectNode reasoningProps = reasoningLearning.putObject("properties");
+        reasoningProps.putObject("enabled").put("type", "boolean");
+        reasoningProps.putObject("pslSteps").put("type", "integer").put("minimum", 1);
+        reasoningProps.putObject("mebnEpochs").put("type", "integer").put("minimum", 1);
+        reasoningProps.putObject("consensusRounds").put("type", "integer").put("minimum", 1);
+        reasoningProps.putObject("consensusWeight").put("type", "number")
+                .put("minimum", 0.0).put("maximum", 1.0);
+        reasoningProps.putObject("maxRelationTypes").put("type", "integer").put("minimum", 1);
+
         addStringArray(props, "steps",
                 "Pipeline steps to run. Dependencies are resolved by the server; omit to run all.");
         addStringArray(props, "archivedSteps",
@@ -168,16 +193,169 @@ public final class CrawlDocumentsTool implements CliTool {
         props.putObject("maxValidationRetries").put("type", "integer").put("minimum", 0);
 
         addObjectArray(props, "pipelines",
-                "Named ingest pipeline definitions. Types: STANDARD_TEXT, VLM, OCR, CODE, "
-                        + "TABLE_AWARE, KEYWORD_ONLY, CUSTOM. Model-backed definitions accept modelId/vlmModel, "
-                        + "generation/OCR/table options, or pipelineDefinition/pipelineDefinitionPath for an "
-                        + "executable UnifiedPipelineDefinition.");
+                "Named ingest pipeline definitions. pipelineType is an arbitrary portable category; "
+                        + "registeredPipelineId inherits a default and executorId/processor selects execution. "
+                        + "VLM, OCR, code, table, and keyword pipelines are built-in registrations, not a closed set.");
+        ObjectNode pipelineRegistry = props.putObject("pipelineRegistry");
+        pipelineRegistry.put("type", "object");
+        pipelineRegistry.put("description", "Request-scoped pipeline registrations shared by local routing and "
+                + "subprocess execution. Supplying this field selects the local folder backend so executor definitions "
+                + "cannot be lost through a managed-server DTO. Active kompile.project.json pipelines are added automatically locally.");
+        ObjectNode registryProperties = pipelineRegistry.putObject("properties");
+        addObjectArray(registryProperties, "defaults",
+                "Reusable ingest-pipeline defaults. A pipelines entry may inherit one with registeredPipelineId.");
+        addObjectArray(registryProperties, "definitions",
+                "Inline UnifiedPipelineDefinition objects addressable by pipelineDefinitionId.");
+        ObjectNode executors = registryProperties.putObject("executors");
+        executors.put("type", "array");
+        ObjectNode executor = executors.putObject("items");
+        executor.put("type", "object");
+        ObjectNode executorProperties = executor.putObject("properties");
+        executorProperties.putObject("executorId").put("type", "string");
+        executorProperties.putObject("type").put("type", "string")
+                .putArray("enum").add("UNIFIED_PIPELINE").add("KOMPILE_SUBPROCESS").add("EXECUTABLE");
+        executorProperties.putObject("pipelineDefinitionId").put("type", "string");
+        executorProperties.putObject("pipelineDefinitionPath").put("type", "string");
+        executorProperties.putObject("pipelineDefinition").put("type", "object");
+        executorProperties.putObject("componentId").put("type", "string");
+        executorProperties.putObject("executable").put("type", "string");
+        executorProperties.putObject("executableMode").put("type", "string")
+                .putArray("enum").add("DEDICATED").add("UNIFIED");
+        executorProperties.putObject("subprocessMode").put("type", "string");
+        executorProperties.putObject("arguments").put("type", "array")
+                .putObject("items").put("type", "string");
+        executorProperties.putObject("outputProtocol").put("type", "string")
+                .putArray("enum").add("AUTO").add("TEXT").add("JSON").add("KOMPILE_MESSAGE");
+        executorProperties.putObject("outputField").put("type", "string");
+        executorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
+        executorProperties.putObject("environment").put("type", "object")
+                .putObject("additionalProperties").put("type", "string");
+        executor.putArray("required").add("executorId").add("type");
         addObjectArray(props, "routeRules",
                 "Content routing rules that select a pipeline for matching documents.");
 
+        ObjectNode runtimeConfig = props.putObject("runtimeConfig");
+        runtimeConfig.put("type", "object");
+        runtimeConfig.put("description", "Folder-local execution settings. The local crawl engine "
+                + "resolves these directly and does not require a running MCP or application server.");
+        ObjectNode runtimeProperties = runtimeConfig.putObject("properties");
+        runtimeProperties.putObject("documentModelExecutable")
+                .put("type", "string")
+                .put("description", "Legacy alias for the executable on the built-in vlm-test registration. "
+                        + "New processors should use pipelineRegistry.executors[].executable.");
+        runtimeProperties.putObject("documentModelExecutableMode")
+                .put("type", "string")
+                .put("description", "Legacy launch-mode alias for the built-in vlm-test registration.")
+                .putArray("enum").add("DEDICATED").add("UNIFIED");
+        runtimeProperties.putObject("graphExtractionParallelism")
+                .put("type", "integer").put("minimum", 1).put("maximum", 32)
+                .put("description", "Concurrent local extraction work items.");
+        runtimeProperties.putObject("graphExtractionRemoteParallelism")
+                .put("type", "integer").put("minimum", 1).put("maximum", 32)
+                .put("description", "Concurrent request-scoped CLI/API model calls.");
+        runtimeProperties.putObject("graphExtractionBatchSize")
+                .put("type", "integer").put("minimum", 1);
+        runtimeProperties.putObject("graphExtractionTargetCharsPerBatch")
+                .put("type", "integer").put("minimum", 1);
+        runtimeProperties.putObject("graphExtractionMaxItemsPerBatch")
+                .put("type", "integer").put("minimum", 1);
+        runtimeProperties.putObject("graphExtractionBatchTimeoutSeconds")
+                .put("type", "integer").put("minimum", 1);
+        runtimeProperties.putObject("llmCallTimeoutSeconds")
+                .put("type", "integer").put("minimum", 10).put("maximum", 1800);
+        runtimeProperties.putObject("runReasoningLearning").put("type", "boolean")
+                .put("description", "Enable the final folder-local FOL/PSL/MEBN learning pass (default true).");
+        runtimeProperties.putObject("costSortChunks").put("type", "boolean");
+
+        ObjectNode modelRuntime = props.putObject("modelRuntime");
+        modelRuntime.put("type", "object");
+        modelRuntime.put("description", "Folder-local model lifecycle for LOCAL_MODEL routes. Native CLI runs "
+                + "bootstrap and serve through standalone native children; JVM development may use the "
+                + "same executable-JAR ABI. The child exists only for this MCP crawl.");
+        ObjectNode modelRuntimeProperties = modelRuntime.putObject("properties");
+        modelRuntimeProperties.putObject("autoBootstrap").put("type", "boolean");
+        modelRuntimeProperties.putObject("localPath").put("type", "string");
+        modelRuntimeProperties.putObject("source").put("type", "string");
+        modelRuntimeProperties.putObject("repository").put("type", "string");
+        modelRuntimeProperties.putObject("revision").put("type", "string");
+        modelRuntimeProperties.putObject("format").put("type", "string");
+        modelRuntimeProperties.putObject("type").put("type", "string");
+        modelRuntimeProperties.putObject("stagingExecutable").put("type", "string");
+        modelRuntimeProperties.putObject("stagingJar").put("type", "string")
+                .put("description", "JVM-development-only executable JAR; native CLI runs require stagingExecutable.");
+        modelRuntimeProperties.putObject("servingExecutable").put("type", "string");
+        modelRuntimeProperties.putObject("servingJar").put("type", "string")
+                .put("description", "JVM-development-only executable JAR; native CLI runs require servingExecutable.");
+        modelRuntimeProperties.putObject("javaExecutable").put("type", "string")
+                .put("description", "Optional Java executable for executable-JAR artifacts; otherwise the "
+                        + "distribution-aware JavaRuntimeLocator is used (including SDKMAN/Graal Java 17).");
+        modelRuntimeProperties.putObject("heapSize").put("type", "string");
+        modelRuntimeProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
+        modelRuntimeProperties.putObject("environment").put("type", "object")
+                .putObject("additionalProperties").put("type", "string");
+
+        ObjectNode graphExtraction = props.putObject("graphExtraction");
+        graphExtraction.put("type", "object");
+        graphExtraction.put("description", "Semantic graph configuration. Supplying this object "
+                + "enables the same GraphExtractionOrchestrator used by the parallel batch crawl.");
+        ObjectNode graphProperties = graphExtraction.putObject("properties");
+        graphProperties.putObject("llmProvider").put("type", "string")
+                .put("description", "Model runtime shorthand: serving/kompile-local launches Kompile's "
+                        + "request-scoped serving subprocess; claude, codex/openai, gemini/google, "
+                        + "opencode, qwen, pi, or an exact *-cli id launches that CLI agent. "
+                        + "Use processingRoute for an explicit fallback chain or API endpoint.");
+        graphProperties.putObject("modelName").put("type", "string")
+                .put("description", "Request-scoped model override passed to the selected serving, CLI, or API backend.");
+        graphProperties.putObject("temperature").put("type", "number");
+        graphProperties.putObject("maxTokens").put("type", "integer").put("minimum", 1);
+        graphProperties.putObject("minConfidence").put("type", "number")
+                .put("minimum", 0.0).put("maximum", 1.0);
+        graphProperties.putObject("entityResolution").put("type", "boolean")
+                .put("description", "Run the shared final corpus entity-resolution lifecycle after extraction and learning.");
+        graphProperties.putObject("entityResolutionSimilarityThreshold").put("type", "number")
+                .put("minimum", 0.0).put("maximum", 1.0);
+        graphProperties.putObject("entityResolutionUseEmbeddings").put("type", "boolean");
+        graphProperties.putObject("entityResolutionEmbeddingThreshold").put("type", "number")
+                .put("minimum", 0.0).put("maximum", 1.0);
+        graphProperties.putObject("entityResolutionMaxCandidatePairs").put("type", "integer")
+                .put("minimum", 1);
+        graphProperties.putObject("extractionMode").put("type", "string")
+                .putArray("enum").add("SINGLE_PASS").add("DECOMPOSED");
+        addStringArray(graphProperties, "entityTypes", "Entity types to extract.");
+        addStringArray(graphProperties, "relationshipTypes", "Relationship types to extract.");
+
+        ObjectNode processingRoute = props.putObject("processingRoute");
+        processingRoute.put("type", "object");
+        processingRoute.put("description", "Request-scoped model execution chain. The local MCP path "
+                + "launches Kompile's serving subprocess for LOCAL_MODEL, launches CLI_AGENT subprocesses, "
+                + "or calls API_AGENT endpoints without a running app server. Every local subprocess is "
+                + "stopped before the MCP command returns.");
+        ObjectNode routeProperties = processingRoute.putObject("properties");
+        routeProperties.putObject("fallbackEnabled").put("type", "boolean");
+        routeProperties.putObject("servingLaneEnabled").put("type", "boolean");
+        ObjectNode backends = routeProperties.putObject("backends");
+        backends.put("type", "array").put("minItems", 1);
+        ObjectNode backend = backends.putObject("items");
+        backend.put("type", "object");
+        ObjectNode backendProperties = backend.putObject("properties");
+        backendProperties.putObject("id").put("type", "string");
+        backendProperties.putObject("displayName").put("type", "string");
+        backendProperties.putObject("type").put("type", "string")
+                .putArray("enum").add("CLI_AGENT").add("API_AGENT").add("LOCAL_MODEL");
+        backendProperties.putObject("agentName").put("type", "string")
+                .put("description", "CLI registry id for CLI_AGENT; 'serving' for Kompile's request-scoped LOCAL_MODEL subprocess.");
+        backendProperties.putObject("endpointUrl").put("type", "string")
+                .put("description", "OpenAI-compatible base URL for API_AGENT (the dispatcher appends /chat/completions).");
+        backendProperties.putObject("apiKey").put("type", "string");
+        backendProperties.putObject("modelName").put("type", "string");
+        backendProperties.putObject("priority").put("type", "integer");
+        backendProperties.putObject("maxConcurrent").put("type", "integer").put("minimum", 0);
+        backendProperties.putObject("requestsPerMinute").put("type", "integer").put("minimum", 0);
+        addStringArray(backendProperties, "capabilities", "Backend capabilities such as llm.");
+        backend.putArray("required").add("id").add("type");
+
         for (String field : List.of(
-                "graphExtraction", "chunking", "vectorIndex", "processingRoute",
-                "runtimeConfig", "preprocessing", "hydration", "distribution")) {
+                "chunking", "vectorIndex", "preprocessing", "hydration", "distribution")) {
             props.putObject(field).put("type", "object")
                     .put("description", "UnifiedCrawlRequest." + field + " configuration.");
         }
@@ -211,15 +389,11 @@ public final class CrawlDocumentsTool implements CliTool {
             return ToolResult.error("codeProjects must be an array.");
         }
         boolean hasDocuments = documents != null && documents.isArray() && !documents.isEmpty();
-        boolean hasCodeProjects = codeProjects != null && codeProjects.isArray() && !codeProjects.isEmpty();
-        if (!hasDocuments && !hasCodeProjects) {
-            return ToolResult.error("Provide at least one document or registered codeProjects selector.");
-        }
         JsonNode config = params.get("config");
         if (config != null && !config.isNull() && !config.isObject()) {
             return ToolResult.error("config must be an object.");
         }
-        if (!client.isAvailable()) {
+        if (!client.isAvailable() || requiresRequestScopedPipelineExecution(params)) {
             return localBackend.crawlDocuments(params, context);
         }
 
@@ -274,6 +448,10 @@ public final class CrawlDocumentsTool implements CliTool {
                 copyIfPresent(selected, source, "allowedContentTypes");
                 copyIfPresent(selected, source, "properties");
                 copyIfPresent(selected, source, "pipelineId");
+                copyIfPresent(selected, source, "executorId");
+                copyIfPresent(selected, source, "processor");
+                copyIfPresent(selected, source, "pipelineDefinitionId");
+                copyIfPresent(selected, source, "pipelineDefinitionPath");
                 copyIfPresent(selected, source, "loaderName");
                 copyIfPresent(selected, source, "chunkerName");
                 copyIfPresent(selected, source, "chunkSize");
@@ -310,7 +488,7 @@ public final class CrawlDocumentsTool implements CliTool {
             for (String field : List.of(
                     "strictSteps", "deriveOntology", "defaultPipelineId", "maxValidationRetries",
                     "graphExtraction", "chunking", "vectorIndex", "processingRoute",
-                    "runtimeConfig", "preprocessing", "hydration", "distribution")) {
+                    "pipelineRegistry", "runtimeConfig", "preprocessing", "hydration", "distribution")) {
                 copyIfPresent(params, request, field);
             }
             String embeddingError = applyEmbeddingTraining(params.get("embeddingTraining"), request);
@@ -370,9 +548,11 @@ public final class CrawlDocumentsTool implements CliTool {
             }
             metadata.put("scheduled", body.path("scheduled").asBoolean(false));
             metadata.put("nextTools", List.of(
-                    "crawl_control", "local_code_index", "code_graph", "knowledge_graph",
+                    "crawl_control", "crawl_result", "knowledge_status", "knowledge_search",
+                    "local_code_index", "code_graph", "knowledge_graph",
                     "graph_embeddings", "graph_reason", "graph_reasoning_query",
                     "graph_import", "graph_export"));
+            CrawlResultHandle.from(body, "managed", jobId, null).attachTo(metadata);
             return ToolResult.success("crawl_documents", output.toString(), metadata);
         } catch (ResourceAccessException e) {
             return localBackend.crawlDocuments(params, context);
@@ -733,6 +913,38 @@ public final class CrawlDocumentsTool implements CliTool {
             request.put("factSheetName", kbName);
         }
         return null;
+    }
+
+    private static boolean requiresRequestScopedPipelineExecution(JsonNode params) {
+        return hasRequestScopedPipelineContract(params)
+                || hasRequestScopedPipelineContract(params == null ? null : params.get("config"));
+    }
+
+    private static boolean hasRequestScopedPipelineContract(JsonNode request) {
+        if (request == null || !request.isObject()) {
+            return false;
+        }
+        if (request.hasNonNull("pipelineRegistry") || request.hasNonNull("registeredPipelines")
+                || request.hasNonNull("modelRuntime")) {
+            return true;
+        }
+        return containsRequestScopedProcessor(request.get("pipelines"))
+                || containsRequestScopedProcessor(request.get("documents"))
+                || containsRequestScopedProcessor(request.get("sources"));
+    }
+
+    private static boolean containsRequestScopedProcessor(JsonNode values) {
+        if (values == null || !values.isArray()) {
+            return false;
+        }
+        for (JsonNode value : values) {
+            if (value.isObject() && List.of(
+                    "registeredPipelineId", "executorId", "processor", "pipelineDefinition",
+                    "pipelineDefinitionId", "pipelineDefinitionPath").stream().anyMatch(value::hasNonNull)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String copyArrayOverride(JsonNode source, ObjectNode target, String sourceName, String targetName) {

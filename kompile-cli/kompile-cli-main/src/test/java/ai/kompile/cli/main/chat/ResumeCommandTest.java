@@ -158,6 +158,51 @@ class ResumeCommandTest {
     }
 
     @Test
+    void automaticResumeTargetKeepsLiteralStandardChatInKompile() {
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
+                "cli-standard", "auto", "coder", null));
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
+                "cli-standard", "kompile", "", null));
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
+                "fpna-20260809-0826", "auto", "coder", null));
+        assertFalse(ResumeCommand.shouldResumeStandardChat(
+                "cli-standard", "claude", "coder", null));
+        assertFalse(ResumeCommand.shouldResumeStandardChat(
+                "cli-wrapper", "auto", "codex", null));
+        assertFalse(ResumeCommand.shouldResumeStandardChat(
+                "cli-wrapper", "auto", "coder", "native-session"));
+        assertEquals("claude", ResumeCommand.effectiveTargetAgent("auto"));
+        assertEquals("codex", ResumeCommand.effectiveTargetAgent("codex"));
+    }
+
+    @Test
+    void standardChatAppearsInListUnderKompileAgent() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        PrintStream originalOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setProperty("user.home", tempDir.resolve("standard-list-home").toString());
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+            ChatHistory history = new ChatHistory("custom-standard-list");
+            history.open("(local)", null, false);
+            history.logUserMessage("literal standard transcript");
+            history.close();
+
+            int exitCode = new CommandLine(new ResumeCommand()).execute(
+                    "--list", "--filter-source", "kompile", "--filter-agent", "kompile");
+
+            String output = captured.toString(StandardCharsets.UTF_8);
+            assertEquals(0, exitCode);
+            assertTrue(output.contains("custom-standard-list"));
+            assertTrue(output.contains("agent=kompile"));
+            assertTrue(output.contains("literal standard transcript"));
+        } finally {
+            System.setOut(originalOut);
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @Test
     void listFlagPrintsConversationsAndExits() throws Exception {
         String originalHome = System.getProperty("user.home");
         PrintStream originalOut = System.out;

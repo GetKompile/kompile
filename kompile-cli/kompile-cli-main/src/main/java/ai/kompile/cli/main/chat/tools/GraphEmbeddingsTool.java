@@ -62,9 +62,11 @@ public class GraphEmbeddingsTool implements CliTool {
     @Override
     public String description() {
         return "Learn and query link-prediction vectors (KGE) for the knowledge graph. " +
+                "Local stdio automatically initializes and uses the current folder's knowledge base; " +
+                "fact_sheet_id is only an explicit remote/legacy selector. " +
                 "Actions: " +
-                "'train' (start a background embedding training job for a fact sheet), " +
-                "'jobs' (list training jobs for a fact sheet), " +
+                "'train' (train embeddings for the selected graph), " +
+                "'jobs' (list training jobs), " +
                 "'job_status' (get status and progress of a specific job), " +
                 "'cancel' (cancel a running training job), " +
                 "'score' (plausibility score for a head/relation/tail triple), " +
@@ -80,8 +82,8 @@ public class GraphEmbeddingsTool implements CliTool {
     @Override
     public String compactHint() {
         return "Learn/refresh link-prediction vectors and predict missing links: " +
-                "action=train then job_status; predict_tails {fact_sheet_id, head, relation}; " +
-                "similar {fact_sheet_id, entity_name}; score {fact_sheet_id, head, relation, tail}. " +
+                "local stdio defaults to the current folder; action=train then job_status; " +
+                "predict_tails {head, relation}; similar {entity_name}; score {head, relation, tail}. " +
                 "algorithm=TRANSE|ROTATE (default ROTATE).";
     }
 
@@ -94,7 +96,7 @@ public class GraphEmbeddingsTool implements CliTool {
         addStringProp(props, "action",
                 "Action: train|jobs|job_status|cancel|score|predict_tails|predict_heads|predict_relations|similar|algorithms");
         addLongProp(props, "fact_sheet_id",
-                "Fact sheet ID (required for train, jobs, score, predict_*, similar)");
+                "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base");
         addStringProp(props, "algorithm",
                 "Embedding algorithm: TRANSE | ROTATE (default ROTATE)");
         addIntProp(props, "embedding_dim",
@@ -157,7 +159,8 @@ public class GraphEmbeddingsTool implements CliTool {
                         "predict_tails, predict_heads, predict_relations, similar, algorithms");
             };
         } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
+            return ToolResult.error("The explicitly configured remote graph embedding service became unavailable at "
+                    + baseUrl + ". Remove --url to continue with in-process embeddings.");
         } catch (Exception e) {
             return ToolResult.error("graph_embeddings error: " + e.getMessage());
         }

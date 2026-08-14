@@ -1,5 +1,6 @@
 package ai.kompile.serving.openai;
 
+import ai.kompile.utils.NativeLibraryResolver;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServer;
 import io.vertx.ext.web.Router;
@@ -249,6 +250,7 @@ public class OpenAiCompatibleServer implements Callable<Integer> {
     }
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         int exitCode = new CommandLine(new OpenAiCompatibleServer()).execute(args);
         System.exit(exitCode);
     }

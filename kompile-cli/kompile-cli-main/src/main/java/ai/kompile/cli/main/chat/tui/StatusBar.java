@@ -99,6 +99,8 @@ public class StatusBar {
         private final String type;
         private final String description;
         private final Instant startedAt;
+        private final StringBuilder transcript = new StringBuilder();
+        private volatile Instant completedAt;
         private volatile String status;
 
         public SubagentEntry(String id, String type, String description) {
@@ -111,15 +113,68 @@ public class StatusBar {
         public String getId() { return id; }
         public String getType() { return type; }
         public String getDescription() { return description; }
+        public Instant getStartedAt() { return startedAt; }
+        public Instant getCompletedAt() { return completedAt; }
         public String getStatus() { return status; }
+        public boolean isActive() { return completedAt == null; }
+
+        /** Full bounded activity transcript shown only when this subagent is opened. */
+        public synchronized String getTranscript() {
+            return transcript.toString().stripTrailing();
+        }
+
+        private synchronized void appendActivity(String summary, String detail) {
+            if (summary != null && !summary.isBlank()) {
+                this.status = summary;
+            }
+            if (detail == null || detail.isBlank()) return;
+            if (transcript.length() > 0) transcript.append('\n');
+            transcript.append(detail);
+            if (transcript.length() > MAX_SUBAGENT_TRANSCRIPT_CHARS) {
+                int trimAt = transcript.length() - MAX_SUBAGENT_TRANSCRIPT_CHARS;
+                int newline = transcript.indexOf("\n", trimAt);
+                transcript.delete(0, newline >= 0 ? newline + 1 : trimAt);
+                transcript.insert(0, "[older activity omitted]\n");
+            }
+        }
+
+        /** Append streamed model output without inserting a newline per token/chunk. */
+        private synchronized void appendOutput(String chunk) {
+            if (chunk == null || chunk.isEmpty()) return;
+            transcript.append(chunk);
+            trimTranscript();
+        }
+
+        private synchronized void trimTranscript() {
+            if (transcript.length() <= MAX_SUBAGENT_TRANSCRIPT_CHARS) return;
+            int trimAt = transcript.length() - MAX_SUBAGENT_TRANSCRIPT_CHARS;
+            int newline = transcript.indexOf("\n", trimAt);
+            transcript.delete(0, newline >= 0 ? newline + 1 : trimAt);
+            transcript.insert(0, "[older activity omitted]\n");
+        }
 
         /** Update the live status (e.g. "thinking", "Read file.java", "writing"). */
         public void setStatus(String status) {
             this.status = status;
         }
 
+        private void complete() {
+            this.completedAt = Instant.now();
+            if (status == null || status.isBlank()
+                    || "starting".equalsIgnoreCase(status)
+                    || "thinking".equalsIgnoreCase(status)) {
+                this.status = "completed";
+            }
+        }
+
+        private void reactivate() {
+            this.completedAt = null;
+            this.status = "starting follow-up";
+        }
+
         public String getElapsed() {
-            Duration d = Duration.between(startedAt, Instant.now());
+            Duration d = Duration.between(startedAt,
+                    completedAt != null ? completedAt : Instant.now());
             long secs = d.getSeconds();
             if (secs < 60) return secs + "s";
             return (secs / 60) + "m " + (secs % 60) + "s";
@@ -127,6 +182,9 @@ public class StatusBar {
     }
 
     private final CopyOnWriteArrayList<SubagentEntry> activeSubagents = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<SubagentEntry> recentSubagents = new CopyOnWriteArrayList<>();
+    private static final int MAX_RECENT_SUBAGENTS = 8;
+    private static final int MAX_SUBAGENT_TRANSCRIPT_CHARS = 250_000;
 
     // ========================================================================
     // Menu items — navigable activity items shown below the status line.
@@ -218,15 +276,20 @@ public class StatusBar {
         // Start refresh thread for spinner animation and periodic updates
         running.set(true);
         refreshThread = new Thread(() -> {
+            boolean wasActive = hasActiveItems();
             while (running.get()) {
                 try {
-                    // 5fps when active items exist, 1fps otherwise
-                    int sleepMs = hasActiveItems() ? 200 : 1000;
-                    Thread.sleep(sleepMs);
-                    spinnerFrame++;
-                    if (visible) {
+                    Thread.sleep(wasActive ? 200 : 1000);
+                    boolean active = hasActiveItems();
+                    if (active) {
+                        spinnerFrame++;
+                    }
+                    // An idle status bar is event-driven. Rewriting it forever can
+                    // disturb JLine and, on wrap-prone terminals, scroll blank rows.
+                    if (visible && (active || active != wasActive)) {
                         redraw();
                     }
+                    wasActive = active;
                 } catch (InterruptedException e) {
                     break;
                 }
@@ -323,6 +386,14 @@ public class StatusBar {
      * Register a new active subagent. The status bar will show it until unregistered.
      */
     public SubagentEntry registerSubagent(String id, String type, String description) {
+        for (SubagentEntry existing : recentSubagents) {
+            if (existing.getId().equals(id) && recentSubagents.remove(existing)) {
+                existing.reactivate();
+                activeSubagents.add(existing);
+                requestRedraw();
+                return existing;
+            }
+        }
         SubagentEntry entry = new SubagentEntry(id, type, description);
         activeSubagents.add(entry);
         requestRedraw();
@@ -333,16 +404,32 @@ public class StatusBar {
      * Unregister a subagent (it has completed or failed).
      */
     public void unregisterSubagent(String id) {
-        activeSubagents.removeIf(e -> e.getId().equals(id));
-        requestRedraw();
+        for (SubagentEntry entry : activeSubagents) {
+            if (entry.getId().equals(id) && activeSubagents.remove(entry)) {
+                retainCompletedSubagent(entry);
+                requestRedraw();
+                return;
+            }
+        }
     }
 
     /**
      * Unregister a subagent by entry reference.
      */
     public void unregisterSubagent(SubagentEntry entry) {
-        activeSubagents.remove(entry);
-        requestRedraw();
+        if (entry != null && activeSubagents.remove(entry)) {
+            retainCompletedSubagent(entry);
+            requestRedraw();
+        }
+    }
+
+    private void retainCompletedSubagent(SubagentEntry entry) {
+        entry.complete();
+        recentSubagents.removeIf(existing -> existing.getId().equals(entry.getId()));
+        recentSubagents.add(entry);
+        while (recentSubagents.size() > MAX_RECENT_SUBAGENTS) {
+            recentSubagents.remove(0);
+        }
     }
 
     /**
@@ -361,8 +448,46 @@ public class StatusBar {
         }
     }
 
+    /** Append detailed activity while keeping only its concise summary in the main panel. */
+    public void appendSubagentActivity(String id, String summary, String detail) {
+        for (SubagentEntry e : activeSubagents) {
+            if (e.getId().equals(id)) {
+                e.appendActivity(summary, detail);
+                requestRedraw();
+                return;
+            }
+        }
+        for (SubagentEntry e : recentSubagents) {
+            if (e.getId().equals(id)) {
+                e.appendActivity(summary, detail);
+                requestRedraw();
+                return;
+            }
+        }
+    }
+
+    /** Append raw streaming output to a subagent's retained transcript. */
+    public void appendSubagentOutput(String id, String chunk) {
+        for (SubagentEntry e : activeSubagents) {
+            if (e.getId().equals(id)) {
+                e.appendOutput(chunk);
+                return;
+            }
+        }
+        for (SubagentEntry e : recentSubagents) {
+            if (e.getId().equals(id)) {
+                e.appendOutput(chunk);
+                return;
+            }
+        }
+    }
+
     public List<SubagentEntry> getActiveSubagents() {
         return new ArrayList<>(activeSubagents);
+    }
+
+    public List<SubagentEntry> getRecentSubagents() {
+        return new ArrayList<>(recentSubagents);
     }
 
     // ========================================================================
@@ -437,7 +562,7 @@ public class StatusBar {
             // Draw separator line
             out.print(ESC + sepRow + ";1H");
             out.print(ESC + "2K");
-            out.print(DIM + HORIZONTAL_LINE.repeat(Math.min(terminalWidth, 200)) + RESET);
+            out.print(DIM + HORIZONTAL_LINE.repeat(Math.min(safeDrawWidth(terminalWidth), 200)) + RESET);
 
             // Draw status content line
             out.print(ESC + contentRow + ";1H");
@@ -486,6 +611,10 @@ public class StatusBar {
      * Layout: [active items...] │ [queue] │ [mode] │ [agent]
      */
     String buildStatusContent() {
+        return buildStatusContent(terminalWidth > 0 ? terminalWidth : 80);
+    }
+
+    String buildStatusContent(int width) {
         List<String> segments = new ArrayList<>();
 
         // --- Foreground model activity ---
@@ -610,11 +739,26 @@ public class StatusBar {
         String sep = " " + DIM + VERTICAL_SEP + RESET + " ";
         String joined = String.join(sep, segments);
 
-        // Pad to terminal width with inverse-video background
+        // Never write the last terminal column: filling it sets the terminal's
+        // auto-wrap flag, so the next animated redraw can become a line feed.
+        int drawWidth = safeDrawWidth(width);
+        if (drawWidth == 1) {
+            return INVERSE + " " + RESET;
+        }
+        int innerWidth = Math.max(0, drawWidth - 2);
         int visibleLen = AnsiConstants.stripAnsi(joined).length();
-        int padding = Math.max(0, terminalWidth - visibleLen - 2); // -2 for leading space
+        if (visibleLen > innerWidth) {
+            String plain = AnsiConstants.stripAnsi(joined);
+            joined = plain.substring(0, innerWidth);
+            visibleLen = joined.length();
+        }
+        int padding = Math.max(0, drawWidth - visibleLen - 2);
 
         return INVERSE + " " + joined + " ".repeat(padding + 1) + RESET;
+    }
+
+    static int safeDrawWidth(int terminalWidth) {
+        return Math.max(1, terminalWidth - 1);
     }
 
     // ========================================================================
@@ -717,6 +861,24 @@ public class StatusBar {
             }
         }
 
+        if (!recentSubagents.isEmpty()) {
+            if (!running.isEmpty() || !done.isEmpty() || !activeSubagents.isEmpty()) body.append("\n");
+            body.append(BOLD + MAGENTA + "Recent Subagents" + RESET).append("\n");
+            for (SubagentEntry sa : recentSubagents) {
+                body.append("  ✓ ")
+                        .append("[").append(DIM + sa.getId() + RESET).append("]")
+                        .append(" ").append(sa.getType());
+                if (sa.getDescription() != null && !sa.getDescription().isEmpty()) {
+                    body.append(DIM + " — " + sa.getDescription() + RESET);
+                }
+                if (sa.getStatus() != null && !sa.getStatus().isBlank()) {
+                    body.append(DIM + " · " + sa.getStatus() + RESET);
+                }
+                body.append(DIM + " (" + sa.getElapsed() + ")" + RESET)
+                        .append("\n");
+            }
+        }
+
         // Backgrounded LLM tasks
         List<BackgroundTask> bgTasks = taskManager.getActiveTasks();
         if (!bgTasks.isEmpty()) {
@@ -731,7 +893,8 @@ public class StatusBar {
             }
         }
 
-        if (running.isEmpty() && done.isEmpty() && activeSubagents.isEmpty() && bgTasks.isEmpty()) {
+        if (running.isEmpty() && done.isEmpty() && activeSubagents.isEmpty()
+                && recentSubagents.isEmpty() && bgTasks.isEmpty()) {
             body.append(DIM + "  No active processes or subagents" + RESET).append("\n");
         }
 

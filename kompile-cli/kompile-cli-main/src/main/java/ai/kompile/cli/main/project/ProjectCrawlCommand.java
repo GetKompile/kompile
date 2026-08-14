@@ -18,6 +18,8 @@ package ai.kompile.cli.main.project;
 import ai.kompile.cli.common.http.KompileHttpClient;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
+import ai.kompile.cli.common.util.JavaRuntimeLocator;
+import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.app.CrawlCommand;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.cli.main.manage.ServiceManager;
@@ -34,15 +36,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
+import org.jsoup.parser.Parser;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.Writer;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.URI;
@@ -54,6 +59,8 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -101,6 +108,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
     /** Workflow-step template token standing in for "the kompile server". */
     private static final String APP_URL_TOKEN = "${appUrl}";
+    private static final int LOCAL_IO_BUFFER_CHARS = 16 * 1024;
+    private static final int NO_OP_STREAM_BATCH_CHARS = 64 * 1024;
+    private static final int MAX_HTML_TOKEN_CHARS = 8 * 1024;
 
     private static final Set<String> LOCAL_KNOWLEDGE_STOP_WORDS = Set.of(
             "the", "and", "for", "that", "with", "this", "from", "are", "was", "were",
@@ -841,10 +851,32 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             return Optional.of("echo 'Model staging already running on port " + stagingPort + " — skipping.'");
         }
         Path modelDir = projectRoot.resolve("data/models").normalize();
-        // Resolution order: explicit env/property → installed component → source-tree build output
+        ComponentRegistry registry = new ComponentRegistry();
+        Optional<Path> stagingExecutable = configuredPath(
+                "KOMPILE_MODEL_STAGING_EXECUTABLE", "kompile.model.staging.executable")
+                .filter(path -> Files.isRegularFile(path) && Files.isExecutable(path))
+                .or(() -> {
+                    File binary = registry.getDistributionBinaryPath(
+                            ComponentRegistry.KOMPILE_MODEL_STAGING);
+                    return binary != null && binary.isFile() && binary.canExecute()
+                            ? Optional.of(binary.toPath().toAbsolutePath().normalize())
+                            : Optional.empty();
+                });
+        if (stagingExecutable.isPresent()) {
+            return Optional.of(artifactLaunchCommand(stagingExecutable.get(), List.of(
+                    "--server.port=" + stagingPort,
+                    "--kompile.staging.models-dir=" + modelDir,
+                    "--spring.main.banner-mode=off")));
+        }
+        if (CliProcessLauncher.requiresNativeChildren()) {
+            System.err.println("Native Kompile execution requires bin/kompile-model-staging; "
+                    + "the executable-JAR fallback is disabled.");
+            return Optional.empty();
+        }
+        // JVM development resolution: explicit JAR → installed component → source-tree build output.
         Optional<Path> stagingJar = configuredPath("KOMPILE_MODEL_STAGING_JAR", "kompile.modelStaging.jar")
                 .or(() -> {
-                    File installed = new ComponentRegistry().findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
+                    File installed = registry.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING);
                     return installed != null ? Optional.of(installed.toPath()) : Optional.empty();
                 })
                 .or(() -> findSourceRoot(projectRoot)
@@ -881,26 +913,47 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         if (configuredCommand != null) {
             return Optional.of(configuredCommand.replace("{args}", shellQuote(argsPath.toString())));
         }
-        String configuredClasspath = firstNonBlank(System.getenv("KOMPILE_PIPELINE_SERVING_CLASSPATH"),
-                System.getProperty("kompile.pipelineServing.classpath"));
-        if (configuredClasspath != null) {
-            return Optional.of("exec java -cp " + shellQuote(configuredClasspath)
-                    + " ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain "
-                    + shellQuote(argsPath.toString()));
-        }
-        Optional<Path> sourceRoot = findSourceRoot(projectRoot);
-        if (sourceRoot.isEmpty()) {
-            System.err.println("No pipeline serving launcher found. Set KOMPILE_SERVING_COMMAND, "
-                    + "KOMPILE_PIPELINE_SERVING_COMMAND, or KOMPILE_PIPELINE_SERVING_CLASSPATH.");
+        ComponentRegistry registry = new ComponentRegistry();
+        Optional<Path> runtime = configuredPath(
+                "KOMPILE_PIPELINE_SERVING_EXECUTABLE",
+                "kompile.pipeline.serving.executable")
+                .filter(path -> Files.isRegularFile(path) && Files.isExecutable(path))
+                .or(() -> {
+                    File binary = registry.getDistributionBinaryPath(
+                            ComponentRegistry.KOMPILE_PIPELINE_SERVING);
+                    Path path = binary == null ? null : binary.toPath().toAbsolutePath().normalize();
+                    return path != null && Files.isRegularFile(path) && Files.isExecutable(path)
+                            ? Optional.of(path) : Optional.empty();
+                });
+        if (runtime.isEmpty() && CliProcessLauncher.requiresNativeChildren()) {
+            System.err.println("Native Kompile execution requires bin/kompile-pipeline-serving; "
+                    + "the executable-JAR fallback is disabled.");
             return Optional.empty();
         }
-        // -pl takes the artifactId (colon syntax), not a module path: pipeline-serving sits under
-        // kompile-app/kompile-data/kompile-pipelines/, and a path here goes stale on every regroup.
-        return Optional.of("cd " + shellQuote(sourceRoot.get().toString())
-                + " && exec ./mvnw -q -pl :kompile-pipeline-serving exec:java"
-                + " -Dexec.mainClass=ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain"
-                + " -Dexec.args=" + shellQuote(argsPath.toString())
-                + " -DskipTests -Dskip.ui");
+        if (runtime.isEmpty()) {
+            runtime = configuredPath(
+                    "KOMPILE_PIPELINE_SERVING_JAR",
+                    "kompile.pipeline.serving.jar")
+                    .filter(Files::isRegularFile)
+                    .or(() -> {
+                    File installed = registry.findInstalledJar(
+                            ComponentRegistry.KOMPILE_PIPELINE_SERVING);
+                    return installed != null && installed.isFile()
+                            ? Optional.of(installed.toPath().toAbsolutePath().normalize())
+                            : Optional.empty();
+                    })
+                    .or(() -> findSourceRoot(projectRoot)
+                            .flatMap(root -> findModuleExecutableJar(
+                                    root, ComponentRegistry.KOMPILE_PIPELINE_SERVING)));
+        }
+        if (runtime.isEmpty()) {
+            System.err.println("No standalone pipeline-serving binary or executable JAR found. "
+                    + "Install kompile-pipeline-serving or set "
+                    + "KOMPILE_PIPELINE_SERVING_EXECUTABLE / KOMPILE_PIPELINE_SERVING_JAR.");
+            return Optional.empty();
+        }
+        return Optional.of(artifactLaunchCommand(
+                runtime.get(), List.of(argsPath.toAbsolutePath().normalize().toString())));
     }
 
     /**
@@ -997,7 +1050,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     .filter(Files::isExecutable)
                     .orElse(null);
             command.append("exec ")
-                    .append(bundledJava == null ? "java" : shellQuote(bundledJava.toString()));
+                    .append(bundledJava == null
+                            ? shellQuote(JavaRuntimeLocator.javaExecutable())
+                            : shellQuote(bundledJava.toString()));
             distributionHome.ifPresent(root -> command.append(" ")
                     .append(shellQuote("-Dkompile.dist.home=" + root)));
             command.append(" -jar ").append(shellQuote(normalizedArtifact.toString()));
@@ -1431,7 +1486,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                       int documentCount,
                                       int chunkCount,
                                       int markdownCount,
+                                      String status,
+                                      List<LocalCrawlFailure> documentFailures,
                                       boolean dryRun) {
+        public LocalCrawlExecution {
+            documentFailures = documentFailures == null ? List.of() : List.copyOf(documentFailures);
+        }
+    }
+
+    /** A document extraction failure surfaced to local crawl callers and MCP tool responses. */
+    public record LocalCrawlFailure(String documentId, String source, String relativePath,
+                                    String message, String pipelineId, String pipelineType) {
     }
 
     /**
@@ -1463,7 +1528,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             throw new IllegalArgumentException("Local crawl markdown output escapes project root: " + markdownDir);
         }
         if (dryRun) {
-            return new LocalCrawlExecution(crawlId, outputDir, markdownDir, 0, 0, 0, true);
+            return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
+                    0, 0, 0, "DRY_RUN", List.of(), true);
         }
 
         Files.createDirectories(outputDir);
@@ -1488,7 +1554,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             // Catalog synchronization requires a manifest; local artifacts do not.
         }
         return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
-                result.documents().size(), result.chunks().size(), result.markdownCount(), false);
+                result.documents().size(), result.chunkCount(), result.markdownCount(),
+                result.status(), result.failures(), false);
     }
 
     static int runLocalCrawl(KompileProjectCrawlProfile profile, Path projectRoot, boolean dryRun) {
@@ -1504,10 +1571,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 return 0;
             }
 
-            System.out.println("Local crawl complete: " + profile.getId());
+            System.out.println("Local crawl " + execution.status().toLowerCase(Locale.ROOT)
+                    .replace('_', ' ') + ": " + profile.getId());
             System.out.println("  Documents: " + execution.documentCount());
             System.out.println("  Chunks: " + execution.chunkCount());
             System.out.println("  Markdown: " + execution.markdownCount());
+            if (!execution.documentFailures().isEmpty()) {
+                System.out.println("  Failed documents: " + execution.documentFailures().size());
+                for (LocalCrawlFailure failure : execution.documentFailures()) {
+                    System.out.println("    " + failure.relativePath() + ": " + failure.message());
+                }
+            }
             System.out.println("  Output: " + execution.outputDirectory());
             System.out.println("  Markdown output: " + execution.markdownDirectory());
             if (profile.getFactSheetName() != null && !profile.getFactSheetName().isBlank()) {
@@ -1515,7 +1589,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 // Best-effort: register markdown as facts via running backend
                 tryRegisterMarkdownAsFacts(profile.getFactSheetName());
             }
-            return 0;
+            return "FAILED".equals(execution.status()) ? 1
+                    : "COMPLETED_WITH_ERRORS".equals(execution.status()) ? 2 : 0;
         } catch (IOException e) {
             System.err.println("Local crawl failed: " + e.getMessage());
             return 1;
@@ -1536,34 +1611,43 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                       String projectName,
                                                       JsonNode request) throws IOException {
         List<LocalCrawlDocument> documents = new ArrayList<>();
-        List<LocalCrawlChunk> chunks = new ArrayList<>();
+        LocalCrawlStatistics statistics = new LocalCrawlStatistics();
         int maxDocuments = profile.getMaxDocuments();
-        for (String source : profile.getSources()) {
-            Path sourcePath = resolveLocalCrawlSource(projectRoot, source);
-            if (!Files.exists(sourcePath)) {
-                throw new IOException("Crawl source does not exist: " + sourcePath);
-            }
-            List<Path> sourceFiles = localCrawlFiles(sourcePath, projectRoot, outputDir, markdownDir, profile);
-            for (Path file : sourceFiles) {
+        Path chunksPath = outputDir.resolve("chunks.jsonl");
+        try (BufferedWriter chunks = Files.newBufferedWriter(chunksPath, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            for (String source : profile.getSources()) {
+                Path sourcePath = resolveLocalCrawlSource(projectRoot, source);
+                if (!Files.exists(sourcePath)) {
+                    throw new IOException("Crawl source does not exist: " + sourcePath);
+                }
+                List<Path> sourceFiles = localCrawlFiles(sourcePath, projectRoot, outputDir, markdownDir, profile);
+                for (Path file : sourceFiles) {
+                    if (maxDocuments > 0 && documents.size() >= maxDocuments) {
+                        break;
+                    }
+                    LocalCrawlDocument document = localCrawlDocument(projectRoot, sourcePath, file);
+                    LocalCrawlCapabilities.ResolvedPipeline pipeline =
+                            LocalCrawlCapabilities.resolve(request, profile, sourcePath, file);
+                    LocalMarkdownArtifact markdown = writeLocalCrawlMarkdown(projectRoot, markdownDir,
+                            document, file, profile, projectName, pipeline);
+                    document = document.withMarkdown(markdown);
+                    if (markdown.markdownPath() != null) {
+                        Path markdownPath = projectRoot.resolve(markdown.markdownPath()).normalize();
+                        LocalChunkingStats documentStats = streamLocalCrawlChunks(
+                                document, markdownPath, pipeline, chunks, statistics);
+                        markdown = markdown.withStats(documentStats.markdownChars(), documentStats.wordCount());
+                        document = document.withMarkdown(markdown);
+                    }
+                    documents.add(document);
+                }
                 if (maxDocuments > 0 && documents.size() >= maxDocuments) {
                     break;
                 }
-                LocalCrawlDocument document = localCrawlDocument(projectRoot, sourcePath, file);
-                LocalCrawlCapabilities.ResolvedPipeline pipeline =
-                        LocalCrawlCapabilities.resolve(request, profile, sourcePath, file);
-                LocalMarkdownArtifact markdown = writeLocalCrawlMarkdown(projectRoot, markdownDir,
-                        document, file, profile, projectName, pipeline);
-                document = document.withMarkdown(markdown);
-                documents.add(document);
-                if (markdown.markdown() != null && !markdown.markdown().isBlank()) {
-                    chunks.addAll(localCrawlChunks(document, markdown.markdown(), pipeline));
-                }
-            }
-            if (maxDocuments > 0 && documents.size() >= maxDocuments) {
-                break;
             }
         }
-        return new LocalCrawlResult(documents, chunks);
+        return new LocalCrawlResult(documents, statistics.chunkCount,
+                statistics.analysisWordCount, Map.copyOf(statistics.terms));
     }
 
     private static List<Path> localCrawlFiles(Path sourcePath, Path projectRoot, Path outputDir, Path markdownDir,
@@ -1575,8 +1659,11 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
             return files;
         }
+        boolean hasExplicitIncludes = profile != null && !profile.getIncludePatterns().isEmpty();
         try (Stream<Path> stream = Files.walk(sourcePath)) {
             stream.filter(Files::isRegularFile)
+                    .filter(path -> hasExplicitIncludes || isKnowledgeSource(
+                            path.getFileName().toString().toLowerCase(Locale.ROOT)))
                     .filter(path -> includeLocalCrawlFile(path, sourcePath.relativize(path), projectRoot, outputDir,
                             markdownDir, profile))
                     .forEach(files::add);
@@ -1675,41 +1762,53 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             return LocalMarkdownArtifact.failed("Loader '" + pipeline.loaderName()
                     + "' does not support " + file.getFileName(), pipeline);
         }
+        Path bodyPath = null;
+        Path temporaryMarkdown = null;
         try {
-            LocalMarkdownContent content;
-            if (LocalCrawlCapabilities.usesProcessingSubprocess(pipeline)) {
-                LocalMarkdownContent loaded = null;
-                try {
-                    loaded = localMarkdownContent(
-                            file, name, document, profile, projectName, pipeline.loaderName());
-                } catch (Exception ignored) {
-                    // Scanned PDFs commonly have no usable local text; the model worker owns extraction.
+            bodyPath = Files.createTempFile(markdownDir, document.documentId() + "-body-", ".tmp");
+            String title;
+            try (Writer fileWriter = Files.newBufferedWriter(bodyPath, StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+                 NormalizedTextWriter bodyWriter = new NormalizedTextWriter(fileWriter)) {
+                if (LocalCrawlCapabilities.usesProcessingSubprocess(pipeline)) {
+                    String extracted = LocalModelPipelineRunner.extract(projectRoot, file, pipeline, "");
+                    bodyWriter.write(extracted);
+                    title = file.getFileName().toString();
+                } else {
+                    title = streamLocalMarkdownBody(file, name, pipeline.loaderName(), bodyWriter);
                 }
-                String extracted = LocalModelPipelineRunner.extract(projectRoot, file, pipeline,
-                        loaded == null ? "" : loaded.markdown());
-                String title = loaded == null ? file.getFileName().toString() : loaded.title();
-                content = new LocalMarkdownContent(title,
-                        knowledgeMarkdown(title, document, extracted, profile, projectName));
-            } else {
-                content = localMarkdownContent(
-                        file, name, document, profile, projectName, pipeline.loaderName());
             }
-            if (content.markdown() == null || content.markdown().isBlank()) {
+            if (Files.size(bodyPath) == 0) {
                 return LocalMarkdownArtifact.skipped("No extractable text", pipeline);
             }
             Path markdownPath = markdownDir.resolve(document.documentId() + ".md").normalize();
             if (!markdownPath.startsWith(markdownDir)) {
                 throw new IllegalArgumentException("Markdown artifact escapes markdown directory: " + markdownPath);
             }
-            Files.writeString(markdownPath, content.markdown(), StandardCharsets.UTF_8);
+            temporaryMarkdown = Files.createTempFile(markdownDir, document.documentId() + "-markdown-", ".tmp");
+            try (BufferedWriter markdown = Files.newBufferedWriter(temporaryMarkdown, StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+                 BufferedReader body = Files.newBufferedReader(bodyPath, StandardCharsets.UTF_8)) {
+                markdown.write(knowledgeMarkdownHeader(title, document, profile, projectName));
+                char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+                int read;
+                while ((read = body.read(buffer)) >= 0) {
+                    if (read > 0) markdown.write(buffer, 0, read);
+                }
+                markdown.write('\n');
+            }
+            Files.move(temporaryMarkdown, markdownPath, StandardCopyOption.REPLACE_EXISTING);
+            temporaryMarkdown = null;
             String relativeMarkdown = projectRoot.toAbsolutePath().normalize()
                     .relativize(markdownPath.toAbsolutePath().normalize())
                     .toString()
                     .replace('\\', '/');
-            return LocalMarkdownArtifact.extracted(
-                    content.title(), relativeMarkdown, content.markdown(), pipeline);
+            return LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline);
         } catch (Exception e) {
             return LocalMarkdownArtifact.failed(e.getMessage(), pipeline);
+        } finally {
+            if (bodyPath != null) Files.deleteIfExists(bodyPath);
+            if (temporaryMarkdown != null) Files.deleteIfExists(temporaryMarkdown);
         }
     }
 
@@ -1720,7 +1819,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     private static boolean isTextKnowledgeSource(String name) {
         return name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".markdown")
                 || name.endsWith(".json") || name.endsWith(".jsonl") || name.endsWith(".yaml")
-                || name.endsWith(".yml") || name.endsWith(".csv") || name.endsWith(".html")
+                || name.endsWith(".yml") || name.endsWith(".csv") || name.endsWith(".tsv")
+                || name.endsWith(".html")
                 || name.endsWith(".htm") || name.endsWith(".xml") || name.endsWith(".properties");
     }
 
@@ -1747,69 +1847,78 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 || name.equals("dockerfile") || name.equals("makefile");
     }
 
-    private static LocalMarkdownContent localMarkdownContent(Path file, String name,
-                                                             LocalCrawlDocument document) throws IOException {
-        return localMarkdownContent(file, name, document, null, null,
-                LocalCrawlCapabilities.resolve(null, null, file, file).loaderName());
-    }
-
-    private static LocalMarkdownContent localMarkdownContent(Path file, String name,
-                                                             LocalCrawlDocument document,
-                                                             KompileProjectCrawlProfile profile,
-                                                             String projectName,
-                                                             String loaderName) throws IOException {
+    private static String streamLocalMarkdownBody(Path file, String name, String loaderName,
+                                                  Writer output) throws IOException {
         String title = file.getFileName().toString();
-        String body;
         if ("pdf".equals(loaderName)) {
-            body = extractPdfText(file);
+            streamPdfText(file, output);
         } else if ("html".equals(loaderName)) {
-            Document html = Jsoup.parse(file.toFile(), StandardCharsets.UTF_8.name());
-            title = firstNonBlank(html.title(), title);
-            body = htmlToMarkdown(html);
-        } else if ("markdown".equals(loaderName)) {
-            body = Files.readString(file, StandardCharsets.UTF_8);
+            title = firstNonBlank(streamHtmlToMarkdown(file, output), title);
         } else if ("table".equals(loaderName)) {
             if (name.endsWith(".html") || name.endsWith(".htm")) {
-                Document html = Jsoup.parse(file.toFile(), StandardCharsets.UTF_8.name());
-                title = firstNonBlank(html.title(), title);
-                body = htmlToMarkdown(html);
+                title = firstNonBlank(streamHtmlToMarkdown(file, output), title);
             } else if (name.endsWith(".csv") || name.endsWith(".tsv")) {
-                body = delimitedTableToMarkdown(Files.readString(file, StandardCharsets.UTF_8),
-                        name.endsWith(".tsv") ? '\t' : ',');
+                streamDelimitedTable(file, name.endsWith(".tsv") ? '\t' : ',', output);
             } else {
-                body = extractPdfText(file);
+                streamPdfText(file, output);
             }
         } else {
-            body = normalizeKnowledgeText(Files.readString(file, StandardCharsets.UTF_8));
+            streamUtf8(file, output);
         }
-        String markdown = knowledgeMarkdown(title, document, body, profile, projectName);
-        return new LocalMarkdownContent(title, markdown);
+        return title;
     }
 
-    private static String extractPdfText(Path file) throws IOException {
-        if (NativeImageInfo.isRunningInNativeImage()) {
-            return extractPdfTextWithPdftotext(file);
+    private static void streamUtf8(Path file, Writer output) throws IOException {
+        try (BufferedReader input = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) output.write(buffer, 0, read);
+            }
         }
+    }
+
+    private static void streamPdfText(Path file, Writer output) throws IOException {
+        if (NativeImageInfo.isRunningInNativeImage()) {
+            streamPdfTextWithPdftotext(file, output);
+            return;
+        }
+        boolean wrotePage = false;
         try (PDDocument pdf = Loader.loadPDF(file.toFile())) {
             PDFTextStripper stripper = new PDFTextStripper();
             stripper.setSortByPosition(true);
-            return normalizeKnowledgeText(stripper.getText(pdf));
-        } catch (IOException e) {
-            String fallback = extractPdfTextWithPdftotext(file);
-            if (!fallback.isBlank()) {
-                return fallback;
+            for (int page = 1; page <= pdf.getNumberOfPages(); page++) {
+                stripper.setStartPage(page);
+                stripper.setEndPage(page);
+                output.write(stripper.getText(pdf));
+                output.write("\n\n");
+                wrotePage = true;
             }
-            throw e;
+        } catch (IOException e) {
+            if (!wrotePage) {
+                streamPdfTextWithPdftotext(file, output);
+                return;
+            }
+            throw new IOException("Unable to extract PDF text from " + file + ": " + e.getMessage(), e);
         }
     }
 
-    private static String extractPdfTextWithPdftotext(Path file) throws IOException {
+    private static void streamPdfTextWithPdftotext(Path file, Writer output) throws IOException {
         Process process = new ProcessBuilder("pdftotext", "-layout", file.toString(), "-")
                 .redirectErrorStream(true)
                 .start();
-        String output;
+        StringBuilder tail = new StringBuilder();
         try {
-            output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            try (Reader input = new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+                char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read == 0) continue;
+                    output.write(buffer, 0, read);
+                    tail.append(buffer, 0, read);
+                    if (tail.length() > 4_000) tail.delete(0, tail.length() - 4_000);
+                }
+            }
             if (!process.waitFor(60, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 throw new IOException("pdftotext timed out for " + file);
@@ -1819,122 +1928,86 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             throw new IOException("Interrupted while extracting PDF text: " + file, e);
         }
         if (process.exitValue() != 0) {
-            throw new IOException("pdftotext failed for " + file + ": " + output.strip());
+            throw new IOException("pdftotext failed for " + file + ": " + tail.toString().strip());
         }
-        return normalizeKnowledgeText(output);
     }
 
-    private static String htmlToMarkdown(Document html) {
-        html.select("script, style, noscript, svg, canvas").remove();
-        StringBuilder markdown = new StringBuilder();
-        Element body = html.body();
-        if (body == null) {
-            return "";
-        }
-        for (Element element : body.select("h1, h2, h3, h4, h5, h6, p, li, blockquote, pre, table")) {
-            String tag = element.tagName().toLowerCase(Locale.ROOT);
-            if ("table".equals(tag)) {
-                appendHtmlTable(markdown, element);
-                continue;
-            }
-            String text = normalizeKnowledgeText(element.text());
-            if (text.isBlank()) {
-                continue;
-            }
-            if (tag.matches("h[1-6]")) {
-                int level = Math.max(1, Math.min(6, Integer.parseInt(tag.substring(1))));
-                markdown.append("#".repeat(level)).append(' ').append(text).append("\n\n");
-            } else if ("li".equals(tag)) {
-                markdown.append("- ").append(text).append("\n");
-            } else if ("blockquote".equals(tag)) {
-                markdown.append("> ").append(text).append("\n\n");
-            } else if ("pre".equals(tag)) {
-                markdown.append("```\n").append(element.text()).append("\n```\n\n");
-            } else {
-                markdown.append(text).append("\n\n");
+    private static String streamHtmlToMarkdown(Path file, Writer output) throws IOException {
+        StreamingHtmlMarkdown html = new StreamingHtmlMarkdown(output);
+        try (BufferedReader input = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) html.accept(buffer, read);
             }
         }
-        if (markdown.isEmpty()) {
-            return normalizeKnowledgeText(body.text());
-        }
-        return markdown.toString().trim();
+        html.finish();
+        return html.title();
     }
 
-    private static String delimitedTableToMarkdown(String value, char delimiter) {
-        List<List<String>> rows = new ArrayList<>();
-        for (String line : value.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
-            if (!line.isBlank()) rows.add(parseDelimitedRow(line, delimiter));
-        }
-        if (rows.isEmpty()) return "";
-        int columns = rows.stream().mapToInt(List::size).max().orElse(0);
-        StringBuilder markdown = new StringBuilder();
-        appendMarkdownRow(markdown, rows.get(0), columns);
-        markdown.append('|');
-        for (int i = 0; i < columns; i++) markdown.append(" --- |");
-        markdown.append('\n');
-        for (int i = 1; i < rows.size(); i++) appendMarkdownRow(markdown, rows.get(i), columns);
-        return markdown.toString().strip();
-    }
-
-    private static List<String> parseDelimitedRow(String line, char delimiter) {
-        List<String> cells = new ArrayList<>();
-        StringBuilder cell = new StringBuilder();
+    private static void streamDelimitedTable(Path file, char delimiter, Writer output) throws IOException {
         boolean quoted = false;
-        for (int i = 0; i < line.length(); i++) {
-            char current = line.charAt(i);
+        boolean rowStarted = false;
+        boolean firstRow = true;
+        int columns = 1;
+        try (BufferedReader input = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            int value;
+            while ((value = input.read()) >= 0) {
+                char current = (char) value;
+                if (!rowStarted && (current == '\r' || current == '\n')) continue;
+                if (!rowStarted) {
+                    output.write("| ");
+                    rowStarted = true;
+                    columns = 1;
+                }
             if (current == '"') {
-                if (quoted && i + 1 < line.length() && line.charAt(i + 1) == '"') {
-                    cell.append('"');
-                    i++;
-                } else {
-                    quoted = !quoted;
-                }
+                    if (quoted) {
+                        input.mark(1);
+                        int next = input.read();
+                        if (next == '"') output.write('"');
+                        else {
+                            quoted = false;
+                            if (next >= 0) input.reset();
+                        }
+                    } else quoted = true;
             } else if (current == delimiter && !quoted) {
-                cells.add(cell.toString().strip());
-                cell.setLength(0);
-            } else {
-                cell.append(current);
-            }
-        }
-        cells.add(cell.toString().strip());
-        return cells;
-    }
-
-    private static void appendMarkdownRow(StringBuilder markdown, List<String> row, int columns) {
-        markdown.append('|');
-        for (int i = 0; i < columns; i++) {
-            String cell = i < row.size() ? row.get(i) : "";
-            markdown.append(' ').append(cell.replace("|", "\\|").replace("\n", " ")).append(" |");
-        }
-        markdown.append('\n');
-    }
-
-    private static void appendHtmlTable(StringBuilder markdown, Element table) {
-        for (Element row : table.select("tr")) {
-            List<String> cells = new ArrayList<>();
-            for (Element cell : row.select("th, td")) {
-                String text = normalizeKnowledgeText(cell.text());
-                if (!text.isBlank()) {
-                    cells.add(text);
+                    output.write(" | ");
+                    columns++;
+                } else if ((current == '\r' || current == '\n') && !quoted) {
+                    if (current == '\r') {
+                        input.mark(1);
+                        int next = input.read();
+                        if (next != '\n' && next >= 0) input.reset();
+                    }
+                    output.write(" |\n");
+                    if (firstRow) {
+                        writeMarkdownTableSeparator(output, columns);
+                        firstRow = false;
+                    }
+                    rowStarted = false;
+                } else if ((current == '\r' || current == '\n') && quoted) {
+                    output.write(' ');
+                } else if (current == '|') {
+                    output.write("\\|");
+                } else {
+                    output.write(current);
                 }
             }
-            if (!cells.isEmpty()) {
-                markdown.append("| ").append(String.join(" | ", cells)).append(" |\n");
-            }
         }
-        markdown.append('\n');
+        if (rowStarted) {
+            output.write(" |\n");
+            if (firstRow) writeMarkdownTableSeparator(output, columns);
+        }
     }
 
-    private static String knowledgeMarkdown(String title, LocalCrawlDocument document, String body) {
-        return knowledgeMarkdown(title, document, body, null, null);
+    private static void writeMarkdownTableSeparator(Writer output, int columns) throws IOException {
+        output.write('|');
+        for (int i = 0; i < columns; i++) output.write(" --- |");
+        output.write('\n');
     }
 
-    private static String knowledgeMarkdown(String title, LocalCrawlDocument document, String body,
-                                            KompileProjectCrawlProfile profile, String projectName) {
-        String normalizedBody = normalizeKnowledgeText(body);
-        if (normalizedBody.isBlank()) {
-            return "";
-        }
+    private static String knowledgeMarkdownHeader(String title, LocalCrawlDocument document,
+                                                  KompileProjectCrawlProfile profile, String projectName) {
         String resolvedTitle = firstNonBlank(title, document.relativePath(), document.documentId());
         StringBuilder fm = new StringBuilder("---\n");
         fm.append("title: \"").append(escapeYaml(resolvedTitle)).append("\"\n");
@@ -1943,7 +2016,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         fm.append("content_type: \"").append(escapeYaml(document.contentType())).append("\"\n");
         fm.append("converter: kompile-project-crawl\n");
         if (profile != null) {
-            fm.append("crawl_profile: \"").append(escapeYaml(firstNonBlank(profile.getId(), profile.getName()))).append("\"\n");
+            fm.append("crawl_profile: \"").append(escapeYaml(firstNonBlank(profile.getId(), profile.getName())))
+                    .append("\"\n");
             if (profile.getFactSheetName() != null && !profile.getFactSheetName().isBlank()) {
                 fm.append("fact_sheet: \"").append(escapeYaml(profile.getFactSheetName())).append("\"\n");
             }
@@ -1952,19 +2026,13 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
             if (profile.getTags() != null && !profile.getTags().isEmpty()) {
                 fm.append("tags:\n");
-                for (String tag : profile.getTags()) {
-                    fm.append("  - ").append(tag).append("\n");
-                }
+                for (String tag : profile.getTags()) fm.append("  - ").append(tag).append('\n');
             }
         }
         if (projectName != null && !projectName.isBlank()) {
             fm.append("project: \"").append(escapeYaml(projectName)).append("\"\n");
         }
-        fm.append("---\n\n");
-
-        return fm.toString()
-                + "# " + resolvedTitle + "\n\n"
-                + normalizedBody + "\n";
+        return fm.append("---\n\n# ").append(resolvedTitle).append("\n\n").toString();
     }
 
     private static String escapeYaml(String value) {
@@ -1983,24 +2051,319 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 .trim();
     }
 
-    private static List<LocalCrawlChunk> localCrawlChunks(
-            LocalCrawlDocument document,
-            String text,
-            LocalCrawlCapabilities.ResolvedPipeline pipeline) {
-        List<LocalCrawlChunk> chunks = new ArrayList<>();
-        int index = 0;
-        int searchFrom = 0;
-        for (String chunkText : LocalCrawlCapabilities.chunk(document.documentId(), text, pipeline)) {
-            int start = text.indexOf(chunkText, Math.max(0, searchFrom - pipeline.chunkOverlap()));
-            if (start < 0) start = Math.min(searchFrom, text.length());
-            int end = Math.min(text.length(), start + chunkText.length());
-            chunks.add(new LocalCrawlChunk(document.documentId() + "#chunk-" + index,
-                    document.documentId(), index, start, end, chunkText,
-                    pipeline.pipelineId(), pipeline.chunkerName()));
-            searchFrom = end;
-            index++;
+    private static LocalChunkingStats streamLocalCrawlChunks(LocalCrawlDocument document,
+                                                              Path markdownPath,
+                                                              LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                                              Writer chunks,
+                                                              LocalCrawlStatistics statistics) throws IOException {
+        StreamingLocalChunker chunker = new StreamingLocalChunker(document, pipeline, chunks, statistics);
+        long markdownChars = 0;
+        long wordCount = 0;
+        boolean inWord = false;
+        try (BufferedReader markdown = Files.newBufferedReader(markdownPath, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[LOCAL_IO_BUFFER_CHARS];
+            int read;
+            while ((read = markdown.read(buffer)) >= 0) {
+                if (read == 0) continue;
+                markdownChars += read;
+                for (int i = 0; i < read; i++) {
+                    boolean wordCharacter = Character.isLetterOrDigit(buffer[i]);
+                    if (wordCharacter && !inWord) wordCount++;
+                    inWord = wordCharacter;
+                }
+                chunker.accept(buffer, read);
+            }
         }
-        return chunks;
+        chunker.finish();
+        return new LocalChunkingStats(markdownChars, wordCount);
+    }
+
+    private static final class NormalizedTextWriter extends Writer {
+        private final Writer delegate;
+        private boolean started;
+        private boolean pendingSpace;
+        private int pendingNewlines;
+        private boolean previousCarriageReturn;
+
+        private NormalizedTextWriter(Writer delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void write(char[] value, int offset, int length) throws IOException {
+            for (int i = offset; i < offset + length; i++) write(value[i]);
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            char current = (char) value;
+            if (current == '\n' && previousCarriageReturn) {
+                previousCarriageReturn = false;
+                return;
+            }
+            previousCarriageReturn = current == '\r';
+            if (current == '\r' || current == '\n') {
+                pendingSpace = false;
+                if (started) pendingNewlines = Math.min(2, pendingNewlines + 1);
+                return;
+            }
+            if (current == ' ' || current == '\t' || Character.isWhitespace(current)) {
+                if (started && pendingNewlines == 0) pendingSpace = true;
+                return;
+            }
+            while (pendingNewlines-- > 0) delegate.write('\n');
+            pendingNewlines = 0;
+            if (pendingSpace && started) delegate.write(' ');
+            pendingSpace = false;
+            delegate.write(current);
+            started = true;
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
+    private static final class StreamingHtmlMarkdown {
+        private final Writer output;
+        private final StringBuilder text = new StringBuilder();
+        private final StringBuilder tag = new StringBuilder();
+        private final StringBuilder title = new StringBuilder();
+        private boolean inTag;
+        private boolean tagOverflow;
+        private char tagQuote;
+        private boolean inHead;
+        private boolean inTitle;
+        private boolean bodySeen;
+        private boolean inBody;
+        private String ignoredTag;
+
+        private StreamingHtmlMarkdown(Writer output) {
+            this.output = output;
+        }
+
+        private void accept(char[] value, int length) throws IOException {
+            for (int i = 0; i < length; i++) {
+                char current = value[i];
+                if (inTag) {
+                    if ((current == '\'' || current == '"')) {
+                        if (tagQuote == 0) tagQuote = current;
+                        else if (tagQuote == current) tagQuote = 0;
+                    }
+                    if (current == '>' && tagQuote == 0) {
+                        handleTag(tag.toString());
+                        tag.setLength(0);
+                        tagOverflow = false;
+                        inTag = false;
+                    } else if (!tagOverflow) {
+                        if (tag.length() < MAX_HTML_TOKEN_CHARS) tag.append(current);
+                        else tagOverflow = true;
+                    }
+                } else if (current == '<') {
+                    flushText();
+                    inTag = true;
+                    tagQuote = 0;
+                } else {
+                    text.append(current);
+                    if (text.length() >= MAX_HTML_TOKEN_CHARS) flushText();
+                }
+            }
+        }
+
+        private void finish() throws IOException {
+            flushText();
+        }
+
+        private String title() {
+            return normalizeKnowledgeText(title.toString());
+        }
+
+        private void flushText() throws IOException {
+            if (text.isEmpty()) return;
+            String decoded = Parser.unescapeEntities(text.toString(), false);
+            text.setLength(0);
+            if (ignoredTag != null) return;
+            if (inTitle) {
+                int available = Math.max(0, MAX_HTML_TOKEN_CHARS - title.length());
+                if (available > 0) title.append(decoded, 0, Math.min(available, decoded.length()));
+            } else if (!inHead && (!bodySeen || inBody)) {
+                output.write(decoded);
+            }
+        }
+
+        private void handleTag(String rawTag) throws IOException {
+            if (tagOverflow) return;
+            String cleaned = rawTag.strip();
+            if (cleaned.isEmpty() || cleaned.startsWith("!") || cleaned.startsWith("?")) return;
+            boolean closing = cleaned.startsWith("/");
+            if (closing) cleaned = cleaned.substring(1).stripLeading();
+            int end = 0;
+            while (end < cleaned.length()) {
+                char value = cleaned.charAt(end);
+                if (!Character.isLetterOrDigit(value)) break;
+                end++;
+            }
+            if (end == 0) return;
+            String name = cleaned.substring(0, end).toLowerCase(Locale.ROOT);
+            if (ignoredTag != null) {
+                if (closing && ignoredTag.equals(name)) ignoredTag = null;
+                return;
+            }
+            if (!closing && Set.of("script", "style", "noscript", "svg", "canvas").contains(name)) {
+                ignoredTag = name;
+                return;
+            }
+            if ("title".equals(name)) {
+                inTitle = !closing;
+                return;
+            }
+            if ("head".equals(name)) {
+                inHead = !closing;
+                return;
+            }
+            if ("body".equals(name)) {
+                bodySeen = true;
+                inBody = !closing;
+                return;
+            }
+            if (inHead) return;
+            if (!closing) {
+                if (name.matches("h[1-6]")) {
+                    output.write("\n\n" + "#".repeat(name.charAt(1) - '0') + " ");
+                } else if ("p".equals(name)) {
+                    output.write("\n\n");
+                } else if ("li".equals(name)) {
+                    output.write("\n- ");
+                } else if ("blockquote".equals(name)) {
+                    output.write("\n\n> ");
+                } else if ("pre".equals(name)) {
+                    output.write("\n\n```\n");
+                } else if ("br".equals(name)) {
+                    output.write('\n');
+                } else if ("tr".equals(name)) {
+                    output.write('\n');
+                } else if ("td".equals(name) || "th".equals(name)) {
+                    output.write("| ");
+                }
+            } else if (name.matches("h[1-6]") || Set.of("p", "blockquote").contains(name)) {
+                output.write("\n\n");
+            } else if ("li".equals(name) || "tr".equals(name)) {
+                output.write('\n');
+            } else if ("pre".equals(name)) {
+                output.write("\n```\n\n");
+            } else if ("td".equals(name) || "th".equals(name)) {
+                output.write(" | ");
+            }
+        }
+    }
+
+    private static final class StreamingLocalChunker {
+        private final LocalCrawlDocument document;
+        private final LocalCrawlCapabilities.ResolvedPipeline pipeline;
+        private final Writer output;
+        private final LocalCrawlStatistics statistics;
+        private final StringBuilder pending = new StringBuilder();
+        private final int targetSize;
+        private final int overlap;
+        private long pendingStart;
+        private long lastEmittedEnd;
+        private int index;
+
+        private StreamingLocalChunker(LocalCrawlDocument document,
+                                      LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                      Writer output,
+                                      LocalCrawlStatistics statistics) {
+            this.document = document;
+            this.pipeline = pipeline;
+            this.output = output;
+            this.statistics = statistics;
+            this.targetSize = "no-op".equals(pipeline.chunkerName())
+                    ? NO_OP_STREAM_BATCH_CHARS : Math.max(1, pipeline.chunkSize());
+            this.overlap = "no-op".equals(pipeline.chunkerName()) ? 0 : pipeline.chunkOverlap();
+        }
+
+        private void accept(char[] value, int length) throws IOException {
+            pending.append(value, 0, length);
+            while (pending.length() >= targetSize) emit(chooseBoundary(), false);
+        }
+
+        private void finish() throws IOException {
+            while (pending.length() > targetSize) emit(chooseBoundary(), false);
+            if (pendingStart + pending.length() > lastEmittedEnd) emit(pending.length(), true);
+        }
+
+        private int chooseBoundary() {
+            if ("no-op".equals(pipeline.chunkerName())) return targetSize;
+            int minimum = Math.max(1, targetSize / 2);
+            if ("sentence".equals(pipeline.chunkerName())) {
+                for (int i = targetSize - 1; i >= minimum; i--) {
+                    char current = pending.charAt(i);
+                    if ((current == '.' || current == '!' || current == '?')
+                            && (i + 1 >= pending.length() || Character.isWhitespace(pending.charAt(i + 1)))) {
+                        return i + 1;
+                    }
+                }
+            } else {
+                for (String separator : List.of("\n\n", "\n", ". ", " ")) {
+                    int candidate = pending.lastIndexOf(separator, targetSize - 1);
+                    if (candidate >= minimum) return candidate + separator.length();
+                }
+            }
+            return targetSize;
+        }
+
+        private void emit(int boundary, boolean finalChunk) throws IOException {
+            if (boundary <= 0) return;
+            int start = 0;
+            int end = Math.min(boundary, pending.length());
+            while (start < end && Character.isWhitespace(pending.charAt(start))) start++;
+            while (end > start && Character.isWhitespace(pending.charAt(end - 1))) end--;
+            if (end > start) {
+                String text = pending.substring(start, end);
+                long absoluteStart = pendingStart + start;
+                long absoluteEnd = pendingStart + end;
+                output.write("{\"chunkId\":");
+                output.write(jsonString(document.documentId() + "#chunk-" + index));
+                output.write(",\"documentId\":");
+                output.write(jsonString(document.documentId()));
+                output.write(",\"index\":" + index + ",\"start\":" + absoluteStart + ",\"end\":" + absoluteEnd);
+                output.write(",\"pipelineId\":");
+                output.write(jsonString(pipeline.pipelineId()));
+                output.write(",\"chunker\":");
+                output.write(jsonString(pipeline.chunkerName()));
+                output.write(",\"text\":");
+                output.write(jsonString(text));
+                output.write("}\n");
+                statistics.acceptChunk(text);
+                lastEmittedEnd = Math.max(lastEmittedEnd, absoluteEnd);
+                index++;
+            }
+            int discard = finalChunk ? boundary : Math.max(1, boundary - Math.min(overlap, boundary - 1));
+            discard = Math.min(discard, pending.length());
+            pending.delete(0, discard);
+            pendingStart += discard;
+        }
+    }
+
+    private static final class LocalCrawlStatistics {
+        private int chunkCount;
+        private long analysisWordCount;
+        private final Map<String, Integer> terms = new HashMap<>();
+
+        private void acceptChunk(String text) {
+            chunkCount++;
+            for (String token : text.toLowerCase(Locale.ROOT).split("[^a-z0-9]+")) {
+                if (token.length() < 3 || LOCAL_KNOWLEDGE_STOP_WORDS.contains(token)) continue;
+                analysisWordCount++;
+                terms.merge(token, 1, Integer::sum);
+            }
+        }
     }
 
     private static void writeLocalCrawlArtifacts(KompileProjectCrawlProfile profile, Path projectRoot, Path outputDir,
@@ -2009,48 +2372,33 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         Instant finishedAt = Instant.now();
         Path analysisPath = outputDir.resolve("analysis.json");
         writeLocalKnowledgeAnalysis(profile, projectRoot, markdownDir, analysisPath, result, finishedAt);
-        StringBuilder documents = new StringBuilder();
-        for (LocalCrawlDocument document : result.documents()) {
-            documents.append("{")
-                    .append("\"documentId\":").append(jsonString(document.documentId())).append(",")
-                    .append("\"source\":").append(jsonString(document.source())).append(",")
-                    .append("\"relativePath\":").append(jsonString(document.relativePath())).append(",")
-                    .append("\"sizeBytes\":").append(document.sizeBytes()).append(",")
-                    .append("\"lastModified\":").append(jsonString(document.lastModified())).append(",")
-                    .append("\"contentType\":").append(jsonString(document.contentType())).append(",")
-                    .append("\"title\":").append(jsonString(document.title())).append(",")
-                    .append("\"markdownPath\":").append(jsonString(document.markdownPath())).append(",")
-                    .append("\"extractionStatus\":").append(jsonString(document.extractionStatus())).append(",")
-                    .append("\"extractionMessage\":").append(jsonString(document.extractionMessage())).append(",")
-                    .append("\"pipelineId\":").append(jsonString(document.pipelineId())).append(",")
-                    .append("\"pipelineType\":").append(jsonString(document.pipelineType())).append(",")
-                    .append("\"loader\":").append(jsonString(document.loader())).append(",")
-                    .append("\"chunker\":").append(jsonString(document.chunker())).append(",")
-                    .append("\"markdownChars\":").append(document.markdownChars()).append(",")
-                    .append("\"wordCount\":").append(document.wordCount())
-                    .append("}\n");
+        try (BufferedWriter documents = Files.newBufferedWriter(outputDir.resolve("documents.jsonl"),
+                StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            for (LocalCrawlDocument document : result.documents()) {
+                documents.write("{");
+                documents.write("\"documentId\":" + jsonString(document.documentId()) + ",");
+                documents.write("\"source\":" + jsonString(document.source()) + ",");
+                documents.write("\"relativePath\":" + jsonString(document.relativePath()) + ",");
+                documents.write("\"sizeBytes\":" + document.sizeBytes() + ",");
+                documents.write("\"lastModified\":" + jsonString(document.lastModified()) + ",");
+                documents.write("\"contentType\":" + jsonString(document.contentType()) + ",");
+                documents.write("\"title\":" + jsonString(document.title()) + ",");
+                documents.write("\"markdownPath\":" + jsonString(document.markdownPath()) + ",");
+                documents.write("\"extractionStatus\":" + jsonString(document.extractionStatus()) + ",");
+                documents.write("\"extractionMessage\":" + jsonString(document.extractionMessage()) + ",");
+                documents.write("\"pipelineId\":" + jsonString(document.pipelineId()) + ",");
+                documents.write("\"pipelineType\":" + jsonString(document.pipelineType()) + ",");
+                documents.write("\"loader\":" + jsonString(document.loader()) + ",");
+                documents.write("\"chunker\":" + jsonString(document.chunker()) + ",");
+                documents.write("\"markdownChars\":" + document.markdownChars() + ",");
+                documents.write("\"wordCount\":" + document.wordCount() + "}\n");
+            }
         }
-        Files.writeString(outputDir.resolve("documents.jsonl"), documents.toString(), StandardCharsets.UTF_8);
-
-        StringBuilder chunks = new StringBuilder();
-        for (LocalCrawlChunk chunk : result.chunks()) {
-            chunks.append("{")
-                    .append("\"chunkId\":").append(jsonString(chunk.chunkId())).append(",")
-                    .append("\"documentId\":").append(jsonString(chunk.documentId())).append(",")
-                    .append("\"index\":").append(chunk.index()).append(",")
-                    .append("\"start\":").append(chunk.start()).append(",")
-                    .append("\"end\":").append(chunk.end()).append(",")
-                    .append("\"pipelineId\":").append(jsonString(chunk.pipelineId())).append(",")
-                    .append("\"chunker\":").append(jsonString(chunk.chunker())).append(",")
-                    .append("\"text\":").append(jsonString(chunk.text()))
-                    .append("}\n");
-        }
-        Files.writeString(outputDir.resolve("chunks.jsonl"), chunks.toString(), StandardCharsets.UTF_8);
 
         String summary = "{\n"
                 + "  \"profileId\" : " + jsonString(profile.getId()) + ",\n"
                 + "  \"name\" : " + jsonString(profile.getName()) + ",\n"
-                + "  \"status\" : \"COMPLETED\",\n"
+                + "  \"status\" : " + jsonString(result.status()) + ",\n"
                 + "  \"finishedAt\" : " + jsonString(finishedAt.toString()) + ",\n"
                 + "  \"sources\" : " + jsonArray(profile.getSources()) + ",\n"
                 + "  \"includePatterns\" : " + jsonArray(profile.getIncludePatterns()) + ",\n"
@@ -2063,10 +2411,29 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 + "  \"markdownPath\" : " + jsonString(projectRelativePath(projectRoot, markdownDir)) + ",\n"
                 + "  \"analysisPath\" : " + jsonString(projectRelativePath(projectRoot, analysisPath)) + ",\n"
                 + "  \"documentCount\" : " + result.documents().size() + ",\n"
+                + "  \"failedDocumentCount\" : " + result.failures().size() + ",\n"
+                + "  \"documentFailures\" : " + failureJsonArray(result.failures()) + ",\n"
                 + "  \"markdownCount\" : " + result.markdownCount() + ",\n"
-                + "  \"chunkCount\" : " + result.chunks().size() + "\n"
+                + "  \"chunkCount\" : " + result.chunkCount() + "\n"
                 + "}\n";
         Files.writeString(outputDir.resolve("crawl-result.json"), summary, StandardCharsets.UTF_8);
+    }
+
+    private static String failureJsonArray(List<LocalCrawlFailure> failures) {
+        StringBuilder result = new StringBuilder("[");
+        for (int i = 0; i < failures.size(); i++) {
+            LocalCrawlFailure failure = failures.get(i);
+            if (i > 0) result.append(',');
+            result.append("{")
+                    .append("\"documentId\":").append(jsonString(failure.documentId())).append(",")
+                    .append("\"source\":").append(jsonString(failure.source())).append(",")
+                    .append("\"relativePath\":").append(jsonString(failure.relativePath())).append(",")
+                    .append("\"message\":").append(jsonString(failure.message())).append(",")
+                    .append("\"pipelineId\":").append(jsonString(failure.pipelineId())).append(",")
+                    .append("\"pipelineType\":").append(jsonString(failure.pipelineType()))
+                    .append("}");
+        }
+        return result.append(']').toString();
     }
 
     /**
@@ -2109,18 +2476,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     private static void writeLocalKnowledgeAnalysis(KompileProjectCrawlProfile profile, Path projectRoot, Path markdownDir,
                                                     Path analysisPath, LocalCrawlResult result,
                                                     Instant finishedAt) throws IOException {
-        int totalWords = 0;
-        Map<String, Integer> terms = new HashMap<>();
-        for (LocalCrawlChunk chunk : result.chunks()) {
-            for (String token : chunk.text().toLowerCase(Locale.ROOT).split("[^a-z0-9]+")) {
-                if (token.length() < 3 || LOCAL_KNOWLEDGE_STOP_WORDS.contains(token)) {
-                    continue;
-                }
-                totalWords++;
-                terms.merge(token, 1, Integer::sum);
-            }
-        }
-        List<LocalTerm> topTerms = terms.entrySet().stream()
+        List<LocalTerm> topTerms = result.terms().entrySet().stream()
                 .sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder())
                         .thenComparing(Map.Entry.comparingByKey()))
                 .limit(20)
@@ -2132,8 +2488,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 + "  \"markdownPath\" : " + jsonString(projectRelativePath(projectRoot, markdownDir)) + ",\n"
                 + "  \"documentCount\" : " + result.documents().size() + ",\n"
                 + "  \"markdownCount\" : " + result.markdownCount() + ",\n"
-                + "  \"chunkCount\" : " + result.chunks().size() + ",\n"
-                + "  \"wordCount\" : " + totalWords + ",\n"
+                + "  \"chunkCount\" : " + result.chunkCount() + ",\n"
+                + "  \"wordCount\" : " + result.analysisWordCount() + ",\n"
                 + "  \"topTerms\" : " + topTermsJson(topTerms) + "\n"
                 + "}\n";
         Files.writeString(analysisPath, analysis, StandardCharsets.UTF_8);
@@ -2349,7 +2705,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
 
     // ==================== Inner records ====================
 
-    record LocalCrawlResult(List<LocalCrawlDocument> documents, List<LocalCrawlChunk> chunks) {
+    record LocalCrawlResult(List<LocalCrawlDocument> documents, int chunkCount,
+                            long analysisWordCount, Map<String, Integer> terms) {
         int markdownCount() {
             int count = 0;
             for (LocalCrawlDocument document : documents) {
@@ -2359,13 +2716,31 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
             return count;
         }
+
+        List<LocalCrawlFailure> failures() {
+            List<LocalCrawlFailure> failures = new ArrayList<>();
+            for (LocalCrawlDocument document : documents) {
+                if ("FAILED".equals(document.extractionStatus())) {
+                    failures.add(new LocalCrawlFailure(document.documentId(), document.source(),
+                            document.relativePath(), document.extractionMessage(),
+                            document.pipelineId(), document.pipelineType()));
+                }
+            }
+            return List.copyOf(failures);
+        }
+
+        String status() {
+            int failures = failures().size();
+            if (failures == 0) return "COMPLETED";
+            return failures == documents.size() ? "FAILED" : "COMPLETED_WITH_ERRORS";
+        }
     }
 
     record LocalCrawlDocument(String documentId, String source, String relativePath,
                               long sizeBytes, String lastModified, String contentType,
                               String title, String markdownPath, String extractionStatus,
                               String extractionMessage, String pipelineId, String pipelineType,
-                              String loader, String chunker, int markdownChars, int wordCount) {
+                              String loader, String chunker, long markdownChars, long wordCount) {
         LocalCrawlDocument withMarkdown(LocalMarkdownArtifact artifact) {
             return new LocalCrawlDocument(documentId, source, relativePath, sizeBytes, lastModified, contentType,
                     artifact.title(), artifact.markdownPath(), artifact.status(), artifact.message(),
@@ -2374,32 +2749,30 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
     }
 
-    record LocalCrawlChunk(String chunkId, String documentId, int index, int start, int end,
-                           String text, String pipelineId, String chunker) {
-    }
-
-    record LocalMarkdownContent(String title, String markdown) {
-    }
-
-    record LocalMarkdownArtifact(String title, String markdownPath, String markdown,
+    record LocalMarkdownArtifact(String title, String markdownPath,
                                  String status, String message, String pipelineId, String pipelineType,
-                                 String loader, String chunker, int markdownChars, int wordCount) {
-        static LocalMarkdownArtifact extracted(String title, String markdownPath, String markdown,
+                                 String loader, String chunker, long markdownChars, long wordCount) {
+        static LocalMarkdownArtifact extracted(String title, String markdownPath,
                                                LocalCrawlCapabilities.ResolvedPipeline pipeline) {
-            return new LocalMarkdownArtifact(title, markdownPath, markdown, "EXTRACTED", null,
+            return new LocalMarkdownArtifact(title, markdownPath, "EXTRACTED", null,
                     pipeline.pipelineId(), pipeline.pipelineType(), pipeline.loaderName(), pipeline.chunkerName(),
-                    markdown.length(), countWords(markdown));
+                    0, 0);
+        }
+
+        LocalMarkdownArtifact withStats(long markdownChars, long wordCount) {
+            return new LocalMarkdownArtifact(title, markdownPath, status, message, pipelineId, pipelineType,
+                    loader, chunker, markdownChars, wordCount);
         }
 
         static LocalMarkdownArtifact skipped(String message,
                                              LocalCrawlCapabilities.ResolvedPipeline pipeline) {
-            return new LocalMarkdownArtifact(null, null, null, "SKIPPED", message,
+            return new LocalMarkdownArtifact(null, null, "SKIPPED", message,
                     pipeline.pipelineId(), pipeline.pipelineType(), pipeline.loaderName(), pipeline.chunkerName(), 0, 0);
         }
 
         static LocalMarkdownArtifact failed(String message,
                                             LocalCrawlCapabilities.ResolvedPipeline pipeline) {
-            return new LocalMarkdownArtifact(null, null, null, "FAILED", message,
+            return new LocalMarkdownArtifact(null, null, "FAILED", message,
                     pipeline.pipelineId(), pipeline.pipelineType(), pipeline.loaderName(), pipeline.chunkerName(), 0, 0);
         }
     }
@@ -2407,13 +2780,6 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     record LocalTerm(String term, int count) {
     }
 
-    private static int countWords(String text) {
-        int count = 0;
-        for (String token : firstNonBlank(text, "").split("[^\\p{Alnum}]+")) {
-            if (!token.isBlank()) {
-                count++;
-            }
-        }
-        return count;
+    record LocalChunkingStats(long markdownChars, long wordCount) {
     }
 }

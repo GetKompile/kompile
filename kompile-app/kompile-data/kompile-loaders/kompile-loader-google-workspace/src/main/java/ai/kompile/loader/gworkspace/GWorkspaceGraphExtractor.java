@@ -200,25 +200,16 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> mergedEntities = new LinkedHashMap<>();
-        List<ExtractedRelation> allRelations = new ArrayList<>();
+        Map<String, ExtractedRelation> mergedRelations = new LinkedHashMap<>();
 
         for (Document doc : docs) {
-            ExtractionResult result = extract(doc);
-            for (ExtractedEntity entity : result.entities()) {
-                addEntity(mergedEntities, entity);
-            }
-            allRelations.addAll(result.relations());
+            ai.kompile.core.graphrag.ExtractorUtils.mergeResult(
+                    mergedEntities, mergedRelations, extract(doc));
         }
-
-        // Deduplicate relations
-        Set<String> seen = new HashSet<>();
-        List<ExtractedRelation> uniqueRelations = allRelations.stream()
-                .filter(r -> seen.add(r.source() + "|" + r.target() + "|" + r.type()))
-                .collect(Collectors.toCollection(ArrayList::new));
 
         return ExtractionResult.of(
                 new ArrayList<>(mergedEntities.values()),
-                uniqueRelations,
+                new ArrayList<>(mergedRelations.values()),
                 ExtractionMetadata.forChunk(null, null, "gworkspace-rule-extractor")
         );
     }
@@ -1788,45 +1779,7 @@ public class GWorkspaceGraphExtractor implements DocumentGraphExtractor {
     }
 
     private void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {
-        ExtractedEntity existing = index.get(entity.id());
-        if (existing == null) {
-            index.put(entity.id(), entity);
-            return;
-        }
-
-        // Merge: union aliases, keep higher confidence, prefer real name over ID
-        Set<String> aliases = new LinkedHashSet<>();
-        if (existing.aliases() != null) aliases.addAll(existing.aliases());
-        if (entity.aliases() != null) aliases.addAll(entity.aliases());
-
-        String name = existing.name();
-        // Prefer a real name over a generic label
-        if (name.startsWith("Message ") || name.startsWith("Thread ") || name.startsWith("Event ")
-                || name.contains("@") || name.matches("[a-f0-9-]+")) {
-            if (!entity.name().startsWith("Message ") && !entity.name().startsWith("Thread ")
-                    && !entity.name().startsWith("Event ") && !entity.name().matches("[a-f0-9-]+")) {
-                name = entity.name();
-            }
-        }
-
-        double confidence = Math.max(
-                existing.confidence() != null ? existing.confidence() : 0,
-                entity.confidence() != null ? entity.confidence() : 0
-        );
-
-        String description = existing.description();
-        if ((description == null || description.length() < 20) && entity.description() != null) {
-            description = entity.description();
-        }
-
-        Map<String, String> props = new LinkedHashMap<>();
-        if (existing.properties() != null) props.putAll(existing.properties());
-        if (entity.properties() != null) props.putAll(entity.properties());
-
-        index.put(entity.id(), new ExtractedEntity(
-                entity.id(), name, existing.type(),
-                new ArrayList<>(aliases), description, confidence, props
-        ));
+        ai.kompile.core.graphrag.ExtractorUtils.addEntity(index, entity);
     }
 
     private static String str(Object obj) {

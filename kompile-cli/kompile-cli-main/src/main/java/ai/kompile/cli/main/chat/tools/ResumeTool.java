@@ -103,6 +103,8 @@ public class ResumeTool implements CliTool {
     private int currentTab = 0;
     private int currentPage = 0;
     private static final int PAGE_SIZE = 15;
+    private static final String STANDARD_CHAT_AGENT = "kompile";
+    private static final String STANDARD_CHAT_TAB_LABEL = "Kompile Chat";
     private static final long LEGACY_WRAPPER_DEDUP_WINDOW_MILLIS = TimeUnit.MINUTES.toMillis(5);
     private String searchQuery = "";
     private String filterAgent = "";
@@ -188,8 +190,9 @@ public class ResumeTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Browse/search/view/resume saved conversations. Kompile ids (passthrough-*/emulated-*) only name " +
-                "the local transcript — for native agent resume use the native_session_id from search/resume results.";
+        return "Browse/search/view/resume saved conversations. Standard cli-* chats are resumed directly in " +
+                "Kompile; passthrough/emulated ids only name local transcripts, so native agent resume uses " +
+                "the native_session_id from search/resume results.";
     }
 
     @Override
@@ -221,7 +224,7 @@ public class ResumeTool implements CliTool {
 
         ObjectNode targetAgent = props.putObject("target_agent");
         targetAgent.put("type", "string");
-        targetAgent.put("description", "Target agent for resume/migrate actions");
+        targetAgent.put("description", "Target agent for resume/migrate actions. Omit to resume standard chats in Kompile and use Claude for other sessions.");
 
         ObjectNode outputFormat = props.putObject("output_format");
         outputFormat.put("type", "string");
@@ -709,26 +712,34 @@ public class ResumeTool implements CliTool {
                 for (String harvestedId : session.harvestedSourceIds()) {
                     harvestedExternalIds.add(harvestedId);
                     String canonicalId = ChatHistory.normalizeNativeSessionId(
-                            harvestedId, normalizeAgentName(session.agent()));
+                            harvestedId, normalizedAgent);
                     if (canonicalId != null && !canonicalId.isBlank()) {
                         harvestedExternalIds.add(canonicalId);
                     }
                 }
                 // The last harvested id IS the underlying agent's real session id —
                 // the one native resume must be given instead of the kompile id.
+                String nativeId = null;
                 if (!session.harvestedSourceIds().isEmpty()) {
-                    String nativeId = ChatHistory.normalizeNativeSessionId(
+                    nativeId = ChatHistory.normalizeNativeSessionId(
                             session.harvestedSourceIds().get(session.harvestedSourceIds().size() - 1),
-                            normalizeAgentName(session.agent()));
+                            normalizedAgent);
                     if (nativeId != null) {
                         nativeSessionIds.put(session.sessionId(), nativeId);
                     }
                 }
+                // Literal standard chat historically recorded a blank/coder agent, which
+                // produced an empty or misleading tab in the resume picker. Give it a
+                // stable Kompile identity while retaining provider labels for wrappers.
+                String displayAgent = isStandardKompileChatSession(
+                        session.sessionId(), "kompile", normalizedAgent, nativeId)
+                        ? "kompile"
+                        : normalizedAgent;
                 allConversations.add(new ConversationSummary(
                         session.sessionId(),
                         formatTitle(session.title()),
                         session.started(),
-                        normalizeAgentName(session.agent()),
+                        displayAgent,
                         "kompile",
                         formatDate(session.lastModified()),
                         session.lastModified()
@@ -814,8 +825,11 @@ public class ResumeTool implements CliTool {
     private static boolean isLegacySyntheticWrapper(
             ConversationSummary conversation,
             Map<String, String> nativeSessionIds) {
+        String nativeSessionId = nativeSessionIds.get(conversation.sessionId());
         if (!"kompile".equals(conversation.source())
-                || nativeSessionIds.containsKey(conversation.sessionId())) {
+                || (nativeSessionId != null && !nativeSessionId.isBlank())
+                || isStandardKompileChatSession(conversation.sessionId(), conversation.source(),
+                conversation.agent(), nativeSessionId)) {
             return false;
         }
         return isSyntheticWrapperId(conversation.sessionId());
@@ -877,15 +891,24 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Distinguish literal standard-chat transcripts from old cli-* passthrough
-     * wrappers. Standard chats have no underlying native-agent session and their
-     * recorded agent is a Kompile role (for example coder), not a CLI vendor.
+     * Distinguish literal standard-chat transcripts from provider-backed Kompile
+     * wrappers. Standard chat accepts generated cli-* ids and caller-supplied ids;
+     * the stable signals are a Kompile role (for example coder), no harvested
+     * provider session, and the absence of a managed/passthrough wrapper prefix.
      */
-    static boolean isStandardKompileChatSession(String sessionId, String source,
-                                                 String agent, String nativeSessionId) {
-        if (sessionId == null || !sessionId.toLowerCase(Locale.ROOT).startsWith("cli-")
-                || !"kompile".equalsIgnoreCase(source)
+    public static boolean isStandardKompileChatSession(String sessionId, String source,
+                                                        String agent, String nativeSessionId) {
+        if (sessionId == null || !"kompile".equalsIgnoreCase(source)
                 || (nativeSessionId != null && !nativeSessionId.isBlank())) {
+            return false;
+        }
+        String normalizedSessionId = sessionId.trim().toLowerCase(Locale.ROOT);
+        if (normalizedSessionId.isEmpty()
+                || normalizedSessionId.contains("subagent-")
+                || normalizedSessionId.startsWith("emulated-")
+                || normalizedSessionId.startsWith("passthrough-")
+                || normalizedSessionId.startsWith("managed-")
+                || normalizedSessionId.startsWith("enforcer-")) {
             return false;
         }
         String normalizedAgent = agent == null ? "" : agent.trim().toLowerCase(Locale.ROOT);
@@ -1476,14 +1499,33 @@ public class ResumeTool implements CliTool {
     }
 
     /**
+     * Return the numbered resume tabs. Kompile standard chat is a first-class
+     * resume target, so its tab remains visible even when transcript discovery
+     * returns no standard sessions yet.
+     */
+    static List<String> agentTabs(List<ConversationSummary> conversations) {
+        SortedSet<String> agents = new TreeSet<>();
+        agents.add(STANDARD_CHAT_AGENT);
+        if (conversations != null) {
+            conversations.stream()
+                    .map(ConversationSummary::agent)
+                    .filter(Objects::nonNull)
+                    .forEach(agents::add);
+        }
+        return List.copyOf(agents);
+    }
+
+    static String agentTabLabel(String agent) {
+        return STANDARD_CHAT_AGENT.equalsIgnoreCase(agent)
+                ? STANDARD_CHAT_TAB_LABEL
+                : agent;
+    }
+
+    /**
      * Set the agent filter based on the current tab index.
      */
     private void setFilterForCurrentTab() {
-        List<String> agents = allConversations.stream()
-                .map(ConversationSummary::agent)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+        List<String> agents = agentTabs(allConversations);
         
         if (currentTab >= 0 && currentTab < agents.size()) {
             filterAgent = agents.get(currentTab);
@@ -1553,14 +1595,13 @@ public class ResumeTool implements CliTool {
      * Render tab bar for different agent groups with numbered selection.
      */
     private void renderTabs() {
-        Set<String> agents = allConversations.stream()
-                .map(ConversationSummary::agent)
-                .collect(Collectors.toSet());
-
-        List<String> sortedAgents = agents.stream().sorted().collect(Collectors.toList());
+        List<String> agents = agentTabs(allConversations);
         int tabIndex = 0;
-        for (String agent : sortedAgents) {
-            String tabLabel = agent.length() > 14 ? agent.substring(0, 14) : agent;
+        for (String agent : agents) {
+            String displayLabel = agentTabLabel(agent);
+            String tabLabel = displayLabel.length() > 14
+                    ? displayLabel.substring(0, 14)
+                    : displayLabel;
             if (tabIndex == currentTab) {
                 terminal.writer().print(BOLD + GREEN + " [" + (tabIndex + 1) + " " + tabLabel + "]" + RESET + " ");
             } else {
@@ -1814,11 +1855,7 @@ public class ResumeTool implements CliTool {
     private void switchTab(String tabStr) {
         try {
             int displayNum = Integer.parseInt(tabStr);
-            List<String> agents = allConversations.stream()
-                    .map(ConversationSummary::agent)
-                    .distinct()
-                    .sorted()
-                    .collect(Collectors.toList());
+            List<String> agents = agentTabs(allConversations);
 
             // Convert 1-based display number to 0-based index
             int tabIndex = displayNum - 1;
@@ -3017,6 +3054,17 @@ public class ResumeTool implements CliTool {
             convoNode.put("title", convo.title());
             convoNode.put("agent", convo.agent());
             convoNode.put("source", convo.source());
+            boolean standardChat = isStandardKompileChatSession(
+                    convo.sessionId(), convo.source(), convo.agent(),
+                    nativeSessionIds.get(convo.sessionId()));
+            convoNode.put("session_type", standardChat
+                    ? "standard_chat"
+                    : ("kompile".equals(convo.source()) ? "managed_chat" : "provider_chat"));
+            if (standardChat) {
+                convoNode.put("resume_target", "kompile");
+                convoNode.put("resume_command",
+                        "kompile chat --resume " + convo.sessionId() + " --mode standard");
+            }
             convoNode.put("last_modified", convo.lastModified());
             if (convo.messageCount() >= 0) {
                 convoNode.put("message_count", convo.messageCount());
@@ -3087,7 +3135,7 @@ public class ResumeTool implements CliTool {
      */
     private ToolResult runResume(JsonNode params) {
         String sessionIdInput = params.has("session_id") ? params.get("session_id").asText() : "";
-        String agent = params.has("target_agent") ? params.get("target_agent").asText() : "claude";
+        String requestedAgent = params.has("target_agent") ? params.get("target_agent").asText() : "";
         String targetSessionId = params.has("target_session_id") ? params.get("target_session_id").asText() : null;
         boolean compact = params.has("compact") && params.get("compact").asBoolean(false);
         int compactRecentTurns = params.has("compact_recent_turns") ? params.get("compact_recent_turns").asInt(2) : 2;
@@ -3107,6 +3155,18 @@ public class ResumeTool implements CliTool {
 
         try {
             LoadedConversation conversation = loadConversation(sessionId);
+            ConversationSummary listedConversation = allConversations.stream()
+                    .filter(candidate -> candidate.sessionId().equals(sessionId))
+                    .findFirst()
+                    .orElse(null);
+            boolean standardChat = listedConversation != null
+                    && isStandardKompileChatSession(
+                    listedConversation.sessionId(), listedConversation.source(),
+                    listedConversation.agent(), nativeSessionIds.get(sessionId));
+            String agent = requestedAgent == null || requestedAgent.isBlank()
+                    || "auto".equalsIgnoreCase(requestedAgent)
+                    ? (standardChat ? "kompile" : "claude")
+                    : requestedAgent;
 
             // Export conversation turns as structured JSON
             List<ChatHistory.Turn> turns = conversation.turns();
@@ -3116,6 +3176,12 @@ public class ResumeTool implements CliTool {
             ObjectNode result = om.createObjectNode();
             result.put("session_id", sessionId);
             result.put("target_agent", agent);
+            result.put("session_type", standardChat ? "standard_chat" : "provider_or_managed_chat");
+            if (standardChat && "kompile".equalsIgnoreCase(agent)) {
+                result.put("resume_mode", "standard");
+                result.put("resume_command",
+                        "kompile chat --resume " + sessionId + " --mode standard");
+            }
             if (targetSessionId != null && !targetSessionId.isBlank()) {
                 result.put("target_session_id", targetSessionId);
             }

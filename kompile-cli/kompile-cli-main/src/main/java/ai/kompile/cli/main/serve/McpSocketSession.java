@@ -524,7 +524,7 @@ public class McpSocketSession implements Runnable {
         // Full knowledge graph CRUD + graph capabilities
         register(map, new KnowledgeGraphTool(null, om), om, wd);
 
-        // KB Grounding tools (LLM→MCP→KB path, require kompile-app backend)
+        // KB grounding tools (project-local by default; no application backend required)
         register(map, new AskGraphVerifyTool(null, om), om, wd);
         register(map, new AskGraphQueryTool(null, om), om, wd);
         register(map, new AskGraphExplainTool(null, om), om, wd);

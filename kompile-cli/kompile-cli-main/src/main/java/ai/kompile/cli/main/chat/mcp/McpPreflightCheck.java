@@ -273,10 +273,8 @@ public class McpPreflightCheck {
     }
 
     /**
-     * Main entry point for running preflight check standalone.
-     * 
-     * Usage:
-     *   java -cp kompile-cli.jar ai.kompile.cli.main.chat.mcp.McpPreflightCheck
+     * Main entry point retained for packaged CLI integration. Distribution callers launch
+     * Kompile through its native executable or executable JAR, never an inherited classpath.
      */
     public static void main(String[] args) {
         Path projectDir = Paths.get(System.getProperty("user.dir"));

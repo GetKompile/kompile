@@ -47,12 +47,15 @@ public final class LocalCrawlCapabilities {
     public static final String TABLE_AWARE_PIPELINE = "table-aware";
     public static final String KEYWORD_ONLY_PIPELINE = "keyword-only";
 
-    private static final Set<String> PIPELINE_TYPES = Set.of(
+    private static final Set<String> BUILTIN_PIPELINE_TYPES = Set.of(
             "STANDARD_TEXT", "VLM", "OCR", "CODE", "TABLE_AWARE", "KEYWORD_ONLY", "CUSTOM");
+    private static final Set<String> EXECUTOR_TYPES = Set.of(
+            "UNIFIED_PIPELINE", "KOMPILE_SUBPROCESS", "EXECUTABLE");
+    private static final Pattern PIPELINE_TYPE_PATTERN = Pattern.compile("[A-Za-z][A-Za-z0-9_.:-]*");
     private static final Set<String> SUPPORTED_STEPS = Set.of(
             "LOADING", "MARKDOWN_EXTRACTION", "CHUNKING", "LEXICAL_INDEX");
     private static final Set<String> LOCAL_GRAPH_STEPS = Set.of(
-            "GRAPH_EXTRACTION", "VECTOR_INDEXING", "ENTITY_RESOLUTION", "LEARNING");
+            "GRAPH_EXTRACTION", "VECTOR_INDEXING", "ENTITY_RESOLUTION", "ENRICHMENT", "LEARNING");
     private static final Map<String, String> LOADER_ALIASES = loaderAliases();
     private static final Map<String, String> CHUNKER_ALIASES = chunkerAliases();
 
@@ -61,6 +64,12 @@ public final class LocalCrawlCapabilities {
 
     /** Build discovery data from the executable local registry. */
     public static ObjectNode catalog(ObjectMapper mapper, String executionMode) {
+        return catalog(mapper, executionMode, LocalModelPipelineRunner.documentModelWorkerAvailable());
+    }
+
+    /** Build discovery data using the worker availability resolved for the active project folder. */
+    public static ObjectNode catalog(ObjectMapper mapper, String executionMode,
+                                     boolean documentModelWorkerAvailable) {
         ObjectNode catalog = mapper.createObjectNode();
         ArrayNode templates = catalog.putArray("pipelineTemplates");
         pipelineTemplate(templates, STANDARD_TEXT_PIPELINE, "STANDARD_TEXT", "auto",
@@ -70,10 +79,10 @@ public final class LocalCrawlCapabilities {
                 "recursive-character", 1_800, 180,
                 "Source code and project files with code validation and boundary-aware chunking.");
         pipelineTemplate(templates, VLM_PIPELINE, "VLM", "pdf",
-                "recursive-character", 2_000, 200,
+                "recursive-character", 2_000, 200, documentModelWorkerAvailable,
                 "Model-backed PDF extraction in the isolated document-model subprocess.");
         pipelineTemplate(templates, OCR_PIPELINE, "OCR", "pdf",
-                "recursive-character", 2_000, 200,
+                "recursive-character", 2_000, 200, documentModelWorkerAvailable,
                 "Traditional or VLM-backed OCR in the isolated document-model subprocess.");
         pipelineTemplate(templates, TABLE_AWARE_PIPELINE, "TABLE_AWARE", "table",
                 "recursive-character", 2_000, 200,
@@ -119,10 +128,30 @@ public final class LocalCrawlCapabilities {
                 .add("minSizeBytes").add("maxSizeBytes").add("contentPatterns");
         catalog.put("executionMode", executionMode);
         catalog.put("distributed", false);
+        ObjectNode registry = catalog.putObject("pipelineRegistry");
+        registry.put("requestField", "pipelineRegistry")
+                .put("projectDefaults", "active kompile.project.json pipeline registrations")
+                .put("definitionFormat", "UnifiedPipelineDefinition")
+                .put("folderDefinitions", ".kompile/pipelines/unified/*.json")
+                .put("globalDefinitions", "${kompile.data.dir:-~/.kompile}/pipelines/unified/*.json")
+                .put("arbitraryPipelineTypes", true);
+        ArrayNode executorTypes = registry.putArray("executorTypes");
+        EXECUTOR_TYPES.stream().sorted().forEach(executorTypes::add);
+        ArrayNode pipelineTypes = registry.putArray("builtinPipelineTypes");
+        BUILTIN_PIPELINE_TYPES.stream().sorted().forEach(pipelineTypes::add);
+
         catalog.putObject("modelProcessing")
-                .put("available", true)
-                .put("execution", "isolated document-model or unified-pipeline subprocess")
-                .put("configuration", "pipelines[].options plus optional pipelineDefinition/pipelineDefinitionPath");
+                .put("available", documentModelWorkerAvailable)
+                .put("documentModelWorker", documentModelWorkerAvailable)
+                .put("builtinDocumentProcessor", documentModelWorkerAvailable)
+                .put("callerDefinedUnifiedPipelines", true)
+                .put("callerDefinedExecutors", true)
+                .put("execution", "request-scoped Kompile subprocesses; no MCP/application server required")
+                .put("semanticServing", "processingRoute LOCAL_MODEL/serving or graphExtraction.llmProvider=serving")
+                .put("finalReasoningLearning", "portable FOL/PSL/MEBN hybrid-consensus models stored in the folder .kgraph")
+                .put("lifecycle", "children stop before the MCP command returns")
+                .put("configuration", "pipelineRegistry defaults/definitions/executors, project pipeline "
+                        + "registrations, or pipeline processor overrides");
         return catalog;
     }
 
@@ -132,6 +161,22 @@ public final class LocalCrawlCapabilities {
             return null;
         }
         try {
+            JsonNode runtimeConfig = request.get("runtimeConfig");
+            if (runtimeConfig != null && !runtimeConfig.isNull()) {
+                if (!runtimeConfig.isObject()) return "runtimeConfig must be an object.";
+                JsonNode executable = runtimeConfig.get("documentModelExecutable");
+                if (executable != null && !executable.isNull()
+                        && (!executable.isTextual() || executable.asText().isBlank())) {
+                    return "runtimeConfig.documentModelExecutable must be a non-empty path.";
+                }
+                String executableMode = text(runtimeConfig, "documentModelExecutableMode");
+                if (executableMode != null && !Set.of("DEDICATED", "UNIFIED")
+                        .contains(executableMode.toUpperCase(Locale.ROOT))) {
+                    return "runtimeConfig.documentModelExecutableMode must be DEDICATED or UNIFIED.";
+                }
+            }
+            String registryError = registryError(request);
+            if (registryError != null) return registryError;
             Map<String, PipelineDefinition> pipelines = pipelineDefinitions(request);
             JsonNode definitions = request.get("pipelines");
             if (definitions != null && !definitions.isNull() && !definitions.isArray()) {
@@ -151,10 +196,9 @@ public final class LocalCrawlCapabilities {
                     if (!ids.add(id)) {
                         return "Duplicate local pipelineId: " + id;
                     }
-                    String type = firstNonBlank(text(definition, "pipelineType"), "CUSTOM")
-                            .toUpperCase(Locale.ROOT);
-                    if (!PIPELINE_TYPES.contains(type)) {
-                        return "Unknown pipeline type " + type + ". Local pipeline types: " + PIPELINE_TYPES;
+                    String type = firstNonBlank(text(definition, "pipelineType"), "CUSTOM");
+                    if (!PIPELINE_TYPE_PATTERN.matcher(type).matches()) {
+                        return "pipelines[" + i + "].pipelineType must be a portable identifier; got " + type;
                     }
                     String componentError = componentError(definition, "pipelines[" + i + "]");
                     if (componentError != null) return componentError;
@@ -270,12 +314,20 @@ public final class LocalCrawlCapabilities {
         mergeOptions(options, document == null ? null : document.get("options"));
         mergeOptions(options, document == null ? null : document.get("chunkerOptions"));
         for (String field : List.of("pipelineDefinition", "pipelineDefinitionPath", "modelSetId",
-                "modelId", "vlmModel", "processingMode")) {
+                "pipelineDefinitionId", "modelId", "vlmModel", "processingMode")) {
             copyOption(options, document, field);
         }
+        Map<String, Object> processor = new LinkedHashMap<>(pipeline.processor());
+        mergeOptions(processor, document == null ? null : document.get("processor"));
+        applyExecutorReference(request, document, processor);
+        applyDefinitionReference(request, document, processor);
+        JsonNode runtimeConfig = request == null ? null : request.get("runtimeConfig");
+        // Backward-compatible aliases are copied only into the built-in registered processor.
+        copyOption(processor, runtimeConfig, "documentModelExecutable");
+        copyOption(processor, runtimeConfig, "documentModelExecutableMode");
         validateAllowedContentTypes(document, file);
         return new ResolvedPipeline(pipelineId, pipeline.pipelineType(), loader, chunker,
-                chunkSize, chunkOverlap, Map.copyOf(options));
+                chunkSize, chunkOverlap, Map.copyOf(options), Map.copyOf(processor));
     }
 
     /** Execute one of the registered TextChunker implementations. */
@@ -315,19 +367,19 @@ public final class LocalCrawlCapabilities {
     }
 
     public static Set<String> supportedSteps() {
-        return SUPPORTED_STEPS;
+        LinkedHashSet<String> supported = new LinkedHashSet<>(SUPPORTED_STEPS);
+        supported.addAll(LOCAL_GRAPH_STEPS);
+        return Set.copyOf(supported);
     }
 
     public static Set<String> supportedPipelineTypes() {
-        return PIPELINE_TYPES;
+        return BUILTIN_PIPELINE_TYPES;
     }
 
     /** Whether extraction must cross a second process boundary for this document. */
     public static boolean usesProcessingSubprocess(ResolvedPipeline pipeline) {
         if (pipeline == null) return false;
-        if ("VLM".equals(pipeline.pipelineType()) || "OCR".equals(pipeline.pipelineType())) return true;
-        Object modelBacked = pipeline.chunkerOptions().get("modelBacked");
-        return Boolean.parseBoolean(String.valueOf(modelBacked))
+        return !pipeline.processor().isEmpty()
                 || pipeline.chunkerOptions().containsKey("pipelineDefinition")
                 || pipeline.chunkerOptions().containsKey("pipelineDefinitionPath");
     }
@@ -356,50 +408,229 @@ public final class LocalCrawlCapabilities {
     private static Map<String, PipelineDefinition> pipelineDefinitions(JsonNode request) {
         Map<String, PipelineDefinition> pipelines = new LinkedHashMap<>();
         pipelines.put(STANDARD_TEXT_PIPELINE, new PipelineDefinition(STANDARD_TEXT_PIPELINE,
-                "STANDARD_TEXT", "auto", "recursive-character", 2_000, 200, Map.of()));
+                "STANDARD_TEXT", "auto", "recursive-character", 2_000, 200, Map.of(), Map.of()));
         pipelines.put(CODE_PIPELINE, new PipelineDefinition(CODE_PIPELINE,
                 "CODE", "code", "recursive-character", 1_800, 180,
-                Map.of("separators", List.of("\n\n", "\n", " "))));
+                Map.of("separators", List.of("\n\n", "\n", " ")), Map.of()));
         pipelines.put(VLM_PIPELINE, new PipelineDefinition(VLM_PIPELINE,
-                "VLM", "pdf", "recursive-character", 2_000, 200, Map.of()));
+                "VLM", "pdf", "recursive-character", 2_000, 200, Map.of(),
+                builtinDocumentProcessor("VLM")));
         pipelines.put(OCR_PIPELINE, new PipelineDefinition(OCR_PIPELINE,
-                "OCR", "pdf", "recursive-character", 2_000, 200, Map.of()));
+                "OCR", "pdf", "recursive-character", 2_000, 200, Map.of(),
+                builtinDocumentProcessor("OCR")));
         pipelines.put(TABLE_AWARE_PIPELINE, new PipelineDefinition(TABLE_AWARE_PIPELINE,
                 "TABLE_AWARE", "table", "recursive-character", 2_000, 200,
-                Map.of("preserveTables", true)));
+                Map.of("preserveTables", true), Map.of()));
         pipelines.put(KEYWORD_ONLY_PIPELINE, new PipelineDefinition(KEYWORD_ONLY_PIPELINE,
                 "KEYWORD_ONLY", "auto", "recursive-character", 2_000, 200,
-                Map.of("keywordOnly", true)));
+                Map.of("keywordOnly", true), Map.of()));
+        JsonNode registry = request == null ? null : request.get("pipelineRegistry");
+        Map<String, Map<String, Object>> executors = executorDefinitions(registry);
+        Map<String, Object> definitionsById = unifiedDefinitions(registry);
+        appendPipelineDefinitions(pipelines, registry == null ? null : registry.get("defaults"),
+                executors, definitionsById);
+        appendPipelineDefinitions(pipelines, request == null ? null : request.get("registeredPipelines"),
+                executors, definitionsById);
         JsonNode definitions = request == null ? null : request.get("pipelines");
-        if (definitions == null || !definitions.isArray()) return pipelines;
+        appendPipelineDefinitions(pipelines, definitions, executors, definitionsById);
+        return pipelines;
+    }
+
+    private static void appendPipelineDefinitions(Map<String, PipelineDefinition> pipelines,
+                                                  JsonNode definitions,
+                                                  Map<String, Map<String, Object>> executors,
+                                                  Map<String, Object> definitionsById) {
+        if (definitions == null || !definitions.isArray()) return;
         for (JsonNode definition : definitions) {
             if (!definition.isObject()) continue;
             String id = text(definition, "pipelineId");
             if (id == null) continue;
-            String type = firstNonBlank(text(definition, "pipelineType"), "CUSTOM")
+            String registeredPipelineId = text(definition, "registeredPipelineId");
+            PipelineDefinition inherited = pipelines.get(registeredPipelineId);
+            if (registeredPipelineId != null && inherited == null) {
+                throw new IllegalArgumentException("Unknown registeredPipelineId: " + registeredPipelineId);
+            }
+            String type = firstNonBlank(text(definition, "pipelineType"),
+                            inherited == null ? null : inherited.pipelineType(), "CUSTOM")
                     .toUpperCase(Locale.ROOT);
-            String defaultLoader = "CODE".equals(type) ? "code"
+            if (inherited == null) {
+                if ("VLM".equals(type)) {
+                    inherited = pipelines.get(VLM_PIPELINE);
+                } else if ("OCR".equals(type)) {
+                    inherited = pipelines.get(OCR_PIPELINE);
+                }
+            }
+            String defaultLoader = inherited != null ? inherited.loaderName() : "CODE".equals(type) ? "code"
                     : ("VLM".equals(type) || "OCR".equals(type) ? "pdf"
                     : "TABLE_AWARE".equals(type) ? "table" : "auto");
-            int defaultSize = "CODE".equals(type) ? 1_800 : 2_000;
-            int defaultOverlap = "CODE".equals(type) ? 180 : 200;
-            Map<String, Object> options = new LinkedHashMap<>();
+            int defaultSize = inherited != null ? inherited.chunkSize() : "CODE".equals(type) ? 1_800 : 2_000;
+            int defaultOverlap = inherited != null ? inherited.chunkOverlap() : "CODE".equals(type) ? 180 : 200;
+            Map<String, Object> options = new LinkedHashMap<>(
+                    inherited == null ? Map.of() : inherited.options());
             mergeOptions(options, definition.get("options"));
             mergeOptions(options, definition.get("chunkerOptions"));
             copyOption(options, definition, "pipelineDefinition");
             copyOption(options, definition, "pipelineDefinitionPath");
+            copyOption(options, definition, "pipelineDefinitionId");
             copyOption(options, definition, "modelSetId");
             copyOption(options, definition, "modelId");
             copyOption(options, definition, "vlmModel");
             copyOption(options, definition, "processingMode");
+            Map<String, Object> processor = new LinkedHashMap<>(
+                    inherited == null ? Map.of() : inherited.processor());
+            String executorId = text(definition, "executorId");
+            if (executorId != null) {
+                Map<String, Object> executor = executors.get(executorId);
+                if (executor == null) {
+                    throw new IllegalArgumentException("Unknown pipeline executorId: " + executorId);
+                }
+                processor.putAll(executor);
+                processor.put("executorId", executorId);
+            }
+            mergeOptions(processor, definition.get("processor"));
+            applyDefinitionReference(definition, definitionsById, processor);
+            if (processor.isEmpty() && (options.containsKey("pipelineDefinition")
+                    || options.containsKey("pipelineDefinitionPath"))) {
+                processor.put("type", "UNIFIED_PIPELINE");
+                copyMapValue(processor, options, "pipelineDefinition");
+                copyMapValue(processor, options, "pipelineDefinitionPath");
+            }
             pipelines.put(id, new PipelineDefinition(id, type,
                     firstNonBlank(text(definition, "loaderName"), defaultLoader),
-                    firstNonBlank(text(definition, "chunkerName"), "recursive-character"),
+                    firstNonBlank(text(definition, "chunkerName"),
+                            inherited == null ? null : inherited.chunkerName(), "recursive-character"),
                     positiveInt(definition, "chunkSize", defaultSize),
                     nonNegativeInt(definition, "chunkOverlap", defaultOverlap),
-                    Map.copyOf(options)));
+                    Map.copyOf(options), Map.copyOf(processor)));
         }
-        return pipelines;
+    }
+
+    private static String registryError(JsonNode request) {
+        JsonNode registry = request == null ? null : request.get("pipelineRegistry");
+        if (registry == null || registry.isNull()) return null;
+        if (!registry.isObject()) return "pipelineRegistry must be an object.";
+        for (String field : List.of("defaults", "definitions", "executors")) {
+            JsonNode value = registry.get(field);
+            if (value != null && !value.isNull() && !value.isArray()) {
+                return "pipelineRegistry." + field + " must be an array.";
+            }
+        }
+        JsonNode executors = registry.get("executors");
+        if (executors != null && executors.isArray()) {
+            Set<String> ids = new LinkedHashSet<>();
+            for (int i = 0; i < executors.size(); i++) {
+                JsonNode executor = executors.get(i);
+                if (!executor.isObject()) return "pipelineRegistry.executors[" + i + "] must be an object.";
+                String id = firstNonBlank(text(executor, "executorId"), text(executor, "id"));
+                if (id == null) return "pipelineRegistry.executors[" + i + "].executorId is required.";
+                if (!ids.add(id)) return "Duplicate pipeline executorId: " + id;
+                String type = firstNonBlank(text(executor, "type"), "UNIFIED_PIPELINE")
+                        .toUpperCase(Locale.ROOT);
+                if (!EXECUTOR_TYPES.contains(type)) {
+                    return "Unsupported pipeline executor type " + type + ". Supported execution contracts: "
+                            + EXECUTOR_TYPES;
+                }
+            }
+        }
+        JsonNode definitions = registry.get("definitions");
+        if (definitions != null && definitions.isArray()) {
+            Set<String> ids = new LinkedHashSet<>();
+            for (int i = 0; i < definitions.size(); i++) {
+                JsonNode definition = definitions.get(i);
+                if (!definition.isObject()) {
+                    return "pipelineRegistry.definitions[" + i + "] must be an object.";
+                }
+                String id = text(definition, "pipelineId");
+                if (id == null) return "pipelineRegistry.definitions[" + i + "].pipelineId is required.";
+                if (!ids.add(id)) return "Duplicate registered UnifiedPipelineDefinition: " + id;
+            }
+        }
+        return null;
+    }
+
+    private static Map<String, Map<String, Object>> executorDefinitions(JsonNode registry) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        JsonNode executors = registry == null ? null : registry.get("executors");
+        if (executors == null || !executors.isArray()) return result;
+        for (JsonNode executor : executors) {
+            String id = firstNonBlank(text(executor, "executorId"), text(executor, "id"));
+            if (id == null) continue;
+            Map<String, Object> value = new LinkedHashMap<>();
+            mergeOptions(value, executor);
+            value.put("executorId", id);
+            value.put("type", firstNonBlank(text(executor, "type"), "UNIFIED_PIPELINE")
+                    .toUpperCase(Locale.ROOT));
+            result.put(id, Map.copyOf(value));
+        }
+        return result;
+    }
+
+    private static Map<String, Object> unifiedDefinitions(JsonNode registry) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        JsonNode definitions = registry == null ? null : registry.get("definitions");
+        if (definitions == null || !definitions.isArray()) return result;
+        for (JsonNode definition : definitions) {
+            String id = text(definition, "pipelineId");
+            if (id != null) result.put(id, jsonValue(definition));
+        }
+        return result;
+    }
+
+    private static void applyExecutorReference(JsonNode request, JsonNode definition,
+                                               Map<String, Object> processor) {
+        if (definition == null) return;
+        String executorId = text(definition, "executorId");
+        if (executorId == null) return;
+        JsonNode registry = request == null ? null : request.get("pipelineRegistry");
+        Map<String, Object> registered = executorDefinitions(registry).get(executorId);
+        if (registered == null) {
+            throw new IllegalArgumentException("Unknown registered pipeline executorId: " + executorId);
+        }
+        Map<String, Object> local = new LinkedHashMap<>(processor);
+        processor.clear();
+        processor.putAll(registered);
+        processor.putAll(local);
+        processor.put("executorId", executorId);
+    }
+
+    private static void applyDefinitionReference(JsonNode request, JsonNode definition,
+                                                 Map<String, Object> processor) {
+        JsonNode registry = request == null ? null : request.get("pipelineRegistry");
+        applyDefinitionReference(definition, unifiedDefinitions(registry), processor);
+    }
+
+    private static void applyDefinitionReference(JsonNode definition,
+                                                 Map<String, Object> definitionsById,
+                                                 Map<String, Object> processor) {
+        if (definition == null) return;
+        for (String field : List.of("pipelineDefinition", "pipelineDefinitionPath", "pipelineDefinitionId")) {
+            copyOption(processor, definition, field);
+        }
+        String definitionId = text(definition, "pipelineDefinitionId");
+        if (definitionId == null) definitionId = text(definition, "registeredDefinitionId");
+        if (definitionId != null) {
+            Object registered = definitionsById.get(definitionId);
+            if (registered != null) processor.put("pipelineDefinition", registered);
+            processor.put("pipelineDefinitionId", definitionId);
+        }
+        if (processor.containsKey("pipelineDefinition") || processor.containsKey("pipelineDefinitionPath")
+                || processor.containsKey("pipelineDefinitionId")) {
+            processor.putIfAbsent("type", "UNIFIED_PIPELINE");
+        }
+    }
+
+    private static void copyMapValue(Map<String, Object> target, Map<String, Object> source, String key) {
+        if (source.containsKey(key)) target.put(key, source.get(key));
+    }
+
+    private static Map<String, Object> builtinDocumentProcessor(String pipelineType) {
+        Map<String, Object> processor = new LinkedHashMap<>();
+        processor.put("type", "KOMPILE_SUBPROCESS");
+        processor.put("adapter", "vlm-test");
+        processor.put("subprocessMode", "vlm-test");
+        processor.put("componentId", "kompile-vlm-test");
+        processor.put("pipelineType", pipelineType);
+        return Map.copyOf(processor);
     }
 
     private static JsonNode matchingDocument(JsonNode request, Path sourceRoot, Path file) {
@@ -616,10 +847,16 @@ public final class LocalCrawlCapabilities {
 
     private static void pipelineTemplate(ArrayNode target, String id, String type, String loader,
                                          String chunker, int size, int overlap, String description) {
+        pipelineTemplate(target, id, type, loader, chunker, size, overlap, true, description);
+    }
+
+    private static void pipelineTemplate(ArrayNode target, String id, String type, String loader,
+                                         String chunker, int size, int overlap, boolean available,
+                                         String description) {
         target.addObject().put("pipelineId", id).put("pipelineType", type)
                 .put("loaderName", loader).put("chunkerName", chunker)
                 .put("chunkSize", size).put("chunkOverlap", overlap)
-                .put("available", true).put("description", description);
+                .put("available", available).put("description", description);
     }
 
     private static void loader(ArrayNode target, String name, List<String> aliases,
@@ -645,7 +882,14 @@ public final class LocalCrawlCapabilities {
                                    String chunkerName,
                                    int chunkSize,
                                    int chunkOverlap,
-                                   Map<String, Object> chunkerOptions) {
+                                   Map<String, Object> chunkerOptions,
+                                   Map<String, Object> processor) {
+        public ResolvedPipeline(String pipelineId, String pipelineType, String loaderName,
+                                String chunkerName, int chunkSize, int chunkOverlap,
+                                Map<String, Object> chunkerOptions) {
+            this(pipelineId, pipelineType, loaderName, chunkerName, chunkSize, chunkOverlap,
+                    chunkerOptions, Map.of());
+        }
     }
 
     private record PipelineDefinition(String pipelineId,
@@ -654,6 +898,7 @@ public final class LocalCrawlCapabilities {
                                       String chunkerName,
                                       int chunkSize,
                                       int chunkOverlap,
-                                      Map<String, Object> options) {
+                                      Map<String, Object> options,
+                                      Map<String, Object> processor) {
     }
 }

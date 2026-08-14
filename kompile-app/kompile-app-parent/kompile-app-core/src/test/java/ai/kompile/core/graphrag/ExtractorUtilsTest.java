@@ -195,9 +195,10 @@ class ExtractorUtilsTest {
         void mergesPropertiesOnDuplicate() {
             Map<String, ExtractedEntity> index = new LinkedHashMap<>();
             ExtractedEntity first = new ExtractedEntity("e1", "Alice", "PERSON",
-                    null, "desc", 0.8, Map.of("role", "engineer"));
+                    List.of("A. Smith"), "desc", 0.8, Map.of("role", "engineer"));
             ExtractedEntity second = new ExtractedEntity("e1", "Alice B", "PERSON",
-                    null, "other desc", 0.7, Map.of("dept", "engineering"));
+                    List.of("Alice Smith"), "a more complete description", 0.7,
+                    Map.of("dept", "engineering"));
 
             ExtractorUtils.addEntity(index, first);
             ExtractorUtils.addEntity(index, second);
@@ -206,6 +207,19 @@ class ExtractorUtilsTest {
             ExtractedEntity merged = index.get("e1");
             assertEquals("engineer", merged.properties().get("role"));
             assertEquals("engineering", merged.properties().get("dept"));
+            assertEquals(List.of("A. Smith", "Alice Smith", "Alice B"), merged.aliases());
+            assertEquals("a more complete description", merged.description());
+        }
+
+        @Test
+        void retainsExplicitCanonicalAliasAcrossObservations() {
+            Map<String, ExtractedEntity> index = new LinkedHashMap<>();
+            ExtractorUtils.addEntity(index, new ExtractedEntity(
+                    "e1", "Alice", "PERSON", List.of("Alice"), null, 0.8, Map.of()));
+            ExtractorUtils.addEntity(index, new ExtractedEntity(
+                    "e1", "Alice Smith", "PERSON", List.of("Alice Smith"), null, 0.9, Map.of()));
+
+            assertEquals(List.of("Alice", "Alice Smith"), index.get("e1").aliases());
         }
 
         @Test
@@ -230,6 +244,28 @@ class ExtractorUtilsTest {
             ExtractorUtils.addEntity(index, second);
 
             assertEquals("Original Name", index.get("e1").name());
+            assertEquals(List.of("Updated Name"), index.get("e1").aliases(),
+                    "alternate names must remain searchable after deterministic batch merging");
+        }
+
+        @Test
+        void correctedEntityReplacesIdentityWithoutDroppingPriorEvidence() {
+            ExtractedEntity retained = new ExtractedEntity(
+                    "e1", "Draft Name", "DRAFT", List.of("Old Alias"),
+                    "old but much longer incorrect description", 0.6, Map.of("first", "one"));
+            ExtractedEntity corrected = new ExtractedEntity(
+                    "e1", "Canonical Name", "PERSON", List.of("New Alias"),
+                    "corrected description", 0.95, Map.of("second", "two"));
+
+            ExtractedEntity merged = ExtractorUtils.replaceEntity(retained, corrected);
+
+            assertEquals("Canonical Name", merged.name());
+            assertEquals("PERSON", merged.type());
+            assertEquals(List.of("Old Alias", "New Alias", "Draft Name"), merged.aliases());
+            assertEquals("corrected description", merged.description());
+            assertEquals("one", merged.properties().get("first"));
+            assertEquals("two", merged.properties().get("second"));
+            assertEquals(0.95, merged.confidence());
         }
 
         @Test
@@ -246,6 +282,51 @@ class ExtractorUtilsTest {
             // First entity's null confidence became DEFAULT_ENTITY_CONFIDENCE (0.7),
             // max(0.7, 0.5) = 0.7
             assertEquals(GraphExtractionSchema.DEFAULT_ENTITY_CONFIDENCE, index.get("e1").confidence());
+        }
+    }
+
+    // ── addRelation() ────────────────────────────────────────────────
+
+    @Nested
+    class AddRelation {
+        @Test
+        void mergesDuplicateRelationEvidenceInsteadOfKeepingFirstOnly() {
+            Map<String, ExtractedRelation> index = new LinkedHashMap<>();
+            ExtractedRelation first = new ExtractedRelation(
+                    "e1", "e2", "WORKS_AT", "works there", 0.6,
+                    Map.of("sourceChunk", "one"), "2025-01-01T00:00:00Z");
+            ExtractedRelation second = new ExtractedRelation(
+                    "e1", "e2", "WORKS_AT", "works at the engineering division", 0.9,
+                    Map.of("reviewed", "true"), null);
+
+            ExtractorUtils.addRelation(index, first);
+            ExtractorUtils.addRelation(index, second);
+
+            assertEquals(1, index.size());
+            ExtractedRelation merged = index.values().iterator().next();
+            assertEquals("one", merged.properties().get("sourceChunk"));
+            assertEquals("true", merged.properties().get("reviewed"));
+            assertEquals("works at the engineering division", merged.description());
+            assertEquals("2025-01-01T00:00:00Z", merged.occurredAt());
+            assertEquals(0.9, merged.confidence());
+        }
+
+        @Test
+        void correctedRelationRetainsPropertiesAndUsesCorrectedOptionalFields() {
+            ExtractedRelation retained = new ExtractedRelation(
+                    "e1", "e2", "WORKS_AT", "draft", 0.6,
+                    Map.of("first", "one"), "2025-01-01T00:00:00Z");
+            ExtractedRelation corrected = new ExtractedRelation(
+                    "e1", "e2", "WORKS_AT", "corrected", 0.95,
+                    Map.of("second", "two"), "2025-02-01T00:00:00Z");
+
+            ExtractedRelation merged = ExtractorUtils.replaceRelation(retained, corrected);
+
+            assertEquals("corrected", merged.description());
+            assertEquals("2025-02-01T00:00:00Z", merged.occurredAt());
+            assertEquals("one", merged.properties().get("first"));
+            assertEquals("two", merged.properties().get("second"));
+            assertEquals(0.95, merged.confidence());
         }
     }
 
@@ -402,11 +483,11 @@ class ExtractorUtilsTest {
             ExtractionResult result = ExtractorUtils.extractBatch(
                     extractor, List.of(doc1, doc2), "test-extractor");
 
-            // StubExtractor always creates one entity with id "stub-entity"
-            // so both docs merge into 1 entity
+            // StubExtractor always creates the same entity and relation atom,
+            // so both documents merge without losing the richer evidence.
             assertEquals(1, result.entities().size());
-            // But each doc creates its own relation
-            assertEquals(2, result.relations().size());
+            assertEquals(1, result.relations().size());
+            assertEquals("self from doc 1", result.relations().get(0).description());
             assertEquals("test-extractor", result.metadata().extractionModel());
         }
 

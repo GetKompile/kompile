@@ -20,14 +20,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.file.Paths;
+import com.sun.net.httpserver.HttpServer;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +55,8 @@ class CrawlSourceToolTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
+    @TempDir
+    Path tempDir;
 
     @BeforeEach
     void setUp() {
@@ -58,7 +66,7 @@ class CrawlSourceToolTest {
         perms.setUserOverride("crawl_source", PermissionService.PermissionLevel.ALLOW);
         perms.setUserOverride("external_directory", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────
@@ -130,6 +138,37 @@ class CrawlSourceToolTest {
         assertTrue(result.isError());
         assertTrue(result.getOutput().contains("Local crawl source does not exist"),
                 "Error should identify the local source problem but was: " + result.getOutput());
+    }
+
+    @Test
+    void nullBaseUrl_fetchesUrlDirectlyInProcess() throws Exception {
+        byte[] body = "Offline stdio URL crawl content".getBytes(StandardCharsets.UTF_8);
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/notes.txt", exchange -> {
+            requests.incrementAndGet();
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            CrawlSourceTool tool = new CrawlSourceTool((String) null, om);
+            ObjectNode params = om.createObjectNode();
+            params.put("url", "http://127.0.0.1:" + server.getAddress().getPort() + "/notes.txt");
+            params.put("title", "offline notes");
+            params.put("dryRun", true);
+
+            ToolResult result = tool.execute(params, ctx);
+
+            assertFalse(result.isError(), result.getOutput());
+            assertEquals(1, requests.get());
+            assertEquals("project-local", result.getMetadata().get("backend"));
+            assertFalse(result.getOutput().contains("distributed crawl manager"), result.getOutput());
+        } finally {
+            server.stop(0);
+        }
     }
 
     // ── Dry-run success ───────────────────────────────────────────────────

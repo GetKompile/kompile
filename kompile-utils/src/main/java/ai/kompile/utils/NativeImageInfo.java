@@ -30,6 +30,8 @@ import java.nio.file.Paths;
  */
 public final class NativeImageInfo {
 
+    static final String IMAGE_CODE_PROPERTY = "org.graalvm.nativeimage.imagecode";
+
     // Lazily computed at first use — NEVER in a static initializer: when GraalVM
     // class-initializes this class at image BUILD time, values captured then
     // describe the builder's process (executable path = builder java / null),
@@ -89,7 +91,16 @@ public final class NativeImageInfo {
         return SubprocessLaunchMode.NATIVE_EXECUTABLE;
     }
 
-    private static Boolean detectNativeImage() {
+    static Boolean detectNativeImage() {
+        // Graal publishes this property directly in hosted and runtime image code.
+        // Use it before reflection: small subprocess images do not all retain
+        // reflective access to ImageInfo, which previously made otherwise-native
+        // workers fall into the JVM/classpath native-library path.
+        String imageCode = System.getProperty(IMAGE_CODE_PROPERTY);
+        if ("runtime".equalsIgnoreCase(imageCode)
+                || "buildtime".equalsIgnoreCase(imageCode)) {
+            return true;
+        }
         try {
             Class<?> imageInfoClass = Class.forName("org.graalvm.nativeimage.ImageInfo");
             Method inImageCodeMethod = imageInfoClass.getMethod("inImageCode");
@@ -105,6 +116,19 @@ public final class NativeImageInfo {
     private static String detectExecutablePath() {
         if (!isRunningInNativeImage()) {
             return null;
+        }
+
+        // On Linux this is the kernel-owned runtime truth and resolves launcher
+        // symlinks to the copied distribution binary. Graal ProcessProperties can
+        // retain the native-image output path from the build tree after that image
+        // is copied, which makes component lookup silently fall back to ~/.kompile.
+        Path procSelfExe = Paths.get("/proc/self/exe");
+        if (Files.exists(procSelfExe)) {
+            try {
+                return Files.readSymbolicLink(procSelfExe).toString();
+            } catch (Exception e) {
+                // Fall through to portable alternatives.
+            }
         }
 
         try {
@@ -123,15 +147,6 @@ public final class NativeImageInfo {
             String[] parts = command.split("\\s+");
             if (parts.length > 0 && !parts[0].contains(".class")) {
                 return parts[0];
-            }
-        }
-
-        Path procSelfExe = Paths.get("/proc/self/exe");
-        if (java.nio.file.Files.exists(procSelfExe)) {
-            try {
-                return java.nio.file.Files.readSymbolicLink(procSelfExe).toString();
-            } catch (Exception e) {
-                // Ignore
             }
         }
 

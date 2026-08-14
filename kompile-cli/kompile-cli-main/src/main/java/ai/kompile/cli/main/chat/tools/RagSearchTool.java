@@ -39,11 +39,13 @@ public class RagSearchTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public RagSearchTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -53,7 +55,8 @@ public class RagSearchTool implements CliTool {
 
     @Override
     public String description() {
-        return "Search the kompile knowledge base using RAG (Retrieval-Augmented Generation). " +
+        return "Search the Kompile knowledge base using RAG (Retrieval-Augmented Generation). " +
+                "Local stdio initializes and searches the current folder automatically. " +
                 "Fans out to all active document retrievers (vector store, keyword index) and " +
                 "the knowledge graph simultaneously. Returns relevant document chunks with " +
                 "source attribution, relevance scores, and optional graph context. " +
@@ -94,10 +97,12 @@ public class RagSearchTool implements CliTool {
             return ToolResult.error("query is required");
         }
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable()) {
-            return ToolResult.error("RAG search requires a running kompile-app instance. " +
-                    "Start kompile-app or use --url to connect. " +
-                    "The backend will be auto-detected when it comes online.");
+            return ToolResult.error("The explicitly configured remote RAG service is unavailable at "
+                    + backend.baseUrlFor("/api/chat/rag/search") + ". Remove --url to use the in-process index.");
         }
 
         try {
@@ -122,7 +127,8 @@ public class RagSearchTool implements CliTool {
             return formatResults(query, result, topic);
 
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote RAG service became unavailable. "
+                    + "Remove --url to continue with the in-process index. " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
             return ToolResult.error("RAG search timed out after 30s. The query may be too broad " +
                     "or the backend is under heavy load. Try a more specific query.");

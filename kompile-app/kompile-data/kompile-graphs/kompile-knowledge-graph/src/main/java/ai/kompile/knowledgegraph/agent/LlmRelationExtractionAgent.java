@@ -16,6 +16,7 @@
 package ai.kompile.knowledgegraph.agent;
 
 import ai.kompile.core.graphrag.GraphConstants;
+import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.agent.ExtractionLlmService;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import ai.kompile.core.graphrag.agent.RelationExtractionAgent;
@@ -116,9 +117,9 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             processChunk(chunk, effectiveConfig, llmService, allEntities, allRelations);
         }
 
-        // Deduplicate entities by ID (keep first occurrence)
+        // Deduplicate entities by ID while retaining evidence from every chunk.
         List<GraphExtractionSchema.ExtractedEntity> dedupedEntities = deduplicateEntities(allEntities);
-        // Deduplicate relations by (source, target, type) triple
+        // Deduplicate relation atoms while retaining evidence from every chunk.
         List<GraphExtractionSchema.ExtractedRelation> dedupedRelations = deduplicateRelations(allRelations);
 
         // Filter by minimum confidence
@@ -519,7 +520,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             List<GraphExtractionSchema.ExtractedEntity> entities) {
         Map<String, GraphExtractionSchema.ExtractedEntity> seen = new LinkedHashMap<>();
         for (GraphExtractionSchema.ExtractedEntity e : entities) {
-            seen.putIfAbsent(e.id(), e);
+            ExtractorUtils.addEntity(seen, e);
         }
         return new ArrayList<>(seen.values());
     }
@@ -528,8 +529,7 @@ public class LlmRelationExtractionAgent implements RelationExtractionAgent {
             List<GraphExtractionSchema.ExtractedRelation> relations) {
         Map<String, GraphExtractionSchema.ExtractedRelation> seen = new LinkedHashMap<>();
         for (GraphExtractionSchema.ExtractedRelation r : relations) {
-            String key = r.source() + "|" + r.target() + "|" + r.type();
-            seen.putIfAbsent(key, r);
+            ExtractorUtils.addRelation(seen, r);
         }
         return new ArrayList<>(seen.values());
     }

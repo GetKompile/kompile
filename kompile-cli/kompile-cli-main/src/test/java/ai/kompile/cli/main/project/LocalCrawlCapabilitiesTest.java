@@ -6,6 +6,7 @@
 package ai.kompile.cli.main.project;
 
 import ai.kompile.project.KompileProjectCrawlProfile;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,21 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(catalog.path("pipelineTemplates").toString().contains("table-aware"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("keyword-only"));
         assertEquals("subprocess", catalog.path("executionMode").asText());
+        assertTrue(catalog.path("modelProcessing").path("semanticServing").asText()
+                .contains("LOCAL_MODEL/serving"));
+        assertEquals("children stop before the MCP command returns",
+                catalog.path("modelProcessing").path("lifecycle").asText());
+    }
+
+    @Test
+    void discoveryDoesNotAdvertiseModelTemplatesWithoutAWorker() {
+        ObjectNode catalog = LocalCrawlCapabilities.catalog(mapper, "in-process-native", false);
+
+        assertFalse(template(catalog, LocalCrawlCapabilities.VLM_PIPELINE).path("available").asBoolean());
+        assertFalse(template(catalog, LocalCrawlCapabilities.OCR_PIPELINE).path("available").asBoolean());
+        assertFalse(catalog.path("modelProcessing").path("builtinDocumentProcessor").asBoolean());
+        assertTrue(catalog.path("modelProcessing").path("callerDefinedUnifiedPipelines").asBoolean());
+        assertTrue(catalog.path("pipelineRegistry").path("arbitraryPipelineTypes").asBoolean());
     }
 
     @Test
@@ -100,8 +116,11 @@ class LocalCrawlCapabilitiesTest {
                   {"pipelineId":"custom","pipelineType":"CUSTOM"}
                 ]}
                 """);
-        ObjectNode unknownPipeline = (ObjectNode) mapper.readTree("""
-                {"pipelines":[{"pipelineId":"future","pipelineType":"IMAGINARY"}]}
+        ObjectNode futurePipeline = (ObjectNode) mapper.readTree("""
+                {"pipelines":[{"pipelineId":"future","pipelineType":"AUDIO_TRANSCRIPTION"}]}
+                """);
+        ObjectNode invalidPipeline = (ObjectNode) mapper.readTree("""
+                {"pipelines":[{"pipelineId":"invalid","pipelineType":"not a portable type"}]}
                 """);
         ObjectNode strictStep = (ObjectNode) mapper.readTree("""
                 {"steps":["ENRICHMENT"],"strictSteps":true}
@@ -109,8 +128,10 @@ class LocalCrawlCapabilitiesTest {
 
         assertTrue(LocalCrawlCapabilities.validationError(unknownLoader).contains("unknown"));
         assertNull(LocalCrawlCapabilities.validationError(allPipelines));
-        assertTrue(LocalCrawlCapabilities.validationError(unknownPipeline).contains("Unknown pipeline type"));
-        assertTrue(LocalCrawlCapabilities.validationError(strictStep).contains("unavailable"));
+        assertNull(LocalCrawlCapabilities.validationError(futurePipeline));
+        assertTrue(LocalCrawlCapabilities.validationError(invalidPipeline).contains("portable identifier"));
+        assertNull(LocalCrawlCapabilities.validationError(strictStep));
+        assertTrue(LocalCrawlCapabilities.supportedSteps().contains("ENRICHMENT"));
     }
 
     @Test
@@ -134,6 +155,82 @@ class LocalCrawlCapabilitiesTest {
         LocalCrawlCapabilities.ResolvedPipeline keywords =
                 LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
         assertFalse(LocalCrawlCapabilities.usesProcessingSubprocess(keywords));
+    }
+
+    @Test
+    void requestScopedRuntimeAndPipelineOptionsCreateTheFolderPipeline() throws Exception {
+        Path pdf = tempDir.resolve("created.pdf");
+        Files.writeString(pdf, "resolution only");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "runtimeConfig": {
+                    "documentModelExecutable": "workers/vlm",
+                    "documentModelExecutableMode": "UNIFIED"
+                  },
+                  "documents": [{"path": "%s", "pipelineId": "created-vlm"}],
+                  "pipelines": [{
+                    "pipelineId": "created-vlm",
+                    "pipelineType": "VLM",
+                    "loaderName": "pdf",
+                    "chunkerName": "sentence",
+                    "options": {
+                      "modelId": "folder-model",
+                      "maxPages": 7,
+                      "pdfRenderDpi": 180,
+                      "temperature": 0.2
+                    }
+                  }]
+                }
+                """.formatted(pdf.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
+
+        assertEquals("folder-model", resolved.chunkerOptions().get("modelId"));
+        assertEquals(7, resolved.chunkerOptions().get("maxPages"));
+        assertEquals(180, resolved.chunkerOptions().get("pdfRenderDpi"));
+        assertEquals("workers/vlm", resolved.processor().get("documentModelExecutable"));
+        assertEquals("UNIFIED", resolved.processor().get("documentModelExecutableMode"));
+    }
+
+    @Test
+    void arbitraryPipelinesInheritRegisteredDefaultsAndExecutors() throws Exception {
+        Path audio = tempDir.resolve("meeting.txt");
+        Files.writeString(audio, "audio placeholder");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "pipelineRegistry": {
+                    "executors": [{
+                      "executorId": "transcriber",
+                      "type": "KOMPILE_SUBPROCESS",
+                      "componentId": "kompile-audio",
+                      "subprocessMode": "audio-transcription"
+                    }],
+                    "defaults": [{
+                      "pipelineId": "audio-default",
+                      "pipelineType": "AUDIO_TRANSCRIPTION",
+                      "loaderName": "text",
+                      "chunkerName": "no-op",
+                      "executorId": "transcriber"
+                    }]
+                  },
+                  "pipelines": [{
+                    "pipelineId": "meeting-audio",
+                    "registeredPipelineId": "audio-default"
+                  }],
+                  "documents": [{"path": "%s", "pipelineId": "meeting-audio"}]
+                }
+                """.formatted(audio.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, audio);
+
+        assertEquals("AUDIO_TRANSCRIPTION", resolved.pipelineType());
+        assertEquals("transcriber", resolved.processor().get("executorId"));
+        assertEquals("audio-transcription", resolved.processor().get("subprocessMode"));
+        assertTrue(LocalCrawlCapabilities.usesProcessingSubprocess(resolved));
     }
 
     @Test
@@ -161,5 +258,12 @@ class LocalCrawlCapabilitiesTest {
 
         assertEquals("text", resolved.loaderName());
         assertEquals("no-op", resolved.chunkerName());
+    }
+
+    private JsonNode template(ObjectNode catalog, String pipelineId) {
+        for (JsonNode template : catalog.path("pipelineTemplates")) {
+            if (pipelineId.equals(template.path("pipelineId").asText())) return template;
+        }
+        throw new AssertionError("Missing pipeline template " + pipelineId);
     }
 }

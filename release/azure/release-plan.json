@@ -1,0 +1,442 @@
+{
+  "schemaVersion": 2,
+  "provider": "azure",
+  "projectTag": "kompile-release",
+  "artifactContainer": "releases",
+  "repositoryContainer": "maven",
+  "controlContainer": "control",
+  "artifactPrefix": "kompile/releases",
+  "mavenRepositoryPrefix": "kompile/releases/maven-repository",
+  "unsupportedWorkflows": {
+    "macos": "Azure has no macOS VM offering; retain the AWS dedicated-host lane for macosx-arm64."
+  },
+  "buildCoverage": {
+    "distributionVariants": ["cli-only", "full"],
+    "publishingPolicy": "maven-assemblies-to-azure-blob"
+  },
+  "defaults": {
+    "rootVolumeGiB": 1024,
+    "mavenHeapGiB": 48,
+    "buildThreads": 64,
+    "maxCores": 72,
+    "maxTotalCores": 288,
+    "x86MachineCandidates": [
+      "Standard_F72s_v2",
+      "Standard_F64s_v2",
+      "Standard_D64ds_v5",
+      "Standard_F48s_v2",
+      "Standard_F32s_v2"
+    ],
+    "armMachineCandidates": [
+      "Standard_D64ps_v5",
+      "Standard_D48ps_v5",
+      "Standard_D32ps_v5"
+    ],
+    "linuxImage": "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest",
+    "windowsImage": "MicrosoftWindowsServer:WindowsServer:2022-datacenter-g2:latest"
+  },
+  "shards": [
+    {
+      "id": "distribution-cli-only-linux-x86_64",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "distribution",
+        "backend": "none",
+        "javacppPlatform": "linux-x86_64",
+        "variants": [
+          {
+            "name": "cli-only",
+            "distributionClassifier": "cli-only-linux-x86_64",
+            "requireSdk": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "distribution-cli-only-linux-arm64",
+      "os": "linux",
+      "architecture": "arm64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "distribution",
+        "backend": "none",
+        "javacppPlatform": "linux-arm64",
+        "variants": [
+          {
+            "name": "cli-only",
+            "distributionClassifier": "cli-only-linux-arm64",
+            "requireSdk": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "distribution-cli-only-windows-x86_64",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "distribution",
+        "backend": "none",
+        "javacppPlatform": "windows-x86_64",
+        "variants": [
+          {
+            "name": "cli-only",
+            "distributionClassifier": "cli-only-windows-x86_64",
+            "requireSdk": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-cpu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-cpu",
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64"},
+          {"name": "avx2", "classifier": "linux-x86_64-avx2"},
+          {"name": "avx512", "classifier": "linux-x86_64-avx512"},
+          {"name": "onednn", "classifier": "linux-x86_64-onednn"},
+          {"name": "onednn-avx2", "classifier": "linux-x86_64-onednn-avx2"},
+          {"name": "onednn-avx512", "classifier": "linux-x86_64-onednn-avx512"},
+          {"name": "compile", "classifier": "linux-x86_64-compile"},
+          {"name": "compile-avx2", "classifier": "linux-x86_64-compile-avx2"},
+          {"name": "compile-avx512", "classifier": "linux-x86_64-compile-avx512"}
+        ]
+      }
+    },
+    {
+      "id": "linux-arm64-cpu",
+      "os": "linux",
+      "architecture": "arm64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "linux-arm64",
+        "dl4jLane": "linux-arm64-cpu",
+        "variants": [
+          {"name": "base", "classifier": "linux-arm64"},
+          {"name": "armcompute", "classifier": "linux-arm64-armcompute"},
+          {"name": "onednn", "classifier": "linux-arm64-onednn"},
+          {"name": "compile", "classifier": "linux-arm64-compile"}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-cuda-12-6",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.6",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-cuda-12-6",
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64-cuda-12.6"},
+          {"name": "cudnn", "classifier": "linux-x86_64-cuda-12.6-cudnn"},
+          {"name": "compile", "classifier": "linux-x86_64-cuda-12.6-compile"}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-cuda-12-9",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-cuda-12-9",
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64-cuda-12.9"},
+          {"name": "cudnn", "classifier": "linux-x86_64-cuda-12.9-cudnn"},
+          {"name": "compile", "classifier": "linux-x86_64-cuda-12.9-compile"}
+        ]
+      }
+    },
+    {
+      "id": "windows-x86_64-cpu",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "windows-x86_64",
+        "dl4jLane": "windows-x86_64-cpu",
+        "variants": [
+          {"name": "base", "classifier": "windows-x86_64"},
+          {"name": "avx2", "classifier": "windows-x86_64-avx2"},
+          {"name": "avx512", "classifier": "windows-x86_64-avx512"},
+          {"name": "onednn", "classifier": "windows-x86_64-onednn"},
+          {"name": "onednn-avx2", "classifier": "windows-x86_64-onednn-avx2"},
+          {"name": "onednn-avx512", "classifier": "windows-x86_64-onednn-avx512"},
+          {"name": "compile", "classifier": "windows-x86_64-compile"}
+        ]
+      }
+    },
+    {
+      "id": "windows-x86_64-vulkan",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "vulkan",
+        "javacppPlatform": "windows-x86_64",
+        "dl4jLane": "windows-x86_64-vulkan",
+        "requireSdk": false,
+        "variants": [
+          {"name": "base", "classifier": "windows-x86_64-vulkan", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "windows-x86_64-cuda-12-6",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.6",
+        "javacppPlatform": "windows-x86_64",
+        "dl4jLane": "windows-x86_64-cuda-12-6",
+        "variants": [
+          {"name": "base", "classifier": "windows-x86_64-cuda-12.6"},
+          {"name": "cudnn", "classifier": "windows-x86_64-cuda-12.6-cudnn"},
+          {"name": "compile", "classifier": "windows-x86_64-cuda-12.6-compile"}
+        ]
+      }
+    },
+    {
+      "id": "windows-x86_64-cuda-12-9",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "windows-x86_64",
+        "dl4jLane": "windows-x86_64-cuda-12-9",
+        "variants": [
+          {"name": "base", "classifier": "windows-x86_64-cuda-12.9"},
+          {"name": "cudnn", "classifier": "windows-x86_64-cuda-12.9-cudnn"},
+          {"name": "compile", "classifier": "windows-x86_64-cuda-12.9-compile"}
+        ]
+      }
+    },
+    {
+      "id": "android-arm64-cpu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "android-arm64",
+        "dl4jLane": "android-arm64",
+        "ndkVersion": "r27d",
+        "skipNative": true,
+        "variants": [
+          {"name": "base", "classifier": "android-arm64"},
+          {"name": "armcompute", "classifier": "android-arm64-armcompute"},
+          {"name": "nnapi", "classifier": "android-arm64-nnapi"},
+          {"name": "compile", "classifier": "android-arm64-compile"},
+          {"name": "compile-nnapi", "classifier": "android-arm64-compile-nnapi"}
+        ]
+      }
+    },
+    {
+      "id": "android-arm64-vulkan",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "vulkan",
+        "javacppPlatform": "android-arm64",
+        "dl4jLane": "android-arm64-vulkan",
+        "ndkVersion": "r27d",
+        "requireSdk": false,
+        "skipNative": true,
+        "variants": [
+          {"name": "base", "classifier": "android-arm64-vulkan", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "android-x86_64-cpu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "sdk", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "android-x86_64",
+        "dl4jLane": "android-x86_64",
+        "ndkVersion": "r27d",
+        "skipNative": true,
+        "variants": [
+          {"name": "base", "classifier": "android-x86_64"},
+          {"name": "onednn", "classifier": "android-x86_64-onednn"},
+          {"name": "compile", "classifier": "android-x86_64-compile"}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-compat",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "containerImage": "almalinux:8",
+      "containerFamily": "almalinux",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cpu",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-compat",
+        "requireSdk": false,
+        "variants": [
+          {"name": "compat", "classifier": "linux-x86_64-compat", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-vulkan",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "vulkan",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-vulkan",
+        "requireSdk": false,
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64-vulkan", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-vulkan-compile",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "vulkan",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-vulkan-compile",
+        "requireSdk": false,
+        "variants": [
+          {"name": "compile", "classifier": "linux-x86_64-vulkan-compile", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-hexagon",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "hexagon",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-hexagon",
+        "requireSdk": false,
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64-hexagon", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-tpu",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "tpu",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-tpu",
+        "requireSdk": false,
+        "variants": [
+          {"name": "base", "classifier": "linux-x86_64-tpu", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "linux-x86_64-zluda",
+      "os": "linux",
+      "architecture": "x86_64",
+      "worker": "worker.sh",
+      "containerImage": "nvidia/cuda:12.9.1-devel-ubuntu22.04",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "linux-x86_64",
+        "dl4jLane": "linux-x86_64-zluda",
+        "requireSdk": false,
+        "variants": [
+          {"name": "zluda", "classifier": "linux-x86_64-cuda-12.9-zluda", "requireSdk": false}
+        ]
+      }
+    },
+    {
+      "id": "windows-x86_64-zluda",
+      "os": "windows",
+      "architecture": "x86_64",
+      "worker": "worker.ps1",
+      "workloads": ["maven", "distribution"],
+      "build": {
+        "kind": "platform",
+        "backend": "cuda",
+        "cudaVersion": "12.9",
+        "javacppPlatform": "windows-x86_64",
+        "dl4jLane": "windows-x86_64-zluda",
+        "requireSdk": false,
+        "variants": [
+          {"name": "zluda", "classifier": "windows-x86_64-cuda-12.9-zluda", "requireSdk": false}
+        ]
+      }
+    }
+  ]
+}

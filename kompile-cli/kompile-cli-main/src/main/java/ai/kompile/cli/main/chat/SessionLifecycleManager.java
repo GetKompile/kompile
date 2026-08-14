@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -82,8 +83,18 @@ public class SessionLifecycleManager {
      * into the DirectLlmClient history (local mode) or printing the transcript (server mode).
      */
     public void restoreSession() {
+        restoreSession(System.out::println);
+    }
+
+    /**
+     * Restore a previous conversation and send every display line through the
+     * supplied output sink. Standard chat passes the active TUI scroll-region
+     * writer here so restored output is not erased by the TUI's initial clear.
+     */
+    public void restoreSession(Consumer<String> output) {
         if (!ChatHistory.exists(sessionId)) return;
 
+        Consumer<String> sink = output != null ? output : ignored -> { };
         try {
             ChatHistory history = new ChatHistory(sessionId);
             List<ChatHistory.Turn> turns = history.readTurns();
@@ -93,29 +104,31 @@ public class SessionLifecycleManager {
             // Print the previous transcript
             String transcript = history.readTranscript();
             if (transcript != null) {
-                System.out.println();
+                sink.accept("");
                 // Print a condensed version — last 50 lines
                 String[] lines = transcript.split("\n");
                 if (lines.length > 50) {
-                    System.out.println(renderer.dim("  ... (" + (lines.length - 50) + " earlier lines)"));
+                    sink.accept(renderer.dim("  ... (" + (lines.length - 50) + " earlier lines)"));
                     for (int i = lines.length - 50; i < lines.length; i++) {
-                        System.out.println(lines[i]);
+                        sink.accept(lines[i]);
                     }
                 } else {
-                    System.out.println(transcript);
+                    for (String line : lines) {
+                        sink.accept(line);
+                    }
                 }
-                System.out.println(renderer.dim("─── end of previous conversation (" + turns.size() + " turns) ───"));
-                System.out.println();
+                sink.accept(renderer.dim("─── end of previous conversation (" + turns.size() + " turns) ───"));
+                sink.accept("");
             }
 
             // In local mode, replay turns into the DirectLlmClient
             if (localMode && agenticLoop != null) {
                 agenticLoop.restoreHistory(turns);
-                System.out.println(renderer.dim("  Restored " + turns.size() + " turns to context."));
+                sink.accept(renderer.dim("  Restored " + turns.size() + " turns to context."));
             }
 
             // Validate and report subagent availability on resume
-            validateAndReportSubagentAvailability();
+            validateAndReportSubagentAvailability(sink);
 
         } catch (Exception e) {
             System.err.println("Warning: Could not restore session: " + e.getMessage());
@@ -127,11 +140,16 @@ public class SessionLifecycleManager {
      * availability to the user when resuming a session.
      */
     public void validateAndReportSubagentAvailability() {
+        validateAndReportSubagentAvailability(System.out::println);
+    }
+
+    private void validateAndReportSubagentAvailability(Consumer<String> output) {
+        Consumer<String> sink = output != null ? output : ignored -> { };
         try {
             // Check if TaskTool is registered
             CliTool taskTool = toolRegistry.get("task");
             if (taskTool == null) {
-                System.out.println(renderer.warn("  ⚠ Subagent delegation (task tool) not available"));
+                sink.accept(renderer.warn("  ⚠ Subagent delegation (task tool) not available"));
                 return;
             }
 
@@ -139,23 +157,23 @@ public class SessionLifecycleManager {
             if (taskTool instanceof TaskTool) {
                 TaskTool task = (TaskTool) taskTool;
                 if (!task.isHealthy()) {
-                    System.out.println(renderer.warn("  ⚠ Subagent delegation tool is not properly configured"));
+                    sink.accept(renderer.warn("  ⚠ Subagent delegation tool is not properly configured"));
                     return;
                 }
             }
 
             // Check subagent registry health
             if (!agentRegistry.isSubagentDelegationHealthy()) {
-                System.out.println(renderer.warn("  ⚠ Subagent registry may not be properly configured"));
+                sink.accept(renderer.warn("  ⚠ Subagent registry may not be properly configured"));
             }
 
             // Report subagent availability
             String summary = agentRegistry.getSubagentSummary();
-            System.out.println(renderer.dim("  ✓ Subagent delegation enabled: " + summary));
+            sink.accept(renderer.dim("  ✓ Subagent delegation enabled: " + summary));
 
         } catch (Exception e) {
             // Non-fatal - subagents are optional, but log the issue
-            System.out.println(renderer.dim("  ⚠ Subagent validation skipped: " + e.getMessage()));
+            sink.accept(renderer.dim("  ⚠ Subagent validation skipped: " + e.getMessage()));
         }
     }
 

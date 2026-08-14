@@ -26,6 +26,7 @@ VERSION="${KOMPILE_VERSION:-}"
 # fall back to `cli-only` if the full variant is not published for this platform.
 # Override with --variant or KOMPILE_VARIANT.
 VARIANT="${KOMPILE_VARIANT:-}"       # empty = auto (try full then cli-only)
+BACKEND_PROFILE="${KOMPILE_BACKEND_PROFILE:-}"
 GITHUB_REPO="GetKompile/kompile"
 VERBOSE=false
 MODIFY_PATH="${KOMPILE_MODIFY_PATH:-0}"
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version|-v)   VERSION="$2"; shift 2 ;;
         --variant)      VARIANT="$2"; shift 2 ;;
+        --backend-profile) BACKEND_PROFILE="$2"; shift 2 ;;
         --dir|-d)       INSTALL_DIR="$2"; shift 2 ;;
         --url|-u)       BASE_URL="$2"; shift 2 ;;
         --verbose)      VERBOSE=true; shift ;;
@@ -47,9 +49,12 @@ while [ $# -gt 0 ]; do
             echo "  --version, -v VERSION   Version to install (default: latest)"
             echo "  --variant VARIANT       Distribution variant (default: auto)"
             echo "                          Auto tries 'full' first, falls back to 'cli-only'."
-            echo "                          Options: full, cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
+            echo "                          Options: full, local, cli-only, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
+            echo "                          'local' contains the CLI and native folder-local MCP/model workers."
             echo "                          The 'full' variant includes server jars and a bundled Java runtime."
-            echo "                          'kompile project init' works fully only with the full variant."
+            echo "                          'kompile project init' works fully with full or local distributions."
+            echo "  --backend-profile P     Select a backend-qualified archive lane."
+            echo "                          Examples: cpu, cpu-avx2, cuda-12.9, cuda-12.6, zluda"
             echo "  --dir, -d DIR           Install directory (default: ~/.kompile)"
             echo "  --url, -u URL           Base URL for distribution archives"
             echo "  --modify-path           Append the PATH export line to your shell profile idempotently"
@@ -99,6 +104,18 @@ if [[ "${PLATFORM}" == windows* ]]; then
     ARCHIVE_EXT="zip"
 fi
 
+release_platform() {
+    case "${BACKEND_PROFILE}" in
+        ""|cpu) echo "${PLATFORM}" ;;
+        cpu-*) echo "${PLATFORM}-${BACKEND_PROFILE#cpu-}" ;;
+        cuda-*) echo "${PLATFORM}-${BACKEND_PROFILE}" ;;
+        zluda) echo "${PLATFORM}-cuda-12.9-zluda" ;;
+        *) echo "${PLATFORM}-${BACKEND_PROFILE}" ;;
+    esac
+}
+
+RELEASE_PLATFORM="$(release_platform)"
+
 # ── Version resolution ───────────────────────────────────────────────────────
 
 resolve_version() {
@@ -143,7 +160,7 @@ url_exists() {
 
 resolve_download_url() {
     local variant="$1"
-    local name="kompile-dist-${VERSION}-${variant}-${PLATFORM}.${ARCHIVE_EXT}"
+    local name="kompile-dist-${VERSION}-${variant}-${RELEASE_PLATFORM}.${ARCHIVE_EXT}"
     if [ -n "${BASE_URL}" ]; then
         echo "${BASE_URL%/}/${name}"
     else
@@ -162,7 +179,7 @@ if [ -z "${VARIANT}" ]; then
     fi
 fi
 
-ARCHIVE_NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}.${ARCHIVE_EXT}"
+ARCHIVE_NAME="kompile-dist-${VERSION}-${VARIANT}-${RELEASE_PLATFORM}.${ARCHIVE_EXT}"
 DOWNLOAD_URL="$(resolve_download_url "${VARIANT}")"
 
 # ── Progress display ─────────────────────────────────────────────────────────
@@ -180,6 +197,7 @@ echo ""
 info "Version:   ${VERSION}"
 info "Variant:   ${VARIANT}"
 info "Platform:  ${PLATFORM}"
+info "Backend:   ${BACKEND_PROFILE:-default}"
 info "Install:   ${INSTALL_DIR}"
 info "Archive:   ${ARCHIVE_NAME}"
 info "URL:       ${DOWNLOAD_URL}"
@@ -240,15 +258,34 @@ if [ -f "${CHECKSUM_FILE}" ] && [ -s "${CHECKSUM_FILE}" ]; then
     fi
 fi
 
-# Clean stale files from previous install (bin/, lib/, conf/ only — data/ is preserved)
+# Clean files owned by the previous distribution before every extraction.
+# This makes same-version reinstalls deterministic while preserving user state and
+# unrelated utilities (for example xet/git-xet) that may share INSTALL_DIR/bin.
+OLD_VERSION=""
 if [ -f "${INSTALL_DIR}/.version" ]; then
     OLD_VERSION=$(cat "${INSTALL_DIR}/.version" 2>/dev/null || true)
-    if [ -n "${OLD_VERSION}" ] && [ "${OLD_VERSION}" != "${VERSION}" ]; then
-        step "Upgrading from ${OLD_VERSION} to ${VERSION}"
-        info "Cleaning stale binaries from previous version..."
-        rm -rf "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/conf"
-    fi
 fi
+
+if [ -f "${INSTALL_DIR}/manifest.sha256" ]; then
+    step "Cleaning previous distribution payload"
+    while IFS= read -r manifest_line; do
+        managed_path="${manifest_line#*  }"
+        case "${managed_path}" in
+            ""|/*|../*|*/../*|*/..) continue ;;
+        esac
+        rm -f -- "${INSTALL_DIR}/${managed_path}" 2>/dev/null || true
+    done < "${INSTALL_DIR}/manifest.sha256"
+elif [ -n "${OLD_VERSION}" ] && [ "${OLD_VERSION}" != "${VERSION}" ]; then
+    # Compatibility with old installations created before manifest.sha256 existed.
+    step "Upgrading from ${OLD_VERSION} to ${VERSION}"
+    info "Cleaning stale binaries from previous version..."
+    rm -rf "${INSTALL_DIR}/bin" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/conf"
+fi
+
+# Known files from pre-manifest layouts. New canonical artifacts have unversioned
+# names, so these legacy aliases must not linger and confuse manual tooling.
+rm -f -- "${INSTALL_DIR}/bin/kompile-app-main.jar"
+rm -f -- "${INSTALL_DIR}/lib/kompile-sdk-serving-"*-shaded.jar
 
 # Extract
 step "Extracting to ${INSTALL_DIR}"
@@ -310,10 +347,18 @@ if [ -d "${INSTALL_DIR}/bin" ]; then
     done
 fi
 if [ -d "${INSTALL_DIR}/lib" ]; then
-    info "App JARs:     ${INSTALL_DIR}/lib/"
-    ls "${INSTALL_DIR}/lib/"*.jar 2>/dev/null | while read -r f; do
+    APP_JAR_COUNT=0
+    for f in "${INSTALL_DIR}/lib/"*.jar; do
+        [ -f "${f}" ] || continue
+        if [ "${APP_JAR_COUNT}" -eq 0 ]; then
+            info "App JARs:     ${INSTALL_DIR}/lib/"
+        fi
         info "  - $(basename "${f}")"
+        APP_JAR_COUNT=$((APP_JAR_COUNT + 1))
     done
+    if [ "${APP_JAR_COUNT}" -eq 0 ] && [ -f "${INSTALL_DIR}/lib/shared-runtime-manifest.txt" ]; then
+        info "Native libs:  ${INSTALL_DIR}/lib/ (manifest validated)"
+    fi
 fi
 
 echo ""
@@ -371,13 +416,18 @@ echo "Get started:"
 echo "  kompile project init                  # scaffold a Kompile project in the current directory"
 echo "  kompile project init --crawl --push   # scaffold + serve + index docs + push to git (one shot)"
 echo "  kompile chat                          # start an AI chat"
-echo "  kompile web                           # launch the web UI"
+if [ "${VARIANT}" != "local" ]; then
+    echo "  kompile web                           # launch the web UI"
+fi
 echo "  kompile --help                        # see all commands"
 echo ""
 if [ "${VARIANT}" = "cli-only" ]; then
-    echo "Note: installed the cli-only variant. 'kompile project init' works fully only with the"
-    echo "full variant (includes server + bundled runtime). Re-run without --variant to try the"
-    echo "full distribution, or: install.sh --variant full"
+    echo "Note: installed the cli-only variant. Folder-local model execution requires the"
+    echo "local or full distribution. Re-run with: install.sh --variant local"
+    echo ""
+elif [ "${VARIANT}" = "local" ]; then
+    echo "Note: installed the native local-execution variant. It includes project-local"
+    echo "model and pipeline workers, but intentionally excludes the web/application server."
     echo ""
 fi
 

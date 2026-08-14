@@ -18,9 +18,12 @@ Options:
   --output-dir <dir>        SDK output root (default: target/android-aot)
   --classes-dir <dir>       Compiled project classes supplied by Maven
   --classpath-file <file>   Runtime dependency classpath supplied by Maven
+  --strict-classpath        Reject reachable classes with missing dependencies
   --reuse-object <file>     Skip Native Image and relink this AArch64 object
-  --reuse-jdk-libs <dir>    Reuse libjava/libnet/libnio/libzip archives
+  --object-output <file>    Publish the verified relocatable object and stop
+  --reuse-jdk-libs <dir>    Reuse the verified JDK 21.0.10 native closure
   --reuse-svm-libs <dir>    Reuse libjvm/liblibchelper archives
+  --support-libraries-only  Build/verify support archives and stop
   --offline                 Do not fetch upstream sources; Maven runs offline
   --clean                   Remove this script's work directory first
   -h, --help                Show this help
@@ -42,8 +45,11 @@ OUTPUT_DIR="$MODULE_DIR/target/android-aot"
 CLASSES_DIR=""
 CLASSPATH_FILE=""
 REUSE_OBJECT=""
+OBJECT_OUTPUT=""
 REUSE_JDK_LIBS=""
 REUSE_SVM_LIBS=""
+SUPPORT_LIBRARIES_ONLY=false
+STRICT_CLASSPATH=false
 OFFLINE=false
 CLEAN=false
 
@@ -57,9 +63,12 @@ while [[ $# -gt 0 ]]; do
         --output-dir) OUTPUT_DIR="${2:?missing value for --output-dir}"; shift 2 ;;
         --classes-dir) CLASSES_DIR="${2:?missing value for --classes-dir}"; shift 2 ;;
         --classpath-file) CLASSPATH_FILE="${2:?missing value for --classpath-file}"; shift 2 ;;
+        --strict-classpath) STRICT_CLASSPATH=true; shift ;;
         --reuse-object) REUSE_OBJECT="${2:?missing value for --reuse-object}"; shift 2 ;;
+        --object-output) OBJECT_OUTPUT="${2:?missing value for --object-output}"; shift 2 ;;
         --reuse-jdk-libs) REUSE_JDK_LIBS="${2:?missing value for --reuse-jdk-libs}"; shift 2 ;;
         --reuse-svm-libs) REUSE_SVM_LIBS="${2:?missing value for --reuse-svm-libs}"; shift 2 ;;
+        --support-libraries-only) SUPPORT_LIBRARIES_ONLY=true; shift ;;
         --offline) OFFLINE=true; shift ;;
         --clean) CLEAN=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -75,12 +84,14 @@ NDK_HOST_TAG="${NDK_HOST_TAG:-linux-x86_64}"
 LABSJDK_URL=https://github.com/graalvm/labs-openjdk-21.git
 LABSJDK_REF=jvmci-23.1-b33
 LABSJDK_COMMIT=ef9d66c6808536e7029680f6f4d965359f8f20c8
+EXPECTED_JDK_SOURCE_VERSION=21.0.10
 GRAAL_URL=https://github.com/oracle/graal.git
 GRAAL_REF=vm-23.1.5
 GRAAL_COMMIT=67b6384f4502ffd46aef357d6bcfaf249b68d7d3
 EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD=st_birthtime_sec
 FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD=st_birthtime_nsec
-LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256=b31495be262f4a59130ba377641f84ca0c42c5ebcb78b7af1abdfb7ab1c9c202
+LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256=309179be37326ce1f0384836bb89c5f598cac6586e0f4d1f0dd3fd9f6ac704a4
+LABSJDK_SHUTDOWN_WRITE_PATCH_SHA256=5b6c08466a2dd41c666108cc62ed9ce42b0daa36ecfe5d56a46a48c8b6f5dde4
 
 fail() {
     echo "ERROR: $*" >&2
@@ -206,35 +217,51 @@ for archive in libjvm.a liblibchelper.a; do
     [[ -s "$SVM_LIB_DIR/$archive" ]] || fail "Missing SVM support archive: $SVM_LIB_DIR/$archive"
 done
 
+PATCH_FILE="$ANDROID_SUPPORT/labsjdk-net-util-md.patch"
+UNIX_FILE_ATTRIBUTES_PATCH="$ANDROID_SUPPORT/labsjdk-unix-file-attributes-abi.patch"
+SHUTDOWN_WRITE_PATCH="$ANDROID_SUPPORT/labsjdk-net-shutdown-write-abi.patch"
+[[ -f "$PATCH_FILE" ]] || fail "Pinned bionic compatibility patch is missing: $PATCH_FILE"
+[[ -f "$UNIX_FILE_ATTRIBUTES_PATCH" ]] ||
+    fail "Pinned UnixFileAttributes ABI patch is missing: $UNIX_FILE_ATTRIBUTES_PATCH"
+[[ -f "$SHUTDOWN_WRITE_PATCH" ]] ||
+    fail "Pinned Net shutdown-write ABI patch is missing: $SHUTDOWN_WRITE_PATCH"
+UNIX_FILE_ATTRIBUTES_PATCH_SHA256="$(sha256sum "$UNIX_FILE_ATTRIBUTES_PATCH" | awk '{print $1}')"
+[[ "$UNIX_FILE_ATTRIBUTES_PATCH_SHA256" == "$LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256" ]] ||
+    fail "UnixFileAttributes ABI patch digest mismatch: expected $LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256, found $UNIX_FILE_ATTRIBUTES_PATCH_SHA256"
+SHUTDOWN_WRITE_PATCH_SHA256="$(sha256sum "$SHUTDOWN_WRITE_PATCH" | awk '{print $1}')"
+[[ "$SHUTDOWN_WRITE_PATCH_SHA256" == "$LABSJDK_SHUTDOWN_WRITE_PATCH_SHA256" ]] ||
+    fail "Net shutdown-write ABI patch digest mismatch: expected $LABSJDK_SHUTDOWN_WRITE_PATCH_SHA256, found $SHUTDOWN_WRITE_PATCH_SHA256"
+
 JDK_LIB_DIR="$WORK_DIR/clibraries/bionic"
 if [[ -n "$REUSE_JDK_LIBS" ]]; then
     JDK_LIB_DIR="$REUSE_JDK_LIBS"
 else
-    LABSJDK_SOURCE="$WORK_DIR/upstream/labs-openjdk-21-$LABSJDK_COMMIT"
-    checkout_pinned "$LABSJDK_SOURCE" "$LABSJDK_URL" "$LABSJDK_REF" "$LABSJDK_COMMIT"
-    # Unlike the sparse Graal checkout above, the LabsJDK build needs the full pinned tree.
+    JDK_SOURCE="$WORK_DIR/upstream/labs-openjdk-21-$LABSJDK_COMMIT"
+    checkout_pinned "$JDK_SOURCE" "$LABSJDK_URL" "$LABSJDK_REF" "$LABSJDK_COMMIT"
+    # Oracle GraalVM's reachable java.base ABI includes LabsJDK-only native
+    # methods (for example UnixNativeDispatcher.exists0). Upstream OpenJDK
+    # 21.0.10 has the same feature version but is not this native ABI.
     # Do not reset it on retries: the bionic compatibility patch below is intentionally tracked.
-    if [[ ! -f "$LABSJDK_SOURCE/configure" ]]; then
-        git -C "$LABSJDK_SOURCE" checkout --detach "$LABSJDK_COMMIT"
+    if [[ ! -f "$JDK_SOURCE/configure" ]]; then
+        git -C "$JDK_SOURCE" checkout --detach "$LABSJDK_COMMIT"
     fi
 
-    PATCH_FILE="$ANDROID_SUPPORT/labsjdk-net-util-md.patch"
-    if git -C "$LABSJDK_SOURCE" apply --check "$PATCH_FILE" >/dev/null 2>&1; then
-        git -C "$LABSJDK_SOURCE" apply "$PATCH_FILE"
-    elif ! git -C "$LABSJDK_SOURCE" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
-        fail "LabsJDK bionic patch neither applies nor is already present"
+    if git -C "$JDK_SOURCE" apply --check "$PATCH_FILE" >/dev/null 2>&1; then
+        git -C "$JDK_SOURCE" apply "$PATCH_FILE"
+    elif ! git -C "$JDK_SOURCE" apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
+        fail "OpenJDK bionic patch neither applies nor is already present"
     fi
 
-    UNIX_FILE_ATTRIBUTES_PATCH="$ANDROID_SUPPORT/labsjdk-unix-file-attributes-abi.patch"
-    [[ -f "$UNIX_FILE_ATTRIBUTES_PATCH" ]] ||
-        fail "Pinned UnixFileAttributes ABI patch is missing: $UNIX_FILE_ATTRIBUTES_PATCH"
-    UNIX_FILE_ATTRIBUTES_PATCH_SHA256="$(sha256sum "$UNIX_FILE_ATTRIBUTES_PATCH" | awk '{print $1}')"
-    [[ "$UNIX_FILE_ATTRIBUTES_PATCH_SHA256" == "$LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256" ]] ||
-        fail "UnixFileAttributes ABI patch digest mismatch: expected $LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256, found $UNIX_FILE_ATTRIBUTES_PATCH_SHA256"
-    if git -C "$LABSJDK_SOURCE" apply --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
-        git -C "$LABSJDK_SOURCE" apply "$UNIX_FILE_ATTRIBUTES_PATCH"
-    elif ! git -C "$LABSJDK_SOURCE" apply --reverse --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
+    if git -C "$JDK_SOURCE" apply --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
+        git -C "$JDK_SOURCE" apply "$UNIX_FILE_ATTRIBUTES_PATCH"
+    elif ! git -C "$JDK_SOURCE" apply --reverse --check "$UNIX_FILE_ATTRIBUTES_PATCH" >/dev/null 2>&1; then
         fail "LabsJDK UnixFileAttributes ABI patch neither applies nor is already present"
+    fi
+
+    if git -C "$JDK_SOURCE" apply --check "$SHUTDOWN_WRITE_PATCH" >/dev/null 2>&1; then
+        git -C "$JDK_SOURCE" apply "$SHUTDOWN_WRITE_PATCH"
+    elif ! git -C "$JDK_SOURCE" apply --reverse --check "$SHUTDOWN_WRITE_PATCH" >/dev/null 2>&1; then
+        fail "LabsJDK Net shutdown-write ABI patch neither applies nor is already present"
     fi
 
     FAKE_DEPS="$WORK_DIR/fake-deps"
@@ -245,47 +272,66 @@ else
 
     CONF=android-jni28
     X11_LIB_DIR="${X11_LIB_DIR:-/usr/lib/x86_64-linux-gnu}"
-    if [[ ! -f "$LABSJDK_SOURCE/build/$CONF/spec.gmk" ]]; then
+    if [[ ! -f "$JDK_SOURCE/build/$CONF/spec.gmk" ]]; then
         (
-            cd "$LABSJDK_SOURCE"
+            cd "$JDK_SOURCE"
             CC="$CLANG"             CXX="$CLANGXX"             AR="$LLVM_AR"             NM="$LLVM_NM"             STRIP="$LLVM_STRIP"             OBJCOPY="$LLVM_OBJCOPY"             OBJDUMP="$LLVM_OBJDUMP"             READELF="$LLVM_READELF"             bash configure                 --openjdk-target=aarch64-linux-android                 --with-toolchain-type=clang                 --with-conf-name="$CONF"                 --with-boot-jdk="$GRAALVM_HOME"                 --with-debug-level=release                 --with-native-debug-symbols=none                 --disable-warnings-as-errors                 --with-jvm-variants=server                 --enable-headless-only                 --with-alsa=/nonexistent/unused                 --with-cups="$FAKE_DEPS"                 --with-fontconfig="$FAKE_DEPS"                 --with-freetype=bundled                 --x-includes="$FAKE_DEPS/include"                 --x-libraries="$X11_LIB_DIR"                 BUILD_CC="${BUILD_CC:-/usr/bin/clang}"                 BUILD_CXX="${BUILD_CXX:-/usr/bin/clang++}"
         )
     fi
 
     BOOT_JDK_LIBRARY_PATH="${BOOT_JDK_LIBRARY_PATH:-${LIBRARY_PATH:-}}"
-    env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$LABSJDK_SOURCE" CONF="$CONF" JOBS="$JOBS" java.base-copy-only
+    env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$JDK_SOURCE" CONF="$CONF" JOBS="$JOBS" java.base-copy-only
     # Static JNI objects include javac-generated headers. Keep dependencies enabled so
     # the host-side langtools/depend generators are built, without requesting a JDK image.
-    env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$LABSJDK_SOURCE" CONF="$CONF" JOBS="$JOBS" java.base-java
+    env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$JDK_SOURCE" CONF="$CONF" JOBS="$JOBS" java.base-java java.prefs-java jdk.net-java
 
-    JDK_BUILD_LOG="$WORK_DIR/labsjdk-static.log"
-    set +e
-    env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH"         make -C "$LABSJDK_SOURCE" CONF="$CONF" JOBS="$JOBS"         STATIC_BUILD=true STATIC_LIBS=true java.base-libs-only         >"$JDK_BUILD_LOG" 2>&1
-    JDK_BUILD_STATUS=$?
-    set -e
-    # The OpenJDK make target can finish all requested static objects and then fail while
-    # aggregating shared-library .symbols files that static Native Image linking never uses.
-    # Accept only those known post-build failures here. Exact object counts, deterministic
-    # archives, and JNI_OnLoad symbols are validated below before anything is linked.
-    if [[ $JDK_BUILD_STATUS -ne 0 ]] && \
-       ! grep -Eq 'libsyslookup|invalid option.*m|no symbols|modules_libs/java\.base/(server/)?lib(jli|java|net|nio|verify|zip|jimage|jvm)\.symbols: No such file or directory' "$JDK_BUILD_LOG"; then
-        tail -n 120 "$JDK_BUILD_LOG" >&2
-        fail "LabsJDK native-library compilation failed"
-    fi
-    if [[ $JDK_BUILD_STATUS -ne 0 ]]; then
-        echo "LabsJDK static objects completed; ignoring the known unused shared-symbol aggregation failure"
-    fi
+    # OpenJDK's module target stops after java.base when its unused static-archive
+    # symbol aggregation trips over the host nm implementation. Invoke each module
+    # separately so a known post-object failure in java.base cannot prevent the
+    # java.prefs and jdk.net JNI objects from being compiled.
+    for jdk_module_target in java.base-libs-only java.prefs-libs-only jdk.net-libs-only; do
+        JDK_BUILD_LOG="$WORK_DIR/openjdk-static-${jdk_module_target}.log"
+        set +e
+        env LIBRARY_PATH="$BOOT_JDK_LIBRARY_PATH" \
+            make -C "$JDK_SOURCE" CONF="$CONF" JOBS="$JOBS" \
+            STATIC_BUILD=true STATIC_LIBS=true \
+            "$jdk_module_target" >"$JDK_BUILD_LOG" 2>&1
+        JDK_BUILD_STATUS=$?
+        set -e
+        # The requested JNI objects are compiled before OpenJDK attempts to
+        # aggregate symbol files that static Native Image linking never consumes.
+        # Accept only known post-object failures; exact object counts and required
+        # JNI symbols are validated below before anything is linked.
+        if [[ $JDK_BUILD_STATUS -ne 0 ]] && \
+           ! grep -Eq 'libsyslookup|invalid option.*m|no symbols|modules_libs/(java\.base/(server/)?lib(jli|java|net|nio|verify|zip|jimage|jvm)|java\.prefs/libprefs|jdk\.net/libextnet)\.symbols: No such file or directory' "$JDK_BUILD_LOG"; then
+            tail -n 120 "$JDK_BUILD_LOG" >&2
+            fail "OpenJDK native-library compilation failed for $jdk_module_target"
+        fi
+        if [[ $JDK_BUILD_STATUS -ne 0 ]]; then
+            echo "OpenJDK $jdk_module_target objects completed; ignoring the known unused symbol-aggregation failure"
+        fi
+    done
 
-    JDK_OBJECT_ROOT="$LABSJDK_SOURCE/build/$CONF/support/native/java.base"
+    JDK_OBJECT_ROOT="$JDK_SOURCE/build/$CONF/support/native"
     declare -A EXPECTED_COUNTS=(
         [libjava]=67
         [libnet]=13
         [libnio]=23
         [libzip]=5
+        [libprefs]=1
+        [libextnet]=1
+    )
+    declare -A LIBRARY_MODULES=(
+        [libjava]=java.base
+        [libnet]=java.base
+        [libnio]=java.base
+        [libzip]=java.base
+        [libprefs]=java.prefs
+        [libextnet]=jdk.net
     )
     mkdir -p "$JDK_LIB_DIR"
-    for library in libjava libnet libnio libzip; do
-        object_dir="$JDK_OBJECT_ROOT/$library/static"
+    for library in libjava libnet libnio libzip libprefs libextnet; do
+        object_dir="$JDK_OBJECT_ROOT/${LIBRARY_MODULES[$library]}/$library/static"
         objects=("$object_dir"/*.o)
         [[ -e "${objects[0]}" ]] || fail "No static objects produced for $library"
         if [[ ${#objects[@]} -ne ${EXPECTED_COUNTS[$library]} ]]; then
@@ -295,16 +341,121 @@ else
     done
 fi
 
-for archive in libjava.a libnet.a libnio.a libzip.a; do
-    [[ -s "$JDK_LIB_DIR/$archive" ]] || fail "Missing LabsJDK archive: $JDK_LIB_DIR/$archive"
+assert_aarch64_archive() {
+    local archive="$1"
+    local archive_name
+    local inspect_dir
+    local member
+    local member_header
+    archive_name="$(basename "$archive")"
+    inspect_dir="$WORK_DIR/archive-inspect/${archive_name%.a}"
+    rm -rf "$inspect_dir"
+    mkdir -p "$inspect_dir"
+    (
+        cd "$inspect_dir"
+        "$LLVM_AR" x "$archive"
+    )
+    shopt -s nullglob
+    local members=("$inspect_dir"/*.o)
+    shopt -u nullglob
+    [[ ${#members[@]} -gt 0 ]] || fail "OpenJDK archive has no object members: $archive"
+    for member in "${members[@]}"; do
+        member_header="$member.elf-header"
+        "$LLVM_READELF" -h "$member" > "$member_header"
+        grep -q 'Machine:.*AArch64' "$member_header" ||
+            fail "OpenJDK archive member is not AArch64: $archive($(basename "$member"))"
+        rm -f "$member_header"
+    done
+    rm -rf "$inspect_dir"
+}
+
+for archive in libjava.a libnet.a libnio.a libzip.a libprefs.a libextnet.a; do
+    [[ -s "$JDK_LIB_DIR/$archive" ]] || fail "Missing OpenJDK archive: $JDK_LIB_DIR/$archive"
+    assert_aarch64_archive "$JDK_LIB_DIR/$archive"
 done
 assert_unix_file_attributes_abi "$JDK_LIB_DIR/libnio.a"
-for onload in java net nio zip; do
+for onload in java net nio zip prefs extnet; do
     ONLOAD_SYMBOLS="$WORK_DIR/JNI_OnLoad_$onload.symbols"
     "$LLVM_NM" --defined-only "$JDK_LIB_DIR/lib$onload.a" > "$ONLOAD_SYMBOLS"
     grep -q "JNI_OnLoad_$onload" "$ONLOAD_SYMBOLS" || \
         fail "Static JNI entry point missing: JNI_OnLoad_$onload"
 done
+
+require_static_symbol() {
+    local archive="$1"
+    local symbol="$2"
+    local symbols_file="$WORK_DIR/$(basename "$archive").required.symbols"
+    "$LLVM_NM" --defined-only "$archive" > "$symbols_file"
+    grep -q "[[:space:]]$symbol$" "$symbols_file" ||
+        fail "Static JNI entry point missing from $(basename "$archive"): $symbol"
+}
+require_static_symbol "$JDK_LIB_DIR/libnio.a" Java_sun_nio_ch_Net_shouldShutdownWriteBeforeClose0
+require_static_symbol "$JDK_LIB_DIR/libnio.a" Java_sun_nio_fs_UnixNativeDispatcher_exists0
+require_static_symbol "$JDK_LIB_DIR/libprefs.a" Java_java_util_prefs_FileSystemPreferences_lockFile0
+require_static_symbol "$JDK_LIB_DIR/libextnet.a" Java_jdk_net_LinuxSocketOptions_setQuickAck0
+
+JDK_SUPPORT_RECEIPT="$JDK_LIB_DIR/jdk-support-receipt"
+NET_PATCH_SHA256="$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
+PRODUCER_SHA256="$(sha256sum "${BASH_SOURCE[0]}" | awk '{print $1}')"
+NDK_SOURCE_PROPERTIES_SHA256="$(sha256sum "$ANDROID_NDK/source.properties" | awk '{print $1}')"
+GRAALVM_VERSION_SHA256="$(printf '%s' "$NATIVE_IMAGE_VERSION" | sha256sum | awk '{print $1}')"
+if [[ -z "$REUSE_JDK_LIBS" ]]; then
+    JDK_SOURCE_PATCHED_SHA256="$(git -C "$JDK_SOURCE" diff --binary | sha256sum | awk '{print $1}')"
+    {
+        printf '%s\n' \
+            'format=1' \
+            'stage=android-jdk-support' \
+            "java_version=$EXPECTED_JDK_SOURCE_VERSION" \
+            "labsjdk_source_url=$LABSJDK_URL" \
+            "labsjdk_source_ref=$LABSJDK_REF" \
+            "labsjdk_source_commit=$LABSJDK_COMMIT" \
+            "labsjdk_source_patched_sha256=$JDK_SOURCE_PATCHED_SHA256" \
+            "net_patch_sha256=$NET_PATCH_SHA256" \
+            "unix_file_attributes_patch_sha256=$UNIX_FILE_ATTRIBUTES_PATCH_SHA256" \
+            "shutdown_write_patch_sha256=$SHUTDOWN_WRITE_PATCH_SHA256" \
+            "producer_sha256=$PRODUCER_SHA256" \
+            "android_ndk_revision=$NDK_REVISION" \
+            "android_ndk_source_properties_sha256=$NDK_SOURCE_PROPERTIES_SHA256" \
+            "graalvm_version_sha256=$GRAALVM_VERSION_SHA256"
+        for archive in libjava.a libnet.a libnio.a libzip.a libprefs.a libextnet.a; do
+            printf '%s_sha256=%s\n' "${archive%.a}" "$(sha256sum "$JDK_LIB_DIR/$archive" | awk '{print $1}')"
+        done
+    } > "$JDK_SUPPORT_RECEIPT"
+else
+    [[ -s "$JDK_SUPPORT_RECEIPT" ]] ||
+        fail "Reused JDK support closure has no receipt: $JDK_SUPPORT_RECEIPT"
+    for expected in \
+        "format=1" \
+        "stage=android-jdk-support" \
+        "java_version=$EXPECTED_JDK_SOURCE_VERSION" \
+        "labsjdk_source_url=$LABSJDK_URL" \
+        "labsjdk_source_ref=$LABSJDK_REF" \
+        "labsjdk_source_commit=$LABSJDK_COMMIT" \
+        "net_patch_sha256=$NET_PATCH_SHA256" \
+        "unix_file_attributes_patch_sha256=$UNIX_FILE_ATTRIBUTES_PATCH_SHA256" \
+        "shutdown_write_patch_sha256=$SHUTDOWN_WRITE_PATCH_SHA256" \
+        "android_ndk_revision=$NDK_REVISION" \
+        "android_ndk_source_properties_sha256=$NDK_SOURCE_PROPERTIES_SHA256" \
+        "graalvm_version_sha256=$GRAALVM_VERSION_SHA256"; do
+        [[ "$(grep -Fxc "$expected" "$JDK_SUPPORT_RECEIPT")" -eq 1 ]] ||
+            fail "Reused JDK support receipt is missing or duplicates: $expected"
+    done
+    # This script also owns Native Image/relink behavior. Its whole-file hash is
+    # provenance only: unrelated edits must not invalidate the independently
+    # pinned and byte-verified JDK support archive closure.
+    [[ "$(grep -Ec '^producer_sha256=[0-9a-f]{64}$' "$JDK_SUPPORT_RECEIPT")" -eq 1 ]] ||
+        fail "Reused JDK support receipt has invalid producer provenance"
+    for archive in libjava.a libnet.a libnio.a libzip.a libprefs.a libextnet.a; do
+        expected="${archive%.a}_sha256=$(sha256sum "$JDK_LIB_DIR/$archive" | awk '{print $1}')"
+        [[ "$(grep -Fxc "$expected" "$JDK_SUPPORT_RECEIPT")" -eq 1 ]] ||
+            fail "Reused JDK support receipt does not bind $archive"
+    done
+fi
+
+if [[ "$SUPPORT_LIBRARIES_ONLY" == true ]]; then
+    echo "Verified Android JDK support closure: $JDK_LIB_DIR"
+    exit 0
+fi
 
 GRAPH_OBJECT="$REUSE_OBJECT"
 GENERATED_DIR="$WORK_DIR/generated"
@@ -334,10 +485,30 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
         cp -L "$GRAALVM_HOME/bin/native-image" "$STAGED_GRAAL/bin/native-image"
         chmod +x "$STAGED_GRAAL/bin/native-image"
     fi
-    STAGED_CLIB="$STAGED_GRAAL/lib/svm/clibraries/linux-aarch64/bionic"
-    mkdir -p "$STAGED_CLIB"
-    ln -sfn "$SVM_LIB_DIR/libjvm.a" "$STAGED_CLIB/libjvm.a"
-    ln -sfn "$SVM_LIB_DIR/liblibchelper.a" "$STAGED_CLIB/liblibchelper.a"
+
+    # Native Image defers target-library enumeration until after whole-program
+    # analysis. A symlink-farm clibraries tree can therefore leave that late
+    # phase observing a missing/broken linux-aarch64/bionic path even though
+    # initialization succeeded. Materialize the small target-library closure
+    # and the two verified Android archives inside this invocation's private
+    # GraalVM tree. This is deterministic, independent of the source support
+    # directory's lifetime, and never mutates the installed GraalVM.
+    STAGED_CLIB_ROOT="$STAGED_GRAAL/lib/svm/clibraries"
+    rm -rf -- "$STAGED_CLIB_ROOT"
+    mkdir -p -- "$(dirname -- "$STAGED_CLIB_ROOT")"
+    cp -a -- "$GRAALVM_HOME/lib/svm/clibraries" "$STAGED_CLIB_ROOT"
+    STAGED_CLIB="$STAGED_CLIB_ROOT/linux-aarch64/bionic"
+    mkdir -p -- "$STAGED_CLIB"
+    for archive in libjvm.a liblibchelper.a; do
+        cp --reflink=auto -- "$SVM_LIB_DIR/$archive" "$STAGED_CLIB/$archive"
+        [[ "$(stat -c '%d:%i' "$SVM_LIB_DIR/$archive")" != "$(stat -c '%d:%i' "$STAGED_CLIB/$archive")" ]] ||
+            fail "staged SVM archive was hard-linked: $archive"
+        [[ "$(sha256sum "$SVM_LIB_DIR/$archive" | awk '{print $1}')" == "$(sha256sum "$STAGED_CLIB/$archive" | awk '{print $1}')" ]] ||
+            fail "staged SVM archive changed while copying: $archive"
+    done
+    chmod -R a-w -- "$STAGED_CLIB_ROOT"
+    [[ -d "$STAGED_CLIB" && ! -L "$STAGED_CLIB" ]] ||
+        fail "Android Native Image target library directory is not materialized: $STAGED_CLIB"
 
     COMPILER_WRAPPER="$WORK_DIR/ndk-compiler/gcc"
     mkdir -p "$(dirname "$COMPILER_WRAPPER")"
@@ -369,7 +540,10 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
     rm -rf "$IMAGE_TMP" "$GENERATED_DIR"
     mkdir -p "$IMAGE_TMP" "$GENERATED_DIR"
 
-    ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"     QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"     "$STAGED_GRAAL/bin/native-image"         -H:+UnlockExperimentalVMOptions         --shared --no-fallback         -H:Name="$GENERATED_DIR/libkompile_reasoning_android"         -H:CCompilerPath="$COMPILER_WRAPPER"         -H:CLibraryPath="$SVM_LIB_DIR"         -H:+AddAllCharsets         -H:+ReportExceptionStackTraces         -H:+RemoveSaturatedTypeFlows         -H:+ExitAfterRelocatableImageWrite         -H:TempDirectory="$IMAGE_TMP"         -H:IncludeResources=META-INF/services/.*         -H:IncludeResources=META-INF/native-image/.*         --initialize-at-build-time=org.slf4j         --allow-incomplete-classpath         -H:-SpawnIsolates         -Dsvm.targetArch=aarch64         -H:TargetPlatform=linux-aarch64         -H:+ForceNoROSectionRelocations         --libc=bionic         -H:+UseCAPCache         -H:CAPCacheDir="$IMAGE_CAP_CACHE"         -H:CompilerBackend=lir         -cp "$GRAPH_CLASSPATH"
+    classpath_completeness_args=(--allow-incomplete-classpath)
+    [[ "$STRICT_CLASSPATH" == false ]] || classpath_completeness_args=()
+
+    ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"     QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"     "$STAGED_GRAAL/bin/native-image"         -H:+UnlockExperimentalVMOptions         --shared --no-fallback         -H:Name="$GENERATED_DIR/libkompile_reasoning_android"         -H:CCompilerPath="$COMPILER_WRAPPER"         -H:CLibraryPath="$SVM_LIB_DIR"         -H:+AddAllCharsets         -H:+ReportExceptionStackTraces         -H:+RemoveSaturatedTypeFlows         -H:+ExitAfterRelocatableImageWrite         -H:TempDirectory="$IMAGE_TMP"         -H:IncludeResources=META-INF/services/.*         -H:IncludeResources=META-INF/native-image/.*         --initialize-at-build-time=org.slf4j         "${classpath_completeness_args[@]}"         -H:-SpawnIsolates         -Dsvm.targetArch=aarch64         -H:TargetPlatform=linux-aarch64         -H:+ForceNoROSectionRelocations         --libc=bionic         -H:+UseCAPCache         -H:CAPCacheDir="$IMAGE_CAP_CACHE"         -H:CompilerBackend=lir         -cp "$GRAPH_CLASSPATH"
 
     shopt -s nullglob
     GRAPH_OBJECTS=("$IMAGE_TMP"/SVM-*/libkompile_reasoning_android.o)
@@ -379,11 +553,25 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
 fi
 
 [[ -s "$GRAPH_OBJECT" ]] || fail "Graal graph object not found: $GRAPH_OBJECT"
-"$LLVM_READELF" -h "$GRAPH_OBJECT" | grep -q 'Machine:.*AArch64' ||     fail "Graal graph object is not AArch64: $GRAPH_OBJECT"
+GRAPH_OBJECT_HEADER="$WORK_DIR/graph-object.elf-header"
+"$LLVM_READELF" -h "$GRAPH_OBJECT" >"$GRAPH_OBJECT_HEADER"
+grep -q 'Machine:.*AArch64' "$GRAPH_OBJECT_HEADER" ||
+    fail "Graal graph object is not AArch64: $GRAPH_OBJECT"
+
+if [[ -n "$OBJECT_OUTPUT" ]]; then
+    mkdir -p "$(dirname "$OBJECT_OUTPUT")"
+    OBJECT_OUTPUT_TMP="$OBJECT_OUTPUT.tmp.$$"
+    cp "$GRAPH_OBJECT" "$OBJECT_OUTPUT_TMP"
+    [[ "$(sha256sum "$OBJECT_OUTPUT_TMP" | awk '{print $1}')" == "$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')" ]] ||
+        fail "Relocatable object changed during publication: $OBJECT_OUTPUT"
+    mv -f "$OBJECT_OUTPUT_TMP" "$OBJECT_OUTPUT"
+    echo "Verified Android AArch64 relocatable object: $OBJECT_OUTPUT"
+    exit 0
+fi
 
 UNSTRIPPED="$WORK_DIR/libkompile_reasoning_android.unstripped.so"
 FINAL_LIBRARY="$OUTPUT_DIR/jni/arm64-v8a/libkompile_reasoning_android.so"
-"$CLANG" -shared     -o "$UNSTRIPPED"     "$GRAPH_OBJECT"     -Wl,--start-group         "$SVM_LIB_DIR/libjvm.a"         "$SVM_LIB_DIR/liblibchelper.a"         "$JDK_LIB_DIR/libjava.a"         "$JDK_LIB_DIR/libnet.a"         "$JDK_LIB_DIR/libnio.a"         "$JDK_LIB_DIR/libzip.a"     -Wl,--end-group     -ldl -lz -lm -llog     -Wl,--no-undefined     -Wl,--gc-sections     -Wl,--build-id=sha1     -Wl,-z,relro,-z,now     -Wl,-z,max-page-size=16384     -Wl,-z,common-page-size=16384     -Wl,-soname,libkompile_reasoning_android.so     -Wl,--version-script="$ANDROID_SUPPORT/kgr_android_exports.map"
+"$CLANG" -shared     -o "$UNSTRIPPED"     "$GRAPH_OBJECT"     -Wl,--start-group         "$SVM_LIB_DIR/libjvm.a"         "$SVM_LIB_DIR/liblibchelper.a"         "$JDK_LIB_DIR/libjava.a"         "$JDK_LIB_DIR/libnet.a"         "$JDK_LIB_DIR/libnio.a"         "$JDK_LIB_DIR/libzip.a"         "$JDK_LIB_DIR/libprefs.a"         "$JDK_LIB_DIR/libextnet.a"     -Wl,--end-group     -ldl -lz -lm -llog     -Wl,--no-undefined     -Wl,--gc-sections     -Wl,--build-id=sha1     -Wl,-z,relro,-z,now     -Wl,-z,max-page-size=16384     -Wl,-z,common-page-size=16384     -Wl,-soname,libkompile_reasoning_android.so     -Wl,--version-script="$ANDROID_SUPPORT/kgr_android_exports.map"
 
 cp "$UNSTRIPPED" "$FINAL_LIBRARY"
 "$LLVM_STRIP" --strip-unneeded "$FINAL_LIBRARY"
@@ -406,9 +594,12 @@ graalvm.java=$EXPECTED_GRAAL_JAVA
 native.image=$EXPECTED_NATIVE_IMAGE
 graal.source.commit=$GRAAL_COMMIT
 labsjdk.source.commit=$LABSJDK_COMMIT
+labsjdk.source.version=$EXPECTED_JDK_SOURCE_VERSION
 labsjdk.unixFileAttributes.required=$EXPECTED_UNIX_FILE_ATTRIBUTES_FIELD
 labsjdk.unixFileAttributes.forbidden=$FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD
 labsjdk.unixFileAttributes.patch.sha256=$LABSJDK_UNIX_FILE_ATTRIBUTES_PATCH_SHA256
+labsjdk.shutdownWrite.patch.sha256=$LABSJDK_SHUTDOWN_WRITE_PATCH_SHA256
+jdk.support.receipt.sha256=$(sha256sum "$JDK_SUPPORT_RECEIPT" | awk '{print $1}')
 graph.object.sha256=$(sha256sum "$GRAPH_OBJECT" | awk '{print $1}')
 library.sha256=$(sha256sum "$FINAL_LIBRARY" | awk '{print $1}')
 openblas=false

@@ -17,6 +17,7 @@
 package ai.kompile.loader.audio;
 
 import ai.kompile.core.graphrag.DocumentGraphExtractor;
+import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionMetadata;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
@@ -250,22 +251,21 @@ public class AudioGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> allEntities = new LinkedHashMap<>();
-        List<ExtractedRelation> allRelations = new ArrayList<>();
+        Map<String, ExtractedRelation> allRelations = new LinkedHashMap<>();
 
         for (Document doc : docs) {
             if (canExtract(doc)) {
-                ExtractionResult result = extract(doc);
-                for (ExtractedEntity e : result.entities()) {
-                    allEntities.putIfAbsent(e.id(), e);
-                }
-                allRelations.addAll(result.relations());
+                ExtractorUtils.mergeResult(allEntities, allRelations, extract(doc));
             }
         }
 
         ExtractionMetadata extractionMeta = ExtractionMetadata.forChunk(
                 null, null, GraphConstants.SOURCE_AUDIO_EXTRACTOR);
 
-        return ExtractionResult.of(new ArrayList<>(allEntities.values()), allRelations, extractionMeta);
+        return ExtractionResult.of(
+                new ArrayList<>(allEntities.values()),
+                new ArrayList<>(allRelations.values()),
+                extractionMeta);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
@@ -275,7 +275,7 @@ public class AudioGraphExtractor implements DocumentGraphExtractor {
     }
 
     private static void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {
-        index.putIfAbsent(entity.id(), entity);
+        ExtractorUtils.addEntity(index, entity);
     }
 
     private static String str(Object val) {

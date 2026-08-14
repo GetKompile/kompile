@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -74,7 +75,10 @@ public class AskGraphAssertTool implements CliTool {
                         "0.0 to explicitly retract/refute. Values in (0,1) are probabilistic.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Target fact sheet (required for assert).");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Project-local knowledge-base id returned in crawlResult; selects that crawl's graph.");
         props.putObject("sessionId")
                 .put("type", "string")
                 .put("description", "Agent session — stored as provenance.");
@@ -114,7 +118,7 @@ public class AskGraphAssertTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_assert requires a running kompile-app.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

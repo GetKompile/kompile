@@ -755,7 +755,7 @@
                                 <configuration>
                                     <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
                                     <includeTypes>jar</includeTypes>
-                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll</includes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
                                 </configuration>
                             </execution>
                         </executions>
@@ -861,7 +861,6 @@
                                      silently returns empty (NoAvailableBackendException). -->
                                 <buildArg>--initialize-at-run-time=org.nd4j.common.config.ND4JClassLoading</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Exclude ByteBuddy bytecode provider from ServiceLoader - Hibernate falls back to property-based selection -->
                                 <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
                                 <!-- Agent-generated configs for main app and all subprocess types.
@@ -873,8 +872,11 @@
                                 <buildArg>-H:IncludeResources=static/.*</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <!-- Exclude BytecodeProvider service file so runtime ServiceLoader won't find ByteBuddy provider -->
                                 <buildArg>-H:ExcludeResources=META-INF/services/org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
@@ -931,6 +933,43 @@
             </build>
         </profile>
 
+        <!--
+            Shared staging contract for opt-in per-subprocess images. Activating a
+            worker profile must not activate the main server image merely to unpack
+            its JavaCPP/ND4J payload. The canonical build scripts set
+            -Dkompile.native.side-load=true for every app-main worker.
+        -->
+        <profile>
+            <id>native-side-load</id>
+            <activation>
+                <property>
+                    <name>kompile.native.side-load</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-libs</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Subprocess native image profiles.
              NOT activated by kompile.dist because the unified `native` profile already produces
              a single binary (`kompile-app`) that handles all subprocess types via the
@@ -957,6 +996,11 @@
                             <imageName>kompile-ingest</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1010,12 +1054,14 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for ingest subprocess -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
                                 <buildArg>-H:IncludeResources=opennlp/.*</buildArg>
@@ -1065,6 +1111,11 @@
                             <imageName>kompile-vector</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1118,12 +1169,14 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for vector subprocess -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/vector,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
@@ -1172,6 +1225,11 @@
                             <imageName>kompile-embedding</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1224,11 +1282,13 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for embedding subprocess -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/embedding</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                                 <!-- Exclude native binaries from image - side-loaded at runtime -->
@@ -1276,6 +1336,11 @@
                             <imageName>kompile-model-init</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1328,11 +1393,13 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Agent-generated configs for model-init subprocess -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                                 <!-- Exclude native binaries from image - side-loaded at runtime -->
@@ -1380,6 +1447,11 @@
                             <imageName>kompile-vlm-test</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1433,12 +1505,14 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Use ingest configs as baseline (VLM test has similar deps) -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
                                 <buildArg>-H:IncludeResources=opennlp/.*</buildArg>
@@ -1488,6 +1562,11 @@
                             <imageName>kompile-training</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
+                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
+                                     ai.onnxruntime inside the compiler, violating the shared
+                                     initialize-at-run-time contract. Keep this CLI-only flag in the
+                                     Maven profile so GraalVM CE consumers remain compatible. -->
+                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1540,11 +1619,13 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Use model-init configs as baseline (training has similar deps) -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                                 <!-- Exclude native binaries from image - side-loaded at runtime -->
@@ -1672,6 +1753,33 @@
                     <groupId>org.eclipse.deeplearning4j</groupId>
                     <artifactId>nd4j-native</artifactId>
                     <version>${nd4j.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <!-- JavaCPP publishes the CUDA JNI bridge and CUDA redistributables
+                     as separate artifacts. Native images side-load both from dist/lib,
+                     so the distribution must stage the matching platform redist lane. -->
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cublas</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusolver</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
+                    <classifier>${javacpp.platform}</classifier>
+                </dependency>
+                <dependency>
+                    <groupId>org.bytedeco</groupId>
+                    <artifactId>cuda-redist-cusparse</artifactId>
+                    <version>${kompile.cuda.redist.version}</version>
                     <classifier>${javacpp.platform}</classifier>
                 </dependency>
             </dependencies>

@@ -315,13 +315,15 @@
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
                                 <!-- Exclude ByteBuddy bytecode provider from ServiceLoader -->
                                 <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- Lite-specific native-image configs -->
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/lite</buildArg>
                                 <!-- Resource inclusion -->
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=model-sources\.yml</buildArg>
                                 <!-- Exclude native binaries from image to prevent analysis bloat -->

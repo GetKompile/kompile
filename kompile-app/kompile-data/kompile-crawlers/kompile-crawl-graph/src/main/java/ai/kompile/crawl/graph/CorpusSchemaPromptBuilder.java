@@ -26,96 +26,51 @@ final class CorpusSchemaPromptBuilder {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    // Legacy callers may still use this passage-based builder. Keep its prompt bounded
-    // so schema inference never grows with the number or size of corpus documents.
-    private static final int MAX_PASSAGES = 12;
-    private static final int MAX_PASSAGE_CHARS = 512;
+    // Bound one semantic call. CorpusSchemaUnifier sends every ordered passage across batches.
+    private static final int MAX_PASSAGES = 8;
+    private static final int MAX_PASSAGE_CHARS = 1_024;
 
     private CorpusSchemaPromptBuilder() {
     }
 
-    static String build(Map<String, String> passageTexts, GraphSchema configuredSchema) {
+    static String build(Map<String, String> passageTexts, GraphSchema establishedSchema) {
+        return build(passageTexts, establishedSchema, true);
+    }
+
+    static String build(
+            Map<String, String> passageTexts,
+            GraphSchema establishedSchema,
+            boolean structuredToolAvailable) {
         validatePassageInputs(passageTexts);
 
         StringBuilder prompt = new StringBuilder();
-        prompt.append("You are inferring a reusable graph schema overlay for this corpus.\n\n");
-        prompt.append("Return exactly one JSON object.\n");
-        prompt.append("Return JSON only.\n");
-        prompt.append("Do not use markdown fences.\n\n");
-
-        prompt.append("Output requirements:\n");
-        prompt.append("1) Generate reusable type definitions, not source instances.\n");
-        prompt.append("2) Person names, organizations, filenames, sheet names, dates, monetary values, and particular process runs must not become schema type names.\n");
-        prompt.append("3) Node and relationship names must match [A-Z][A-Z0-9_]*.\n");
-        prompt.append("4) Every node and relationship definition must include a concise description.\n");
-        prompt.append("5) Properties describe reusable scalar fields on a type.\n");
-        prompt.append("6) Independently queryable concepts should be nodes rather than properties.\n");
-        prompt.append("7) Use only these canonical property types: String, Integer, Decimal, Boolean, Date, Year, YearMonth, DateTime.\n");
-        prompt.append("8) Omit the properties field when no stable property contract is supported.\n");
-        prompt.append("9) An explicitly empty properties array means the type allows no properties.\n");
-        prompt.append("10) Every newly proposed relationship type must have at least one directed pattern.\n");
-        prompt.append("11) Patterns must be exactly (SOURCE_TYPE)-[:RELATION_TYPE]->(TARGET_TYPE).\n");
-        prompt.append("12) Relationship aliases are source-language phrases/synonyms and are not additional canonical relationship types.\n");
-        prompt.append("13) Schema definitions are vocabulary and constraints, not source evidence.\n");
-        prompt.append("14) The output is a schema overlay, not extracted graph entities or facts.\n\n");
-
-        prompt.append("When configured schema exists, treat it as authoritative and do not rename or delete existing canonical names.\n");
-        prompt.append("You may add missing definitions, fill a missing description, fill null property contracts, add relationship aliases, and add missing directed patterns.\n");
-        prompt.append("Return only the overlay additions, not a duplicate of the full configured schema.\n\n");
-
-        prompt.append("Authoritative schema JSON contract to follow:\n");
-        prompt.append("{\n");
-        prompt.append("  \"nodeTypes\": [\n");
-        prompt.append("    {\"label\": \"NODE_LABEL\", \"description\": \"...\", \"properties\": [{\"name\": \"property_name\", \"type\": \"String\"}] }\n");
-        prompt.append("  ],\n");
-        prompt.append("  \"relationshipTypes\": [\n");
-        prompt.append("    {\"type\": \"RELATION_TYPE\", \"description\": \"...\", \"aliases\": [\"from\", \"sent by\"] }\n");
-        prompt.append("  ],\n");
-        prompt.append("  \"patterns\": [\"(SOURCE_TYPE)-[:RELATION_TYPE]->(TARGET_TYPE)\"]\n");
-        prompt.append("}\n\n");
-
-        prompt.append("Example output:\n");
-        prompt.append("{\n");
-        prompt.append("  \"nodeTypes\": [\n");
-        prompt.append("    {\n");
-        prompt.append("      \"label\": \"EMAIL_MESSAGE\",\n");
-        prompt.append("      \"description\": \"An email message.\",\n");
-        prompt.append("      \"properties\": [\n");
-        prompt.append("        {\n");
-        prompt.append("          \"name\": \"subject\",\n");
-        prompt.append("          \"type\": \"String\"\n");
-        prompt.append("        }\n");
-        prompt.append("      ]\n");
-        prompt.append("    },\n");
-        prompt.append("    {\n");
-        prompt.append("      \"label\": \"PERSON\",\n");
-        prompt.append("      \"description\": \"A human actor.\"\n");
-        prompt.append("    }\n");
-        prompt.append("  ],\n");
-        prompt.append("  \"relationshipTypes\": [\n");
-        prompt.append("    {\n");
-        prompt.append("      \"type\": \"SENT_BY\",\n");
-        prompt.append("      \"description\": \"An email message was sent by a person.\",\n");
-        prompt.append("      \"aliases\": [\"sent by\", \"from\"]\n");
-        prompt.append("    }\n");
-        prompt.append("  ],\n");
-        prompt.append("  \"patterns\": [\"(EMAIL_MESSAGE)-[:SENT_BY]->(PERSON)\"]\n");
-        prompt.append("}\n\n");
+        prompt.append("Read the corpus passages and infer their reusable graph ontology.\n");
+        if (structuredToolAvailable) {
+            prompt.append("Call submit_corpus_schema exactly once. Add no prose.\n");
+        } else {
+            prompt.append("Return only one JSON object with nodeTypes, relationshipTypes, and patterns arrays.\n");
+        }
+        prompt.append("Add each distinct type exactly once. Never repeat an array item.\n");
+        prompt.append("A statement like 'X is a Y' makes Y a node-type candidate, never X.\n");
+        prompt.append("A statement like 'X verb Y' makes the verb a directed relationship-type candidate.\n");
+        prompt.append("Add a node type for each explicit reusable entity category, never for a particular name or value.\n");
+        prompt.append("Add a relationship type for each explicit directed relation category.\n");
+        prompt.append("For every relationship type, add one patterns object whose sourceType and targetType are declared node labels.\n");
+        prompt.append("Type names must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*.\n");
+        prompt.append("Use empty arrays only when the passages contain no reusable entity or relation categories.\n\n");
 
         prompt.append("AUTHORITATIVE EXISTING SCHEMA\n");
-        if (configuredSchema == null) {
-            prompt.append("None.\n\n");
+        if (!hasSchemaContent(establishedSchema)) {
+            prompt.append("None. Infer the initial ontology from the passages.\n\n");
         } else {
-            prompt.append(serializeConfiguredSchema(configuredSchema)).append("\n\n");
+            prompt.append("Only add missing types. Do not delete, rename, redefine, or repeat these types:\n");
+            prompt.append(serializeConfiguredSchema(establishedSchema)).append("\n\n");
         }
 
-        prompt.append("CANDIDATE SCHEMA OVERLAY\n");
-        prompt.append("Infer the schema overlay JSON now.\n\n");
-
-        prompt.append("CORPUS PASSAGES (bounded observations)\n");
-        int emittedPassages = 0;
+        prompt.append("CORPUS PASSAGES\n");
+        int emitted = 0;
         for (Map.Entry<String, String> passage : passageTexts.entrySet()) {
-            if (emittedPassages++ >= MAX_PASSAGES) {
+            if (emitted++ >= MAX_PASSAGES) {
                 break;
             }
             prompt.append("BEGIN CORPUS PASSAGE\n");
@@ -128,6 +83,14 @@ final class CorpusSchemaPromptBuilder {
         }
 
         return prompt.toString();
+    }
+
+    private static boolean hasSchemaContent(GraphSchema schema) {
+        return schema != null
+                && ((schema.getNodeTypes() != null && !schema.getNodeTypes().isEmpty())
+                || (schema.getRelationshipTypes() != null
+                        && !schema.getRelationshipTypes().isEmpty())
+                || (schema.getPatterns() != null && !schema.getPatterns().isEmpty()));
     }
 
     private static void validatePassageInputs(Map<String, String> passageTexts) {

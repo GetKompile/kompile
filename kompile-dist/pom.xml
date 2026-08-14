@@ -114,23 +114,9 @@
             <optional>true</optional>
         </dependency>
         <!--
-            Staging service. We pull the Spring Boot exec jar (classifier=exec)
-            so the maven-dependency-plugin can copy it to staging-deps/ for the
-            assembly. Declared with scope=provided so it does not propagate to
-            anything that consumes kompile-dist transitively.
-        -->
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-model-staging</artifactId>
-            <version>${project.version}</version>
-            <classifier>exec</classifier>
-            <scope>provided</scope>
-            <optional>true</optional>
-        </dependency>
-        <!--
             The end-user persona apps: chat (:8081) and the crawl manager (:8082).
-            Same shape and same reason as the staging service above — exec classifier so
-            the maven-dependency-plugin can stage the fat jars for the assembly.
+            Product persona JVM fallbacks use the exec classifier so the
+            maven-dependency-plugin can stage the fat jars for the assembly.
 
             These are not optional extras. kompile-app-main is the admin console now and
             no longer mounts the chat or crawl APIs at all, so a dist that ships only
@@ -224,38 +210,15 @@
             </plugin>
 
             <!--
-                Copy the separately-launched Spring Boot services' exec jars from the
-                local Maven repository into the directories the assembly descriptor
-                expects: kompile-model-staging into staging-deps/, and the two persona
-                apps (chat, crawl manager) into persona-deps/. Using classifier=exec
-                ensures we get the repackaged Spring Boot fat jar (with all
-                dependencies bundled), not the thin jar.
+                Copy the separately-launched JVM product services from the local Maven
+                repository. Local MCP model workers are native-only and are staged by
+                stage-portable-binaries.sh instead.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>3.6.1</version>
                 <executions>
-                    <execution>
-                        <id>copy-staging-exec-jar</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy</goal>
-                        </goals>
-                        <configuration>
-                            <artifactItems>
-                                <artifactItem>
-                                    <groupId>ai.kompile</groupId>
-                                    <artifactId>kompile-model-staging</artifactId>
-                                    <version>${project.version}</version>
-                                    <classifier>exec</classifier>
-                                    <type>jar</type>
-                                    <overWrite>true</overWrite>
-                                    <outputDirectory>${project.build.directory}/staging-deps</outputDirectory>
-                                </artifactItem>
-                            </artifactItems>
-                        </configuration>
-                    </execution>
                     <execution>
                         <id>copy-scripting-worker-exec-jar</id>
                         <phase>prepare-package</phase>

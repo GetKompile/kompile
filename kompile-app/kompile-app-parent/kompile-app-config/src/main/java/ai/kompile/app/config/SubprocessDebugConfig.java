@@ -128,8 +128,13 @@ public class SubprocessDebugConfig {
     /** Extra JVM args to add when debugging */
     private List<String> extraJvmArgs = new ArrayList<>();
 
-    /** Environment variables to set for debugging */
+    /** Environment variables to set for debugging. Native-loader overrides are rejected. */
     private Map<String, String> environmentVariables = new HashMap<>();
+
+    public void setEnvironmentVariables(Map<String, String> variables) {
+        this.environmentVariables = variables == null ? new HashMap<>() : new HashMap<>(variables);
+        this.environmentVariables.keySet().removeIf("LD_PRELOAD"::equalsIgnoreCase);
+    }
 
     /**
      * Build the command prefix for the current debug mode.
@@ -254,6 +259,7 @@ public class SubprocessDebugConfig {
      */
     public Map<String, String> buildEnvironmentVariables() {
         Map<String, String> env = new HashMap<>(environmentVariables);
+        env.keySet().removeIf("LD_PRELOAD"::equalsIgnoreCase);
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
         Path logDir = Paths.get(logDirectory).toAbsolutePath();
 
@@ -267,15 +273,11 @@ public class SubprocessDebugConfig {
                 env.put("ASAN_OPTIONS",
                     "detect_leaks=1:halt_on_error=0:print_stats=1:log_path=" +
                     logDir.resolve("asan_" + timestamp + ".log"));
-                // Note: LD_PRELOAD for libasan needs to be set carefully
-                // env.put("LD_PRELOAD", "/usr/lib64/libasan.so.8");
                 break;
 
             case EFENCE:
-                env.put("LD_PRELOAD", "/usr/lib64/libefence.so");
-                env.put("EF_PROTECT_BELOW", "0");
-                env.put("EF_PROTECT_FREE", "1");
-                env.put("EF_ALLOW_MALLOC_0", "1");
+                // Electric Fence must be linked or launched explicitly; subprocess
+                // environment injection is intentionally unsupported.
                 break;
 
             default:

@@ -1687,19 +1687,16 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> mergedEntities = new LinkedHashMap<>();
-        List<ExtractedRelation> mergedRelations = new ArrayList<>();
+        Map<String, ExtractedRelation> mergedRelations = new LinkedHashMap<>();
 
         for (Document doc : docs) {
-            ExtractionResult result = extract(doc);
-            for (ExtractedEntity entity : result.entities()) {
-                addEntity(mergedEntities, entity);
-            }
-            mergedRelations.addAll(result.relations());
+            ai.kompile.core.graphrag.ExtractorUtils.mergeResult(
+                    mergedEntities, mergedRelations, extract(doc));
         }
 
         return ExtractionResult.of(
                 new ArrayList<>(mergedEntities.values()),
-                mergedRelations,
+                new ArrayList<>(mergedRelations.values()),
                 new ExtractionMetadata(null, null, SOURCE_PDF_EXTRACTOR, null, null, null)
         );
     }
@@ -1794,34 +1791,6 @@ public class PdfGraphExtractor implements DocumentGraphExtractor {
     }
 
     private void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {
-        ExtractedEntity existing = index.get(entity.id());
-        if (existing == null) {
-            index.put(entity.id(), entity);
-        } else {
-            // Merge: union aliases, keep longer description, higher confidence, merge properties
-            Set<String> allAliases = new LinkedHashSet<>();
-            if (existing.aliases() != null) allAliases.addAll(existing.aliases());
-            if (entity.aliases() != null) allAliases.addAll(entity.aliases());
-
-            String desc = existing.description();
-            if (desc == null || (entity.description() != null && entity.description().length() > desc.length())) {
-                desc = entity.description();
-            }
-
-            Map<String, String> mergedProps = new LinkedHashMap<>();
-            if (existing.properties() != null) mergedProps.putAll(existing.properties());
-            if (entity.properties() != null) mergedProps.putAll(entity.properties());
-
-            double conf = Math.max(
-                    existing.confidence() != null ? existing.confidence() : 0.0,
-                    entity.confidence() != null ? entity.confidence() : 0.0
-            );
-
-            index.put(entity.id(), new ExtractedEntity(
-                    entity.id(), existing.name(), existing.type(),
-                    allAliases.isEmpty() ? null : new ArrayList<>(allAliases),
-                    desc, conf, mergedProps
-            ));
-        }
+        ai.kompile.core.graphrag.ExtractorUtils.addEntity(index, entity);
     }
 }

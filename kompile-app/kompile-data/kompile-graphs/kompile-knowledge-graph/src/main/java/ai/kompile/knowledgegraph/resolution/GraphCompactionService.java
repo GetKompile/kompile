@@ -284,6 +284,9 @@ public class GraphCompactionService {
     @Autowired(required = false)
     private GraphDecisionTraceSink graphDecisionTraceSink = GraphDecisionTraceSink.noop();
 
+    @Autowired(required = false)
+    private ReasoningEntityResolutionService reasoningEntityResolutionService;
+
     private int embeddingCacheSize = 128;
 
     private int embeddingNativeMemoryThresholdPercent = 80;
@@ -319,6 +322,8 @@ public class GraphCompactionService {
             ThreadLocal.withInitial(() -> false);
     private final ThreadLocal<Boolean> nativeEmbeddingsTouchedForRun =
             ThreadLocal.withInitial(() -> false);
+    private final ThreadLocal<ReasoningEntityResolutionService.Snapshot> reasoningResolutionSnapshot =
+            ThreadLocal.withInitial(ReasoningEntityResolutionService.Snapshot::empty);
 
     public GraphCompactionService(KnowledgeGraphService knowledgeGraphService) {
         this.knowledgeGraphService = knowledgeGraphService;
@@ -326,6 +331,24 @@ public class GraphCompactionService {
 
     void setGraphDecisionTraceSink(GraphDecisionTraceSink traceSink) {
         this.graphDecisionTraceSink = traceSink == null ? GraphDecisionTraceSink.noop() : traceSink;
+    }
+
+    void setReasoningEntityResolutionService(ReasoningEntityResolutionService service) {
+        this.reasoningEntityResolutionService = service;
+    }
+
+    private void prepareReasoningResolutionSnapshot(Long factSheetId) {
+        if (factSheetId == null || reasoningEntityResolutionService == null) {
+            reasoningResolutionSnapshot.set(ReasoningEntityResolutionService.Snapshot.empty());
+            return;
+        }
+        try {
+            reasoningResolutionSnapshot.set(reasoningEntityResolutionService.snapshot(factSheetId));
+        } catch (Exception ex) {
+            log.warn("Reasoning-assisted entity resolution unavailable for factSheet={}: {}",
+                    factSheetId, ex.getMessage());
+            reasoningResolutionSnapshot.set(ReasoningEntityResolutionService.Snapshot.empty());
+        }
     }
 
     private synchronized CompactionRuntimeConfig refreshRuntimeConfig() {
@@ -441,6 +464,7 @@ public class GraphCompactionService {
         long start = System.currentTimeMillis();
         embeddingMatchingDisabledForRun.set(false);
         nativeEmbeddingsTouchedForRun.set(false);
+        prepareReasoningResolutionSnapshot(factSheetId);
         try {
             // Fix 2 — chunked entity loading: for fact-sheet-scoped crawls load entity nodes
             // in bounded pages so the full list is never materialised all at once on top of the
@@ -692,6 +716,7 @@ public class GraphCompactionService {
             }
             embeddingMatchingDisabledForRun.remove();
             nativeEmbeddingsTouchedForRun.remove();
+            reasoningResolutionSnapshot.remove();
         }
     }
 
@@ -759,6 +784,7 @@ public class GraphCompactionService {
         if (blockingResult.totalEntityNodes() < 2) return List.of();
 
         Map<String, List<GraphNode>> blocks = blockingResult.blocks();
+        prepareReasoningResolutionSnapshot(factSheetId);
         try {
             List<MatchCandidate> allCandidates = new ArrayList<>();
             Set<String> candidatePairKeys = new HashSet<>();
@@ -780,6 +806,7 @@ public class GraphCompactionService {
         } finally {
             clearEmbeddingCache();
             trimNativeMemoryPools("graph compaction preview");
+            reasoningResolutionSnapshot.remove();
         }
     }
 
@@ -1706,6 +1733,24 @@ public class GraphCompactionService {
                 score = Math.max(score, crossLangScore);
                 reasons.add("CROSS_LANGUAGE_MATCH");
             }
+        }
+
+        // Signal 9: corpus-wide learned reasoning. The final crawl pass supplies
+        // FOL/PSL, MEBN, KGE, and registered graph signals; administrative callers consume
+        // whichever of those signals are currently available. Context alone cannot create
+        // identity, and explicit conflicts veto merges.
+        ReasoningEntityResolutionService.Evidence reasoningEvidence =
+                reasoningResolutionSnapshot.get().evaluate(a, b);
+        if (reasoningEvidence.vetoMerge()) {
+            purityRejected = true;
+            reasons.addAll(reasoningEvidence.reasons());
+            reasons.add("REASONING_IDENTITY_CONFLICT");
+        } else {
+            double reasonedScore = reasoningEvidence.mergeScore(score);
+            if (reasonedScore > score) {
+                score = reasonedScore;
+            }
+            reasons.addAll(reasoningEvidence.reasons());
         }
 
         if (!purityRejected && score >= threshold) {

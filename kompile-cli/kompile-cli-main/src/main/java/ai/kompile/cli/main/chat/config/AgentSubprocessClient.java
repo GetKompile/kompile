@@ -77,6 +77,9 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
     // Extra environment variables to set on the agent subprocess (e.g. GEMINI_SYSTEM_MD)
     private volatile Map<String, String> extraEnv = Map.of();
 
+    // Internal model-orchestration calls collect output without rendering it into the active chat.
+    private volatile boolean quiet;
+
     public AgentSubprocessClient(String agentName, String workingDir, ObjectMapper objectMapper) {
         super(new ChatConfig(agentName, null, agentName, null), objectMapper);
         this.agentName = agentName;
@@ -145,6 +148,11 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
         this.extraEnv = extraEnv != null ? extraEnv : Map.of();
     }
 
+    /** Suppress token/tool/status rendering while still parsing and returning the full response. */
+    public void setQuiet(boolean quiet) {
+        this.quiet = quiet;
+    }
+
     /**
      * Start with a specific command — for tests that provide a mock agent.
      */
@@ -188,9 +196,11 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                     monitor.resetTurn(userMessage);
                 }
 
-                System.out.println("\n  \033[33m[enforcer] violation detected — auto-reprompting "
-                        + "(attempt " + (attempt + 1) + "/" + maxAttempts + ")\033[0m");
-                System.out.flush();
+                if (!quiet) {
+                    System.out.println("\n  \033[33m[enforcer] violation detected — auto-reprompting "
+                            + "(attempt " + (attempt + 1) + "/" + maxAttempts + ")\033[0m");
+                    System.out.flush();
+                }
 
                 // Build correction message and retry
                 String correction = monitor != null
@@ -295,10 +305,12 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                             turnCacheRead += tu.cacheReadTokens();
                             turnCacheCreate += tu.cacheCreationTokens();
                             // Display inline token stats
-                            System.out.println("\n" + formatTokenStats(
-                                    tu.inputTokens(), tu.outputTokens(),
-                                    tu.cacheReadTokens(), tu.cacheCreationTokens()));
-                            System.out.flush();
+                            if (!quiet) {
+                                System.out.println("\n" + formatTokenStats(
+                                        tu.inputTokens(), tu.outputTokens(),
+                                        tu.cacheReadTokens(), tu.cacheCreationTokens()));
+                                System.out.flush();
+                            }
                         } else if (event instanceof ToolUse toolUse) {
                             // Check monitor for tool calls
                             if (monitor != null) {
@@ -314,17 +326,21 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                                     return result;
                                 }
                             }
-                            System.out.println("\n  [tool: " + toolUse.name() + "]");
-                            System.out.flush();
+                            if (!quiet) {
+                                System.out.println("\n  [tool: " + toolUse.name() + "]");
+                                System.out.flush();
+                            }
                         } else if (event instanceof ToolOutput toolOutput) {
-                            printToolOutput(toolOutput.output());
+                            if (!quiet) printToolOutput(toolOutput.output());
                         } else if (event instanceof ToolComplete toolComplete) {
-                            printToolOutput(toolComplete.output());
+                            if (!quiet) printToolOutput(toolComplete.output());
                             String status = toolComplete.exitCode() >= 0
                                     ? "exit " + toolComplete.exitCode()
                                     : "completed";
-                            System.out.println("\n  [tool: " + toolComplete.name() + " " + status + "]");
-                            System.out.flush();
+                            if (!quiet) {
+                                System.out.println("\n  [tool: " + toolComplete.name() + " " + status + "]");
+                                System.out.flush();
+                            }
                         } else if (event instanceof TurnComplete tc) {
                             // Use result-level tokens if available, otherwise use accumulated
                             if (tc.inputTokens() > 0 || tc.outputTokens() > 0) {
@@ -350,7 +366,7 @@ public class AgentSubprocessClient extends DirectLlmClient implements AutoClosea
                                     stats.append(" · ").append(FormatUtils.formatNumber(turnCacheRead)).append(" cached");
                                 }
                             }
-                            if (stats.length() > 0) {
+                            if (!quiet && stats.length() > 0) {
                                 System.out.println("\n  \033[2m[" + stats + "]\033[0m");
                                 System.out.flush();
                             }

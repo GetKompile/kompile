@@ -15,8 +15,12 @@
  */
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.cli.main.chat.format.ConversationExporter;
 import ai.kompile.cli.main.chat.format.ConversationReader;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -188,11 +192,33 @@ class ResumeToolCommandTest {
     }
 
     @Test
+    void resumeWizardAlwaysIncludesExplicitKompileChatTab() {
+        List<ResumeTool.ConversationSummary> providerConversations = List.of(
+                conversation("claude-session", "Claude", "claude", "claude-code", 1L),
+                conversation("codex-session", "Codex", "codex", "codex", 2L),
+                conversation("gemini-session", "Gemini", "gemini", "gemini", 3L),
+                conversation("opencode-session", "OpenCode", "opencode", "opencode", 4L),
+                conversation("pi-session", "Pi", "pi", "pi", 5L),
+                conversation("qwen-session", "Qwen", "qwen", "qwen", 6L),
+                conversation("agy-session", "Agy", "agy", "agy", 7L),
+                conversation("cursor-session", "Cursor", "cursor", "cursor", 8L));
+
+        List<String> tabs = ResumeTool.agentTabs(providerConversations);
+
+        assertEquals(9, tabs.size());
+        assertTrue(tabs.contains("kompile"));
+        assertEquals("Kompile Chat", ResumeTool.agentTabLabel("kompile"));
+        assertEquals(List.of("kompile"), ResumeTool.agentTabs(List.of()));
+    }
+
+    @Test
     void literalStandardChatsResumeInKompileInsteadOfPassthrough() {
         assertTrue(ResumeTool.isStandardKompileChatSession(
                 "cli-standard123", "kompile", "coder", null));
         assertTrue(ResumeTool.isStandardKompileChatSession(
                 "cli-standard456", "kompile", "unknown", ""));
+        assertTrue(ResumeTool.isStandardKompileChatSession(
+                "fpna-20260809-0826", "kompile", "coder", null));
 
         assertFalse(ResumeTool.isStandardKompileChatSession(
                 "cli-wrapper", "kompile", "opencode", null));
@@ -202,6 +228,63 @@ class ResumeToolCommandTest {
                 "passthrough-wrapper", "kompile", "coder", null));
         assertFalse(ResumeTool.isStandardKompileChatSession(
                 "cli-external", "codex", "coder", null));
+    }
+
+    @Test
+    void standardChatsAreExposedAndDefaultToLiteralKompileResume() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        Path home = tempDir.resolve("standard-chat-home");
+        System.setProperty("user.home", home.toString());
+        try {
+            ChatHistory history = new ChatHistory("custom-standard-catalog");
+            history.open("(local)", null, false);
+            history.logUserMessage("resume my literal standard chat");
+            history.logAgentResponse("coder", "saved response", 10);
+            history.close();
+
+            ResumeTool tool = new ResumeTool(true);
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode search = mapper.createObjectNode();
+            search.put("action", "search");
+            search.put("source", "kompile");
+
+            ToolResult searchResult = tool.execute(search, null);
+            assertFalse(searchResult.isError());
+            JsonNode searchJson = mapper.readTree(searchResult.getOutput());
+            JsonNode standard = null;
+            for (JsonNode conversation : searchJson.path("conversations")) {
+                if ("custom-standard-catalog".equals(conversation.path("session_id").asText())) {
+                    standard = conversation;
+                    break;
+                }
+            }
+
+            assertTrue(standard != null, "standard chat must be present in resume search results");
+            assertEquals("kompile", standard.path("agent").asText());
+            assertEquals("standard_chat", standard.path("session_type").asText());
+            assertEquals("kompile", standard.path("resume_target").asText());
+            assertTrue(standard.path("resume_command").asText()
+                    .contains("chat --resume custom-standard-catalog --mode standard"));
+
+            ObjectNode resume = mapper.createObjectNode();
+            resume.put("action", "resume");
+            resume.put("session_id", "custom-standard-catalog");
+            ToolResult resumeResult = tool.execute(resume, null);
+            assertFalse(resumeResult.isError());
+
+            JsonNode resumeJson = mapper.readTree(resumeResult.getOutput());
+            assertEquals("kompile", resumeJson.path("target_agent").asText());
+            assertEquals("standard_chat", resumeJson.path("session_type").asText());
+            assertEquals("standard", resumeJson.path("resume_mode").asText());
+            assertTrue(resumeJson.path("resume_command").asText()
+                    .contains("chat --resume custom-standard-catalog --mode standard"));
+        } finally {
+            if (previousHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", previousHome);
+            }
+        }
     }
 
     @Test
@@ -287,6 +370,19 @@ class ResumeToolCommandTest {
                 List.of(wrapper, first, second), Map.of());
 
         assertEquals(List.of(wrapper, first, second), deduplicated);
+    }
+
+    @Test
+    void standardKompileConversationIsNeverCollapsedAsLegacyCliWrapper() {
+        ResumeTool.ConversationSummary standardConversation = conversation(
+                "cli-standard-session", "Prompt", "kompile", "kompile", 1_000_000L);
+        ResumeTool.ConversationSummary nearbyConversation = conversation(
+                "native-near", "Native", "kompile", "external", 1_001_000L);
+
+        List<ResumeTool.ConversationSummary> deduplicated = ResumeTool.deduplicateConversations(
+                List.of(standardConversation, nearbyConversation), Map.of());
+
+        assertEquals(List.of(standardConversation, nearbyConversation), deduplicated);
     }
 
     @Test

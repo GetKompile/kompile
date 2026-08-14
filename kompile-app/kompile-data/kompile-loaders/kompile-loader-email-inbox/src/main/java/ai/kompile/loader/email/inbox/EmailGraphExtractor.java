@@ -1010,19 +1010,15 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
         Map<String, ExtractedEntity> mergedEntities = new LinkedHashMap<>();
-        List<ExtractedRelation> mergedRelations = new ArrayList<>();
+        Map<String, ExtractedRelation> mergedRelations = new LinkedHashMap<>();
 
         for (Document doc : docs) {
-            ExtractionResult result = extract(doc);
-            for (ExtractedEntity entity : result.entities()) {
-                addEntity(mergedEntities, entity);
-            }
-            mergedRelations.addAll(result.relations());
+            ExtractorUtils.mergeResult(mergedEntities, mergedRelations, extract(doc));
         }
 
         return ExtractionResult.of(
                 new ArrayList<>(mergedEntities.values()),
-                mergedRelations,
+                new ArrayList<>(mergedRelations.values()),
                 new ExtractionMetadata(null, null, GraphConstants.SOURCE_EMAIL_EXTRACTOR, null, null, null)
         );
     }
@@ -1213,45 +1209,7 @@ public class EmailGraphExtractor implements DocumentGraphExtractor {
     }
 
     private void addEntity(Map<String, ExtractedEntity> index, ExtractedEntity entity) {
-        // Merge: keep the entity with more information
-        ExtractedEntity existing = index.get(entity.id());
-        if (existing == null) {
-            index.put(entity.id(), entity);
-        } else {
-            // Merge aliases
-            Set<String> allAliases = new LinkedHashSet<>();
-            if (existing.aliases() != null) allAliases.addAll(existing.aliases());
-            if (entity.aliases() != null) allAliases.addAll(entity.aliases());
-
-            // Keep longer description
-            String desc = existing.description();
-            if (desc == null || (entity.description() != null && entity.description().length() > desc.length())) {
-                desc = entity.description();
-            }
-
-            // Merge properties
-            Map<String, String> mergedProps = new LinkedHashMap<>();
-            if (existing.properties() != null) mergedProps.putAll(existing.properties());
-            if (entity.properties() != null) mergedProps.putAll(entity.properties());
-
-            // Keep higher confidence
-            double conf = Math.max(
-                    existing.confidence() != null ? existing.confidence() : 0.0,
-                    entity.confidence() != null ? entity.confidence() : 0.0
-            );
-
-            // Prefer a real name over just an email
-            String name = existing.name();
-            if (entity.name() != null && !entity.name().contains("@") && name.contains("@")) {
-                name = entity.name();
-            }
-
-            index.put(entity.id(), new ExtractedEntity(
-                    entity.id(), name, existing.type(), // keep existing type
-                    allAliases.isEmpty() ? null : new ArrayList<>(allAliases),
-                    desc, conf, mergedProps
-            ));
-        }
+        ExtractorUtils.addEntity(index, entity);
     }
 
     record PersonEntity(ExtractedEntity entity, String email, String displayName) {}

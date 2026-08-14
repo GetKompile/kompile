@@ -16,6 +16,7 @@
 
 package ai.kompile.core.graphrag.format;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -93,7 +94,7 @@ public final class GraphExtractionSchema {
             @JsonProperty("aliases") List<String> aliases,
             @JsonProperty("description") String description,
             @JsonProperty("confidence") Double confidence,
-            @JsonProperty("properties") Map<String, String> properties
+            @JsonAlias("metadata") @JsonProperty("properties") Map<String, String> properties
     ) {
         public ExtractedEntity {
             if (aliases == null) aliases = List.of();
@@ -115,7 +116,7 @@ public final class GraphExtractionSchema {
             @JsonProperty("type") String type,
             @JsonProperty("description") String description,
             @JsonProperty("confidence") Double confidence,
-            @JsonProperty("properties") Map<String, String> properties,
+            @JsonAlias("metadata") @JsonProperty("properties") Map<String, String> properties,
             @JsonProperty("occurredAt") String occurredAt
     ) {
         public ExtractedRelation {

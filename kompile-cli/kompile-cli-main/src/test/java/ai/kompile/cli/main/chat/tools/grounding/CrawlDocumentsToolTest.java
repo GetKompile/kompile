@@ -16,13 +16,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,6 +34,9 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class CrawlDocumentsToolTest {
+    @TempDir
+    Path tempDir;
+
     private ObjectMapper mapper;
     private ToolContext context;
 
@@ -42,7 +46,7 @@ class CrawlDocumentsToolTest {
         AgentConfig agent = AgentConfig.builder("crawler").enabledTools(Set.of("*")).build();
         PermissionService permissions = new PermissionService();
         permissions.setUserOverride("crawl_documents", PermissionService.PermissionLevel.ALLOW);
-        context = new ToolContext("crawl-test", agent, permissions, Paths.get("."),
+        context = new ToolContext("crawl-test", agent, permissions, tempDir,
                 new ToolRegistry(mapper));
     }
 
@@ -55,8 +59,7 @@ class CrawlDocumentsToolTest {
         assertTrue(tool.compactHint().length() <= 200);
 
         JsonNode schema = tool.parameterSchema();
-        assertTrue(schema.path("anyOf").toString().contains("documents"));
-        assertTrue(schema.path("anyOf").toString().contains("codeProjects"));
+        assertTrue(schema.path("anyOf").isMissingNode());
         assertTrue(schema.path("properties").has("documents"));
         assertTrue(schema.path("properties").has("codeProjects"));
         assertTrue(schema.path("properties").has("knowledgeBase"));
@@ -70,14 +73,14 @@ class CrawlDocumentsToolTest {
     }
 
     @Test
-    void missingDocumentsAndCodeProjectsFailsBeforeBackendLookup() throws Exception {
+    void missingDocumentsAndCodeProjectsBootstrapsTheFolder() throws Exception {
         CrawlDocumentsTool tool = new CrawlDocumentsTool((String) null, mapper);
 
         ToolResult result = tool.execute(mapper.createObjectNode(), context);
 
-        assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("document"));
-        assertTrue(result.getOutput().contains("codeProjects"));
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("project-local", result.getMetadata().get("backend"));
+        assertFalse(result.getMetadata().containsKey("factSheetId"));
     }
 
     @Test
@@ -156,6 +159,10 @@ class CrawlDocumentsToolTest {
         assertEquals("crawl-123", result.getMetadata().get("jobId"));
         assertEquals(2, result.getMetadata().get("sourceCount"));
         assertEquals(42L, result.getMetadata().get("factSheetId"));
+        assertTrue(result.getMetadata().get("crawlResult").toString()
+                .contains("kompile-crawl-result/v1"));
+        assertTrue(result.getMetadata().get("nextActions").toString()
+                .contains("graph_reasoning_query"));
         server.verify();
     }
 

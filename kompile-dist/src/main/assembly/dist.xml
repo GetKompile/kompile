@@ -76,25 +76,12 @@
             <destName>kompile-sdk-serving.jar</destName>
         </file>
 
-        <!-- ============ kompile-model-staging Spring Boot exec JAR ============
-             The staging service runs as a separate Spring Boot process on port 8090.
-             It is shipped as the Spring Boot fat (exec) jar by default; the launcher
-             script `bin/kompile-model-staging.sh` will auto-prefer a native binary
-             at `bin/kompile-model-staging` if one is later added. The exec jar is
-             copied into ${project.build.directory}/staging-deps by the
-             maven-dependency-plugin (see kompile-dist/pom.xml). -->
-        <file>
-            <source>${project.build.directory}/staging-deps/kompile-model-staging-${project.version}-exec.jar</source>
-            <outputDirectory>lib</outputDirectory>
-            <destName>kompile-model-staging.jar</destName>
-        </file>
-
         <!-- ============ Persona app Spring Boot exec JARs ============
              The end-user apps: chat on :8081, the crawl manager on :8082. kompile-app-main
              is the admin console and no longer mounts the chat or crawl APIs, so without
              these two a dist has no end-user surface at all — they are not optional extras.
-             Same shipping shape as the staging service above: exec jar on every build, plus
-             a GraalVM binary in bin/ on -Dkompile.dist builds (see the persona fileSets
+             Product personas retain an exec jar on every build, plus a GraalVM binary in
+             bin/ on -Dkompile.dist builds (see the persona fileSets
              below). The launcher scripts `bin/kompile-chat.sh` / `bin/kompile-crawl-manager.sh`
              prefer the binary and fall back to this jar. Staged into
              ${project.build.directory}/persona-deps by the maven-dependency-plugin
@@ -161,11 +148,11 @@
         </fileSet>
 
         <!-- ============ GraalVM-generated Java runtime shared libs ============
-             stage-portable-binaries.sh de-duplicates the shims emitted beside each image;
-             they must ship in bin/ beside the service executables for runtime loading. -->
+             stage-portable-binaries.sh de-duplicates the shims emitted beside each image.
+             They share the canonical side-loaded lib/ tree with JavaCPP/ND4J/CUDA. -->
         <fileSet>
             <directory>${project.build.directory}/portable-bin</directory>
-            <outputDirectory>bin</outputDirectory>
+            <outputDirectory>lib</outputDirectory>
             <includes>
                 <include>lib*.so</include>
                 <include>lib*.dylib</include>
@@ -190,31 +177,36 @@
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>
+        <fileSet>
+            <directory>${project.build.directory}/native-libs</directory>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>shared-runtime-manifest.txt</include>
+            </includes>
+            <fileMode>0644</fileMode>
+        </fileSet>
 
-        <!-- ============ Optional extra subprocess native images (vlm-test, training) ============
-             These are only emitted when their opt-in profiles are explicitly
-             activated. The fileSet pattern lets them be skipped silently when
-             absent, which is what we want for a default dist build. -->
+        <!-- ============ Native local MCP workers ============
+             prepare-package fails before assembly if any required worker is absent.
+             They execute directly and side-load every native payload from lib/. -->
         <fileSet>
             <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
                 <include>kompile-vlm-test</include>
-                <include>kompile-training</include>
+                <include>kompile-model-staging</include>
+                <include>kompile-model-serving</include>
+                <include>kompile-pipeline-serving</include>
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>
 
-        <!-- ============ Optional kompile-model-staging native binary ============
-             If the staging module has been built with `-Pnative`, the resulting
-             `kompile-model-staging` binary is picked up here. When absent, the
-             launcher script falls back to the Spring Boot exec JAR shipped at
-             lib/kompile-model-staging.jar. -->
+        <!-- Optional non-MCP native worker. -->
         <fileSet>
             <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
-                <include>kompile-model-staging</include>
+                <include>kompile-training</include>
             </includes>
             <fileMode>0755</fileMode>
         </fileSet>

@@ -211,9 +211,12 @@ directly usable for CI or diagnosis. It has two deliberately separate artifact m
   missing or ambiguous selection, or wrong-size/wrong-SHA-256 AAR before Gradle runs.
 
 The direct helper resolves its Android build JDK in the order
-`--java-home` > `JAVA_HOME` > `java` on `PATH`. Every route must resolve a
-complete JDK (both `java` and `javac`) with
-`java.specification.version=17`; it never silently builds with Java 11 or 21.
+`--java-home` > `JAVA_HOME` > the selected SDX AOT SDK receipt > `java` on
+`PATH`. The same receipt supplies the exact Maven executable and JavaCPP JAR and
+selects the one installed NDK whose `source.properties` digest matches the
+producer build. Every route must resolve a complete JDK (both `java` and
+`javac`) with `java.specification.version=17`; it never silently builds with
+Java 11 or 21 or mixes an AOT SDK with a different toolchain.
 
 After a focused low-level native repair build, publish/verify its complete provider
 AAR through the existing wrapper rather than reconstructing Maven inputs:
@@ -229,19 +232,62 @@ libnd4j/tools/mobile/build-android-accelerator.sh \
   --skip-native
 ```
 
-Once the provider is published, the repeatable direct APK command needs no AAR or
-JDK path when JDK 17 is already on `PATH`:
+For focused repair builds, use one canonical work root rather than manually
+correlating Gradle, JNI, provider, and output paths. The existing producer
+interfaces populate these stable inputs:
 
-```bash
-android/tools/build-offline-accelerators.sh \
-  --variant tensor-g3 \
-  --skip-maven \
-  --android-sdk /path/to/android-sdk \
-  --android-ndk /path/to/android-sdk/ndk/28.1.13356709
+```text
+<work-root>/aot-sdk/current
+<work-root>/accelerator/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar
 ```
 
-The helper prints the selected JDK and Tensor G3 AAR source/path before packaging,
-so every APK log records the handoff it actually used.
+The checked-in Tensor G3 entry point invokes both zero-parameter producers,
+then builds, host-verifies, and publishes the APK. Keep this as one command: the
+managed process runner gives separate commands separate `/tmp` namespaces, so a
+producer started independently may not be visible to a later packaging process.
+
+```bash
+android/build-tensor-g3-offline-apk.sh
+```
+
+The wrapper discovers the sibling deeplearning4j checkout, uses
+`/tmp/sdx-android-build`, and defaults developer builds to GraalVM quick-build
+mode. Set `KOMPILE_ANDROID_WORK_ROOT`, `KOMPILE_DL4J_ROOT`, or
+`KOMPILE_NATIVE_QUICK_BUILD=0` only for a nonstandard root or optimized build.
+
+Before starting a producer, the wrapper holds a work-root pipeline lock and runs
+the checked-in targeted cleanup preflight. It removes interrupted publication
+directories, superseded immutable CPU/AOT generations beyond the active plus
+one rollback, abandoned provider Maven quarantines, provider manifest
+temporaries, and APK/Gradle staging. It deliberately preserves stable CMake
+worktrees, managed dependency stages, complete checksum-addressed Graal object
+stages, ccache, provider native/dist outputs, and current/rollback APKs. The
+provider producer also removes its active Maven quarantine on every exit, so a
+failed build cannot accumulate another abandoned native tree.
+
+For focused diagnostics, the underlying producer interfaces remain independently
+callable and publish the same canonical layouts:
+
+```bash
+nd4j/sdx-aot/src/main/android/build-android-sdx-sdk.sh
+libnd4j/tools/mobile/build-android-accelerator.sh
+```
+
+CI and diagnostic callers can also invoke the lower-level
+`android/tools/build-offline-accelerators.sh` directly with explicit variant,
+artifact mode, and layout options.
+
+`--work-root` derives disjoint `apk-stage`, `apk-jni/arm64-v8a`, and
+`apk-output` paths, enables isolated Gradle output, and discovers both producer
+artifacts. It cannot be combined with `--jni-output` or `--output`. Advanced
+explicit layouts remain supported, but the helper rejects any overlap between
+the Gradle build root, JNI source root, RAM staging root, and final output.
+
+The Android SDK is resolved from `ANDROID_HOME`/`ANDROID_SDK_ROOT` or the
+standard host locations `~/Android/Sdk` and `~/dev-apps/android-sdk`. Only a
+nonstandard SDK location needs `--android-sdk`. The helper prints the complete
+resolved layout and every selected tool/artifact source before packaging, so each
+APK log records the exact handoff it used.
 
 Release-consumer mode passes each verified absolute path to Gradle with an
 explicit Gradle property (`-PsdxVulkanAar`,
@@ -262,8 +308,9 @@ mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk
 mobile/target/offline-dist/kompile-offline-graph-chat-tensor-g5.apk.sha256
 ```
 
-Direct invocation of `build-offline-accelerators.sh` instead defaults to
-`mobile/android/build/offline-dist`.
+Direct invocation of `build-offline-accelerators.sh` defaults to
+`mobile/android/build/offline-dist`; with `--work-root`, final artifacts are
+published to `<work-root>/apk-output`.
 
 After either success or failure, the helper removes only disposable Gradle
 intermediates, normalized provider AARs, graph-wrapper work, canonical JNI/Maven
@@ -272,7 +319,9 @@ Gradle and the final APK verifier by their resolved source path, so the helper
 never copies or overwrites `app/libs` inputs. Pre-existing/caller-owned AARs, final APKs and checksums, the
 standalone DL4J SDX SDK, Gradle caches, and Maven artifacts in the local repository
 are preserved. Cleanup is armed before input validation/release resolution, and an
-APK output path inside disposable staging is rejected. Use `--retain-staging` (or
+APK output path inside disposable staging is rejected. Work-root mode also
+removes only its exact `apk-stage` and `apk-jni` children while preserving
+producer artifacts and `apk-output`. Use `--retain-staging` (or
 `KOMPILE_ANDROID_RETAIN_STAGING=1`) only when those intermediates are needed for
 diagnosis. `--cleanup-only` applies the same exact-path cleanup without assembling an
 APK. This cleanup is targeted and does not invoke a Maven, Gradle, or CMake `clean`

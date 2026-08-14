@@ -75,6 +75,26 @@ public class ChatConfig {
     @JsonProperty
     private String baseUrl; // null = use provider default
 
+    /** Provider-neutral automatic context compaction policy. */
+    @JsonProperty
+    private boolean autoCompactEnabled = true;
+
+    /** Fraction of the active model context at which compaction may begin. */
+    @JsonProperty
+    private double autoCompactThreshold = 0.85d;
+
+    /** Explicit input headroom; zero derives it from the active model output limit. */
+    @JsonProperty
+    private int compactionReserveTokens = 0;
+
+    /** Optional provider/model context override; zero uses catalog or local serving metadata. */
+    @JsonProperty
+    private int contextWindowTokens = 0;
+
+    /** Optional provider/model output override; zero uses catalog or local serving metadata. */
+    @JsonProperty
+    private int maxOutputTokens = 0;
+
     @JsonProperty
     private String defaultAgent = "coder";
 
@@ -177,6 +197,38 @@ public class ChatConfig {
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
+    public boolean isAutoCompactEnabled() { return autoCompactEnabled; }
+    public void setAutoCompactEnabled(boolean autoCompactEnabled) {
+        this.autoCompactEnabled = autoCompactEnabled;
+    }
+
+    public double getAutoCompactThreshold() {
+        return sanitizeAutoCompactThreshold(autoCompactThreshold);
+    }
+    public void setAutoCompactThreshold(double autoCompactThreshold) {
+        this.autoCompactThreshold = sanitizeAutoCompactThreshold(autoCompactThreshold);
+    }
+
+    public int getCompactionReserveTokens() { return Math.max(0, compactionReserveTokens); }
+    public void setCompactionReserveTokens(int compactionReserveTokens) {
+        this.compactionReserveTokens = Math.max(0, compactionReserveTokens);
+    }
+
+    public int getContextWindowTokens() { return Math.max(0, contextWindowTokens); }
+    public void setContextWindowTokens(int contextWindowTokens) {
+        this.contextWindowTokens = Math.max(0, contextWindowTokens);
+    }
+
+    public int getMaxOutputTokens() { return Math.max(0, maxOutputTokens); }
+    public void setMaxOutputTokens(int maxOutputTokens) {
+        this.maxOutputTokens = Math.max(0, maxOutputTokens);
+    }
+
+    private static double sanitizeAutoCompactThreshold(double threshold) {
+        if (!Double.isFinite(threshold)) return 0.85d;
+        return Math.max(0.50d, Math.min(0.95d, threshold));
+    }
+
     /**
      * Hot-apply only the live LLM settings from another configuration.
      * Keeping this object identity lets the active direct client, tool registry,
@@ -192,6 +244,10 @@ public class ChatConfig {
         this.model = source.model;
         this.thinking = source.thinking;
         this.baseUrl = source.baseUrl;
+        // These limits describe the selected provider/model. The provider-neutral
+        // enable/threshold/reserve policy intentionally remains session-wide.
+        this.contextWindowTokens = source.contextWindowTokens;
+        this.maxOutputTokens = source.maxOutputTokens;
         this.loadedFrom = source.loadedFrom;
     }
 
@@ -440,6 +496,15 @@ public class ChatConfig {
 
     public void save() throws IOException {
         saveGlobal();
+    }
+
+    /** Persist back to the scope this config was loaded from, or globally if new. */
+    public void saveLoadedOrGlobal() throws IOException {
+        if (loadedFrom != null) {
+            saveTo(loadedFrom);
+        } else {
+            saveGlobal();
+        }
     }
 
     public void saveGlobal() throws IOException {

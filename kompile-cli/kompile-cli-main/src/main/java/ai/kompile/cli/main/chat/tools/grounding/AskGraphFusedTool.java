@@ -12,6 +12,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.KompileBackendClient;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -38,11 +39,13 @@ public class AskGraphFusedTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public AskGraphFusedTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -71,7 +74,7 @@ public class AskGraphFusedTool implements CliTool {
                         + "All applicable engines will run concurrently against this target.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Fact sheet scope. Null = global (all fact sheets).");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("depth")
                 .put("type", "integer")
                 .put("description", "Derivation depth cap for the grounding engine. Default: 3.")
@@ -99,8 +102,13 @@ public class AskGraphFusedTool implements CliTool {
             return ToolResult.error("target is required");
         }
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable()) {
-            return ToolResult.error("ask_graph_explain_fused requires a running kompile-app.");
+            return ToolResult.error("The explicitly configured remote fused explanation service is unavailable at "
+                    + backend.baseUrlFor("/api/explain/fused")
+                    + ". Remove --url to use the in-process graph.");
         }
 
         try {
@@ -173,7 +181,8 @@ public class AskGraphFusedTool implements CliTool {
             return ToolResult.success("ask_graph_explain_fused: " + target, sb.toString(), metadata);
 
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote fused-reasoning service became unavailable. "
+                    + "Remove --url to continue with in-process reasoning. " + e.getMessage());
         } catch (Exception e) {
             return ToolResult.error("ask_graph_explain_fused error: " + e.getMessage());
         }

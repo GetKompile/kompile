@@ -894,5 +894,209 @@
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
     "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$Result",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$EntityView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$RelationView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$ResolutionView",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$PathStep",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.query.GraphQueryEngine$Capability",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.explain.ReasoningTrace",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.explain.ReasoningTrace$Step",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.confidence.Opinion",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ScoreBreakdown",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ModelMatch",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$Plan",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ResolvedIntervention",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$Gap",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeRule",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeRule$Input",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$MeasureSelector",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$Intervention",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$Goal",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.ScenarioResult",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeScenarioEngine$GoalSeekResult",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.graph.reasoning.quantitative.QuantitativeScenarioEngine$GoalSeekResult$Alternative",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.project.LocalCrawlSubprocessRunner$GraphContext",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend$CodeProjectSource",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend$GraphUpdate",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.cli.main.project.ProjectCrawlCommand$LocalCrawlFailure",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.core.crawl.graph.GraphExtractionConfig",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.core.crawl.graph.ProcessingRouteConfig",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.core.crawl.graph.ProcessingRouteConfig$ProcessingBackend",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.core.crawl.graph.UnifiedCrawlRequest$RuntimeConfig",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition$ServingConfig",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
   }
 ]

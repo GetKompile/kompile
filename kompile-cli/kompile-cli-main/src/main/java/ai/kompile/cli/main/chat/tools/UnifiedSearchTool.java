@@ -199,7 +199,7 @@ public class UnifiedSearchTool implements CliTool {
             }
         } catch (Exception ignored) {}
 
-        // 2. RAG document search (requires kompile-app)
+        // 2. Project-local RAG document search (or an explicitly configured remote override)
         try {
             ToolResult ragResult = executeRag(params, context);
             if (ragResult.getOutput() != null && !ragResult.getOutput().contains("No documents found")
@@ -212,7 +212,7 @@ public class UnifiedSearchTool implements CliTool {
             }
         } catch (Exception ignored) {}
 
-        // 3. Knowledge graph (requires kompile-app + Neo4j)
+        // 3. Project-local knowledge graph (or an explicitly configured remote override)
         try {
             ToolResult graphResult = executeGraph(params, context);
             if (graphResult.getOutput() != null && !graphResult.getOutput().contains("No graph results")

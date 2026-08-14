@@ -32,8 +32,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -218,6 +220,16 @@ public class DirectLlmClient {
         return conversationHistory.size();
     }
 
+    /** Live chat configuration shared with the standard-chat REPL. */
+    public ChatConfig getChatConfig() {
+        return config;
+    }
+
+    /** The provider configured for this client. */
+    public String getConfiguredProvider() {
+        return config.getProvider();
+    }
+
     /** The model configured for this client (before any per-agent override). */
     public String getConfiguredModel() {
         return config.getModel();
@@ -304,7 +316,11 @@ public class DirectLlmClient {
         ResponsesStreamState state = new ResponsesStreamState();
 
         try {
-            ArrayNode input = buildResponsesInput(userMessage, systemPrompt, toolResults, codex);
+            ResponsesHistoryLinks historyLinks = sanitizeResponsesHistory();
+            List<ObjectNode> stagedToolResultItems =
+                    prepareResponsesToolResultItems(toolResults, historyLinks);
+            ArrayNode input = buildResponsesInput(
+                    userMessage, systemPrompt, stagedToolResultItems, codex);
             ObjectNode request = objectMapper.createObjectNode();
             request.put("model", effectiveModel);
             request.set("input", input);
@@ -362,10 +378,15 @@ public class DirectLlmClient {
 
             parseResponsesStream(response.body(), result, state);
             if (!state.failed && !result.cancelled) {
+                // Commit submitted tool results only after the provider accepts the
+                // request. A rejected request must not poison every later turn.
+                conversationHistory.addAll(stagedToolResultItems);
                 appendResponsesHistory(userMessage, result, state);
             }
         } catch (Exception e) {
-            result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            if (!markCancelled(result, e)) {
+                result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            }
         }
         return result;
     }
@@ -373,7 +394,7 @@ public class DirectLlmClient {
     private ArrayNode buildResponsesInput(
             String userMessage,
             String systemPrompt,
-            List<ToolCallResultInput> toolResults,
+            List<ObjectNode> stagedToolResultItems,
             boolean codex) {
         ArrayNode input = objectMapper.createArrayNode();
         if (!codex && systemPrompt != null && !systemPrompt.isBlank()) {
@@ -383,22 +404,91 @@ public class DirectLlmClient {
             input.add(system);
         }
         conversationHistory.forEach(input::add);
-
-        if (toolResults != null) {
-            for (ToolCallResultInput toolResult : toolResults) {
-                ObjectNode output = objectMapper.createObjectNode();
-                output.put("type", "function_call_output");
-                output.put("call_id", toolResult.callId);
-                output.put("output", toolResult.output == null ? "" : toolResult.output);
-                input.add(output);
-                conversationHistory.add(output);
-            }
+        if (stagedToolResultItems != null) {
+            stagedToolResultItems.forEach(input::add);
         }
         if (userMessage != null) {
             input.add(createResponsesUserMessage(userMessage));
         }
         return input;
     }
+
+    /**
+     * Remove malformed/duplicate Responses linkage left by an interrupted older
+     * client. Function outputs are valid only when the matching function call is
+     * present earlier in the same retained request history.
+     */
+    private ResponsesHistoryLinks sanitizeResponsesHistory() {
+        Set<String> calls = new LinkedHashSet<>();
+        Set<String> outputs = new LinkedHashSet<>();
+        List<ObjectNode> sanitized = new ArrayList<>(conversationHistory.size());
+        for (ObjectNode item : conversationHistory) {
+            String type = item.path("type").asText("");
+            if ("function_call".equals(type)) {
+                String callId = item.path("call_id").asText("");
+                if (callId.isBlank() || !calls.add(callId)) {
+                    continue;
+                }
+            } else if ("function_call_output".equals(type)) {
+                String callId = item.path("call_id").asText("");
+                if (callId.isBlank() || !calls.contains(callId) || !outputs.add(callId)) {
+                    continue;
+                }
+            }
+            sanitized.add(item);
+        }
+        if (sanitized.size() != conversationHistory.size()) {
+            conversationHistory.clear();
+            conversationHistory.addAll(sanitized);
+        }
+        return new ResponsesHistoryLinks(calls, outputs);
+    }
+
+    /**
+     * Stage current tool results without mutating retained history. When a full
+     * compaction or resume lost the provider-owned function-call item, preserve
+     * the useful result as ordinary user context instead of emitting an orphaned
+     * function_call_output that OpenAI rejects with HTTP 400.
+     */
+    private List<ObjectNode> prepareResponsesToolResultItems(
+            List<ToolCallResultInput> toolResults,
+            ResponsesHistoryLinks historyLinks) {
+        if (toolResults == null || toolResults.isEmpty()) {
+            return List.of();
+        }
+        Set<String> submittedOutputs = new LinkedHashSet<>(historyLinks.outputs());
+        List<ObjectNode> staged = new ArrayList<>();
+        for (ToolCallResultInput toolResult : toolResults) {
+            String callId = toolResult.callId == null ? "" : toolResult.callId.trim();
+            if (!callId.isBlank() && historyLinks.calls().contains(callId)) {
+                if (!submittedOutputs.add(callId)) {
+                    continue;
+                }
+                ObjectNode output = objectMapper.createObjectNode();
+                output.put("type", "function_call_output");
+                output.put("call_id", callId);
+                output.put("output", toolResult.output == null ? "" : toolResult.output);
+                staged.add(output);
+                continue;
+            }
+
+            String toolName = toolResult.name == null || toolResult.name.isBlank()
+                    ? "unknown tool" : toolResult.name;
+            StringBuilder recovered = new StringBuilder()
+                    .append("[Recovered tool result for ").append(toolName)
+                    .append("; the provider function-call link was unavailable after compaction/resume]");
+            if (toolResult.isError) {
+                recovered.append(" [tool reported an error]");
+            }
+            if (toolResult.output != null && !toolResult.output.isBlank()) {
+                recovered.append('\n').append(toolResult.output);
+            }
+            staged.add(createResponsesUserMessage(recovered.toString()));
+        }
+        return staged;
+    }
+
+    private record ResponsesHistoryLinks(Set<String> calls, Set<String> outputs) {}
 
     private ObjectNode createResponsesUserMessage(String text) {
         ObjectNode message = objectMapper.createObjectNode();
@@ -738,7 +828,9 @@ public class DirectLlmClient {
                 appendPiMessagesHistory(userMessage, effectiveModel, result, state);
             }
         } catch (Exception e) {
-            result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            if (!markCancelled(result, e)) {
+                result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            }
         }
         return result;
     }
@@ -1208,8 +1300,10 @@ public class DirectLlmClient {
                 conversationHistory.add(assistant);
             }
         } catch (Exception e) {
-            result.text = "[Kompile serving error: " + e.getMessage() + "]";
-            printStreamingChunk(result.text);
+            if (!markCancelled(result, e)) {
+                result.text = "[Kompile serving error: " + formatExceptionMessage(e) + "]";
+                printStreamingChunk(result.text);
+            }
         }
         return result;
     }
@@ -1358,7 +1452,9 @@ public class DirectLlmClient {
             }
 
         } catch (Exception e) {
-            result.text = "[Error: " + e.getMessage() + "]";
+            if (!markCancelled(result, e)) {
+                result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            }
         }
 
         return result;
@@ -1631,7 +1727,9 @@ public class DirectLlmClient {
             }
 
         } catch (Exception e) {
-            result.text = "[Error: " + e.getMessage() + "]";
+            if (!markCancelled(result, e)) {
+                result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            }
         }
 
         return result;
@@ -1896,6 +1994,14 @@ public class DirectLlmClient {
         return content;
     }
 
+    private boolean markCancelled(StreamResult result, Exception error) {
+        if (isCancelled() || error instanceof InterruptedException) {
+            result.cancelled = true;
+            return true;
+        }
+        return false;
+    }
+
     /**
      * Format an exception message for display. If the exception has no message,
      * returns the simple class name of the exception type.
@@ -1933,6 +2039,21 @@ public class DirectLlmClient {
         public long outputTokens = 0;
         public long cacheReadTokens = 0;
         public long cacheCreationTokens = 0;
+
+        /**
+         * Tokens occupying the provider context. Cached tokens are cheaper, not absent;
+         * every provider adapter reports them separately but they still consume context.
+         */
+        public long contextInputTokens() {
+            long total = Math.max(0L, inputTokens);
+            total = saturatingAdd(total, Math.max(0L, cacheReadTokens));
+            return saturatingAdd(total, Math.max(0L, cacheCreationTokens));
+        }
+
+        private static long saturatingAdd(long left, long right) {
+            return Long.MAX_VALUE - left < right ? Long.MAX_VALUE : left + right;
+        }
+
         // Enforcer monitor fields
         public boolean monitorInterrupted = false;
         public String correctionPrompt = null;

@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -73,7 +74,7 @@ public class AskGraphRetractTool implements CliTool {
     public String compactHint() {
         return "Physically remove an atom from the KB; returns which dependent atoms became unsupported or weakened. " +
                 "Triggers re-reasoning. Use mode=revise for synchronous propagation. " +
-                "factSheetId optional — omit to use the active sheet; discover ids via knowledge_graph list_fact_sheets.";
+                "Local stdio retracts from the current folder; factSheetId is an optional remote/legacy override.";
     }
 
     @Override
@@ -87,8 +88,10 @@ public class AskGraphRetractTool implements CliTool {
                 .put("description", "Atom key to retract, e.g. 'trusts(Alice, Bob)'.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Fact sheet to retract from. Optional — omit to use the active sheet; " +
-                        "discover ids via knowledge_graph list_fact_sheets.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
+        props.putObject("knowledgeBase")
+                .put("type", "string")
+                .put("description", "Project-local knowledge-base id returned in crawlResult; selects that crawl's graph.");
         props.putObject("mode")
                 .put("type", "string")
                 .put("description", "Retraction mode: 'retract' (default) = retraction + dependency " +
@@ -115,7 +118,7 @@ public class AskGraphRetractTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_retract requires a running kompile-app.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

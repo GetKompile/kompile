@@ -21,8 +21,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -36,6 +37,9 @@ class GraphSimulateToolTest {
 
     private static final ObjectMapper OM = new ObjectMapper();
     private static final String DUMMY_URL = "http://localhost:8080";
+
+    @TempDir
+    Path tempDir;
 
     private GraphSimulateTool tool;
 
@@ -136,13 +140,14 @@ class GraphSimulateToolTest {
     }
 
     @Test
-    void execute_nullBaseUrl_returnsError() throws ToolExecutionException {
+    void execute_nullBaseUrl_usesProjectLocalBackend() throws ToolExecutionException {
         GraphSimulateTool noUrl = new GraphSimulateTool(null, OM);
         ObjectNode params = OM.createObjectNode();
         params.put("action", "scenarios");
         ToolResult result = noUrl.execute(params, ctx());
-        assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("kompile-app"));
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("project-local"), result.getOutput());
+        assertFalse(result.getOutput().contains("kompile-app"));
     }
 
     // ── missing required param guards ────────────────────────────────────────
@@ -223,6 +228,6 @@ class GraphSimulateToolTest {
     private ToolContext ctx() {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_simulate", PermissionService.PermissionLevel.ALLOW);
-        return new ToolContext("test-session", null, perms, Paths.get("."), null);
+        return new ToolContext("test-session", null, perms, tempDir, null);
     }
 }

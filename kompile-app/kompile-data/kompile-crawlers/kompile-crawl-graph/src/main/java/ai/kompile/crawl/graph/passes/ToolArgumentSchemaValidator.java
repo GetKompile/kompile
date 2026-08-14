@@ -270,7 +270,7 @@ final class ToolArgumentSchemaValidator {
             case "object" -> value != null && value.isObject();
             case "array" -> value != null && value.isArray();
             case "string" -> value != null && value.isTextual();
-            case "integer" -> value != null && value.isIntegralNumber();
+            case "integer" -> isJsonSchemaInteger(value);
             case "number" -> value != null && value.isNumber();
             case "boolean" -> value != null && value.isBoolean();
             case "null" -> value == null || value.isNull();
@@ -287,10 +287,27 @@ final class ToolArgumentSchemaValidator {
         if (value.isObject()) return "object";
         if (value.isArray()) return "array";
         if (value.isTextual()) return "string";
-        if (value.isIntegralNumber()) return "integer";
+        if (isJsonSchemaInteger(value)) return "integer";
         if (value.isNumber()) return "number";
         if (value.isBoolean()) return "boolean";
         return value.getNodeType().name().toLowerCase();
+    }
+
+    /**
+     * JSON Schema defines an integer by mathematical value, not by the parser's storage type.
+     * Consequently {@code 1}, {@code 1.0}, and {@code 1.00} are all integers, while
+     * {@code 1.5} is not. Jackson represents the decimal spellings as floating-point nodes, so
+     * {@link JsonNode#isIntegralNumber()} alone is too strict for model-authored tool arguments.
+     */
+    private static boolean isJsonSchemaInteger(JsonNode value) {
+        if (value == null || !value.isNumber()) {
+            return false;
+        }
+        try {
+            return value.decimalValue().stripTrailingZeros().scale() <= 0;
+        } catch (ArithmeticException | NumberFormatException invalidNumber) {
+            return false;
+        }
     }
 
     private static String childPath(String path, String field) {

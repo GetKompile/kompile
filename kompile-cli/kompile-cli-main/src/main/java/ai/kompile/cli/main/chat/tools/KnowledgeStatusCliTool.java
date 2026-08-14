@@ -54,7 +54,7 @@ public class KnowledgeStatusCliTool implements CliTool {
     @Override
     public String description() {
         return "Check what knowledge backends are available and how much data is indexed. " +
-                "Reports project-local crawl knowledge bases when no server is configured, or remote " +
+                "When no server is configured, initializes and reports the current folder's local knowledge base; otherwise reports remote " +
                 "document and graph backends when connected. Returns backend names, document count, and graph entity count. " +
                 "Call this to verify knowledge search will work.";
     }
@@ -65,7 +65,7 @@ public class KnowledgeStatusCliTool implements CliTool {
         schema.put("type", "object");
         schema.putObject("properties").putObject("knowledgeBase")
                 .put("type", "string")
-                .put("description", "Optional project-local knowledge-base id, name, or collection.");
+                .put("description", "Optional explicit project-local selector. Omit to use and initialize the current folder's knowledge base.");
         return schema;
     }
 
@@ -81,7 +81,7 @@ public class KnowledgeStatusCliTool implements CliTool {
 
         String knowledgeBase = params.path("knowledgeBase").asText(null);
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return localBackend.status(knowledgeBase, context.getWorkingDirectory());
+            return localBackend.status(knowledgeBase, context);
         }
 
         try {
@@ -102,7 +102,7 @@ public class KnowledgeStatusCliTool implements CliTool {
             return formatStatus(result);
 
         } catch (java.net.ConnectException e) {
-            return localBackend.status(knowledgeBase, context.getWorkingDirectory());
+            return localBackend.status(knowledgeBase, context);
         } catch (Exception e) {
             return ToolResult.error("Knowledge status error: " + e.getMessage());
         }

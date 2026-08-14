@@ -153,7 +153,10 @@ class UnifiedCrawlGraphServiceImplTest {
         // Re-create LLM chain mocks
         requestSpec = mock(LLMChat.ChatClientRequestSpec.class);
         callResponseSpec = mock(LLMChat.CallResponseSpec.class);
-        when(llmChat.prompt(anyString())).thenReturn(requestSpec);
+        when(llmChat.prompt(anyString())).thenAnswer(invocation -> {
+            String prompt = invocation.getArgument(0);
+            return isCorpusSchemaPrompt(prompt) ? emptyCorpusSchemaResponse() : requestSpec;
+        });
         when(requestSpec.call()).thenReturn(callResponseSpec);
         when(callResponseSpec.content()).thenReturn(buildExtractionJson(
                 List.of(entity("default-entity", "Default Entity", "CONCEPT", "Default graph extraction", 0.9)),
@@ -247,6 +250,28 @@ class UnifiedCrawlGraphServiceImplTest {
 
         // CrossDocumentRelationCallback — reset to default neutral stub
         when(crossDocumentRelationCallback.extractRelationsFromGraphNodes(any())).thenReturn(0);
+    }
+
+    private static boolean isCorpusSchemaPrompt(String prompt) {
+        return prompt != null
+                && prompt.contains("AUTHORITATIVE EXISTING SCHEMA")
+                && prompt.contains("CORPUS PASSAGES");
+    }
+
+    private static LLMChat.ChatClientRequestSpec emptyCorpusSchemaResponse() {
+        LLMChat.CallResponseSpec response = mock(LLMChat.CallResponseSpec.class);
+        when(response.content()).thenReturn(
+                "{\"nodeTypes\":[],\"relationshipTypes\":[],\"patterns\":[]}");
+        LLMChat.ChatClientRequestSpec request = mock(LLMChat.ChatClientRequestSpec.class);
+        when(request.call()).thenReturn(response);
+        return request;
+    }
+
+    private static String extractionPrompt(ArgumentCaptor<String> captor) {
+        return captor.getAllValues().stream()
+                .filter(prompt -> !isCorpusSchemaPrompt(prompt))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No graph extraction prompt was submitted"));
     }
 
     @AfterEach
@@ -729,7 +754,7 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(2, job.getDocumentsLoaded().get());
         assertEquals(2, job.getDocumentsIndexed().get());
         assertTrue(job.getEntitiesExtracted().get() > 0);
-        verify(llmChat, atLeastOnce()).prompt(anyString());
+        verify(llmChat, atLeastOnce()).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
     }
 
     @Test
@@ -752,7 +777,7 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(1, job.getDocumentsLoaded().get());
         assertTrue(job.getEntitiesExtracted().get() > 0);
         assertEquals(0, job.getDocumentsIndexed().get());
-        verify(llmChat, atLeastOnce()).prompt(anyString());
+        verify(llmChat, atLeastOnce()).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
         verify(vectorStore, never()).add(anyList());
     }
 
@@ -786,7 +811,7 @@ class UnifiedCrawlGraphServiceImplTest {
         InOrder clearOrder = inOrder(graphExtractionCheckpointStore, knowledgeGraphService);
         clearOrder.verify(graphExtractionCheckpointStore).clearFactSheet(42L);
         clearOrder.verify(knowledgeGraphService).deleteByFactSheetId(42L);
-        verify(llmChat, atLeastOnce()).prompt(anyString());
+        verify(llmChat, atLeastOnce()).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -1190,7 +1215,7 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         // Only 1 call to LLM (2 blank docs skipped)
-        verify(llmChat, times(1)).prompt(anyString());
+        verify(llmChat, times(1)).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
         assertEquals(1, job.getEntitiesExtracted().get());
     }
 
@@ -1309,7 +1334,7 @@ class UnifiedCrawlGraphServiceImplTest {
         // GraphConstructor was called, NOT the inline LLM path
         verify(graphConstructor).constructGraphFromDocs(anyList(), any(), any(), anyBoolean(), anyBoolean(), any());
         // LLM should not be called directly for extraction (only configure is called)
-        verify(llmChat, never()).prompt(anyString());
+        verify(llmChat, never()).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
     }
 
     @Test
@@ -1340,7 +1365,7 @@ class UnifiedCrawlGraphServiceImplTest {
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         assertEquals(1, job.getEntitiesExtracted().get());
         // LLM was called directly
-        verify(llmChat).prompt(anyString());
+        verify(llmChat).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
     }
 
     @Test
@@ -1732,8 +1757,8 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         // LLM was called with normalized text (no null bytes or raw control chars)
-        verify(llmChat).prompt(promptCaptor.capture());
-        String promptReceived = promptCaptor.getValue();
+        verify(llmChat, atLeastOnce()).prompt(promptCaptor.capture());
+        String promptReceived = extractionPrompt(promptCaptor);
         assertFalse(promptReceived.contains("\u0000"), "Null bytes should be stripped");
         assertFalse(promptReceived.contains("\u0001"), "Control chars should be stripped");
         // Tabs are converted to spaces, CRLF to LF — neither raw tab nor \r should remain
@@ -1765,8 +1790,8 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        verify(llmChat).prompt(promptCaptor.capture());
-        String promptReceived = promptCaptor.getValue();
+        verify(llmChat, atLeastOnce()).prompt(promptCaptor.capture());
+        String promptReceived = extractionPrompt(promptCaptor);
         // VLM normalizeStructuredText should preserve [Table 1] marker and markdown pipes
         assertTrue(promptReceived.contains("[Table 1]") || promptReceived.contains("Table 1"),
                 "VLM table markers should be preserved in structured text normalization");
@@ -1798,8 +1823,8 @@ class UnifiedCrawlGraphServiceImplTest {
         awaitCompletion(job);
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
-        verify(llmChat).prompt(promptCaptor.capture());
-        String promptReceived = promptCaptor.getValue();
+        verify(llmChat, atLeastOnce()).prompt(promptCaptor.capture());
+        String promptReceived = extractionPrompt(promptCaptor);
         // Page header "Page 1" and "1 of 5" should be stripped by normalizeText
         assertFalse(promptReceived.contains("\nPage 1\n"), "Page headers should be stripped");
         assertFalse(promptReceived.contains("\n1 of 5\n"), "Page number patterns should be stripped");
@@ -1833,7 +1858,7 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         // Only the valid doc should reach the LLM — blank doc discarded in convertDocumentText
-        verify(llmChat, times(1)).prompt(anyString());
+        verify(llmChat, times(1)).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
         assertEquals(1, job.getEntitiesExtracted().get());
     }
 
@@ -1866,7 +1891,7 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         // Image and chart docs filtered — LLM called only once for the plain text doc
-        verify(llmChat, times(1)).prompt(anyString());
+        verify(llmChat, times(1)).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
     }
 
     @Test
@@ -1934,7 +1959,7 @@ class UnifiedCrawlGraphServiceImplTest {
 
         assertEquals(UnifiedCrawlJob.Status.COMPLETED, job.getStatus().get());
         // VLM document should pass through — LLM called once for it
-        verify(llmChat, times(1)).prompt(anyString());
+        verify(llmChat, times(1)).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
         assertEquals(1, job.getEntitiesExtracted().get());
     }
 
@@ -2300,7 +2325,7 @@ class UnifiedCrawlGraphServiceImplTest {
 
         // ── Phase 2: Text conversion ran (text was normalized) ──
         // Verified by the fact that LLM received a prompt (non-blank text survived)
-        verify(llmChat).prompt(anyString());
+        verify(llmChat).prompt(argThat((String prompt) -> !isCorpusSchemaPrompt(prompt)));
 
         // ── Phase 3: Document node registered (source_path present) ──
         verify(knowledgeGraphService, atLeast(1)).createNode(
@@ -3204,6 +3229,10 @@ class UnifiedCrawlGraphServiceImplTest {
             List.of()
         );
         when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            String prompt = inv.getArgument(0);
+            if (isCorpusSchemaPrompt(prompt)) {
+                return emptyCorpusSchemaResponse();
+            }
             int call = callCount.incrementAndGet();
             LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
             when(resp.content()).thenReturn(call == 1 ? "not valid json at all" : validJson);
@@ -3235,6 +3264,10 @@ class UnifiedCrawlGraphServiceImplTest {
             List.of()
         );
         when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            String prompt = inv.getArgument(0);
+            if (isCorpusSchemaPrompt(prompt)) {
+                return emptyCorpusSchemaResponse();
+            }
             int call = callCount.incrementAndGet();
             LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
             when(resp.content()).thenReturn(call == 1
@@ -3268,6 +3301,10 @@ class UnifiedCrawlGraphServiceImplTest {
         // Always returns invalid JSON — exhausts all maxValidationRetries (default=2 → 3 attempts).
         // After all retries: errorCount=1, entitiesExtracted=0 → GRAPH_EXTRACTION FAILED → job FAILED.
         when(llmChat.prompt(anyString())).thenAnswer(inv -> {
+            String prompt = inv.getArgument(0);
+            if (isCorpusSchemaPrompt(prompt)) {
+                return emptyCorpusSchemaResponse();
+            }
             LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
             when(resp.content()).thenReturn("this is not valid json");
             LLMChat.ChatClientRequestSpec spec = mock(LLMChat.ChatClientRequestSpec.class);

@@ -84,21 +84,27 @@ public class PermissionService {
         d.put("webfetch", PermissionLevel.ALLOW);
         d.put("websearch", PermissionLevel.ALLOW);
         d.put("crawl_discover", PermissionLevel.ALLOW);
+        d.put("crawl_result", PermissionLevel.ALLOW);
         d.put("knowledge_status", PermissionLevel.ALLOW);
+        d.put("knowledge_search", PermissionLevel.ALLOW);
+        d.put("graph_reasoning_query", PermissionLevel.ALLOW);
 
-        // File modification requires asking
-        d.put("edit", PermissionLevel.ASK);
-        d.put("write", PermissionLevel.ASK);
-        d.put("patch", PermissionLevel.ASK);
-
-        // Shell execution — tiered by command risk level
-        d.put("bash", PermissionLevel.ASK);
+        // Standard chat is permissive by default. The enforcer and explicit
+        // agent/user rules own policy; this transport-level service must not
+        // unexpectedly stall local MCP execution waiting for terminal input.
+        d.put("crawl_documents", PermissionLevel.ALLOW);
+        d.put("crawl_source", PermissionLevel.ALLOW);
+        d.put("crawl_control", PermissionLevel.ALLOW);
+        d.put("ask_graph_assert", PermissionLevel.ALLOW);
+        d.put("ask_graph_retract", PermissionLevel.ALLOW);
+        d.put("edit", PermissionLevel.ALLOW);
+        d.put("write", PermissionLevel.ALLOW);
+        d.put("patch", PermissionLevel.ALLOW);
+        d.put("bash", PermissionLevel.ALLOW);
         d.put("bash.readonly", PermissionLevel.ALLOW);
-        d.put("bash.write", PermissionLevel.ASK);
-        d.put("bash.destructive", PermissionLevel.ASK);
-
-        // External directory access requires asking
-        d.put("external_directory", PermissionLevel.ASK);
+        d.put("bash.write", PermissionLevel.ALLOW);
+        d.put("bash.destructive", PermissionLevel.ALLOW);
+        d.put("external_directory", PermissionLevel.ALLOW);
 
         // Subagent spawning is allowed
         d.put("task", PermissionLevel.ALLOW);
@@ -227,8 +233,9 @@ public class PermissionService {
             return defaultLevel;
         }
 
-        // Unknown permission keys default to ASK
-        return PermissionLevel.ASK;
+        // Future MCP tools inherit the permissive standard-chat default. Explicit
+        // agent/user rules can still set ASK or DENY for any permission key.
+        return PermissionLevel.ALLOW;
     }
 
     private PermissionResult askUser(String permissionKey, String description) {

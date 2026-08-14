@@ -16,6 +16,7 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -136,6 +137,7 @@ public class EmbeddingSubprocessMain {
     private record PendingRequest(int priority, long sequence, EmbeddingSubprocessMessage message) {}
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         // Capture original stdout for protocol messages
         originalStdout = System.out;
 

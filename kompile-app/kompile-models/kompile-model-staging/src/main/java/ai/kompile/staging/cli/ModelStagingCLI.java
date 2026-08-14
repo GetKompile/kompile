@@ -32,6 +32,7 @@ import java.util.concurrent.Callable;
     mixinStandardHelpOptions = true,
     version = "1.0.0",
     subcommands = {
+        BootstrapCommand.class,
         DownloadCommand.class,
         ConvertCommand.class,
         PromoteCommand.class,

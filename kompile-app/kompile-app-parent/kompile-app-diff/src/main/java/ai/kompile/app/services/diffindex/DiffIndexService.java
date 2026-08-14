@@ -76,7 +76,17 @@ public class DiffIndexService {
     );
 
     public DiffIndexService() {
-        this.indexDir = Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diff-index");
+        this(Paths.get(System.getProperty("user.home"), ".kompile", "agent-state", "diff-index"));
+    }
+
+    /**
+     * Create a diff index rooted at an explicit directory.
+     *
+     * <p>This constructor keeps the index usable outside a Spring application context, including
+     * the stdio MCP server and focused tests. Call {@link #init()} before querying it.</p>
+     */
+    public DiffIndexService(Path indexDir) {
+        this.indexDir = Objects.requireNonNull(indexDir, "indexDir").toAbsolutePath().normalize();
         this.mapper = JsonUtils.newStandardMapper()
                 .enable(SerializationFeature.INDENT_OUTPUT)
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL);

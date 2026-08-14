@@ -18,6 +18,7 @@ package ai.kompile.cli.main.serve;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.registry.InstanceInfo;
+import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.common.registry.InstanceRegistry;
 import picocli.CommandLine;
 
@@ -28,6 +29,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 /**
@@ -172,24 +174,13 @@ public class ServeCommand implements Callable<Integer> {
      */
     private int forkToBackground() {
         try {
-            // Re-run ourselves without --detach
-            String currentCommand = ProcessHandle.current().info().command().orElse("java");
-            ProcessBuilder pb;
-
-            // Detect if running as native image or JVM
-            if (!currentCommand.toLowerCase().contains("java")) {
-                // Native image
-                pb = new ProcessBuilder(currentCommand, "serve",
-                        "--idle-timeout", String.valueOf(idleTimeoutMinutes),
-                        "--max-sessions", String.valueOf(maxSessions));
-            } else {
-                // JVM — need classpath
-                String classPath = System.getProperty("java.class.path");
-                pb = new ProcessBuilder(currentCommand, "-cp", classPath,
-                        ai.kompile.cli.main.MainCommand.class.getName(), "serve",
-                        "--idle-timeout", String.valueOf(idleTimeoutMinutes),
-                        "--max-sessions", String.valueOf(maxSessions));
-            }
+            // Re-run through the same distributable process ABI as stdio MCP:
+            // native executable first, executable JAR via java -jar otherwise.
+            List<String> command = CliProcessLauncher.commandFor(List.of(
+                    "serve",
+                    "--idle-timeout", String.valueOf(idleTimeoutMinutes),
+                    "--max-sessions", String.valueOf(maxSessions)));
+            ProcessBuilder pb = new ProcessBuilder(command);
 
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(
                     new File(KompileHome.runtimeDirectory(), "daemon.log")));

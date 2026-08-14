@@ -18,16 +18,20 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.file.Paths;
+import java.io.InputStream;
+import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -44,7 +48,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
  * <ul>
  *   <li>Tool metadata: id, permissionKey, READ_ONLY annotation, compactHint present</li>
  *   <li>Parameter schema: operation and question present; no required params (all optional)</li>
- *   <li>Backend unavailable → descriptive error before HTTP</li>
+ *   <li>No configured backend → folder-scoped local graph bootstrap</li>
  *   <li>CAPABILITIES intent routed correctly, HTTP call made to the right endpoint</li>
  *   <li>Server 400 → tool error with CAPABILITIES hint</li>
  *   <li>Server 200 CAPABILITIES → formatted output with "Available operations" section</li>
@@ -59,15 +63,71 @@ class GraphReasoningQueryToolTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
+    private String previousLocalCrawlExecution;
+
+    @TempDir
+    Path tempDir;
 
     @BeforeEach
     void setUp() {
+        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
+        System.setProperty("kompile.local.crawl.execution", "inline");
         om = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("coder").enabledTools(Set.of("*")).build();
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_reasoning_query", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
+    }
+
+    @AfterEach
+    void restoreLocalCrawlExecution() {
+        if (previousLocalCrawlExecution == null) {
+            System.clearProperty("kompile.local.crawl.execution");
+        } else {
+            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
+        }
+    }
+
+    @Test
+    @DisplayName("native image registers the complete local graph query response DTO graph")
+    void nativeImageRegistersLocalGraphQueryResponseTypes() throws Exception {
+        String resource = "/META-INF/native-image/ai.kompile/kompile-cli/reflect-config.json";
+        try (InputStream input = getClass().getResourceAsStream(resource)) {
+            assertNotNull(input, "missing native-image reflection configuration");
+            JsonNode config = om.readTree(input);
+            Set<String> registered = new HashSet<>();
+            config.forEach(entry -> registered.add(entry.path("name").asText()));
+
+            Set<String> required = Set.of(
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$Result",
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$EntityView",
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$RelationView",
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$ResolutionView",
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$PathStep",
+                    "ai.kompile.graph.reasoning.query.GraphQueryEngine$Capability",
+                    "ai.kompile.graph.reasoning.explain.ReasoningTrace",
+                    "ai.kompile.graph.reasoning.explain.ReasoningTrace$Step",
+                    "ai.kompile.graph.reasoning.confidence.Opinion",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ScoreBreakdown",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ModelMatch",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$Plan",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$ResolvedIntervention",
+                    "ai.kompile.graph.reasoning.quantitative.ModelRetrieval$Gap",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeRule",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeRule$Input",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$MeasureSelector",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$Intervention",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeQuery$Goal",
+                    "ai.kompile.graph.reasoning.quantitative.ScenarioResult",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeScenarioEngine$GoalSeekResult",
+                    "ai.kompile.graph.reasoning.quantitative.QuantitativeScenarioEngine$GoalSeekResult$Alternative");
+            Set<String> missing = new HashSet<>(required);
+            missing.removeAll(registered);
+            assertTrue(missing.isEmpty(), () -> "Missing native reflection metadata: " + missing);
+        }
     }
 
     // ── Metadata ──────────────────────────────────────────────────────────────
@@ -106,8 +166,10 @@ class GraphReasoningQueryToolTest {
             assertFalse(hint.isBlank(), "compactHint must not be blank");
             assertTrue(hint.contains("capabilities") || hint.contains("CAPABILITIES"),
                     "compactHint must mention capabilities intent");
-            assertTrue(hint.contains("factSheetId"),
-                    "compactHint must mention factSheetId discovery");
+            assertTrue(hint.contains("current folder"),
+                    "compactHint must advertise the folder-scoped local default");
+            assertTrue(hint.contains("optional remote/legacy"),
+                    "compactHint must describe factSheetId only as an optional compatibility override");
         }
 
         @Test
@@ -118,6 +180,10 @@ class GraphReasoningQueryToolTest {
             assertFalse(desc.isBlank());
             assertTrue(desc.toLowerCase().contains("knowledge graph"),
                     "description must mention knowledge graph");
+            assertTrue(desc.contains("project-local"),
+                    "description must advertise the default in-process backend");
+            assertFalse(desc.toLowerCase().contains("requires kompile"),
+                    "description must not claim that a centralized service is required");
         }
     }
 
@@ -174,32 +240,35 @@ class GraphReasoningQueryToolTest {
         }
     }
 
-    // ── Backend unavailable ───────────────────────────────────────────────────
+    // ── Folder-scoped local backend ────────────────────────────────────────────
 
     @Nested
-    @DisplayName("Backend unavailable")
+    @DisplayName("Folder-scoped local backend")
     class BackendUnavailable {
 
         @Test
-        @DisplayName("null baseUrl selects project-local graph backend")
+        @DisplayName("null baseUrl bootstraps the project-local graph")
         void nullBaseUrl_usesProjectLocalBackend() throws Exception {
             GraphReasoningQueryTool tool = new GraphReasoningQueryTool((String) null, om);
             ObjectNode params = om.createObjectNode();
             params.put("operation", "CAPABILITIES");
 
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when no local graph exists");
-            assertTrue(result.getOutput().contains("graph_reasoning_query local error"));
-            assertTrue(result.getOutput().contains("project-local"),
-                    "Error must mention the project-local graph; was: " + result.getOutput());
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("Available operations"), result.getOutput());
+            assertTrue(java.nio.file.Files.isRegularFile(
+                    tempDir.resolve("data/crawls")
+                            .resolve(tempDir.getFileName().toString().toLowerCase() + "-knowledge")
+                            .resolve(LocalProjectGraphBackend.GRAPH_FILE)));
         }
 
         @Test
-        @DisplayName("empty params with unavailable backend returns error")
+        @DisplayName("empty params use the folder graph and default query intent")
         void emptyParams_unavailableBackend_returnsError() throws Exception {
             GraphReasoningQueryTool tool = new GraphReasoningQueryTool((String) null, om);
             ToolResult result = tool.execute(om.createObjectNode(), ctx);
-            assertTrue(result.isError());
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("Available operations"), result.getOutput());
         }
     }
 
@@ -425,6 +494,24 @@ class GraphReasoningQueryToolTest {
             assertFalse(tr.isError());
             assertTrue(tr.getOutput().contains("Guidance"), "must render guidance section");
             assertTrue(tr.getOutput().contains("SEARCH"),   "must include guidance text");
+        }
+
+        @Test
+        @DisplayName("FACTS renders ranked atoms returned in data.facts")
+        void factsSection() throws Exception {
+            JsonNode result = om.readTree("""
+                    {"status":"OK","intent":"FACTS","summary":"Returned 1 ranked graph fact(s).",
+                     "entities":[],"relations":[],"path":[],"capabilities":[],"guidance":[],
+                     "data":{"facts":[
+                       {"atom":"WORKS_AT(alice,acme)","kind":"relation","confidence":0.91,"source":"r1"}
+                     ]},"resolutions":[]}
+                    """);
+            ToolResult tr = tool.formatResult(result);
+            assertFalse(tr.isError());
+            assertTrue(tr.getOutput().contains("Facts (1)"), tr.getOutput());
+            assertTrue(tr.getOutput().contains("WORKS_AT(alice,acme)"), tr.getOutput());
+            assertTrue(tr.getOutput().contains("confidence=0.91"), tr.getOutput());
+            assertEquals(1, tr.getMetadata().get("factCount"));
         }
 
         @Test

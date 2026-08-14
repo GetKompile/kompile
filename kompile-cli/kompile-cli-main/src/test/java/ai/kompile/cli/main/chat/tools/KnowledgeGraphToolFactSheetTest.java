@@ -107,12 +107,14 @@ class KnowledgeGraphToolFactSheetTest {
     }
 
     @Test
-    @DisplayName("compactHint is non-null and mentions list_fact_sheets")
+    @DisplayName("compactHint leads with the folder-scoped local default")
     void compactHint_mentionsListFactSheets() {
         String hint = tool().compactHint();
         assertNotNull(hint, "compactHint must not be null");
-        assertTrue(hint.contains("list_fact_sheets"),
-                "compactHint must mention list_fact_sheets as the discovery action");
+        assertTrue(hint.contains("current folder"),
+                "compactHint must advertise the folder-scoped local default");
+        assertFalse(hint.contains("ALWAYS call list_fact_sheets"),
+                "compactHint must not require hosted fact-sheet discovery");
     }
 
     @Test

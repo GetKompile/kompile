@@ -5,6 +5,8 @@ fail(){ printf 'verify-offline-apk: %s\n' "$*" >&2; exit 1; }
 need(){ [[ $# -ge 2 && -n $2 ]] || fail "missing value for $1"; }
 APK= VARIANT= CONFIG= ANDROID_SDK= ANDROID_NDK= RUNTIME_AAR_OVERRIDE=
 SDX_SDK= EXPECTED_BUILD_ID= EXPECTED_VERSION_CODE=
+EXPECTED_SOURCE_RUNTIME_AAR_SHA256= EXPECTED_RUNTIME_PROVENANCE_SHA256=
+EXPECTED_SDX_AOT_PROVENANCE_SHA256=
 while [[ $# -gt 0 ]]; do case "$1" in
  --apk) need "$@"; APK=$2; shift 2;; --variant) need "$@"; VARIANT=$2; shift 2;;
  --config) need "$@"; CONFIG=$2; shift 2;; --android-sdk) need "$@"; ANDROID_SDK=$2; shift 2;;
@@ -13,7 +15,10 @@ while [[ $# -gt 0 ]]; do case "$1" in
  --sdx-sdk) need "$@"; SDX_SDK=$2; shift 2;;
  --expected-build-id) need "$@"; EXPECTED_BUILD_ID=$2; shift 2;;
  --expected-version-code) need "$@"; EXPECTED_VERSION_CODE=$2; shift 2;;
- -h|--help) echo "Usage: verify-offline-apk.sh --apk FILE --variant NAME --config FILE --android-sdk DIR --android-ndk DIR --sdx-sdk DIR --expected-build-id ID --expected-version-code N [--runtime-aar FILE]"; exit 0;;
+ --expected-source-runtime-aar-sha256) need "$@"; EXPECTED_SOURCE_RUNTIME_AAR_SHA256=$2; shift 2;;
+ --expected-runtime-provenance-sha256) need "$@"; EXPECTED_RUNTIME_PROVENANCE_SHA256=$2; shift 2;;
+ --expected-sdx-aot-provenance-sha256) need "$@"; EXPECTED_SDX_AOT_PROVENANCE_SHA256=$2; shift 2;;
+ -h|--help) echo "Usage: verify-offline-apk.sh --apk FILE --variant NAME --config FILE --android-sdk DIR --android-ndk DIR --sdx-sdk DIR --expected-build-id ID --expected-version-code N [--runtime-aar FILE] [--expected-source-runtime-aar-sha256 SHA256 --expected-runtime-provenance-sha256 SHA256 --expected-sdx-aot-provenance-sha256 SHA256]"; exit 0;;
  *) fail "unknown argument: $1";; esac; done
 [[ -n $APK && -n $VARIANT && -n $CONFIG && -n $ANDROID_SDK && -n $ANDROID_NDK && -n $SDX_SDK && -n $EXPECTED_BUILD_ID && -n $EXPECTED_VERSION_CODE ]] ||
   fail "apk, variant, config, Android SDK/NDK, SDX SDK, build ID, and version code are required"
@@ -21,6 +26,20 @@ while [[ $# -gt 0 ]]; do case "$1" in
 [[ $EXPECTED_BUILD_ID =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "invalid expected build ID"
 [[ $EXPECTED_VERSION_CODE =~ ^[0-9]+$ ]] && (( EXPECTED_VERSION_CODE >= 1 && EXPECTED_VERSION_CODE <= 2100000000 )) ||
   fail "invalid expected Android version code"
+if [[ $VARIANT == tensorG3 ]]; then
+  [[ $EXPECTED_SOURCE_RUNTIME_AAR_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
+    fail "Tensor G3 requires a lowercase source runtime AAR SHA-256"
+  [[ $EXPECTED_RUNTIME_PROVENANCE_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
+    fail "Tensor G3 requires a lowercase runtime provenance SHA-256"
+  [[ $EXPECTED_SDX_AOT_PROVENANCE_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
+    fail "Tensor G3 requires a lowercase SDX AOT provenance SHA-256"
+else
+  [[ -z $EXPECTED_SOURCE_RUNTIME_AAR_SHA256 && -z $EXPECTED_RUNTIME_PROVENANCE_SHA256 && -z $EXPECTED_SDX_AOT_PROVENANCE_SHA256 ]] ||
+    fail "runtime provenance digests are only valid for Tensor G3"
+  EXPECTED_SOURCE_RUNTIME_AAR_SHA256=not-applicable
+  EXPECTED_RUNTIME_PROVENANCE_SHA256=not-applicable
+  EXPECTED_SDX_AOT_PROVENANCE_SHA256=not-applicable
+fi
 [[ -s $APK && -f $APK ]] || fail "APK not found or empty: $APK"
 [[ -s $CONFIG && -f $CONFIG ]] || fail "config not found or empty: $CONFIG"
 [[ -d $SDX_SDK ]] || fail "SDX SDK directory not found: $SDX_SDK"
@@ -46,7 +65,9 @@ for d in "${BTDIRS[@]}"; do [[ -x $d/aapt2 && -x $d/apksigner ]] || continue
  AAPT2=$d/aapt2; APKSIGNER=$d/apksigner; [[ -x $d/dexdump ]] && DEXDUMP=$d/dexdump; break; done
 [[ -n $AAPT2 && -n $APKSIGNER ]] || fail "aapt2/apksigner not found in one build-tools version"
 READELF=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf
+STRIP=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
 [[ -x $READELF ]] || fail "llvm-readelf not found or not executable: $READELF"
+[[ -x $STRIP ]] || fail "llvm-strip not found or not executable: $STRIP"
 APKANALYZER=$ANDROID_SDK/cmdline-tools/latest/bin/apkanalyzer
 [[ -x $APKANALYZER ]] || fail "apkanalyzer not found or not executable: $APKANALYZER"
 
@@ -65,7 +86,9 @@ unzip -Z1 "$APK" > "$NAMES" || fail "APK is not a readable ZIP"
 [[ $(wc -l < "$NAMES") -eq $(sort -u "$NAMES"|wc -l) ]] || fail "APK has duplicate members"
 while IFS= read -r n; do [[ -n $n && $n != /* && $n != *\\* ]] || fail "unsafe APK path: $n"
  case "/$n/" in */../*) fail "unsafe APK path: $n";; esac; done < "$NAMES"
-unzip -qq "$APK" -d "$TMP/apk" || fail "APK extraction failed"
+# Duplicate members and unsafe paths are rejected above. Force overwrite mode so
+# verification can never block on an interactive unzip prompt in unattended builds.
+unzip -oqq "$APK" -d "$TMP/apk" || fail "APK extraction failed"
 
 "$APKSIGNER" verify --verbose "$APK" >/dev/null || fail "APK signature audit failed"
 "$AAPT2" dump permissions "$APK" > "$TMP/permissions" || fail "APK permission audit failed"
@@ -150,6 +173,12 @@ case $VARIANT in
  tensorG3) [[ -n ${LIBS[libnd4jnnapi.so]:-} ]]; ! grep -Eqi 'litert|vulkan|hexagon' <<<"$LOWER";;
  tensorG5) [[ -n ${LIBS[liblitert-lm.so]:-} ]]; ! grep -Eqi 'vulkan|hexagon|nnapi|neuralnetworks' <<<"$LOWER";;
 esac || fail "wrong or mixed provider native runtime"
+if [[ $VARIANT == tensorG3 ]]; then
+ for importer_library in libjnind4jcpu.so libnd4jcpu.so libopenblas.so libomp.so; do
+  [[ -n ${LIBS[$importer_library]:-} ]] ||
+   fail "Tensor G3 APK is missing required CPU importer library: $importer_library"
+ done
+fi
 
 is_android_system_library(){
  case "$1" in
@@ -172,7 +201,7 @@ is_hexagon_dsp_system_library(){
 # exemption, and every dependency still has to be packaged and Android/AArch64-clean.
 is_raw_sdx_cpu_library(){
  case "$1" in
-  libnd4jcpu.so|libjnind4jcpu.so|libjniopenblas*.so|libopenblas*.so) return 0;;
+  libsdx_cpu.so|libnd4jcpu.so|libjnind4jcpu.so|libjniopenblas*.so|libopenblas*.so) return 0;;
  esac
  return 1
 }
@@ -204,10 +233,10 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
  grep -Fq GNU_RELRO <<<"$h" && grep -Fq BIND_NOW <<<"$d" || fail "ELF hardening missing: $b"
  ! grep -Eq '[(]RPATH[)]|TEXTREL' <<<"$d" || fail "unsafe ELF tag: $b"
  if grep -Fq '(RUNPATH)' <<<"$d"; then
-   # LiteRT-LM resolves its separately packaged constraint provider beside the
-   # runtime. Permit only that non-escaping local lookup; reject every other
-   # provider and every absolute, parent-relative, or multi-entry RUNPATH.
-   [[ $VARIANT == tensorG5 ]] || fail "unexpected RUNPATH: $b"
+   # LiteRT-LM and the explicit raw-SDX CPU importer resolve separately packaged
+   # companion libraries beside the runtime. Permit only that non-escaping local
+   # lookup; reject every absolute, parent-relative, or multi-entry RUNPATH.
+   [[ $VARIANT == tensorG5 ]] || is_raw_sdx_cpu_library "$b" || fail "unexpected RUNPATH: $b"
    ! grep -F '(RUNPATH)' <<<"$d" | grep -Evq 'Library runpath: \[\$ORIGIN\][[:space:]]*$' || fail "unsafe RUNPATH: $b"
  fi
  needed=$(grep -oE 'Shared library: \[[^]]+\]' <<<"$d"|tr '\n' ' '||true)
@@ -215,9 +244,9 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
  dependency_surface=$(printf '%s\n%s\n%s' "$h" "$d" "$undefined"|tr '[:upper:]' '[:lower:]')
  # Audit runtime dependencies and unresolved imports. Only the explicitly packaged
  # raw-SDX CPU companion libraries may expose ND4J CPU/OpenBLAS names.
- for x in gfortran quadmath sdx_cpu ld-linux linuxbrew; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden ELF dependency $x in $b"; done
+ for x in gfortran quadmath ld-linux linuxbrew; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden ELF dependency $x in $b"; done
  if ! is_raw_sdx_cpu_library "$b"; then
-  for x in openblas nd4jcpu; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden provider dependency $x in $b"; done
+  for x in openblas nd4jcpu sdx_cpu; do ! grep -Fq "$x" <<<"$dependency_surface" || fail "forbidden provider dependency $x in $b"; done
  fi
  while IFS= read -r dep; do
    [[ -z $dep ]] && continue
@@ -238,10 +267,12 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
    done < <(grep -oE '\[[^]]+\]' <<<"$needed" | tr -d '[]')
  elif [[ $b == libjnisdx_llm.so ]]; then
    grep -Fq libsdx_llm.so <<<"$needed" ||
-     fail "JavaCPP SDX LLM transport is not linked to libsdx_llm.so"
+     fail "direct SDX LLM JNI transport is not linked to libsdx_llm.so"
+   ! grep -Fq libjnijavacpp.so <<<"$needed" ||
+     fail "ART-facing SDX JNI transport must not share JavaCPP state with embedded Graal"
    while IFS= read -r dep; do case $dep in
-     libc.so|libdl.so|liblog.so|libm.so|libsdx_llm.so) ;;
-     '') ;; *) fail "unexpected JavaCPP SDX LLM dependency: $dep";; esac
+     libc.so|libc++_shared.so|libdl.so|liblog.so|libm.so|libsdx_llm.so) ;;
+     '') ;; *) fail "unexpected direct SDX LLM JNI dependency: $dep";; esac
    done < <(grep -oE '\[[^]]+\]' <<<"$needed" | tr -d '[]')
  fi
  if [[ $VARIANT == tensorG3 && $b == libnd4jnnapi.so ]]; then
@@ -258,8 +289,8 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
  fi
  if [[ $b == libnd4jcpu.so ]]; then
   # The exact runtime packaged in the APK must understand the canonical v2
-  # text-generation metadata emitted by current SDZ producers. Byte-for-byte AAR
-  # comparison below then binds this contract to the selected provider artifact.
+  # text-generation metadata emitted by current SDZ producers. The immutable AOT
+  # SDK comparison below binds this contract to the selected importer artifact.
   local -a text_generation_v2_contracts=(
    "causal-lm-in-graph-state-v2"
    "io.recurrentStates"
@@ -269,6 +300,11 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
    grep -aFq "$contract" "$f" ||
     fail "packaged libnd4jcpu.so lacks text-generation v2 contract: $contract"
   done
+ fi
+ if [[ $b == libnd4jcpu.so || $b == libnd4jnnapi.so ]]; then
+  if grep -aFq 'executeSegmentWithCpuGraph: no CPU graph backends available' "$f"; then
+   fail "packaged $b contains the obsolete manual CPU-backend chain"
+  fi
  fi
 }
 for b in "${!LIBS[@]}"; do audit_elf "$b" "${LIBS[$b]}"; done
@@ -289,10 +325,14 @@ else
  NORMALIZED_AAR=$CDIR/app/build/sdx-normalized-aar/$AD/sdx-runtime-$AD.aar
  [[ -s $NORMALIZED_AAR ]] && AAR=$NORMALIZED_AAR
 fi
-# Gradle refreshes provider-independent SDX Java and paired tokenizer libraries
-# before packaging. Native byte comparisons therefore target that consumed,
-# normalized AAR rather than the provider's original input.
+# Tensor G3 exact-stages the source-bound producer AAR; the other providers may
+# still normalize shared Java/tokenizer layers before packaging.
 [[ -s $AAR ]] || fail "configured runtime AAR not found: $AAR"
+if [[ $VARIANT == tensorG3 ]]; then
+ AAR_HASH=$(sha256sum "$AAR") || fail "cannot hash Tensor G3 runtime AAR"; AAR_HASH=${AAR_HASH%% *}
+ [[ $AAR_HASH == "$EXPECTED_SOURCE_RUNTIME_AAR_SHA256" ]] ||
+  fail "Tensor G3 consumed runtime AAR differs from the source-bound producer AAR"
+fi
 AN=$TMP/aar.names; unzip -Z1 "$AAR" > "$AN" || fail "bad runtime AAR"
 [[ $(wc -l < "$AN") -eq $(sort -u "$AN"|wc -l) ]] || fail "AAR has duplicate members"
 for e in AndroidManifest.xml binding.json provider.json classes.jar; do grep -Fxq "$e" "$AN" || fail "AAR missing $e"; unzip -p "$AAR" "$e" > "$TMP/$e"; [[ -s $TMP/$e ]] || fail "AAR has empty $e"; done
@@ -310,7 +350,7 @@ for c in "${CLASSES[@]}"; do grep -Fxq "$c" "$TMP/classes.names" || fail "AAR mi
 mapfile -t AE < <(grep -E '^jni/[^/]+/[^/]+\.so$' "$AN"||true); [[ ${#AE[@]} -gt 0 ]] || fail "AAR has no native libs"
 declare -A AL=(); for e in "${AE[@]}"; do [[ $e == jni/arm64-v8a/* ]] || fail "AAR has non-arm64 ABI"; AL[${e##*/}]=1; done
 # Provider-independent application runtimes are staged outside the provider AAR:
-# libsdx_llm and its JavaCPP bridge come from DL4J's explicit android-aot SDK.
+# libsdx_llm and its direct host JNI bridge come from DL4J's explicit android-aot SDK.
 for l in "${REQUIRED[@]}"; do
  case "$l" in libsdx_llm.so|libjnisdx_llm.so) continue;; esac
  [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"
@@ -338,6 +378,20 @@ for l in "${!AL[@]}"; do
  [[ -n ${LIBS[$l]:-} ]] || fail "AAR native library not packaged: $l"
  AH=$(unzip -p "$AAR" "jni/arm64-v8a/$l" | sha256sum) || fail "cannot hash AAR native library: $l"
  AH=${AH%% *}; PH=$(sha256sum "${LIBS[$l]}") || fail "cannot hash APK native library: $l"; PH=${PH%% *}
+ if [[ $AH != "$PH" && $VARIANT == tensorG3 && $l == libomp.so ]]; then
+  # Tensor G3's provider and CPU importer are built against the same NDK libomp
+  # (same Build ID and exports), but the importer SDK removes deployment-irrelevant
+  # DWARF. Compare the provider after that exact canonicalization; the SDK audit
+  # below still requires the APK member to match the importer byte-for-byte.
+  AAR_CANONICAL_LIBOMP=$TMP/aar-canonical-libomp.so
+  unzip -p "$AAR" "jni/arm64-v8a/$l" > "$AAR_CANONICAL_LIBOMP" ||
+   fail "cannot extract AAR OpenMP runtime"
+  "$STRIP" --strip-debug "$AAR_CANONICAL_LIBOMP" ||
+   fail "cannot canonicalize AAR OpenMP runtime"
+  AH=$(sha256sum "$AAR_CANONICAL_LIBOMP") ||
+   fail "cannot hash canonical AAR OpenMP runtime"
+  AH=${AH%% *}
+ fi
  [[ $AH == "$PH" ]] || fail "APK native library differs from configured AAR: $l"
 done
 
@@ -348,11 +402,24 @@ done
 SDX_JNI_DIR=$SDX_SDK/jni/arm64-v8a
 SDX_METADATA=$SDX_SDK/metadata/build.properties
 SDX_NATIVE_MANIFEST=$SDX_SDK/metadata/cmake-owned-native-libraries.txt
+SDX_NATIVE_BYTES=$SDX_SDK/metadata/sdk-native-bytes.txt
+SDX_BUILD_RECEIPT=$SDX_SDK/metadata/build-receipt
 SDX_COMPLETION=$SDX_SDK/.complete.cmake
 [[ -s $SDX_JNI_DIR/libsdx_llm.so ]] || fail "SDX SDK is missing jni/arm64-v8a/libsdx_llm.so"
 [[ -s $SDX_JNI_DIR/libjnisdx_llm.so ]] || fail "SDX SDK is missing jni/arm64-v8a/libjnisdx_llm.so"
 [[ -s $SDX_NATIVE_MANIFEST ]] || fail "SDX SDK native manifest is missing"
+[[ -s $SDX_NATIVE_BYTES ]] || fail "SDX SDK native byte manifest is missing"
+[[ -s $SDX_BUILD_RECEIPT ]] || fail "SDX SDK build receipt is missing"
 [[ -s $SDX_COMPLETION ]] || fail "SDX SDK immutable completion record is missing"
+
+SDX_BUILD_RECEIPT_HASH=$(sha256sum "$SDX_BUILD_RECEIPT") || fail "cannot hash SDX SDK build receipt"; SDX_BUILD_RECEIPT_HASH=${SDX_BUILD_RECEIPT_HASH%% *}
+DECLARED_SDX_BUILD_RECEIPT_HASH=$(sed -n 's/^build[.]receipt[.]sha256=//p' "$SDX_METADATA")
+[[ $DECLARED_SDX_BUILD_RECEIPT_HASH == "$SDX_BUILD_RECEIPT_HASH" ]] ||
+  fail "SDX SDK metadata does not bind its build receipt"
+if [[ $VARIANT == tensorG3 ]]; then
+  [[ $SDX_BUILD_RECEIPT_HASH == "$EXPECTED_SDX_AOT_PROVENANCE_SHA256" ]] ||
+    fail "selected SDX AOT SDK receipt differs from the Tensor G3 build provenance"
+fi
 
 EXPECTED_SDX_LIBRARY_HASH=$(sed -n 's/^library[.]sha256=//p' "$SDX_METADATA")
 EXPECTED_SDX_NATIVE_COUNT=$(sed -n 's/^native[.]library[.]count=//p' "$SDX_METADATA")
@@ -373,6 +440,12 @@ CANONICAL_SDX_SDK=$(realpath -e -- "$SDX_SDK") || fail "cannot resolve the publi
 [[ ${CANONICAL_SDX_SDK##*/} == "$COMPLETED_SDX_GENERATION_KEY"-* ]] ||
   fail "SDX SDK public path does not resolve to its content-addressed completed generation"
 [[ ! -w $CANONICAL_SDX_SDK ]] || fail "completed SDX SDK generation is unexpectedly writable"
+if find "$CANONICAL_SDX_SDK" -type l -print -quit | grep -q .; then
+  fail "completed SDX SDK generation contains a symlink"
+fi
+if find "$CANONICAL_SDX_SDK" -perm /0222 -print -quit | grep -q .; then
+  fail "completed SDX SDK generation contains a writable member"
+fi
 SDK_HASH=$(sha256sum "$SDX_JNI_DIR/libsdx_llm.so") || fail "cannot hash SDX SDK libsdx_llm.so"; SDK_HASH=${SDK_HASH%% *}
 [[ $SDK_HASH == "$EXPECTED_SDX_LIBRARY_HASH" ]] ||
   fail "SDX SDK libsdx_llm.so does not match its immutable metadata"
@@ -386,16 +459,52 @@ unzip -Z1 "$SDX_ARCHIVE" > "$SDX_ARCHIVE_NAMES" || fail "SDX SDK archive is not 
 [[ $(wc -l < "$SDX_ARCHIVE_NAMES") -eq $(sort -u "$SDX_ARCHIVE_NAMES" | wc -l) ]] ||
   fail "SDX SDK archive has duplicate members"
 
-mapfile -t SDX_LIBRARY_NAMES < <(find "$SDX_JNI_DIR" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort)
+mapfile -t SDX_LIBRARY_NAMES < <(find "$SDX_JNI_DIR" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | LC_ALL=C sort)
 [[ ${#SDX_LIBRARY_NAMES[@]} -gt 0 ]] || fail "SDX SDK has no Android native libraries"
 (( ${#SDX_LIBRARY_NAMES[@]} == EXPECTED_SDX_NATIVE_COUNT )) ||
   fail "SDX SDK native library count disagrees with build metadata"
-SDX_DECLARED_SET=$(sort -u "$SDX_NATIVE_MANIFEST")
+SDX_DECLARED_SET=$(LC_ALL=C sort -u "$SDX_NATIVE_MANIFEST")
 SDX_ACTUAL_SET=$(printf '%s\n' "${SDX_LIBRARY_NAMES[@]}")
 [[ $SDX_DECLARED_SET == "$SDX_ACTUAL_SET" ]] ||
   fail "SDX SDK native directory does not match cmake-owned-native-libraries.txt"
 
-for sdk_member in metadata/build.properties metadata/cmake-owned-native-libraries.txt; do
+SDX_EXPECTED_ARCHIVE_NAMES=$TMP/sdx-sdk.expected-names
+{
+ printf '%s\n' \
+  include/sdx_llm_c.h \
+	  metadata/build.properties \
+	  metadata/build-receipt \
+	  metadata/jdk-support-receipt \
+	  metadata/base-sdk-native-bytes.txt \
+  metadata/classpath-bytes.txt \
+  metadata/javacpp-native-image-reachability.txt \
+  metadata/fresh-class-builds.txt \
+  metadata/native-image-optimization.txt \
+  metadata/cmake-owned-native-libraries.txt \
+  metadata/sdk-native-bytes.txt \
+  metadata/native-dependency-closure.txt \
+  metadata/jnijavacpp.cpp \
+  metadata/javacpp_jni_lifecycle.cpp \
+  metadata/jnisdx_llm.cpp
+ while IFS= read -r sdk_name; do
+  printf 'jni/arm64-v8a/%s\n' "$sdk_name"
+ done <"$SDX_NATIVE_MANIFEST"
+} | LC_ALL=C sort -u >"$SDX_EXPECTED_ARCHIVE_NAMES"
+LC_ALL=C sort -u "$SDX_ARCHIVE_NAMES" >"$TMP/sdx-sdk.actual-names"
+cmp -s "$SDX_EXPECTED_ARCHIVE_NAMES" "$TMP/sdx-sdk.actual-names" ||
+ fail "SDX SDK archive member set differs from its declared native closure"
+
+for sdk_member in \
+	 metadata/build.properties \
+	 metadata/build-receipt \
+	 metadata/jdk-support-receipt \
+	 metadata/classpath-bytes.txt \
+	 metadata/javacpp-native-image-reachability.txt \
+	 metadata/javacpp_jni_lifecycle.cpp \
+ metadata/fresh-class-builds.txt \
+ metadata/native-image-optimization.txt \
+ metadata/cmake-owned-native-libraries.txt \
+ metadata/sdk-native-bytes.txt; do
  grep -Fxq "$sdk_member" "$SDX_ARCHIVE_NAMES" || fail "SDX SDK archive is missing $sdk_member"
  ARCHIVE_MEMBER_HASH=$(unzip -p "$SDX_ARCHIVE" "$sdk_member" | sha256sum) || fail "cannot hash archived $sdk_member"; ARCHIVE_MEMBER_HASH=${ARCHIVE_MEMBER_HASH%% *}
  EXPLODED_MEMBER_HASH=$(sha256sum "$SDX_SDK/$sdk_member") || fail "cannot hash exploded $sdk_member"; EXPLODED_MEMBER_HASH=${EXPLODED_MEMBER_HASH%% *}
@@ -406,7 +515,10 @@ for sdk_name in "${SDX_LIBRARY_NAMES[@]}"; do
  [[ $sdk_name =~ ^lib[A-Za-z0-9._+-]+[.]so$ ]] || fail "unsafe SDX SDK library name: $sdk_name"
  sdk_library=$SDX_JNI_DIR/$sdk_name
  sdk_member=jni/arm64-v8a/$sdk_name
- grep -Fxq "$sdk_member" "$SDX_ARCHIVE_NAMES" || fail "SDX SDK archive is missing $sdk_member"
+ grep -Fxq "$sdk_member" "$SDX_ARCHIVE_NAMES" || fail "SDX SDK archive is missing native member $sdk_member"
+ ARCHIVE_MEMBER_HASH=$(unzip -p "$SDX_ARCHIVE" "$sdk_member" | sha256sum) || fail "cannot hash archived SDX SDK library: $sdk_name"; ARCHIVE_MEMBER_HASH=${ARCHIVE_MEMBER_HASH%% *}
+ SDK_HASH=$(sha256sum "$sdk_library") || fail "cannot hash SDX SDK library: $sdk_name"; SDK_HASH=${SDK_HASH%% *}
+ [[ $SDK_HASH == "$ARCHIVE_MEMBER_HASH" ]] || fail "SDX SDK library differs from its immutable archive: $sdk_name"
  case "$sdk_name" in
   libjnitokenizers.so|libtokenizers_ffi.so|libtokenizers_wrapper.so)
    # These libraries intentionally come from the normalized provider AAR so its
@@ -415,17 +527,17 @@ for sdk_name in "${SDX_LIBRARY_NAMES[@]}"; do
    ;;
  esac
  [[ -n ${LIBS[$sdk_name]:-} ]] || fail "APK is missing SDX SDK library: $sdk_name"
- SDK_HASH=$(sha256sum "$sdk_library") || fail "cannot hash SDX SDK library: $sdk_name"; SDK_HASH=${SDK_HASH%% *}
  APK_HASH=$(sha256sum "${LIBS[$sdk_name]}") || fail "cannot hash packaged SDX SDK library: $sdk_name"; APK_HASH=${APK_HASH%% *}
  [[ $SDK_HASH == "$APK_HASH" ]] || fail "APK SDX SDK library differs from the selected SDK: $sdk_name"
- # The ABI metadata hashes libsdx_llm directly; verify that same authoritative
- # member against the completion-bound archive. Companion libraries are consumed
- # from the read-only generation above and still compare byte-for-byte to the APK.
- if [[ $sdk_name == libsdx_llm.so ]]; then
-  ARCHIVE_MEMBER_HASH=$(unzip -p "$SDX_ARCHIVE" "$sdk_member" | sha256sum) || fail "cannot hash archived SDX SDK library: $sdk_name"; ARCHIVE_MEMBER_HASH=${ARCHIVE_MEMBER_HASH%% *}
-  [[ $SDK_HASH == "$ARCHIVE_MEMBER_HASH" ]] || fail "SDX libsdx_llm.so differs from its immutable archive"
- fi
 done
+
+ACTUAL_SDX_NATIVE_BYTES=$TMP/sdx-sdk-native-bytes.actual
+for sdk_name in "${SDX_LIBRARY_NAMES[@]}"; do
+ SDK_MEMBER_HASH=$(sha256sum "$SDX_JNI_DIR/$sdk_name") || fail "cannot hash SDX SDK native member: $sdk_name"
+ printf '%s %s\n' "${SDK_MEMBER_HASH%% *}" "$sdk_name"
+done >"$ACTUAL_SDX_NATIVE_BYTES"
+cmp -s "$ACTUAL_SDX_NATIVE_BYTES" "$SDX_NATIVE_BYTES" ||
+  fail "SDX SDK native closure differs from its provenance byte manifest"
 
 [[ -n $DEXDUMP ]] || fail "dexdump required for flavor metadata audit"
 mapfile -t DEX < <(find "$TMP/apk" -maxdepth 1 -type f -name 'classes*.dex' -print|sort)
@@ -439,6 +551,9 @@ for FIELD in \
   ".field public static final ACCELERATOR_PROVIDER:Ljava/lang/String; = \"$PROVIDER\"" \
   ".field public static final SDX_TARGET_PROFILE:Ljava/lang/String; = \"$TARGET_PROFILE\"" \
   ".field public static final APK_BUILD_ID:Ljava/lang/String; = \"$EXPECTED_BUILD_ID\"" \
+  ".field public static final SOURCE_RUNTIME_AAR_SHA256:Ljava/lang/String; = \"$EXPECTED_SOURCE_RUNTIME_AAR_SHA256\"" \
+  ".field public static final RUNTIME_PROVENANCE_SHA256:Ljava/lang/String; = \"$EXPECTED_RUNTIME_PROVENANCE_SHA256\"" \
+  ".field public static final SDX_AOT_PROVENANCE_SHA256:Ljava/lang/String; = \"$EXPECTED_SDX_AOT_PROVENANCE_SHA256\"" \
   ".field public static final DEVICE_ONLY:Z = true"; do
   grep -Fxq "$FIELD" <<<"$BUILD_CONFIG" ||
     fail "BuildConfig field is missing or incorrect: $FIELD"
@@ -476,12 +591,12 @@ DEX_CLASSES=(
   "Lai/kompile/chat/local/android/model/SdxGgufModelImporter;"
   "Lai/kompile/chat/local/android/model/SdxAndroidLlmLibrary;"
   "Lai/kompile/chat/local/android/model/SdxAndroidLlmAbi;"
+  "Lai/kompile/chat/local/android/model/SdxAndroidLlmNative;"
   "Lai/kompile/chat/local/android/model/SdxModelPreparationClient;"
   "Lai/kompile/chat/local/android/model/SdxModelPreparationConnection;"
   "Lai/kompile/chat/local/android/model/SdxModelPreparationService;"
   "Lai/kompile/chat/local/android/model/PreparedModelPayload;"
   "Lorg/bytedeco/javacpp/Loader;"
-  "Lorg/nd4j/dsp/model/SdxLlmNative;"
   "Lorg/nd4j/dsp/model/HuggingFaceGgmlResolver;"
 )
 if [[ $VARIANT == tensorG5 ]]; then
@@ -498,8 +613,8 @@ else
     "Lai/kompile/chat/local/android/model/SdxRuntimeService;"
     'Lai/kompile/chat/local/android/model/SdxAndroidLlmAbi$ChunkCallback;'
     'Lai/kompile/chat/local/android/model/SdxAndroidLlmAbi$CancelCallback;'
-    'Lorg/nd4j/dsp/model/SdxLlmNative$ChunkCallback;'
-    'Lorg/nd4j/dsp/model/SdxLlmNative$CancelCallback;'
+    'Lai/kompile/chat/local/android/model/SdxAndroidLlmNative$ChunkCallback;'
+    'Lai/kompile/chat/local/android/model/SdxAndroidLlmNative$CancelCallback;'
   )
 fi
 for descriptor in "${DEX_CLASSES[@]}"; do
@@ -508,22 +623,27 @@ for descriptor in "${DEX_CLASSES[@]}"; do
 done
 SDX_ANDROID_ABI_CODE=$("$APKANALYZER" dex code \
   --class ai.kompile.chat.local.android.model.SdxAndroidLlmAbi "$APK") ||
-  fail "cannot decompile Android SDX JavaCPP adapter"
-for contract in 'SdxLlmNative' 'sdxLlmRenderChatPrompt' 'sdxLlmGenerateStreaming'; do
+  fail "cannot decompile Android SDX direct JNI adapter"
+for contract in 'SdxAndroidLlmNative' 'sdxLlmRenderChatPrompt' 'sdxLlmGenerateStreaming'; do
   grep -Fq "$contract" <<<"$SDX_ANDROID_ABI_CODE" ||
-    fail "R8 stripped or renamed Android SDX JavaCPP adapter contract: $contract"
+    fail "R8 stripped or renamed Android SDX direct JNI adapter contract: $contract"
 done
-SDX_JAVACPP_ABI_CODE=$("$APKANALYZER" dex code \
-  --class org.nd4j.dsp.model.SdxLlmNative "$APK") ||
-  fail "cannot decompile DL4J SDX JavaCPP binding"
-for contract in 'sdxLlmCreateRuntime' 'sdxLlmPrepareGguf' \
-  'sdxLlmLoadCompiledModel' 'sdxLlmGenerateStreaming'; do
-  grep -Fq "$contract" <<<"$SDX_JAVACPP_ABI_CODE" ||
-    fail "R8 stripped or renamed DL4J SDX JavaCPP contract: $contract"
+for forbidden_host_binding in 'SdxLlmNative' 'org.bytedeco.javacpp'; do
+  ! grep -Fq "$forbidden_host_binding" <<<"$SDX_ANDROID_ABI_CODE" ||
+    fail "Android SDX host adapter still crosses the JavaCPP boundary: $forbidden_host_binding"
+done
+SDX_DIRECT_JNI_CODE=$("$APKANALYZER" dex code \
+  --class ai.kompile.chat.local.android.model.SdxAndroidLlmNative "$APK") ||
+  fail "cannot decompile Android SDX direct JNI declarations"
+for contract in 'nativeCreateRuntime' 'nativePrepareGguf' \
+  'nativeLoadCompiledModel' 'nativeGenerateStreaming'; do
+  grep -Fq "$contract" <<<"$SDX_DIRECT_JNI_CODE" ||
+    fail "R8 stripped or renamed Android SDX direct JNI contract: $contract"
 done
 
-# Prove the exact lifecycle that prevents the CPU importer native image from sharing
-# ART/JNI state with the flavor accelerator: main-process open binds an important,
+# Prove the exact lifecycle that isolates both native execution domains. The direct
+# host bridge prevents ART from seeding JavaCPP caches consumed by embedded Graal,
+# while main-process open binds an important,
 # death-supervised private service for the complete preparation, then unbinds and waits
 # for the disposable importer process to vanish before opening the accelerator runtime.
 GGUF_IMPORTER_CODE=$("$APKANALYZER" dex code \
@@ -620,14 +740,14 @@ if [[ $VARIANT != tensorG5 ]]; then
     'sdxLlmLoadCompiledModel' \
     'sdxRuntimeProcessName'; do
     grep -Fq "$contract" <<<"$SDX_RUNTIME_OWNER_CODE" ||
-      fail "process-owned SDX runtime is missing JavaCPP ABI ownership contract: $contract"
+      fail "process-owned SDX runtime is missing direct JNI ownership contract: $contract"
   done
   SDX_RUNTIME_SESSION_CODE=$("$APKANALYZER" dex code \
     --class 'ai.kompile.chat.local.android.model.SdxPlatformRuntimeOwner$Session' "$APK") ||
     fail "cannot decompile process-owned SDX generation session"
   for contract in 'sdxLlmRenderChatPrompt' 'sdxLlmGenerateStreaming' 'CancelCallback'; do
     grep -Fq "$contract" <<<"$SDX_RUNTIME_SESSION_CODE" ||
-      fail "process-owned SDX session is missing shared ABI generation contract: $contract"
+      fail "process-owned SDX session is missing direct JNI generation contract: $contract"
   done
   SDX_RUNTIME_IMPLEMENTATION_CODE="$SDX_RUNTIME_OWNER_CODE$SDX_RUNTIME_SESSION_CODE"
   for forbidden_runtime in \
@@ -764,5 +884,6 @@ for descriptor in "${FORBIDDEN_DEX_CLASSES[@]}"; do
 done
 
 ASH=$(sha256sum "$APK"); ASH=${ASH%% *}; RSH=$(sha256sum "$AAR"); RSH=${RSH%% *}
-printf 'verified offline APK: variant=%s package=%s buildId=%s versionCode=%s apkSha256=%s runtimeAarSha256=%s\n' \
-  "$VARIANT" "$PACKAGE" "$EXPECTED_BUILD_ID" "$EXPECTED_VERSION_CODE" "$ASH" "$RSH"
+printf 'verified offline APK: variant=%s package=%s buildId=%s versionCode=%s apkSha256=%s runtimeAarSha256=%s sourceRuntimeAarSha256=%s runtimeProvenanceSha256=%s sdxAotProvenanceSha256=%s\n' \
+  "$VARIANT" "$PACKAGE" "$EXPECTED_BUILD_ID" "$EXPECTED_VERSION_CODE" "$ASH" "$RSH" \
+  "$EXPECTED_SOURCE_RUNTIME_AAR_SHA256" "$EXPECTED_RUNTIME_PROVENANCE_SHA256" "$EXPECTED_SDX_AOT_PROVENANCE_SHA256"

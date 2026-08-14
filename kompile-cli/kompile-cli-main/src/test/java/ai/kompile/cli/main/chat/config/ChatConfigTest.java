@@ -121,10 +121,17 @@ class ChatConfigTest {
         ChatConfig active = new ChatConfig("openai", "old-key", "gpt-4o", "https://old.example/v1");
         active.setThinking("low");
         active.setCancelKey("Ctrl+Q");
+        active.setAutoCompactEnabled(false);
+        active.setAutoCompactThreshold(0.72d);
+        active.setCompactionReserveTokens(12_000);
+        active.setContextWindowTokens(111_000);
+        active.setMaxOutputTokens(11_000);
 
         ChatConfig selected = new ChatConfig(
                 "anthropic", "new-key", "claude-sonnet-4-20250514", "https://new.example/v1");
         selected.setThinking("high");
+        selected.setContextWindowTokens(222_000);
+        selected.setMaxOutputTokens(22_000);
 
         active.applyLlmSettingsFrom(selected);
 
@@ -135,6 +142,37 @@ class ChatConfigTest {
         assertEquals("https://new.example/v1", active.getBaseUrl());
         assertEquals("Ctrl+Q", active.getCancelKey(),
                 "session-level controls must survive a provider switch");
+        assertFalse(active.isAutoCompactEnabled());
+        assertEquals(0.72d, active.getAutoCompactThreshold());
+        assertEquals(12_000, active.getCompactionReserveTokens());
+        assertEquals(222_000, active.getContextWindowTokens(),
+                "provider/model overrides must switch with the model");
+        assertEquals(22_000, active.getMaxOutputTokens());
+    }
+
+    @Test
+    void compactionPolicyPersistsAtTheLoadedScope() throws Exception {
+        Path project = tempDir.resolve("compaction-project");
+        ChatConfig config = new ChatConfig("openai", null, "gpt-5.4", null);
+        config.setAutoCompactEnabled(false);
+        config.setAutoCompactThreshold(0.74d);
+        config.setCompactionReserveTokens(30_000);
+        config.setContextWindowTokens(350_000);
+        config.setMaxOutputTokens(100_000);
+        config.saveProject(project);
+
+        ChatConfig loaded = ChatConfig.loadProject(project);
+        assertNotNull(loaded);
+        loaded.setAutoCompactEnabled(true);
+        loaded.saveLoadedOrGlobal();
+
+        ChatConfig reloaded = ChatConfig.loadProject(project);
+        assertNotNull(reloaded);
+        assertTrue(reloaded.isAutoCompactEnabled());
+        assertEquals(0.74d, reloaded.getAutoCompactThreshold());
+        assertEquals(30_000, reloaded.getCompactionReserveTokens());
+        assertEquals(350_000, reloaded.getContextWindowTokens());
+        assertEquals(100_000, reloaded.getMaxOutputTokens());
     }
 
     @Test

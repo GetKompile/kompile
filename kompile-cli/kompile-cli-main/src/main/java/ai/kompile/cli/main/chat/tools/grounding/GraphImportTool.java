@@ -72,8 +72,7 @@ public class GraphImportTool implements CliTool {
                 .put("description", "Filesystem path to the .kgraph file to load.");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Fact sheet to import into. Omit to use the graph's own recorded "
-                        + "fact sheet (an exported graph re-imports onto its origin sheet).");
+                .put("description", "Optional remote/legacy destination override. Locally the imported graph uses its recorded knowledge-base identity.");
         schema.putArray("required").add("path");
         return schema;
     }

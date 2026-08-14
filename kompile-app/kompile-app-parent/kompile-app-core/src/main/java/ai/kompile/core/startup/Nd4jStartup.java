@@ -48,15 +48,11 @@ public final class Nd4jStartup {
             return;
         }
 
-        boolean resolved = NativeLibraryResolver.bootstrap();
-        if (resolved) {
-            logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
-                    System.getProperty("org.bytedeco.javacpp.cachedir"),
-                    System.getProperty("org.nd4j.presets.sharedRuntimePath"),
-                    System.getProperty("org.bytedeco.javacpp.pathsFirst"));
-        } else {
-            logger.warn("No side-loaded native library directory could be resolved for this native image");
-        }
+        NativeLibraryResolver.bootstrapOrThrow();
+        logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
+                System.getProperty("org.bytedeco.javacpp.cachedir"),
+                System.getProperty("org.nd4j.presets.sharedRuntimePath"),
+                System.getProperty("org.bytedeco.javacpp.pathsFirst"));
     }
 
     /**

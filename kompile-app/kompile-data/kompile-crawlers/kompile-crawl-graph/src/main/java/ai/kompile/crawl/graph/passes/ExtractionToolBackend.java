@@ -30,6 +30,11 @@ public interface ExtractionToolBackend {
         return ExtractionTarget.FULL_GRAPH;
     }
 
+    /** Whether this crawl may extend its ontology during extraction. */
+    default boolean ontologyUpdatesAllowed() {
+        return true;
+    }
+
     /** Compact, model-facing JSON catalog. It may contain project schema but never example facts. */
     String catalogJson();
 
@@ -70,6 +75,14 @@ public interface ExtractionToolBackend {
 
     /** Execute one model-requested tool call. Implementations return JSON in {@link ToolExecution#json()}. */
     ToolExecution execute(String toolName, JsonNode arguments);
+
+    /**
+     * Execute with the exact current source shard available for deterministic grounding checks.
+     * Backends that do not validate source evidence retain the original two-argument behavior.
+     */
+    default ToolExecution execute(String toolName, JsonNode arguments, String sourceText) {
+        return execute(toolName, arguments);
+    }
 
     /**
      * The accumulated validator-clean staged delta, present after any fact has been retained.

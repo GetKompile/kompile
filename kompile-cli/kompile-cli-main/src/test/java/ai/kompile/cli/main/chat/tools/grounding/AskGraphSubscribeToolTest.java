@@ -21,12 +21,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -45,6 +46,9 @@ import org.springframework.http.HttpStatus;
 @DisplayName("AskGraphSubscribeTool")
 class AskGraphSubscribeToolTest {
 
+    @TempDir
+    Path tempDir;
+
     private ObjectMapper om;
     private ToolContext ctx;
 
@@ -55,7 +59,7 @@ class AskGraphSubscribeToolTest {
         PermissionService perms = new PermissionService();
         perms.setUserOverride("ask_graph_subscribe", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -121,13 +125,14 @@ class AskGraphSubscribeToolTest {
         }
 
         @Test
-        @DisplayName("backend unavailable returns error")
-        void backendUnavailable_returnsError() throws Exception {
+        @DisplayName("missing project-local graph is bootstrapped")
+        void missingProjectLocalGraph_returnsError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.putArray("predicates").add("worksFor");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError());
-            assertTrue(result.getOutput().contains("kompile-app"));
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("project-local"), result.getOutput());
+            assertFalse(result.getOutput().contains("kompile-app"));
         }
     }
 

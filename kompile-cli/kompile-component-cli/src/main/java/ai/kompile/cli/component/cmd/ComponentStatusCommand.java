@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.component.cmd;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.component.output.OutputFormatter;
 import ai.kompile.cli.component.output.OutputFormatter.Format;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,9 +47,10 @@ public class ComponentStatusCommand implements Callable<Integer> {
     @Parameters(index = "0", arity = "0..1", description = "Component ID to check (omit for all)")
     private String componentId;
 
-    @Option(names = {"--format", "-f"}, 
+    @Option(names = {"--format", "-f"},
             description = "Output format: text, json, yaml, csv, table",
-            defaultValue = "text")
+            defaultValue = "text",
+            converter = ComponentListCommand.FormatConverter.class)
     private Format format = Format.TEXT;
 
     @Option(names = {"--health-check"}, 
@@ -218,26 +220,15 @@ public class ComponentStatusCommand implements Callable<Integer> {
     }
 
     private String getInstallPath(String componentId) {
-        String homeDir = System.getProperty("user.home");
-        File componentsDir = new File(homeDir, ".kompile/components/" + componentId);
-        
-        if (!componentsDir.exists()) {
-            return null;
-        }
-
-        File[] versions = componentsDir.listFiles(File::isDirectory);
-        if (versions == null || versions.length == 0) {
-            return null;
-        }
-
-        // Return the first version directory
-        return versions[0].getAbsolutePath();
+        ComponentInstallPaths.InstallInfo install = ComponentInstallPaths.findInstallInfo(componentId);
+        return install.installed() && install.path() != null
+                ? install.path().getAbsolutePath()
+                : null;
     }
 
     private InstanceInfo getInstanceInfo(String componentId) {
         try {
-            String homeDir = System.getProperty("user.home");
-            File instancesDir = new File(homeDir, ".kompile/instances");
+            File instancesDir = new File(KompileHome.homeDirectory(), "instances");
             
             if (!instancesDir.exists()) {
                 return null;

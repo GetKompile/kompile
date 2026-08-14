@@ -36,6 +36,7 @@ import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.crawl.graph.preprocessing.PreprocessingPipelineRunner;
 import ai.kompile.knowledgegraph.embedding.domain.KGEmbeddingJob;
 import ai.kompile.knowledgegraph.matrix.store.MatrixGraphStore;
+import ai.kompile.graph.reasoning.lifecycle.FinalGraphLearningResolutionPipeline;
 import ai.kompile.knowledgegraph.reasoning.MebnTheoryRegistrationService;
 import ai.kompile.knowledgegraph.resolution.GraphCompactionService;
 import ai.kompile.core.graphrag.conformance.OntologyAutoProvisioner;
@@ -2379,86 +2380,23 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
 
             if (isCancelled(job)) return;
 
-            // Phase 6.5: Entity resolution
-            // Skipped when graphWholesaleFailure: 0 semantic entities → resolution is a no-op and
-            // downstream steps (edge computation, enrichment) are equally meaningless. The failed
-            // chunks are archived and resumable via GET /api/unified-crawl/jobs/resumable.
+            // Entity resolution is intentionally deferred until the complete corpus graph has
+            // relations, ontology/schema, KGE embeddings, and FOL/PSL/MEBN model state. Merging
+            // here would destroy duplicate evidence before graph-wide learning can use it.
             GraphExtractionConfig graphConfigForResolution = job.getRequest().getGraphExtraction();
-            if (!graphWholesaleFailure[0] && stepPlan.isRun("ENTITY_RESOLUTION") && graphCompactionService != null && graphConfigForResolution != null
-                    && graphConfigForResolution.isEntityResolution()) {
-                try {
-                    updateProgress(job, "ENTITY_RESOLUTION", estimateProgress(job),
-                            "Running entity resolution", null);
-                    boolean memoryReady = waitForMemoryCapacity(job, "ENTITY_RESOLUTION");
-                    log.info("[Job {}] Running entity resolution / graph compaction", job.getJobId());
-                    updatePipelineStep(job, "ENTITY_RESOLUTION", UnifiedCrawlJob.PipelineStepStatus.RUNNING,
-                            0, 1, 0, 0, 0, 0, null, "Running entity resolution");
-                    Long factSheetId = jobFactSheetId(job);
-                    boolean useEmbeddingResolution = graphConfigForResolution.isEntityResolutionUseEmbeddings();
-                    double embeddingResolutionThreshold =
-                            graphConfigForResolution.getEffectiveEmbeddingIdentitySimilarity();
-                    if (useEmbeddingResolution) {
-                        if (!memoryReady || hasNativeMemoryPressure(job, nativeMemoryWaitThresholdPercent)) {
-                            String reason = memoryPressureDetail(job);
-                            useEmbeddingResolution = false;
-                            recordEvent(job, "ENTITY_RESOLUTION", "WARN",
-                                    "Embedding-assisted entity resolution disabled",
-                                    "Native memory unavailable; falling back to deterministic resolution: " + reason);
-                        } else {
-                            EmbeddingModel embModel = waitForEmbeddingModelReady(job, "ENTITY_RESOLUTION",
-                                    "embedding-assisted entity resolution");
-                            if (embModel == null) {
-                                if (isCancelled(job)) return;
-                                String reason = vectorIndexingHelper.embeddingModelNotReadyReason(
-                                        vectorIndexingHelper.primaryEmbeddingModel());
-                                useEmbeddingResolution = false;
-                                recordEvent(job, "ENTITY_RESOLUTION", "WARN",
-                                        "Embedding-assisted entity resolution disabled",
-                                        "Embedding model unavailable; falling back to deterministic resolution: " + reason);
-                            }
-                        }
-                    }
-                    recordEvent(job, "ENTITY_RESOLUTION", "INFO", "Entity resolution mode",
-                            "embeddings=" + useEmbeddingResolution
-                                    + ", threshold=" + entityResolutionSimilarityThreshold(graphConfigForResolution)
-                                    + ", embeddingThreshold=" + embeddingResolutionThreshold);
-                    var compactionResult = graphCompactionService.compact(factSheetId,
-                            new GraphCompactionService.CompactionConfig(
-                                    entityResolutionSimilarityThreshold(graphConfigForResolution),
-                                    true, useEmbeddingResolution, embeddingResolutionThreshold,
-                                    progress -> recordEntityResolutionProgress(job, progress)));
-                    if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
-                        updatePipelineStep(job, "ENTITY_RESOLUTION",
-                                UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
-                                0, 1, 0, 0, 0, 0, null, "Entity resolution cancelled");
-                        return;
-                    }
-                    log.info("[Job {}] Graph compaction: {} entities merged into {} ({}ms)",
-                            job.getJobId(), compactionResult.entitiesMerged(),
-                            compactionResult.finalEntityCount(), compactionResult.elapsedMs());
-                    // Promote barcode/GTIN signals (resolved during compaction) into first-class
-                    // IDENTIFIER nodes + RESOLVES_TO edges, mirroring the HTTP compact/advanced path —
-                    // automated crawls otherwise never materialize them.
-                    materializeIdentifiers(job, factSheetId);
-                    completePipelineStep(job, "ENTITY_RESOLUTION", 1,
-                            compactionResult.entitiesMerged() + " merge(s), "
-                                    + compactionResult.finalEntityCount() + " final entities");
-                } catch (CancellationException e) {
-                    updatePipelineStep(job, "ENTITY_RESOLUTION",
-                            UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
-                            0, 1, 0, 0, 0, 0, null, "Entity resolution cancelled");
-                    recordEvent(job, "ENTITY_RESOLUTION", "WARN", "Entity resolution cancelled", e.getMessage());
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (Exception e) {
-                    String errorDetail = e.getMessage() != null ? e.getMessage()
-                            : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
-                    failPipelineStep(job, "ENTITY_RESOLUTION", "Graph compaction failed: " + errorDetail);
-                    log.warn("[Job {}] Graph compaction failed: {}", job.getJobId(), errorDetail, e);
-                    throw new IllegalStateException("Graph compaction failed: " + errorDetail, e);
-                } finally {
-                    trimNativeMemory(job, "ENTITY_RESOLUTION", "after entity resolution");
-                }
+            boolean runFinalEntityResolution = !graphWholesaleFailure[0]
+                    && stepPlan.isRun("ENTITY_RESOLUTION")
+                    && graphCompactionService != null
+                    && graphConfigForResolution != null
+                    && graphConfigForResolution.isEntityResolution();
+            // Hydration produces a current reasoning snapshot. KGE training below marks it dirty,
+            // and the shared final lifecycle refreshes it exactly once before resolution.
+            final boolean[] reasoningModelsDirty = {true};
+            if (runFinalEntityResolution) {
+                recordEvent(job, "ENTITY_RESOLUTION", "INFO",
+                        "Entity resolution deferred until corpus learning completes",
+                        "The duplicate-preserving graph will first receive relations, ontology/schema, "
+                                + "KGE, FOL/PSL, and MEBN learning");
             } else if (stepPlan.isArchive("ENTITY_RESOLUTION")) {
                 archiveCrawlStep(job, "ENTITY_RESOLUTION", new ArrayList<>(), graphConfigForResolution,
                         "Entity resolution archived to run later");
@@ -2712,6 +2650,7 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                     (stageId, message) -> recordHydrationSubStageProgress(
                                             job, stageId, message, ++stagesDone[0],
                                             GraphHydrationOrchestrator.TOTAL_STAGES));
+                            reasoningModelsDirty[0] = hr.runId() == null;
                             if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
                                 updatePipelineStep(job, "ENRICHMENT",
                                         UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
@@ -2810,32 +2749,8 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                                                     + " relations=" + (kgeJob.getRelationsEmbedded() != null ? kgeJob.getRelationsEmbedded() : "?")
                                                     + " loss=" + (kgeJob.getCurrentLoss() != null
                                                             ? String.format("%.4f", kgeJob.getCurrentLoss()) : "?");
-                                            try {
-                                                if (reasoningGraphRegistrationService != null) {
-                                                    int graphEntities = reasoningGraphRegistrationService
-                                                            .registerReasoningGraphForFactSheet(kgeFactSheetId);
-                                                    doneMsg += "; semanticGraphEntities=" + graphEntities;
-                                                }
-                                                if (graphHydrationOrchestrator != null) {
-                                                    HydrationConfig defaults = HydrationConfig.defaults();
-                                                    HydrationResult semanticPass = graphHydrationOrchestrator.run(
-                                                            kgeFactSheetId,
-                                                            new HydrationConfig(
-                                                                    Set.of(GraphHydrationOrchestrator.STAGE_DERIVATION),
-                                                                    defaults.confidencePruneThreshold(), false),
-                                                            (stage, message) -> recordEvent(job, "LEARNING", "INFO",
-                                                                    "Post-KGE " + stage, message));
-                                                    doneMsg += "; semanticConsensusPass="
-                                                            + (semanticPass.runId() != null ? "complete" : "skipped");
-                                                }
-                                            } catch (Exception semanticEx) {
-                                                String semanticMessage = "Post-KGE semantic consensus failed (non-fatal): "
-                                                        + semanticEx.getMessage();
-                                                log.warn("[Job {}] {}", kgeCrawlJobId, semanticMessage, semanticEx);
-                                                recordEvent(job, "LEARNING", "WARN",
-                                                        "Post-KGE semantic consensus failed", semanticMessage);
-                                                doneMsg += "; semanticConsensusPass=failed";
-                                            }
+                                            reasoningModelsDirty[0] = true;
+                                            doneMsg += "; reasoningRefresh=deferred-to-final-lifecycle";
                                             completePipelineStep(job, "LEARNING", kgeCfg.epochs(), doneMsg);
                                             recordEvent(job, "LEARNING", "INFO", "KGE training complete", doneMsg);
                                             publishProgressEvent(job, CrawlProgressEvent.EventType.PROGRESS, doneMsg);
@@ -2902,6 +2817,17 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
                         "confidence/PSL/prune model will NOT run for this crawl. " +
                         "Cold-start Opinions remain at their initial priors. " +
                         "Add ENRICHMENT to enabledSteps to activate.", job.getJobId());
+            }
+
+            if (runFinalEntityResolution || stepPlan.isRun("ENRICHMENT")) {
+                runFinalCorpusLifecycle(
+                        job,
+                        jobFactSheetId(job),
+                        graphConfigForResolution,
+                        stepPlan.isRun("ENRICHMENT"),
+                        reasoningModelsDirty[0],
+                        runFinalEntityResolution);
+                if (isCancelled(job)) return;
             }
 
             int finalChunkCount = chunkedDocuments.size();
@@ -3405,6 +3331,226 @@ public class UnifiedCrawlGraphServiceImpl implements UnifiedCrawlService {
         } catch (Exception e) {
             log.debug("[Job {}] subprocess log relay failed: {}", job.getJobId(), e.getMessage());
         }
+    }
+
+    /**
+     * Run the shared final graph lifecycle over the complete, duplicate-preserving corpus graph.
+     *
+     * <p>The framework-free coordinator is also used by project-local MCP crawls. This managed
+     * adapter supplies fact-sheet model refresh and persistent graph compaction operations.</p>
+     */
+    private void runFinalCorpusLifecycle(
+            UnifiedCrawlJob job,
+            Long factSheetId,
+            GraphExtractionConfig graphConfig,
+            boolean runReasoningLearning,
+            boolean preResolutionLearningRequired,
+            boolean runEntityResolution) {
+        if (factSheetId == null) {
+            if (runEntityResolution) {
+                skipPipelineStep(job, "ENTITY_RESOLUTION",
+                        "Final entity resolution skipped: no fact sheet ID for job");
+            }
+            return;
+        }
+
+        try {
+            if (runEntityResolution) {
+                updateProgress(job, "ENTITY_RESOLUTION", 99,
+                        "Running final corpus-wide entity resolution",
+                        "factSheet=" + factSheetId);
+                updatePipelineStep(job, "ENTITY_RESOLUTION",
+                        UnifiedCrawlJob.PipelineStepStatus.RUNNING,
+                        0, 1, 0, 0, 0, 0, null,
+                        preResolutionLearningRequired
+                                ? "Refreshing graph models before final identity resolution"
+                                : "Resolving identities from the current learned graph");
+            }
+
+            FinalGraphLearningResolutionPipeline.Result<
+                    Long, ManagedLearningResult, GraphCompactionService.CompactionResult> lifecycle =
+                    FinalGraphLearningResolutionPipeline.run(
+                            factSheetId,
+                            phase -> runReasoningLearning
+                                    && (phase == FinalGraphLearningResolutionPipeline.LearningPhase.POST_CANONICALIZATION
+                                    || preResolutionLearningRequired),
+                            (scope, phase) ->
+                                    new FinalGraphLearningResolutionPipeline.LearningOutcome<>(
+                                            scope,
+                                            refreshManagedReasoningModels(job, scope, phase)),
+                            scope -> {
+                                if (!runEntityResolution) {
+                                    return new FinalGraphLearningResolutionPipeline.ResolutionOutcome<>(
+                                            scope, 0, false,
+                                            GraphCompactionService.CompactionResult.empty());
+                                }
+                                GraphCompactionService.CompactionResult result =
+                                        compactFinalCorpus(job, scope, graphConfig,
+                                                runReasoningLearning);
+                                return new FinalGraphLearningResolutionPipeline.ResolutionOutcome<>(
+                                        scope, result.entitiesMerged(), result);
+                            });
+
+            if (!runEntityResolution) {
+                return;
+            }
+
+            GraphCompactionService.CompactionResult result = lifecycle.resolution();
+            String reasoningSignals = runReasoningLearning
+                    ? "relations+ontology+FOL/PSL+MEBN+KGE-when-present"
+                    : "deterministic+existing-graph-reasoning-when-present";
+            String completion = result.entitiesMerged() + " merge(s), "
+                    + result.finalEntityCount() + " final entities; signals="
+                    + reasoningSignals;
+            completePipelineStep(job, "ENTITY_RESOLUTION", 1, completion);
+            recordEvent(job, "ENTITY_RESOLUTION", "INFO",
+                    "Final corpus entity resolution complete", completion);
+            log.info("[Job {}] Final corpus graph compaction: {} entities merged into {} ({}ms)",
+                    job.getJobId(), result.entitiesMerged(),
+                    result.finalEntityCount(), result.elapsedMs());
+        } catch (CancellationException e) {
+            if (runEntityResolution) {
+                updatePipelineStep(job, "ENTITY_RESOLUTION",
+                        UnifiedCrawlJob.PipelineStepStatus.CANCELLED,
+                        0, 1, 0, 0, 0, 0, null, "Entity resolution cancelled");
+                recordEvent(job, "ENTITY_RESOLUTION", "WARN",
+                        "Entity resolution cancelled", e.getMessage());
+            }
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            String detail = e.getMessage() != null
+                    ? e.getMessage()
+                    : e.getClass().getSimpleName();
+            if (!runEntityResolution) {
+                recordEvent(job, "LEARNING", "WARN",
+                        "Final graph model refresh failed (non-fatal)", detail);
+                log.warn("[Job {}] Final graph model refresh failed: {}",
+                        job.getJobId(), detail, e);
+                return;
+            }
+            failPipelineStep(job, "ENTITY_RESOLUTION",
+                    "Final graph lifecycle failed: " + detail);
+            recordEvent(job, "ENTITY_RESOLUTION", "ERROR",
+                    "Final graph lifecycle failed", detail);
+            throw new IllegalStateException("Final graph lifecycle failed: " + detail, e);
+        } finally {
+            trimNativeMemory(job, "ENTITY_RESOLUTION",
+                    "after final corpus graph lifecycle");
+        }
+    }
+
+    private ManagedLearningResult refreshManagedReasoningModels(
+            UnifiedCrawlJob job,
+            Long factSheetId,
+            FinalGraphLearningResolutionPipeline.LearningPhase phase) {
+        int mFrags = 0;
+        if (reasoningGraphRegistrationService != null) {
+            mFrags = reasoningGraphRegistrationService.registerMTheoryForFactSheet(factSheetId);
+        }
+
+        String label = phase
+                == FinalGraphLearningResolutionPipeline.LearningPhase.POST_CANONICALIZATION
+                ? "Canonical graph" : "Final corpus";
+        if (graphHydrationOrchestrator == null) {
+            recordEvent(job, "LEARNING", "WARN",
+                    label + " reasoning refresh unavailable",
+                    "MEBN graph registration completed with " + mFrags
+                            + " MFrag(s), but the hydration orchestrator is unavailable");
+            return new ManagedLearningResult(mFrags, null);
+        }
+
+        HydrationConfig defaults = HydrationConfig.defaults();
+        HydrationResult learned = graphHydrationOrchestrator.run(
+                factSheetId,
+                new HydrationConfig(
+                        Set.of(GraphHydrationOrchestrator.STAGE_DERIVATION),
+                        defaults.confidencePruneThreshold(),
+                        false),
+                (stage, message) -> recordEvent(job, "LEARNING", "INFO",
+                        label + " " + stage, message));
+
+        if (phase == FinalGraphLearningResolutionPipeline.LearningPhase.POST_CANONICALIZATION) {
+            recordEvent(job, "LEARNING", "INFO",
+                    "Canonical graph models re-grounded",
+                    "Removed aliases were replaced by canonical entity IDs across FOL/PSL and "
+                            + mFrags + " MEBN MFrag(s); runId=" + learned.runId());
+        } else {
+            recordEvent(job, "LEARNING", "INFO",
+                    "Final corpus graph models learned",
+                    "reasoningGraphRegistered=" + (reasoningGraphRegistrationService != null)
+                            + "; KGE embeddings consumed when present; "
+                            + "FOL/PSL grounded and weight-learned; MEBN theory/weights "
+                            + "learned across " + mFrags + " MFrag(s); runId=" + learned.runId());
+        }
+        return new ManagedLearningResult(mFrags, learned.runId());
+    }
+
+    private GraphCompactionService.CompactionResult compactFinalCorpus(
+            UnifiedCrawlJob job,
+            Long factSheetId,
+            GraphExtractionConfig graphConfig,
+            boolean runReasoningLearning) {
+        boolean useTextEmbeddings = graphConfig.isEntityResolutionUseEmbeddings();
+        double embeddingThreshold = graphConfig.getEffectiveEmbeddingIdentitySimilarity();
+        if (useTextEmbeddings) {
+            boolean memoryReady = waitForMemoryCapacity(job, "ENTITY_RESOLUTION");
+            if (!memoryReady || hasNativeMemoryPressure(job, nativeMemoryWaitThresholdPercent)) {
+                useTextEmbeddings = false;
+                recordEvent(job, "ENTITY_RESOLUTION", "WARN",
+                        "Text embedding identity signal disabled",
+                        "Using graph/KGE/FOL/PSL/MEBN signals without a second text model: "
+                                + memoryPressureDetail(job));
+            } else {
+                EmbeddingModel model = waitForEmbeddingModelReady(
+                        job, "ENTITY_RESOLUTION", "final entity resolution");
+                if (model == null) {
+                    if (isCancelled(job)) {
+                        throw new CancellationException(
+                                "Final corpus entity resolution cancelled");
+                    }
+                    useTextEmbeddings = false;
+                    recordEvent(job, "ENTITY_RESOLUTION", "WARN",
+                            "Text embedding identity signal disabled",
+                            "The graph reasoning signals remain available; text embedding model: "
+                                    + vectorIndexingHelper.embeddingModelNotReadyReason(
+                                            vectorIndexingHelper.primaryEmbeddingModel()));
+                }
+            }
+        }
+
+        String reasoningSignals = runReasoningLearning
+                ? "relations+ontology+FOL/PSL+MEBN+KGE-when-present"
+                : "deterministic+existing-graph-reasoning-when-present";
+        recordEvent(job, "ENTITY_RESOLUTION", "INFO",
+                "Final reasoning-assisted entity resolution",
+                "threshold=" + entityResolutionSimilarityThreshold(graphConfig)
+                        + ", textEmbeddings=" + useTextEmbeddings
+                        + ", graphSignals=" + reasoningSignals);
+
+        GraphCompactionService.CompactionResult result = graphCompactionService.compact(
+                factSheetId,
+                new GraphCompactionService.CompactionConfig(
+                        entityResolutionSimilarityThreshold(graphConfig),
+                        true,
+                        useTextEmbeddings,
+                        embeddingThreshold,
+                        true,
+                        true,
+                        true,
+                        progress -> recordEntityResolutionProgress(job, progress)));
+
+        if (isCancelled(job) || Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("Final corpus entity resolution cancelled");
+        }
+
+        materializeIdentifiers(job, factSheetId);
+        if (knowledgeGraphService != null) {
+            knowledgeGraphService.flushPendingNodes();
+        }
+        return result;
+    }
+
+    private record ManagedLearningResult(int mFrags, String runId) {
     }
 
     /**

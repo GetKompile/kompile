@@ -9,6 +9,7 @@
 #
 # Variants:
 #   cli-only      — Just the kompile-cli binary (smallest, fastest)
+#   local         — CLI + native local MCP/model workers; no web or batch server
 #   full          — CLI native + all service exec JARs + bundled Java runtime
 #   hosted        — CLI + app-main + staging (for API-key/hosted LLM users)
 #   cpu-intel     — CLI + app-main + staging with nd4j-native x86_64
@@ -91,7 +92,7 @@ esac
 if [ -z "${VARIANT}" ]; then
     echo "Usage: $0 <variant> [options]"
     echo ""
-    echo "Variants: cli-only, full, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
+    echo "Variants: cli-only, local, full, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
     exit 1
 fi
 
@@ -135,7 +136,12 @@ echo ""
 CLI_NATIVE=true            # Always build CLI
 APP_NATIVE=false           # kompile-app-main native
 STAGING_NATIVE=false       # kompile-model-staging native
+LOCAL_RUNTIME=false        # request-scoped model/pipeline serving artifacts
+DOCUMENT_MODEL_NATIVE=false # dedicated request-scoped document/VLM worker
 SERVER_JARS_ONLY=false     # keep CLI native, package service JARs instead of service images
+BUNDLE_RUNTIME=true        # jlink runtime for JVM fallback/product services
+INCLUDE_CLI_JAR=true       # shaded CLI/JBang fallback
+INCLUDE_PRODUCT_EXTRAS=true # web personas, SDK server, C/Python bindings, app config
 ND4J_BACKEND=""            # Java backend artifact; empty = no local models
 KOMPILE_BACKEND_PROFILE="" # exact root-POM profile matching the DL4J classifier matrix
 CUDA_FLAG=""               # compatibility switch used by downstream native-image configuration
@@ -145,11 +151,24 @@ case "${VARIANT}" in
     cli-only)
         APP_NATIVE=false
         STAGING_NATIVE=false
+        BUNDLE_RUNTIME=false
+        INCLUDE_CLI_JAR=false
+        INCLUDE_PRODUCT_EXTRAS=false
+        ;;
+    local)
+        # Native folder-local orchestration only. Local crawl is a hidden mode of
+        # the CLI itself; these four children are the complete executable closure.
+        APP_NATIVE=false
+        STAGING_NATIVE=true
+        BUNDLE_RUNTIME=false
+        INCLUDE_CLI_JAR=false
+        INCLUDE_PRODUCT_EXTRAS=false
+        ND4J_BACKEND="nd4j-native"
+        KOMPILE_BACKEND_PROFILE="cpu"
         ;;
     full)
         APP_NATIVE=true
         STAGING_NATIVE=true
-        SERVER_JARS_ONLY=true
         ND4J_BACKEND="nd4j-native"
         KOMPILE_BACKEND_PROFILE="cpu"
         ;;
@@ -192,7 +211,7 @@ case "${VARIANT}" in
         ;;
     *)
         echo "Unknown variant: ${VARIANT}" >&2
-        echo "Valid: cli-only, full, hosted, cpu-intel, cpu-arm, cuda, amd-zluda" >&2
+        echo "Valid: cli-only, local, full, hosted, cpu-intel, cpu-arm, cuda, amd-zluda" >&2
         exit 1
         ;;
 esac
@@ -215,6 +234,24 @@ if [ -n "${BACKEND_PROFILE_OVERRIDE}" ]; then
         *) echo "Unsupported backend profile: ${KOMPILE_BACKEND_PROFILE}" >&2; exit 1 ;;
     esac
 fi
+# Local request-scoped runtimes require a packaged numerical backend. Hosted and
+# cli-only variants remain remote-only. Backend-bearing distributions publish the
+# local MCP workers only as Graal executables; their JNI/CUDA payload stays in lib/.
+if [ -n "${ND4J_BACKEND}" ]; then
+    LOCAL_RUNTIME=true
+    DOCUMENT_MODEL_NATIVE=true
+fi
+
+# A native CLI plus JVM-only workers is not a jars-only distribution; it is a
+# mixed execution graph whose MCP behavior changes by component. Do not publish
+# that shape. JVM development remains supported directly through Maven exec
+# JARs, while distributions keep the native boundary end-to-end.
+if [ "${JARS_ONLY}" = true ]; then
+    echo "--jars-only would mix the required native CLI with JVM-only child workers." >&2
+    echo "Kompile distributions require native subprocess artifacts; build JVM modules directly for development." >&2
+    exit 1
+fi
+
 if [ -n "${SDK_CLASSIFIER_OVERRIDE}" ]; then
     SDK_CLASSIFIER="${SDK_CLASSIFIER_OVERRIDE}"
 else
@@ -344,6 +381,10 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
         # A CLI-only archive must not require a DL4J backend just because the
         # repository root also contains model-serving modules.
         BUILD_CMD+=(-pl :kompile-cli-main -am)
+    elif [ "${VARIANT}" = "local" ]; then
+        # Keep the Java reactor at the local execution boundary. app-main is
+        # included only because it currently owns the dedicated VLM entrypoint.
+        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-staging,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main -am)
     fi
     # When building JARs (not native), produce exec JARs for app-main
     if { [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; } \
@@ -369,13 +410,36 @@ if [ "${SKIP_JAVA_BUILD}" = true ] \
         && [ "${APP_NATIVE}" = true ]; then
     # Check if exec JARs already exist
     APP_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-main/target/*-exec.jar 2>/dev/null | head -1)
-    STAGING_EXEC_JAR=$(ls kompile-app/kompile-models/kompile-model-staging/target/*-exec.jar 2>/dev/null | head -1)
-
     CHAT_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-chat/target/*-exec.jar 2>/dev/null | head -1)
     CRAWL_MGR_EXEC_JAR=$(ls kompile-app/kompile-app-parent/kompile-app-crawl-manager/target/*-exec.jar 2>/dev/null | head -1)
 
-    if [ -z "${APP_EXEC_JAR}" ] || [ -z "${STAGING_EXEC_JAR}" ] \
-       || [ -z "${CHAT_EXEC_JAR}" ] || [ -z "${CRAWL_MGR_EXEC_JAR}" ]; then
+    # --skip-java-build may reuse target/ from a previous backend lane. Presence
+    # alone is not enough: a CUDA archive assembled after a CPU package run would
+    # otherwise silently publish CPU-only service JARs. Require the lane's exact
+    # backend artifact and rebuild only mismatched/missing exec JARs.
+    exec_jar_matches_backend() {
+        local jar="$1"
+        [ -n "${jar}" ] && [ -f "${jar}" ] \
+            && unzip -p "${jar}" "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}.jar" \
+                >/dev/null 2>&1
+    }
+
+    invalidate_exec_jar_if_backend_mismatch() {
+        local variable_name="$1"
+        local label="$2"
+        local jar="${!variable_name}"
+        if [ -n "${jar}" ] && ! exec_jar_matches_backend "${jar}"; then
+            echo "  ${label}: existing exec JAR does not contain ${ND4J_BACKEND}; rebuilding"
+            printf -v "${variable_name}" '%s' ""
+        fi
+    }
+
+    invalidate_exec_jar_if_backend_mismatch APP_EXEC_JAR kompile-app-main
+    invalidate_exec_jar_if_backend_mismatch CHAT_EXEC_JAR kompile-app-chat
+    invalidate_exec_jar_if_backend_mismatch CRAWL_MGR_EXEC_JAR kompile-app-crawl-manager
+
+    if [ -z "${APP_EXEC_JAR}" ] || [ -z "${CHAT_EXEC_JAR}" ] \
+       || [ -z "${CRAWL_MGR_EXEC_JAR}" ]; then
         echo ""
         echo "──── Step 1b: Building exec JARs ─────────────────────────────────"
         echo ""
@@ -391,14 +455,14 @@ if [ "${SKIP_JAVA_BUILD}" = true ] \
         echo "  ✓ kompile-app-main exec JAR built"
     fi
 
-    if [ "${STAGING_NATIVE}" = true ] && [ -z "${STAGING_EXEC_JAR}" ]; then
-        echo "  kompile-model-staging: exec JAR already built by default"
-    fi
-
-    # The persona apps emit their exec jar on every build (no -Dkompile.uber), so this only
-    # fires when an earlier --skip-java-build left their target/ empty.
+    # The persona apps emit their exec jar on every build (no -Dkompile.uber).
+    # Rebuild when target/ is empty or when it belongs to another backend lane.
     for PERSONA_MODULE in kompile-app-chat kompile-app-crawl-manager; do
-        if ! ls "kompile-app/kompile-app-parent/${PERSONA_MODULE}/target"/*-exec.jar 1>/dev/null 2>&1; then
+        case "${PERSONA_MODULE}" in
+            kompile-app-chat) PERSONA_EXEC_JAR="${CHAT_EXEC_JAR}" ;;
+            kompile-app-crawl-manager) PERSONA_EXEC_JAR="${CRAWL_MGR_EXEC_JAR}" ;;
+        esac
+        if [ -z "${PERSONA_EXEC_JAR}" ]; then
             echo "  ${PERSONA_MODULE}: building exec JAR..."
             (
                 cd "kompile-app/kompile-app-parent/${PERSONA_MODULE}"
@@ -496,6 +560,38 @@ if [ "${SKIP_NATIVE}" = false ]; then
         throttle_native_build
     fi
 
+    # Standalone request-scoped model and pipeline runtimes. These are direct
+    # subprocess entrypoints; neither image dispatches through kompile-app-main.
+    if [ "${LOCAL_RUNTIME}" = true ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+        for RUNTIME in \
+            "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving:kompile-model-serving" \
+            "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving:kompile-pipeline-serving"; do
+            RUNTIME_MODULE="${RUNTIME%%:*}"
+            RUNTIME_IMAGE="${RUNTIME##*:}"
+            echo "  ${RUNTIME_IMAGE}: building native image..."
+            (
+                cd "${RUNTIME_MODULE}"
+                "${MVN}" package "${NATIVE_BUILD_FLAG}" -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
+                    2>&1 | tee "/tmp/${RUNTIME_IMAGE}-native.log"
+            ) &
+            PIDS+=($!)
+            throttle_native_build
+        done
+    fi
+
+    # Dedicated document-model worker used by local MCP crawl pipelines. This
+    # must not route through kompile-app-main or an executable server JAR.
+    if [ "${DOCUMENT_MODEL_NATIVE}" = true ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+        echo "  kompile-vlm-test: building native image..."
+        (
+            cd kompile-app/kompile-app-parent/kompile-app-main
+            "${MVN}" package -Pnative-vlm-test -Dkompile.native.side-load=true -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
+                2>&1 | tee /tmp/kompile-vlm-test-native.log
+        ) &
+        PIDS+=($!)
+        throttle_native_build
+    fi
+
     # Wait for whatever is still in flight (empty in serial mode because every launch was reaped).
     echo ""
     echo "  Waiting for ${#PIDS[@]} native build(s)..."
@@ -557,8 +653,15 @@ build_runtime() {
     local modules="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.management,jdk.management.agent,jdk.security.auth,jdk.naming.dns,jdk.charsets,jdk.localedata,jdk.httpserver,jdk.jfr"
     local base_opts="--add-modules ${modules} --strip-debug --no-header-files --no-man-pages --output ${dest}"
 
-    # Try compress=zip-6 first, fall back to compress=2 for older jlink.
+    # JDK 17 exposes the legacy numeric compression levels, while newer
+    # jlink releases use named ZIP levels. Select the syntax advertised by the
+    # actual bundled JDK so a supported Java 17 build does not emit false errors.
+    local jlink_help
+    jlink_help="$("${jlink}" --help 2>&1 || true)"
     local compress_opt="--compress=zip-6"
+    if [[ "${jlink_help}" == *"--compress=<0|1|2>"* ]]; then
+        compress_opt="--compress=2"
+    fi
     local locale_opt="--include-locales=en"
 
     local ok=false
@@ -597,7 +700,7 @@ build_runtime() {
     fi
 }
 
-if [ "${VARIANT}" != "cli-only" ]; then
+if [ "${BUNDLE_RUNTIME}" = true ]; then
     echo ""
     echo "──── Step 2b: Bundling jlink runtime ──────────────────────────────"
     echo ""
@@ -631,7 +734,7 @@ rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"/{bin,lib,config,data}
 
 # Copy jlink runtime into the dist (if it was staged above).
-if [ "${VARIANT}" != "cli-only" ] && [ -d "${RUNTIME_DEST:-}" ] && [ -x "${RUNTIME_DEST}/bin/java" ]; then
+if [ "${BUNDLE_RUNTIME}" = true ] && [ -d "${RUNTIME_DEST:-}" ] && [ -x "${RUNTIME_DEST}/bin/java" ]; then
     cp -a "${RUNTIME_DEST}" "${DIST_DIR}/runtime"
     echo "  runtime/ (bundled JDK — $(du -sh "${DIST_DIR}/runtime" | cut -f1))"
 fi
@@ -655,19 +758,22 @@ if [ ! -x "${DIST_DIR}/bin/kompile${EXE_SUFFIX}" ]; then
     exit 1
 fi
 
-# Copy CLI shaded jar into lib/ when present (JBang fallback)
-CLI_SHADED_JAR="kompile-cli/kompile-cli-main/target/kompile-cli-main-${VERSION}-shaded.jar"
-if [ -f "${CLI_SHADED_JAR}" ]; then
-    cp "${CLI_SHADED_JAR}" "${DIST_DIR}/lib/kompile-cli.jar"
-    echo "  lib/kompile-cli.jar ($(du -h "${CLI_SHADED_JAR}" | cut -f1))"
-else
-    CLI_SHADED_GLOB=$(find kompile-cli/kompile-cli-main/target -maxdepth 1 \
-        -name '*-shaded.jar' -print -quit 2>/dev/null || true)
-    if [ -n "${CLI_SHADED_GLOB}" ]; then
-        cp "${CLI_SHADED_GLOB}" "${DIST_DIR}/lib/kompile-cli.jar"
-        echo "  lib/kompile-cli.jar ($(du -h "${CLI_SHADED_GLOB}" | cut -f1)) [fallback: project version]"
+# Copy CLI shaded jar into lib/ only for distributions that intentionally carry
+# a JVM/JBang fallback. The local variant is native end-to-end.
+if [ "${INCLUDE_CLI_JAR}" = true ]; then
+    CLI_SHADED_JAR="kompile-cli/kompile-cli-main/target/kompile-cli-main-${VERSION}-shaded.jar"
+    if [ -f "${CLI_SHADED_JAR}" ]; then
+        cp "${CLI_SHADED_JAR}" "${DIST_DIR}/lib/kompile-cli.jar"
+        echo "  lib/kompile-cli.jar ($(du -h "${CLI_SHADED_JAR}" | cut -f1))"
     else
-        echo "  WARN: ${CLI_SHADED_JAR} not found — lib/kompile-cli.jar will be absent (build with shade plugin to include)"
+        CLI_SHADED_GLOB=$(find kompile-cli/kompile-cli-main/target -maxdepth 1 \
+            -name '*-shaded.jar' -print -quit 2>/dev/null || true)
+        if [ -n "${CLI_SHADED_GLOB}" ]; then
+            cp "${CLI_SHADED_GLOB}" "${DIST_DIR}/lib/kompile-cli.jar"
+            echo "  lib/kompile-cli.jar ($(du -h "${CLI_SHADED_GLOB}" | cut -f1)) [fallback: project version]"
+        else
+            echo "  WARN: ${CLI_SHADED_JAR} not found — lib/kompile-cli.jar will be absent (build with shade plugin to include)"
+        fi
     fi
 fi
 if [ "${VARIANT}" = full ] && [ ! -f "${DIST_DIR}/lib/kompile-cli.jar" ]; then
@@ -686,16 +792,16 @@ if [ "${APP_NATIVE}" = true ]; then
         # Back-compat symlink
         ln -sf kompile-server "${DIST_DIR}/bin/kompile-app-main"
         echo "  bin/kompile-server ($(du -h "${APP_BIN}" | cut -f1)) + bin/kompile-app-main symlink"
-        # GraalVM-emitted JDK shim libraries (libawt.so, libjava.so, libjvm.so, ...)
-        # must ship next to the binary; kompile-server.sh puts bin/ on LD_LIBRARY_PATH.
+        # GraalVM-emitted JDK shim libraries are side-loaded with every other native
+        # dependency. The canonical $ORIGIN/../lib RPATH also works for direct MCP launches.
         SHIM_COUNT=0
         for shim in kompile-app/kompile-app-parent/kompile-app-main/target/lib*.so; do
             [ -f "${shim}" ] || continue
-            cp -a "${shim}" "${DIST_DIR}/bin/"
+            cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
             SHIM_COUNT=$((SHIM_COUNT + 1))
         done
         if [ "${SHIM_COUNT}" -gt 0 ]; then
-            echo "  bin/ (+${SHIM_COUNT} GraalVM JDK shim libraries)"
+            echo "  lib/ (+${SHIM_COUNT} GraalVM JDK shim libraries)"
         fi
     fi
     # Copy exec jar into lib/ (present when -Dkompile.uber was passed, which native build does)
@@ -729,12 +835,9 @@ if [ "${APP_NATIVE}" = true ]; then
     fi
 fi
 
-# Copy model staging — both forms, like the server and the personas below.
-#
-# This used to be an either/or: the exec jar shipped only when the binary was missing. But
-# kompile-model-staging.sh prefers bin/kompile-model-staging and falls back to
-# lib/kompile-model-staging.jar exactly like the other launchers, so a binary-only dist had
-# nothing to fall back to on a host where the image will not start.
+# Copy model staging as a native-only local MCP worker. A native CLI must never
+# cross into a Spring Boot executable-JAR fallback; native payload is side-loaded
+# from the distribution lib/ directory instead.
 if [ "${STAGING_NATIVE}" = true ]; then
     STAGING_TARGET="kompile-app/kompile-models/kompile-model-staging/target"
     STAGING_SHIPPED=false
@@ -746,27 +849,66 @@ if [ "${STAGING_NATIVE}" = true ]; then
         normalize_elf_portability "${DIST_DIR}/bin/kompile-model-staging"
         echo "  bin/kompile-model-staging ($(du -h "${STAGING_TARGET}/kompile-model-staging" | cut -f1))"
         STAGING_SHIPPED=true
-        # GraalVM JDK shim libraries, same handling as the server and personas.
+        # GraalVM JDK shim libraries share the canonical side-loaded lib/ directory.
         STAGING_SHIMS=0
         for shim in "${STAGING_TARGET}"/lib*.so; do
             [ -f "${shim}" ] || continue
-            cp -an "${shim}" "${DIST_DIR}/bin/" 2>/dev/null || true
+            cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
             STAGING_SHIMS=$((STAGING_SHIMS + 1))
         done
         if [ "${STAGING_SHIMS}" -gt 0 ]; then
-            echo "  bin/ (+${STAGING_SHIMS} GraalVM JDK shim libraries from kompile-model-staging)"
+            echo "  lib/ (+${STAGING_SHIMS} GraalVM JDK shim libraries from kompile-model-staging)"
         fi
     fi
 
-    if ls "${STAGING_TARGET}"/*-exec.jar 1>/dev/null 2>&1; then
-        JAR=$(ls "${STAGING_TARGET}"/*-exec.jar | head -1)
-        cp "${JAR}" "${DIST_DIR}/lib/kompile-model-staging.jar"
-        echo "  lib/kompile-model-staging.jar ($(du -h "${JAR}" | cut -f1))"
-        STAGING_SHIPPED=true
-    fi
-
     if [ "${STAGING_SHIPPED}" = false ]; then
-        echo "  WARN: no kompile-model-staging binary or exec jar found — model staging absent from this dist"
+        echo "  ERROR: native model-staging worker is missing" >&2
+        exit 1
+    fi
+fi
+
+# Ship request-scoped local runtimes as native executables only. The local MCP
+# lifecycle is deliberately native end-to-end and resolves JNI/CUDA from lib/.
+if [ "${LOCAL_RUNTIME}" = true ]; then
+    for RUNTIME in \
+        "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving:kompile-model-serving" \
+        "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving:kompile-pipeline-serving"; do
+        RUNTIME_MODULE="${RUNTIME%%:*}"
+        RUNTIME_ARTIFACT="${RUNTIME##*:}"
+        RUNTIME_TARGET="${RUNTIME_MODULE}/target"
+        RUNTIME_SHIPPED=false
+
+        if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ] \
+                && [ -f "${RUNTIME_TARGET}/${RUNTIME_ARTIFACT}" ]; then
+            cp "${RUNTIME_TARGET}/${RUNTIME_ARTIFACT}" "${DIST_DIR}/bin/${RUNTIME_ARTIFACT}"
+            chmod +x "${DIST_DIR}/bin/${RUNTIME_ARTIFACT}"
+            normalize_elf_portability "${DIST_DIR}/bin/${RUNTIME_ARTIFACT}"
+            for shim in "${RUNTIME_TARGET}"/lib*.so; do
+                [ -f "${shim}" ] || continue
+                cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
+            done
+            RUNTIME_SHIPPED=true
+        fi
+
+        if [ "${RUNTIME_SHIPPED}" = false ]; then
+            echo "  ERROR: native ${RUNTIME_ARTIFACT} worker is missing" >&2
+            exit 1
+        fi
+    done
+fi
+
+# Ship the dedicated local document-model worker. There is intentionally no
+# executable-JAR fallback for this path: native MCP execution must remain native.
+if [ "${DOCUMENT_MODEL_NATIVE}" = true ]; then
+    VLM_WORKER_TARGET="kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test${EXE_SUFFIX}"
+    if [ "${SERVER_JARS_ONLY}" = false ] && [ -f "${VLM_WORKER_TARGET}" ]; then
+        cp "${VLM_WORKER_TARGET}" "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
+        chmod +x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
+        normalize_elf_portability "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
+        echo "  bin/kompile-vlm-test ($(du -h "${VLM_WORKER_TARGET}" | cut -f1))"
+    else
+        echo "  ERROR: native document-model worker is missing: ${VLM_WORKER_TARGET}" >&2
+        exit 1
     fi
 fi
 
@@ -804,20 +946,16 @@ if [ "${APP_NATIVE}" = true ]; then
             normalize_elf_portability "${DIST_DIR}/bin/${PERSONA_ARTIFACT}"
             echo "  bin/${PERSONA_ARTIFACT} ($(du -h "${PERSONA_TARGET}/${PERSONA_ARTIFACT}" | cut -f1))"
             PERSONA_SHIPPED=true
-            # GraalVM-emitted JDK shim libraries (libawt.so, libjava.so, libjvm.so, ...) must
-            # ship next to the binary; the launchers put bin/ on LD_LIBRARY_PATH. Same handling
-            # as kompile-server above — without it the binary starts and then dies on the first
-            # shim it cannot dlopen.
+            # GraalVM JDK shims share lib/ with JavaCPP, ND4J, tokenizer, and CUDA
+            # libraries so direct binaries and launcher scripts resolve one filesystem tree.
             PERSONA_SHIMS=0
             for shim in "${PERSONA_TARGET}"/lib*.so; do
                 [ -f "${shim}" ] || continue
-                # Never clobber a shim already placed by another image — they are the same
-                # GraalVM JDK build, and cp -n keeps the first writer's copy.
-                cp -an "${shim}" "${DIST_DIR}/bin/" 2>/dev/null || true
+                cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
                 PERSONA_SHIMS=$((PERSONA_SHIMS + 1))
             done
             if [ "${PERSONA_SHIMS}" -gt 0 ]; then
-                echo "  bin/ (+${PERSONA_SHIMS} GraalVM JDK shim libraries from ${PERSONA_MODULE})"
+                echo "  lib/ (+${PERSONA_SHIMS} GraalVM JDK shim libraries from ${PERSONA_MODULE})"
             fi
         fi
 
@@ -858,6 +996,16 @@ require_component_forms() {
     fi
 }
 
+require_native_component() {
+    local label="$1"
+    local binary_name="$2"
+    if [ ! -x "${DIST_DIR}/bin/${binary_name}" ]; then
+        echo "  ERROR: ${label} native binary is missing: bin/${binary_name}" >&2
+        echo "  Refusing to package an incomplete native MCP worker." >&2
+        exit 1
+    fi
+}
+
 if [ "${APP_NATIVE}" = true ]; then
     require_component_forms "server" "kompile-server" "kompile-server.jar"
     require_component_forms "chat" "kompile-chat" "kompile-chat.jar"
@@ -869,40 +1017,54 @@ if [ "${APP_NATIVE}" = true ]; then
     fi
 fi
 if [ "${STAGING_NATIVE}" = true ]; then
-    require_component_forms "model-staging" "kompile-model-staging" "kompile-model-staging.jar"
+    require_native_component "model-staging" "kompile-model-staging"
+fi
+if [ "${LOCAL_RUNTIME}" = true ]; then
+    require_native_component "model-serving" "kompile-model-serving"
+    require_native_component "pipeline-serving" "kompile-pipeline-serving"
+fi
+if [ "${DOCUMENT_MODEL_NATIVE}" = true ] \
+        && [ ! -x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}" ]; then
+    echo "  ERROR: native document-model worker is missing: bin/kompile-vlm-test${EXE_SUFFIX}" >&2
+    exit 1
 fi
 
-# Copy the launcher scripts into bin/ (every variant).
+# Copy launchers at the payload boundary. Local execution needs only the staging
+# convenience launcher; product/server variants retain the complete launcher set.
 #
-# These are the wrappers that actually start the JVM services shipped in lib/:
-# kompile-server.sh, kompile-model-staging.sh, kompile-chat.sh, kompile-crawl-manager.sh.
-# dist.xml ships them via a fileSet on the same directory; this script had no equivalent,
-# so a dist built here carried lib/kompile-server.jar and lib/kompile-model-staging.jar
-# with nothing to launch them. Copying the directory rather than naming files keeps the
-# two dist paths from drifting again as scripts are added.
+# Copy the supported service launchers. Server/persona scripts retain their JVM
+# product fallback; kompile-model-staging.sh is a native-only MCP worker launcher.
+# Copying the directory rather than naming files keeps both dist paths aligned.
 SCRIPTS_SRC="kompile-dist/src/main/scripts"
 if [ -d "${SCRIPTS_SRC}" ]; then
-    cp "${SCRIPTS_SRC}"/*.sh "${DIST_DIR}/bin/"
+    if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
+        cp "${SCRIPTS_SRC}"/*.sh "${DIST_DIR}/bin/"
+    else
+        cp "${SCRIPTS_SRC}/kompile-model-staging.sh" "${DIST_DIR}/bin/"
+    fi
     chmod +x "${DIST_DIR}/bin/"*.sh
     LAUNCHER_COUNT=$(ls "${DIST_DIR}/bin/"*.sh 2>/dev/null | wc -l)
     echo "  bin/ (${LAUNCHER_COUNT} launcher scripts)"
 fi
 
-# Copy JBang catalog and quick-start guide into the dist root (every variant)
-JBANG_CATALOG_SRC="kompile-dist/src/main/resources/jbang-catalog.json"
-JBANG_MD_SRC="kompile-dist/src/main/resources/JBANG.md"
-if [ -f "${JBANG_CATALOG_SRC}" ]; then
-    cp "${JBANG_CATALOG_SRC}" "${DIST_DIR}/jbang-catalog.json"
-    echo "  jbang-catalog.json"
-fi
-if [ -f "${JBANG_MD_SRC}" ]; then
-    cp "${JBANG_MD_SRC}" "${DIST_DIR}/JBANG.md"
-    echo "  JBANG.md"
+# JBang belongs to the JVM fallback tier, not the native local runtime.
+if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
+    JBANG_CATALOG_SRC="kompile-dist/src/main/resources/jbang-catalog.json"
+    JBANG_MD_SRC="kompile-dist/src/main/resources/JBANG.md"
+    if [ -f "${JBANG_CATALOG_SRC}" ]; then
+        cp "${JBANG_CATALOG_SRC}" "${DIST_DIR}/jbang-catalog.json"
+        echo "  jbang-catalog.json"
+    fi
+    if [ -f "${JBANG_MD_SRC}" ]; then
+        cp "${JBANG_MD_SRC}" "${DIST_DIR}/JBANG.md"
+        echo "  JBANG.md"
+    fi
 fi
 
 # ── Optional artifacts that dist.xml also lists (copy-if-present, logged when skipped) ──
 # These are only produced when their respective sub-projects are built; all copies are
 # safe to skip in cli-only or hosted builds that don't include those modules.
+if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
 
 # kompile-sdk-serving shaded jar → lib/kompile-sdk-serving.jar
 SDK_SERVING_JAR=$(find kompile-app/kompile-middleware/kompile-sdk-serving/target \
@@ -989,6 +1151,7 @@ for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
         echo "  bin/${BNAME} ($(du -h "${extra}" | cut -f1))"
     fi
 done
+fi
 
 # Copy build scripts for platform rebuilds from installed dist
 if [ -d "build-scripts" ]; then
@@ -1005,6 +1168,7 @@ fi
 # strict, though: flattening every platform into lib/ lets foreign libraries and
 # stale CPU flavors overwrite the requested target by basename.
 APP_NATIVE_LIBS="kompile-app/kompile-app-parent/kompile-app-main/target/native-libs"
+CLI_NATIVE_LIBS="kompile-cli/kompile-cli-main/target/native-libs"
 
 NATIVE_STAGER="${SCRIPT_DIR}/kompile-dist/src/main/build/stage-native-libs.sh"
 NATIVE_PLATFORM_EXTENSION="${SDK_CLASSIFIER#${PLATFORM}}"
@@ -1014,14 +1178,26 @@ echo ""
 # stale classifiers with the same basename. Native service images require the
 # exact side-loaded platform/flavor tree; jar-tier services load their libraries
 # from their Maven dependencies and do not need this native-image-only staging.
-if [ "${APP_NATIVE}" = true ] && [ "${JARS_ONLY}" = false ] \
-        && [ "${SERVER_JARS_ONLY}" = false ]; then
+if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+    # The CLI has JNI dependencies even without a model backend (SQLite,
+    # Conscrypt, Netty, and future runtime JARs). Stage that closure for every
+    # native distribution instead of coupling JNI availability to ND4J.
     bash "${NATIVE_STAGER}" \
-        "${APP_NATIVE_LIBS}" \
+        "${CLI_NATIVE_LIBS}" \
         "${DIST_DIR}/lib" \
         "${PLATFORM}" \
         "${NATIVE_PLATFORM_EXTENSION}" \
-        "${ND4J_BACKEND}"
+        none
+
+    if { [ "${APP_NATIVE}" = true ] || [ "${STAGING_NATIVE}" = true ] \
+            || [ "${LOCAL_RUNTIME}" = true ] || [ "${DOCUMENT_MODEL_NATIVE}" = true ]; }; then
+        bash "${NATIVE_STAGER}" \
+            "${APP_NATIVE_LIBS}" \
+            "${DIST_DIR}/lib" \
+            "${PLATFORM}" \
+            "${NATIVE_PLATFORM_EXTENSION}" \
+            "${ND4J_BACKEND:-none}"
+    fi
 else
     echo "  SKIP: side-loaded native libraries are not required by this variant"
 fi
@@ -1029,8 +1205,10 @@ echo "  lib/ ($(du -sh "${DIST_DIR}/lib/" | cut -f1) including exec jars and tar
 
 # Backend distributions are a self-contained SDK boundary. The DL4J release
 # publishes runtime packages separately from Maven, so repository-only builds
-# must provide the matching SDK asset shard explicitly. Copy the entire shard,
-# including its jars/ directory and checksum metadata, and reject partial input.
+# must provide the matching SDK asset shard explicitly. Stage the shard, then
+# retain only runtime packages whose declared lane matches the distribution
+# backend. A CUDA build can emit a CPU-named compatibility package backed by the
+# same CUDA library; shipping that as a CPU fallback is misleading and unsafe.
 SDX_RUNTIME_COUNT=0
 SDX_JAR_COUNT=0
 if [ -n "${SDX_ASSETS_DIR}" ]; then
@@ -1040,6 +1218,20 @@ if [ -n "${SDX_ASSETS_DIR}" ]; then
     fi
     mkdir -p "${DIST_DIR}/sdx-sdk"
     cp -a "${SDX_ASSETS_DIR}/." "${DIST_DIR}/sdx-sdk/"
+    case "${ND4J_BACKEND:-}" in
+        nd4j-cuda-*)
+            rm -rf "${DIST_DIR}/sdx-sdk/cpu"
+            rm -f "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cpu.zip" \
+                "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cpu.zip.sha256" \
+                "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cpu.zip.sha512"
+            ;;
+        nd4j-native)
+            rm -rf "${DIST_DIR}/sdx-sdk/cuda"
+            rm -f "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cuda.zip" \
+                "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cuda.zip.sha256" \
+                "${DIST_DIR}/sdx-sdk/sdx-runtime-${PLATFORM}-cuda.zip.sha512"
+            ;;
+    esac
     SDX_RUNTIME_COUNT=$(find "${DIST_DIR}/sdx-sdk" -type f \( -name '*.zip' -o -name '*.aar' \) | wc -l)
     SDX_JAR_COUNT=$(find "${DIST_DIR}/sdx-sdk/jars" -type f -name '*.jar' 2>/dev/null | wc -l || true)
     echo "  sdx-sdk/ (${SDX_RUNTIME_COUNT} runtime package(s), ${SDX_JAR_COUNT} platform JAR(s))"
@@ -1101,6 +1293,9 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
     "cli": $(component_forms kompile kompile-cli.jar),
     "server": $(component_forms kompile-server kompile-server.jar),
     "model-staging": $(component_forms kompile-model-staging kompile-model-staging.jar),
+    "model-serving": $(component_forms kompile-model-serving kompile-model-serving.jar),
+    "pipeline-serving": $(component_forms kompile-pipeline-serving kompile-pipeline-serving.jar),
+    "document-model": $(component_forms kompile-vlm-test kompile-vlm-test.jar),
     "chat": $(component_forms kompile-chat kompile-chat.jar),
     "crawl-manager": $(component_forms kompile-crawl-manager kompile-crawl-manager.jar),
     "scripting-worker": $(component_forms kompile-scripting-worker kompile-scripting-worker.jar),
@@ -1137,8 +1332,8 @@ find "${DIST_DIR}" -type f | sort | while read -r f; do
     echo "    ${f#${DIST_DIR}/}"
 done
 
-# Create both release formats. ZIP is the publishable Maven artifact; tar.gz is
-# retained for compatibility with existing direct-download consumers.
+# Create both release formats. Distribution modules attach both under the same
+# classifier; direct installers select tar.gz on Unix and ZIP on Windows.
 echo ""
 ZIP_ARCHIVE="${OUTPUT_DIR}/${DIST_NAME}.zip"
 TAR_ARCHIVE="${OUTPUT_DIR}/${DIST_NAME}.tar.gz"
@@ -1150,7 +1345,7 @@ else
     echo "  ERROR: Python 3 is required to create the distribution ZIP" >&2
     exit 1
 fi
-"${PYTHON_BIN}" - "${OUTPUT_DIR}" "${DIST_NAME}" "${ZIP_ARCHIVE}" <<'PY'
+"${PYTHON_BIN}" -c '
 import os
 import sys
 import zipfile
@@ -1168,28 +1363,34 @@ with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=T
         for file_name in files:
             path = Path(current) / file_name
             archive.write(path, path.relative_to(root).as_posix())
-PY
+' "${OUTPUT_DIR}" "${DIST_NAME}" "${ZIP_ARCHIVE}"
 tar -czf "${TAR_ARCHIVE}" -C "${OUTPUT_DIR}" "${DIST_NAME}/"
 printf '%s  %s\n' "$(checksum_value "${ZIP_ARCHIVE}")" "$(basename "${ZIP_ARCHIVE}")" > "${ZIP_ARCHIVE}.sha256"
 printf '%s  %s\n' "$(checksum_value "${TAR_ARCHIVE}")" "$(basename "${TAR_ARCHIVE}")" > "${TAR_ARCHIVE}.sha256"
 
 if [ "${INSTALL_MAVEN}" = true ]; then
-    echo "  Installing classified distribution ZIP in ${MAVEN_REPOSITORY}"
-    INSTALL_ARGS=(
-        --batch-mode
-        --no-transfer-progress
-        "-Dmaven.repo.local=${MAVEN_REPOSITORY}"
-        org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file
-        "-Dfile=${ZIP_ARCHIVE}"
-        -DgroupId=ai.kompile
-        -DartifactId=kompile-dist
-        "-Dversion=${VERSION}"
-        -Dpackaging=zip
-        "-Dclassifier=${DISTRIBUTION_CLASSIFIER}"
-        -DpomFile=kompile-dist/pom.xml
-        -DgeneratePom=false
-    )
-    "${MVN}" "${MAVEN_BUILD_ARGS[@]}" "${INSTALL_ARGS[@]}"
+    install_distribution_artifact() {
+        local artifact_file="$1"
+        local artifact_type="$2"
+        echo "  Installing classified distribution ${artifact_type} in ${MAVEN_REPOSITORY}"
+        local -a install_args=(
+            --batch-mode
+            --no-transfer-progress
+            "-Dmaven.repo.local=${MAVEN_REPOSITORY}"
+            org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file
+            "-Dfile=${artifact_file}"
+            -DgroupId=ai.kompile
+            -DartifactId=kompile-dist
+            "-Dversion=${VERSION}"
+            "-Dpackaging=${artifact_type}"
+            "-Dclassifier=${DISTRIBUTION_CLASSIFIER}"
+            -DpomFile=kompile-dist/pom.xml
+            -DgeneratePom=false
+        )
+        "${MVN}" "${MAVEN_BUILD_ARGS[@]}" "${install_args[@]}"
+    }
+    install_distribution_artifact "${ZIP_ARCHIVE}" zip
+    install_distribution_artifact "${TAR_ARCHIVE}" tar.gz
 fi
 
 echo "  ZIP:      ${ZIP_ARCHIVE}"

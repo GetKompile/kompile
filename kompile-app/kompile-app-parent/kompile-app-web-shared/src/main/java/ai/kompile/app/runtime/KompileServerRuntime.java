@@ -216,16 +216,12 @@ public final class KompileServerRuntime {
      * and a later launch would fail SharedCompilerRuntime's directory trust check.
      */
     public static void configureJavaCppForNativeImage() {
-        boolean resolved = NativeLibraryResolver.bootstrap();
+        NativeLibraryResolver.bootstrapOrThrow();
         if (NativeImageInfo.isRunningInNativeImage()) {
-            if (resolved) {
-                logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
-                        System.getProperty("org.bytedeco.javacpp.cachedir"),
-                        System.getProperty("org.nd4j.presets.sharedRuntimePath"),
-                        System.getProperty("org.bytedeco.javacpp.pathsFirst"));
-            } else {
-                logger.warn("No side-loaded native library directory could be resolved for this native image");
-            }
+            logger.info("JavaCPP native image config: cachedir={}, sharedRuntimePath={}, pathsFirst={}",
+                    System.getProperty("org.bytedeco.javacpp.cachedir"),
+                    System.getProperty("org.nd4j.presets.sharedRuntimePath"),
+                    System.getProperty("org.bytedeco.javacpp.pathsFirst"));
         } else {
             logger.debug("Running in JVM mode - JavaCPP configured by NativeLibraryResolver");
         }

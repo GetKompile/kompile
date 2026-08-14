@@ -91,18 +91,15 @@ public class PstItemGraphExtractor implements DocumentGraphExtractor {
 
     @Override
     public ExtractionResult extractBatch(List<Document> docs) {
-        List<ExtractedEntity> allEntities = new ArrayList<>();
-        List<ExtractedRelation> allRelations = new ArrayList<>();
-        Map<String, ExtractedEntity> dedup = new LinkedHashMap<>();
+        Map<String, ExtractedEntity> allEntities = new LinkedHashMap<>();
+        Map<String, ExtractedRelation> allRelations = new LinkedHashMap<>();
         for (Document doc : docs) {
-            ExtractionResult r = extract(doc);
-            for (ExtractedEntity e : r.entities()) {
-                dedup.putIfAbsent(e.id(), e);
-            }
-            allRelations.addAll(r.relations());
+            ExtractorUtils.mergeResult(allEntities, allRelations, extract(doc));
         }
-        allEntities.addAll(dedup.values());
-        return ExtractionResult.of(allEntities, allRelations, null);
+        return ExtractionResult.of(
+                new ArrayList<>(allEntities.values()),
+                new ArrayList<>(allRelations.values()),
+                null);
     }
 
     // ── Contact extraction ──────────────────────────────────────────────

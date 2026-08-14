@@ -13,6 +13,8 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -160,6 +162,87 @@ class DirectLlmClientContentBlockTest {
 
             assertEquals("[LLM API error 500: bad key]", result.text);
             assertEquals(result.text, output.toString());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void cachedTokensStillCountTowardContextOccupancy() {
+        DirectLlmClient.StreamResult result = new DirectLlmClient.StreamResult();
+        result.inputTokens = 1_000;
+        result.cacheReadTokens = 70_000;
+        result.cacheCreationTokens = 2_000;
+
+        assertEquals(73_000, result.contextInputTokens());
+    }
+
+    @Test
+    void responsesToolResultWithoutRetainedCallRecoversAsOrdinaryContext() throws Exception {
+        AtomicInteger turn = new AtomicInteger();
+        AtomicReference<String> recoveredRequest = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/codex/responses", exchange -> {
+            int currentTurn = turn.incrementAndGet();
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String body;
+            if (currentTurn == 1) {
+                body = """
+                        data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_FKELUG01bpnSx0E0nIVwRnt1","name":"write","arguments":"{}"}}
+
+                        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_FKELUG01bpnSx0E0nIVwRnt1","name":"write","arguments":"{}"}}
+
+                        data: {"type":"response.completed","response":{"output":[],"usage":{}}}
+
+                        """;
+            } else {
+                recoveredRequest.set(request);
+                body = """
+                        data: {"type":"response.output_text.delta","delta":"recovered"}
+
+                        data: {"type":"response.completed","response":{"output":[],"usage":{}}}
+
+                        """;
+            }
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream responseBody = exchange.getResponseBody()) {
+                responseBody.write(bytes);
+            }
+        });
+        server.start();
+
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai-codex", "test-token", "gpt-5.4",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            DirectLlmClient responsesClient = new DirectLlmClient(config, mapper);
+            DirectLlmClient.StreamResult first =
+                    responsesClient.streamChat("use the write tool", "system", null, null);
+            assertEquals(1, first.toolCalls.size());
+
+            // Reproduce full compaction/resume losing the provider-owned call item
+            // while the executor still has its completed result to submit.
+            responsesClient.replaceHistoryWithSummary("prior work summary");
+            DirectLlmClient.ToolCallResultInput result = new DirectLlmClient.ToolCallResultInput(
+                    "call_FKELUG01bpnSx0E0nIVwRnt1", "write", "markdown saved", false);
+            DirectLlmClient.StreamResult second =
+                    responsesClient.streamChat(null, "system", null, List.of(result));
+
+            assertEquals("recovered", second.text);
+            JsonNode input = mapper.readTree(recoveredRequest.get()).path("input");
+            boolean recovered = false;
+            for (JsonNode item : input) {
+                assertNotEquals("function_call_output", item.path("type").asText(),
+                        "an output without its matching call must never reach OpenAI");
+                for (JsonNode block : item.path("content")) {
+                    if (block.path("text").asText().contains("Recovered tool result for write")) {
+                        recovered = true;
+                    }
+                }
+            }
+            assertTrue(recovered, "the completed tool result should remain available as ordinary context");
         } finally {
             server.stop(0);
         }

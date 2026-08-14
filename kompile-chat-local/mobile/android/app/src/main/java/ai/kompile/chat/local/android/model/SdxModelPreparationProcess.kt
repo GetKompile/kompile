@@ -52,6 +52,9 @@ private const val KEY_FAILURE_MESSAGE = "failure_message"
 private const val KEY_FAILURE_STACK = "failure_stack"
 private const val KEY_CACHE_HIT = "cache_hit"
 private const val KEY_SOURCE_SHA256 = "source_sha256"
+private const val KEY_SOURCE_BYTES = "source_bytes"
+private const val KEY_CANONICAL_SDZ_LOGICAL_SHA256 = "canonical_sdz_logical_sha256"
+private const val KEY_CANONICAL_SDZ_LOGICAL_BYTES = "canonical_sdz_logical_bytes"
 private const val KEY_CANONICAL_SDZ_PATH = "canonical_sdz_path"
 private const val KEY_CANONICAL_SDZ_BYTES = "canonical_sdz_bytes"
 private const val KEY_RUNTIME_MODEL_PATH = "runtime_model_path"
@@ -111,6 +114,9 @@ internal fun buildSdxModelPreparationRequest(
 internal data class PreparedModelPayload(
     val cacheHit: Boolean,
     val sourceSha256: String,
+    val sourceBytes: Long,
+    val canonicalSdzLogicalSha256: String,
+    val canonicalSdzLogicalBytes: Long,
     val canonicalSdzPath: String,
     val canonicalSdzBytes: Long,
     val modelPath: String,
@@ -124,6 +130,9 @@ internal data class PreparedModelPayload(
     fun toPreparedModelInfo(): PreparedModelInfo = PreparedModelInfo(
         cacheHit = cacheHit,
         sourceSha256 = sourceSha256,
+        sourceBytes = sourceBytes,
+        canonicalSdzLogicalSha256 = canonicalSdzLogicalSha256,
+        canonicalSdzLogicalBytes = canonicalSdzLogicalBytes,
         canonicalSdzPath = canonicalSdzPath,
         canonicalSdzBytes = canonicalSdzBytes,
         modelPath = modelPath,
@@ -139,6 +148,9 @@ internal data class PreparedModelPayload(
         fun from(info: PreparedModelInfo): PreparedModelPayload = PreparedModelPayload(
             cacheHit = info.cacheHit,
             sourceSha256 = info.sourceSha256,
+            sourceBytes = info.sourceBytes,
+            canonicalSdzLogicalSha256 = info.canonicalSdzLogicalSha256,
+            canonicalSdzLogicalBytes = info.canonicalSdzLogicalBytes,
             canonicalSdzPath = info.canonicalSdzPath,
             canonicalSdzBytes = info.canonicalSdzBytes,
             modelPath = info.modelPath,
@@ -379,6 +391,9 @@ internal object SdxModelPreparationClient {
     private fun decodePreparedModel(response: Bundle): PreparedModelInfo = PreparedModelPayload(
         cacheHit = response.getBoolean(KEY_CACHE_HIT),
         sourceSha256 = response.requireString(KEY_SOURCE_SHA256),
+        sourceBytes = response.getLong(KEY_SOURCE_BYTES),
+        canonicalSdzLogicalSha256 = response.requireString(KEY_CANONICAL_SDZ_LOGICAL_SHA256),
+        canonicalSdzLogicalBytes = response.getLong(KEY_CANONICAL_SDZ_LOGICAL_BYTES),
         canonicalSdzPath = response.requireString(KEY_CANONICAL_SDZ_PATH),
         canonicalSdzBytes = response.getLong(KEY_CANONICAL_SDZ_BYTES),
         modelPath = response.requireString(KEY_RUNTIME_MODEL_PATH),
@@ -811,6 +826,12 @@ class SdxModelPreparationService : Service() {
             putInt(KEY_PID, Process.myPid())
             putBoolean(KEY_CACHE_HIT, payload.cacheHit)
             putString(KEY_SOURCE_SHA256, payload.sourceSha256)
+            putLong(KEY_SOURCE_BYTES, payload.sourceBytes)
+            putString(
+                KEY_CANONICAL_SDZ_LOGICAL_SHA256,
+                payload.canonicalSdzLogicalSha256
+            )
+            putLong(KEY_CANONICAL_SDZ_LOGICAL_BYTES, payload.canonicalSdzLogicalBytes)
             putString(KEY_CANONICAL_SDZ_PATH, payload.canonicalSdzPath)
             putLong(KEY_CANONICAL_SDZ_BYTES, payload.canonicalSdzBytes)
             putString(KEY_RUNTIME_MODEL_PATH, payload.modelPath)

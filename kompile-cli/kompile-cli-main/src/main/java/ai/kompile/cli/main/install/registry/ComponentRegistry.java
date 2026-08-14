@@ -16,12 +16,11 @@
 
 package ai.kompile.cli.main.install.registry;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.util.OSResolver;
-import ai.kompile.utils.NativeImageInfo;
 
 import java.io.File;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -46,6 +45,8 @@ public class ComponentRegistry {
     public static final String KOMPILE_APP_CHAT = "kompile-app-chat";
     public static final String KOMPILE_APP_CRAWL_MANAGER = "kompile-app-crawl-manager";
     public static final String KOMPILE_MODEL_STAGING = "kompile-model-staging";
+    public static final String KOMPILE_MODEL_SERVING = "kompile-model-serving";
+    public static final String KOMPILE_PIPELINE_SERVING = "kompile-pipeline-serving";
     public static final String KOMPILE_GRAPH_SERVICE = "kompile-graph-service";
     public static final String KOMPILE_CLI = "kompile-cli";
     public static final String KOMPILE_AGENT = "kompile-agent";
@@ -64,6 +65,8 @@ public class ComponentRegistry {
             KOMPILE_APP_CHAT, List.of("kompile-app-chat", "kompile-chat"),
             KOMPILE_APP_CRAWL_MANAGER, List.of("kompile-app-crawl-manager", "kompile-crawl-manager"),
             KOMPILE_MODEL_STAGING, List.of("kompile-model-staging"),
+            KOMPILE_MODEL_SERVING, List.of("kompile-model-serving", "kompile-serving", "kompile-app-subprocess-serving"),
+            KOMPILE_PIPELINE_SERVING, List.of("kompile-pipeline-serving"),
             KOMPILE_GRAPH_SERVICE, List.of("kompile-graph-service"),
             KOMPILE_CLI, List.of("kompile-cli", "kompile"));
 
@@ -124,6 +127,32 @@ public class ComponentRegistry {
                 .groupId("ai.kompile")
                 .build());
 
+        // Register the request-scoped standalone model-serving runtime. This is the narrow
+        // ServingSubprocessMain artifact, not the admin application.
+        COMPONENTS.put(KOMPILE_MODEL_SERVING, ComponentDescriptor.builder()
+                .id(KOMPILE_MODEL_SERVING)
+                .name("Kompile Model Serving")
+                .description("Standalone local language-model serving subprocess")
+                .type("serving")
+                .defaultPort(0)
+                .mainClass("ai.kompile.app.subprocess.ServingSubprocessMain")
+                .artifactId("kompile-app-subprocess-serving")
+                .artifactClassifier("exec")
+                .groupId("ai.kompile")
+                .build());
+
+        COMPONENTS.put(KOMPILE_PIPELINE_SERVING, ComponentDescriptor.builder()
+                .id(KOMPILE_PIPELINE_SERVING)
+                .name("Kompile Pipeline Serving")
+                .description("Standalone request-scoped unified pipeline subprocess")
+                .type("serving")
+                .defaultPort(0)
+                .mainClass("ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain")
+                .artifactId("kompile-pipeline-serving")
+                .artifactClassifier("exec")
+                .groupId("ai.kompile")
+                .build());
+
         // Register the standalone graph persistence and reasoning service
         COMPONENTS.put(KOMPILE_GRAPH_SERVICE, ComponentDescriptor.builder()
                 .id(KOMPILE_GRAPH_SERVICE)
@@ -177,30 +206,12 @@ public class ComponentRegistry {
      * running native image's distribution root &gt; {@code ~/.kompile}.
      */
     static File resolveInstallBaseDir() {
-        return resolveInstallBaseDir(System.getProperties(), System.getenv(),
-                NativeImageInfo.getExecutablePathAsPath(), Info.homeDirectory());
+        return KompileHome.installDirectory();
     }
 
     static File resolveInstallBaseDir(Properties properties, Map<String, String> environment,
                                       Path executablePath, File homeDirectory) {
-        String prop = properties.getProperty("kompile.install.dir");
-        if (prop != null && !prop.isBlank()) {
-            return new File(prop);
-        }
-        String env = environment.get("KOMPILE_INSTALL_DIR");
-        if (env != null && !env.isBlank()) {
-            return new File(env);
-        }
-        String distProp = properties.getProperty("kompile.dist.home");
-        if (distProp != null && !distProp.isBlank()) {
-            return new File(distProp);
-        }
-        String distEnv = environment.get("KOMPILE_DIST_HOME");
-        if (distEnv != null && !distEnv.isBlank()) {
-            return new File(distEnv);
-        }
-        File inferredDist = inferDistributionHome(executablePath);
-        return inferredDist != null ? inferredDist : homeDirectory;
+        return KompileHome.resolveInstallDirectory(properties, environment, executablePath, homeDirectory);
     }
 
     /**
@@ -210,24 +221,7 @@ public class ComponentRegistry {
      * native-image builder's executable path.
      */
     public static File inferDistributionHome(Path artifactPath) {
-        if (artifactPath == null) {
-            return null;
-        }
-        Path artifact = artifactPath.toAbsolutePath().normalize();
-        Path artifactDir = artifact.getParent();
-        if (artifactDir == null || artifactDir.getFileName() == null) {
-            return null;
-        }
-        String directoryName = artifactDir.getFileName().toString();
-        if (!"bin".equals(directoryName) && !"lib".equals(directoryName)) {
-            return null;
-        }
-        Path distHome = artifactDir.getParent();
-        if (distHome == null || !Files.isDirectory(distHome.resolve("bin"))
-                || !Files.isDirectory(distHome.resolve("lib"))) {
-            return null;
-        }
-        return distHome.toFile();
+        return KompileHome.inferDistributionHome(artifactPath);
     }
 
     /**

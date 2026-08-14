@@ -24,13 +24,24 @@ import zipfile
 from pathlib import Path
 from typing import Iterable
 
-PRIMARY_SUFFIXES = (".pom", ".jar", ".aar", ".war", ".zip", ".module")
+PRIMARY_SUFFIXES = (".pom", ".jar", ".aar", ".war", ".zip", ".tar.gz", ".module")
 CHECKSUMS = {"md5": hashlib.md5, "sha1": hashlib.sha1, "sha256": hashlib.sha256, "sha512": hashlib.sha512}  # nosec: Central requires MD5/SHA1 metadata
 DERIVED_SUFFIXES = (".asc", ".md5", ".sha1", ".sha256", ".sha512")
 MAX_BUNDLE_BYTES = 1_000_000_000
 MAVEN_METADATA_NAMESPACE = "http://maven.apache.org/METADATA/1.1.0"
 MAVEN_METADATA_SCHEMA = "https://maven.apache.org/xsd/repository-metadata-1.1.0.xsd"
 XML_SCHEMA_INSTANCE_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
+
+
+def artifact_suffix(path: Path, suffixes: Iterable[str] = PRIMARY_SUFFIXES) -> str | None:
+    """Return the longest recognized Maven extension, including compound types."""
+    return next(
+        (
+            suffix for suffix in sorted(suffixes, key=len, reverse=True)
+            if path.name.endswith(suffix)
+        ),
+        None,
+    )
 
 
 def digest(path: Path, algorithm: str = "sha256") -> str:
@@ -226,7 +237,7 @@ def primary_files(repository: Path) -> list[Path]:
     return [
         path
         for path in repository_files(repository)
-        if path.suffix in PRIMARY_SUFFIXES and not path.name.endswith(".asc")
+        if artifact_suffix(path) is not None and not path.name.endswith(".asc")
     ]
 
 
@@ -269,8 +280,11 @@ def write_metadata_xml(path: Path, root: ET.Element) -> None:
 def snapshot_file_identity(
     path: Path, artifact_id: str, release_version: str
 ) -> tuple[str, str | None]:
-    extension = path.suffix.removeprefix(".")
-    stem = path.name[: -(len(extension) + 1)]
+    suffix = artifact_suffix(path)
+    if suffix is None:
+        raise ValueError(f"unsupported Maven artifact extension: {path.name}")
+    extension = suffix.removeprefix(".")
+    stem = path.name[:-len(suffix)]
     base_name = f"{artifact_id}-{release_version}"
     if stem == base_name:
         return extension, None
@@ -520,15 +534,16 @@ def snapshot_deploy_commands(
     if not version.endswith("-SNAPSHOT"):
         raise ValueError(f"snapshot publication requires a -SNAPSHOT version: {version}")
     commands: list[list[str]] = []
-    supported = {".jar", ".aar", ".war", ".zip"}
+    supported = (".jar", ".aar", ".war", ".zip", ".tar.gz")
     for pom in sorted(repository.rglob(f"*-{version}.pom")):
         if pom.parent.name != version:
             continue
         artifact_id = pom.parent.parent.name
         base = f"{artifact_id}-{version}"
-        main_files = [pom.parent / f"{base}{suffix}" for suffix in sorted(supported)]
+        main_files = [pom.parent / f"{base}{suffix}" for suffix in supported]
         main = next((path for path in main_files if path.is_file()), pom)
-        packaging = main.suffix.lstrip(".") if main != pom else "pom"
+        main_suffix = artifact_suffix(main, supported) if main != pom else None
+        packaging = main_suffix.lstrip(".") if main_suffix else "pom"
         attachments: list[tuple[Path, str, str]] = []
         unsupported = []
         for path in sorted(pom.parent.iterdir()):
@@ -536,9 +551,9 @@ def snapshot_deploy_commands(
                 continue
             if path.name.endswith((".asc", ".md5", ".sha1", ".sha256", ".sha512")):
                 continue
-            suffix = path.suffix
-            if suffix not in supported or not path.name.startswith(base + "-"):
-                if suffix in PRIMARY_SUFFIXES:
+            suffix = artifact_suffix(path, supported)
+            if suffix is None or not path.name.startswith(base + "-"):
+                if artifact_suffix(path) is not None:
                     unsupported.append(path.name)
                 continue
             classifier = path.name[len(base) + 1:-len(suffix)]

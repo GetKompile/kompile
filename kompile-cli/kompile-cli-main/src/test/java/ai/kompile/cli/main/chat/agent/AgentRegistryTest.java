@@ -1,5 +1,9 @@
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.tools.ExitPlanModeTool;
+import ai.kompile.cli.main.chat.tools.ToolRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -186,6 +190,24 @@ class AgentRegistryTest {
     @Test
     void testSubagentDelegationHealthy() {
         assertTrue(registry.isSubagentDelegationHealthy());
+    }
+
+    @Test
+    void directSubagentUsesProviderNeutralNonBlankToolDefinitions() {
+        ObjectMapper mapper = new ObjectMapper();
+        ToolRegistry tools = new ToolRegistry(mapper);
+        tools.register(new ExitPlanModeTool());
+        DirectSubagentRunner runner = new DirectSubagentRunner(null, mapper, tools, null, null);
+
+        ArrayNode definitions = runner.directToolDefinitionsFor(AgentConfig.builder("explore-quick")
+                .enabledTools(Set.of("*"))
+                .build());
+
+        assertEquals(1, definitions.size());
+        assertEquals("exit_plan_mode", definitions.path(0).path("name").asText());
+        assertFalse(definitions.path(0).path("name").asText().isBlank());
+        assertTrue(definitions.path(0).has("inputSchema"));
+        assertFalse(definitions.path(0).has("function"));
     }
 
     // ========================================================================

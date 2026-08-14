@@ -231,15 +231,21 @@ public class MailLoaderImpl implements DocumentLoader {
         Document document = new Document(content.toString());
         addMetadata(document, originalFile, "Email Message");
         
-        // Add email-specific metadata
+        // Add canonical email metadata consumed by the shared graph extractors.
         if (message.getSubject() != null) {
-            document.getMetadata().put("subject", message.getSubject());
+            document.getMetadata().put("email.subject", message.getSubject());
         }
         if (message.getFrom() != null) {
-            document.getMetadata().put("from", formatMailboxList(message.getFrom()));
+            document.getMetadata().put("email.from", formatMailboxList(message.getFrom()));
+        }
+        if (message.getTo() != null) {
+            document.getMetadata().put("email.to", formatMailboxList(message.getTo().flatten()));
+        }
+        if (message.getCc() != null) {
+            document.getMetadata().put("email.cc", formatMailboxList(message.getCc().flatten()));
         }
         if (message.getDate() != null) {
-            document.getMetadata().put("messageDate", message.getDate());
+            document.getMetadata().put("email.date", message.getDate().toString());
         }
         
         return document;
@@ -284,15 +290,25 @@ public class MailLoaderImpl implements DocumentLoader {
         Document document = new Document(content.toString());
         addMetadata(document, originalFile, "MIME Email Message");
         
-        // Add email-specific metadata
+        // Add canonical email metadata consumed by the shared graph extractors.
         if (subject != null) {
-            document.getMetadata().put("subject", subject);
+            document.getMetadata().put("email.subject", subject);
         }
         if (from != null) {
-            document.getMetadata().put("from", from);
+            document.getMetadata().put("email.from", from);
+        }
+        jakarta.mail.Address[] toRecipients =
+                mimeMessage.getRecipients(jakarta.mail.Message.RecipientType.TO);
+        if (toRecipients != null && toRecipients.length > 0) {
+            document.getMetadata().put("email.to", formatAddresses(toRecipients));
+        }
+        jakarta.mail.Address[] ccRecipients =
+                mimeMessage.getRecipients(jakarta.mail.Message.RecipientType.CC);
+        if (ccRecipients != null && ccRecipients.length > 0) {
+            document.getMetadata().put("email.cc", formatAddresses(ccRecipients));
         }
         if (mimeMessage.getSentDate() != null) {
-            document.getMetadata().put("messageDate", mimeMessage.getSentDate());
+            document.getMetadata().put("email.date", mimeMessage.getSentDate().toString());
         }
         
         return document;
@@ -349,6 +365,16 @@ public class MailLoaderImpl implements DocumentLoader {
             }
         }
         return sb.toString();
+    }
+
+    private String formatAddresses(jakarta.mail.Address[] addresses) {
+        StringBuilder result = new StringBuilder();
+        for (jakarta.mail.Address address : addresses) {
+            if (address == null) continue;
+            if (result.length() > 0) result.append(", ");
+            result.append(address);
+        }
+        return result.toString();
     }
 
     private void addMetadata(Document document, File file, String docType) {

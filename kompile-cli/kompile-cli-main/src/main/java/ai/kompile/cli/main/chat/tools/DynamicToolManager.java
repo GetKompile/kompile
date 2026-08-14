@@ -27,10 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Manages dynamic tool loading for MCP servers to reduce tool descriptor bloat.
  *
- * <p>Instead of sending all 33+ tools in every {@code tools/list} response (~7000 tokens),
+ * <p>Instead of sending every registered tool in each {@code tools/list} response,
  * tools are organized into groups:
  * <ul>
- *   <li><b>Core tools</b> — always listed (read, write, edit, grep, glob, bash, list)</li>
+ *   <li><b>Core tools</b> — a small set for ordinary project work</li>
  *   <li><b>Extended groups</b> — listed only after activation via the {@code activate_tools}
  *       meta-tool</li>
  * </ul>
@@ -51,45 +51,74 @@ public class DynamicToolManager {
      * are NOT registered at all to avoid duplicating the host agent's native tools.
      * This core set covers the kompile-specific tools that are always active.
      */
-    private static final Set<String> CORE_TOOLS = Set.of(
-            "read", "read_batch", "write", "edit", "edit_batch",
-            "grep", "grep_batch", "glob", "bash", "list",
-            "fetch_result", "fetch_result_batch", "activate_tools",
-            "patch", "edit_patch", "explore", "memory", "transcript_search",
-            "conversation_import", "code_search", "code_graph", "local_code_index", "lsp"
-    );
+    private static final List<String> CORE_TOOL_ORDER = List.of(
+            "read", "write", "edit", "grep", "glob", "list", "bash",
+            "fetch_result", "poll", "activate_tools", "exit_plan_mode");
+    private static final Set<String> CORE_TOOLS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(CORE_TOOL_ORDER));
 
     /** Tool group definitions: group name → set of tool IDs. */
     private static final Map<String, ToolGroup> GROUPS = new LinkedHashMap<>();
 
     static {
-        GROUPS.put("search", new ToolGroup("search",
-                "Unified code search (indexing, graph, impact, signatures) and knowledge search (documents, graph, memory)",
-                Set.of("code_search", "search", "tool_call_catalog", "lsp")));
+        GROUPS.put("files", new ToolGroup("files",
+                "Batch file reads, searches, edits, patches, result retrieval, and file activity",
+                Set.of("read_batch", "edit_batch", "edit_patch", "patch", "grep_batch",
+                        "fetch_result_batch", "explore", "file_activity")));
+
+        GROUPS.put("code", new ToolGroup("code",
+                "Semantic code search, indexes, dependency graphs, language-server queries, and edit history",
+                Set.of("code_search", "code_graph", "local_code_index", "lsp", "diff_index")));
 
         GROUPS.put("workflow", new ToolGroup("workflow",
-                "Todo lists, memory, config archives, test milestones",
-                Set.of("todowrite", "todoread", "memory", "config_archive", "test_milestone")));
+                "Todo tracking, project/enforcer configuration, archives, side panels, and ambient capture",
+                Set.of("todowrite", "todoread", "project_config", "enforcer_config",
+                        "config_archive", "side_panel", "dictation", "ambient_garden")));
 
-        GROUPS.put("network", new ToolGroup("network",
-                "Web fetch, web search",
-                Set.of("webfetch", "websearch")));
-
-        GROUPS.put("delegation", new ToolGroup("delegation",
-                "Task delegation, multi-task, quorum task, role/skill management",
-                Set.of("task", "quorum_task", "multi_task", "role_manager", "skill_manager")));
-
-        GROUPS.put("knowledge", new ToolGroup("knowledge",
-                "Transcript search, conversation import, resume",
-                Set.of("transcript_search", "conversation_import", "resume")));
+        GROUPS.put("web", new ToolGroup("web",
+                "Web search, page retrieval, and interactive browsing",
+                Set.of("webfetch", "websearch", "browser")));
 
         GROUPS.put("process", new ToolGroup("process",
-                "Background process management, edit coordination",
-                Set.of("process", "edit_coordinator")));
+                "Background processes, result polling, server control, process mining, and edit coordination",
+                Set.of("process", "poll", "server_mode", "process_mining", "edit_coordinator")));
 
-        GROUPS.put("advanced", new ToolGroup("advanced",
-                "Performance harness, patch tool",
-                Set.of("performance_harness", "patch")));
+        GROUPS.put("delegation", new ToolGroup("delegation",
+                "Subagents, parallel/quorum tasks, roles, and skills",
+                Set.of("task", "multi_task", "quorum_task", "role_manager", "skill_manager")));
+
+        GROUPS.put("history", new ToolGroup("history",
+                "Conversation search, import/resume, and prior tool-call lookup",
+                Set.of("transcript_search", "conversation_import", "resume", "tool_call_catalog")));
+
+        GROUPS.put("memory", new ToolGroup("memory",
+                "Persistent memory plus semantic, RAG, and knowledge-base search",
+                Set.of("memory", "semantic_memory", "rag_search", "knowledge_search")));
+
+        GROUPS.put("crawl", new ToolGroup("crawl",
+                "Discover, configure, run, monitor, and inspect folder-local model-backed crawls",
+                Set.of("crawl_discover", "model_runtime", "crawl_documents", "crawl_source",
+                        "crawl_control", "crawl_result", "knowledge_status")));
+
+        GROUPS.put("graph_query", new ToolGroup("graph_query",
+                "Search and reason over the knowledge graph without mutating it",
+                Set.of("knowledge_graph", "graph_search", "graph_reason", "graph_reasoning_query",
+                        "ask_graph_query", "ask_graph_verify", "ask_graph_explain",
+                        "ask_graph_explain_fused", "ask_graph_synthesize", "ask_graph_claim")));
+
+        GROUPS.put("graph_analysis", new ToolGroup("graph_analysis",
+                "Graph aggregation, embeddings, centrality, simulation, forecasting, and Bayesian analysis",
+                Set.of("graph_aggregate", "graph_bayes", "graph_centrality", "graph_embeddings",
+                        "graph_forecast", "graph_simulate", "ask_graph_mebn")));
+
+        GROUPS.put("graph_write", new ToolGroup("graph_write",
+                "Assert, retract, subscribe, import, or export graph state",
+                Set.of("ask_graph_assert", "ask_graph_retract", "ask_graph_subscribe",
+                        "graph_import", "graph_export")));
+
+        GROUPS.put("evaluation", new ToolGroup("evaluation",
+                "Test milestones, performance harnesses, and agent evaluation",
+                Set.of("test_milestone", "performance_harness", "eval")));
 
         // Custom tools loaded from ~/.kompile/tools/ and .kompile/tools/ — inactive by default.
         // Group is populated dynamically at startup; tool IDs follow the "custom_<name>" convention.
@@ -113,6 +142,11 @@ public class DynamicToolManager {
         allTools.put(id, new ToolInfo(id, description, schema));
     }
 
+    /** Remove a tool from the live catalog. */
+    public void unregister(String id) {
+        allTools.remove(id);
+    }
+
     /**
      * Enable or disable dynamic mode. When disabled, all tools are always listed.
      */
@@ -132,26 +166,22 @@ public class DynamicToolManager {
             return allTools.keySet();
         }
 
-        Set<String> active = new LinkedHashSet<>(CORE_TOOLS);
-
-        // Add tools from activated groups
-        for (String groupName : activatedGroups) {
-            ToolGroup group = GROUPS.get(groupName);
-            if (group != null) {
-                active.addAll(group.toolIds);
-            }
-        }
-
-        // Also include any tools not in any group (ungrouped tools are always active)
-        Set<String> groupedTools = new HashSet<>();
-        for (ToolGroup group : GROUPS.values()) {
-            groupedTools.addAll(group.toolIds);
-        }
-        for (String id : allTools.keySet()) {
-            if (!groupedTools.contains(id) && !CORE_TOOLS.contains(id)) {
-                // Ungrouped and not core — include it
+        Set<String> active = new LinkedHashSet<>();
+        for (String id : CORE_TOOL_ORDER) {
+            if (allTools.containsKey(id)) {
                 active.add(id);
             }
+        }
+
+        // Add tools from activated groups
+        for (Map.Entry<String, ToolGroup> entry : GROUPS.entrySet()) {
+            if (activatedGroups.contains(entry.getKey())) {
+                entry.getValue().toolIds.stream().sorted().forEach(active::add);
+            }
+        }
+
+        if (activatedGroups.contains("other")) {
+            active.addAll(ungroupedToolIds());
         }
 
         return active;
@@ -164,12 +194,16 @@ public class DynamicToolManager {
      * @return list of tool IDs that were added, or empty if group unknown
      */
     public List<String> activateGroup(String groupName) {
+        if ("other".equals(groupName)) {
+            activatedGroups.add(groupName);
+            return new ArrayList<>(ungroupedToolIds());
+        }
         ToolGroup group = GROUPS.get(groupName);
         if (group == null) return List.of();
 
         activatedGroups.add(groupName);
         List<String> added = new ArrayList<>();
-        for (String toolId : group.toolIds) {
+        for (String toolId : group.toolIds.stream().sorted().toList()) {
             if (allTools.containsKey(toolId)) {
                 added.add(toolId);
             }
@@ -185,6 +219,7 @@ public class DynamicToolManager {
         for (String groupName : GROUPS.keySet()) {
             added.addAll(activateGroup(groupName));
         }
+        added.addAll(activateGroup("other"));
         return added;
     }
 
@@ -193,7 +228,7 @@ public class DynamicToolManager {
      */
     public String describeAvailableGroups() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Available tool groups:\n\n");
+        sb.append("Tool groups:\n");
         boolean anyAvailable = false;
 
         for (Map.Entry<String, ToolGroup> entry : GROUPS.entrySet()) {
@@ -206,7 +241,7 @@ public class DynamicToolManager {
                     .filter(allTools::containsKey).count();
             if (registered == 0) continue;
 
-            sb.append("- **").append(name).append("**");
+            sb.append("- ").append(name);
             if (activated) {
                 sb.append(" [active]");
             } else {
@@ -215,12 +250,24 @@ public class DynamicToolManager {
             sb.append(": ").append(group.description);
             sb.append(" (").append(registered).append(" tools)\n");
         }
+        Set<String> other = ungroupedToolIds();
+        if (!other.isEmpty()) {
+            boolean activated = activatedGroups.contains("other");
+            sb.append("- other");
+            if (activated) {
+                sb.append(" [active]");
+            } else {
+                anyAvailable = true;
+            }
+            sb.append(": Newly registered or uncategorized tools (")
+                    .append(other.size()).append(" tools)\n");
+        }
 
         if (!anyAvailable) {
             sb.append("\nAll groups are already activated.\n");
         } else {
-            sb.append("\nUse activate_tools with group name to enable. ");
-            sb.append("Use 'all' to activate everything.\n");
+            sb.append("\nCall activate_tools with action=activate and one group name. ");
+            sb.append("Activated tools appear on the next model step.\n");
         }
 
         return sb.toString();
@@ -230,15 +277,23 @@ public class DynamicToolManager {
      * Describe the tools in a specific group.
      */
     public String describeGroup(String groupName) {
+        if ("other".equals(groupName)) {
+            return describeTools(groupName,
+                    "Newly registered or uncategorized tools", ungroupedToolIds());
+        }
         ToolGroup group = GROUPS.get(groupName);
         if (group == null) {
             return "Unknown group: " + groupName + ". " + describeAvailableGroups();
         }
 
+        return describeTools(groupName, group.description, group.toolIds);
+    }
+
+    private String describeTools(String groupName, String description, Collection<String> toolIds) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Group '").append(groupName).append("': ").append(group.description).append("\n\n");
+        sb.append("Group '").append(groupName).append("': ").append(description).append("\n\n");
         sb.append("Tools:\n");
-        for (String toolId : group.toolIds) {
+        for (String toolId : toolIds.stream().sorted().toList()) {
             ToolInfo info = allTools.get(toolId);
             if (info != null) {
                 String shortDesc = info.description.length() > 80
@@ -250,6 +305,34 @@ public class DynamicToolManager {
         boolean activated = activatedGroups.contains(groupName);
         sb.append("\nStatus: ").append(activated ? "active" : "inactive").append("\n");
         return sb.toString();
+    }
+
+    /** Registered group names suitable for an enum in the activation tool schema. */
+    public List<String> availableGroupNames() {
+        List<String> names = new ArrayList<>();
+        for (Map.Entry<String, ToolGroup> entry : GROUPS.entrySet()) {
+            if (entry.getValue().toolIds.stream().anyMatch(allTools::containsKey)) {
+                names.add(entry.getKey());
+            }
+        }
+        if (!ungroupedToolIds().isEmpty()) {
+            names.add("other");
+        }
+        return names;
+    }
+
+    private Set<String> ungroupedToolIds() {
+        Set<String> grouped = new HashSet<>(CORE_TOOLS);
+        for (ToolGroup group : GROUPS.values()) {
+            grouped.addAll(group.toolIds);
+        }
+        Set<String> ungrouped = new LinkedHashSet<>();
+        for (String id : allTools.keySet()) {
+            if (!grouped.contains(id)) {
+                ungrouped.add(id);
+            }
+        }
+        return ungrouped;
     }
 
     /**

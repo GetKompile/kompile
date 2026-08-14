@@ -9,9 +9,12 @@ package ai.kompile.chat.local.android.model
 internal object SdxRawGgufContract {
     const val TARGET_PROFILE_FIELD = "targetProfile"
     const val PREPARED_SCHEMA_FIELD = "schema"
-    const val PREPARED_SCHEMA = "sdx-prepared-text-model-v2"
+    const val PREPARED_SCHEMA = "sdx-prepared-text-model-v3"
     const val CACHE_HIT_FIELD = "cacheHit"
     const val SOURCE_SHA256_FIELD = "sourceSha256"
+    const val SOURCE_BYTES_FIELD = "sourceBytes"
+    const val CANONICAL_SDZ_LOGICAL_SHA256_FIELD = "canonicalSdzLogicalSha256"
+    const val CANONICAL_SDZ_LOGICAL_BYTES_FIELD = "canonicalSdzLogicalBytes"
     const val CANONICAL_SDZ_PATH_FIELD = "canonicalSdzPath"
     const val CANONICAL_SDZ_BYTES_FIELD = "canonicalSdzBytes"
     const val MODEL_PATH_FIELD = "modelPath"

@@ -23,6 +23,7 @@ import ai.kompile.app.subprocess.SubprocessPlacementSupport;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingMessage;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
+import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -83,9 +84,6 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         this.placement.applyPlacement(p);
     }
 
-    private static final String SUBPROCESS_MAIN_CLASS =
-            "ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain";
-
     private static final long READY_POLL_TIMEOUT_MS = 120_000L;
     private static final long READY_POLL_INTERVAL_MS = 500L;
 
@@ -115,6 +113,9 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         );
 
         Path argsFile = args.writeToTempFile();
+        Process process = null;
+        Thread reader = null;
+        Thread errReader = null;
         try {
             List<String> command = buildCommand(definition, argsFile);
             logger.info("Launching one-shot pipeline subprocess for '{}': {}", definition.getPipelineId(), taskId);
@@ -123,17 +124,18 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
             pb.redirectErrorStream(false);
             propagateEnvironment(pb.environment());
 
-            Process process = pb.start();
+            process = pb.start();
+            Process child = process;
 
             // Read stdout for PIPELINE_MSG: messages
             CompletableFuture<Map<String, Object>> resultFuture = new CompletableFuture<>();
 
-            Thread reader = new Thread(() -> readOneShotOutput(process, resultFuture), "pipeline-oneshot-reader-" + taskId);
+            reader = new Thread(() -> readOneShotOutput(child, resultFuture), "pipeline-oneshot-reader-" + taskId);
             reader.setDaemon(true);
             reader.start();
 
             // Also drain stderr
-            Thread errReader = new Thread(() -> drainStderr(process, definition.getPipelineId()), "pipeline-oneshot-stderr-" + taskId);
+            errReader = new Thread(() -> drainStderr(child, definition.getPipelineId()), "pipeline-oneshot-stderr-" + taskId);
             errReader.setDaemon(true);
             errReader.start();
 
@@ -141,8 +143,10 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
             Map<String, Object> result = resultFuture.get(5, TimeUnit.MINUTES);
             process.waitFor(10, TimeUnit.SECONDS);
             return result;
-
         } finally {
+            stopChild(process);
+            joinQuietly(reader);
+            joinQuietly(errReader);
             Files.deleteIfExists(argsFile);
         }
     }
@@ -192,19 +196,29 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         errReader.setDaemon(true);
         errReader.start();
 
-        // Wait for READY via HTTP health poll
-        waitForReady(port);
+        try {
+            // The child consumes its args file during startup; remove it on both success and failure.
+            waitForReady(port);
 
-        long pid = process.pid();
-        PipelineServingHandle handle = new PipelineServingHandle(
-                pipelineId,
-                definition.getKind() != null ? definition.getKind().name() : "GENERIC",
-                process, port, pid, Instant.now(), taskId
-        );
-        activeHandles.put(pipelineId, handle);
+            long pid = process.pid();
+            PipelineServingHandle handle = new PipelineServingHandle(
+                    pipelineId,
+                    definition.getKind() != null ? definition.getKind().name() : "GENERIC",
+                    process, port, pid, Instant.now(), taskId
+            );
+            activeHandles.put(pipelineId, handle);
 
-        logger.info("Pipeline '{}' serving on port {} (pid={})", pipelineId, port, pid);
-        return handle;
+            logger.info("Pipeline '{}' serving on port {} (pid={})", pipelineId, port, pid);
+            return handle;
+        } catch (Exception e) {
+            lastHeartbeats.remove(pipelineId);
+            stopChild(process);
+            joinQuietly(reader);
+            joinQuietly(errReader);
+            throw e;
+        } finally {
+            Files.deleteIfExists(argsFile);
+        }
     }
 
     /**
@@ -316,43 +330,170 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         );
     }
 
-    private List<String> buildCommand(UnifiedPipelineDefinition definition, Path argsFile) {
-        String javaPath = ProcessHandle.current().info().command().orElse("java");
-        String classpath = System.getProperty("surefire.test.class.path",
-                System.getProperty("java.class.path", ""));
-        if (classpath.isBlank()) {
-            throw new IllegalStateException("Pipeline subprocess requires a JVM classpath");
-        }
-
+    private List<String> buildCommand(UnifiedPipelineDefinition definition, Path argsFile)
+            throws IOException {
+        LauncherArtifact launcher = resolveLauncher();
         UnifiedPipelineDefinition.ServingConfig serving = definition.getServing() != null ?
                 definition.getServing() : UnifiedPipelineDefinition.ServingConfig.builder().build();
 
         List<String> cmd = new ArrayList<>();
-        cmd.add(javaPath);
-        cmd.add("-Xmx" + serving.getHeapSize());
-        cmd.add("-XX:+UseG1GC");
-        cmd.add("-XX:MaxGCPauseMillis=200");
-        cmd.add("-XX:+ExitOnOutOfMemoryError");
-        cmd.add("-Dorg.bytedeco.javacpp.nopointergc=true");
+        if (launcher.nativeExecutable()) {
+            cmd.add(launcher.path().toString());
+        } else {
+            cmd.add(JavaRuntimeLocator.javaExecutable());
+            cmd.add("-Xmx" + serving.getHeapSize());
+            cmd.add("-XX:+UseG1GC");
+            cmd.add("-XX:MaxGCPauseMillis=200");
+            cmd.add("-XX:+ExitOnOutOfMemoryError");
+            cmd.add("-Dorg.bytedeco.javacpp.nopointergc=true");
 
-        // Forward relevant system properties
-        for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
-            Properties sysProps = System.getProperties();
-            for (String key : sysProps.stringPropertyNames()) {
-                if (key.startsWith(prefix)) {
-                    cmd.add("-D" + key + "=" + sysProps.getProperty(key));
+            // JVM properties and placement flags apply to the executable-JAR tier only.
+            for (String prefix : FORWARDED_PROPERTY_PREFIXES) {
+                Properties sysProps = System.getProperties();
+                for (String key : sysProps.stringPropertyNames()) {
+                    if (key.startsWith(prefix)) {
+                        cmd.add("-D" + key + "=" + sysProps.getProperty(key));
+                    }
                 }
+            }
+            cmd.addAll(placement.jvmFlags());
+            cmd.add("-jar");
+            cmd.add(launcher.path().toString());
+        }
+        cmd.add(argsFile.toAbsolutePath().normalize().toString());
+        return cmd;
+    }
+
+    record LauncherArtifact(Path path, boolean nativeExecutable) {
+        LauncherArtifact {
+            path = path.toAbsolutePath().normalize();
+        }
+    }
+
+    private LauncherArtifact resolveLauncher() throws IOException {
+        String configuredExecutable = firstNonBlank(
+                System.getProperty("kompile.pipeline.serving.executable"),
+                System.getenv("KOMPILE_PIPELINE_SERVING_EXECUTABLE"));
+        if (configuredExecutable != null) {
+            Path executable = Path.of(configuredExecutable).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(executable) || !Files.isExecutable(executable)) {
+                throw new IOException("Configured pipeline-serving executable is not runnable: " + executable);
+            }
+            return new LauncherArtifact(executable, true);
+        }
+
+        String configuredJar = firstNonBlank(
+                System.getProperty("kompile.pipeline.serving.jar"),
+                System.getenv("KOMPILE_PIPELINE_SERVING_JAR"));
+        if (configuredJar != null) {
+            Path jar = Path.of(configuredJar).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(jar)) {
+                throw new IOException("Configured pipeline-serving executable JAR does not exist: " + jar);
+            }
+            return new LauncherArtifact(jar, false);
+        }
+
+        String executableName = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "kompile-pipeline-serving.exe" : "kompile-pipeline-serving";
+        List<Path> executableCandidates = new ArrayList<>();
+        addDistributionCandidates(executableCandidates, executableName, "bin");
+        for (Path candidate : executableCandidates) {
+            if (Files.isRegularFile(candidate) && Files.isExecutable(candidate)) {
+                return new LauncherArtifact(candidate, true);
             }
         }
 
-        // Device-agnostic backend/device selection from the shared base infra — no CUDA_VISIBLE_DEVICES.
-        cmd.addAll(placement.jvmFlags());
-        cmd.add("-cp");
-        cmd.add(classpath);
-        cmd.add(SUBPROCESS_MAIN_CLASS);
-        cmd.add(argsFile.toAbsolutePath().toString());
+        List<Path> jarCandidates = new ArrayList<>();
+        addDistributionCandidates(jarCandidates, "kompile-pipeline-serving-exec.jar", "lib");
+        Path developmentJar = findDevelopmentExecJar();
+        if (developmentJar != null) {
+            jarCandidates.add(developmentJar);
+        }
+        for (Path candidate : jarCandidates) {
+            if (Files.isRegularFile(candidate)) {
+                return new LauncherArtifact(candidate, false);
+            }
+        }
 
-        return cmd;
+        throw new IOException("No standalone pipeline-serving runtime found. Install "
+                + executableName + ", package kompile-pipeline-serving-*-exec.jar, or configure "
+                + "KOMPILE_PIPELINE_SERVING_EXECUTABLE / KOMPILE_PIPELINE_SERVING_JAR.");
+    }
+
+    private void addDistributionCandidates(List<Path> candidates, String name, String directory) {
+        String installDir = System.getenv("KOMPILE_INSTALL_DIR");
+        if (installDir != null && !installDir.isBlank()) {
+            candidates.add(Path.of(installDir).resolve(directory).resolve(name));
+        }
+        ProcessHandle.current().info().command().ifPresent(command -> {
+            Path executable = Path.of(command).toAbsolutePath().normalize();
+            Path bin = executable.getParent();
+            if (bin != null && bin.getParent() != null) {
+                candidates.add(bin.getParent().resolve(directory).resolve(name));
+            }
+        });
+        candidates.add(Path.of(System.getProperty("user.home"), ".kompile", directory, name));
+    }
+
+    private Path findDevelopmentExecJar() {
+        Path cursor = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+        for (int i = 0; i < 8 && cursor != null; i++, cursor = cursor.getParent()) {
+            Path target = cursor.resolve("kompile-app")
+                    .resolve("kompile-data")
+                    .resolve("kompile-pipelines")
+                    .resolve("kompile-pipeline-serving")
+                    .resolve("target");
+            if (!Files.isDirectory(target)) {
+                continue;
+            }
+            try (var files = Files.list(target)) {
+                Path match = files.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith("-exec.jar"))
+                        .findFirst().orElse(null);
+                if (match != null) {
+                    return match.toAbsolutePath().normalize();
+                }
+            } catch (IOException ignored) {
+                // Continue walking toward the workspace root.
+            }
+        }
+        return null;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private static void stopChild(Process process) {
+        if (process == null || !process.isAlive()) {
+            return;
+        }
+        process.destroy();
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void joinQuietly(Thread thread) {
+        if (thread == null) {
+            return;
+        }
+        try {
+            thread.join(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void propagateEnvironment(Map<String, String> env) {

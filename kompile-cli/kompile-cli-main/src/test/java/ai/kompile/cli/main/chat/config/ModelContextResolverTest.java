@@ -34,10 +34,16 @@ class ModelContextResolverTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static Function<URI, Optional<JsonNode>> fixedStatus(boolean loaded, int maxContextLength) {
+        return fixedStatus(loaded, maxContextLength, 0);
+    }
+
+    private static Function<URI, Optional<JsonNode>> fixedStatus(
+            boolean loaded, int maxContextLength, int maxOutputTokens) {
         return uri -> {
             try {
                 return Optional.of(MAPPER.readTree(
-                        "{\"loaded\":" + loaded + ",\"modelId\":\"lfm2\",\"maxContextLength\":" + maxContextLength + "}"));
+                        "{\"loaded\":" + loaded + ",\"modelId\":\"lfm2\",\"maxContextLength\":"
+                                + maxContextLength + ",\"maxOutputTokens\":" + maxOutputTokens + "}"));
             } catch (Exception e) {
                 return Optional.empty();
             }
@@ -62,6 +68,24 @@ class ModelContextResolverTest {
         int window = resolver.resolveContextWindow(
                 "totally-unknown-staged-model", "http://localhost:8090/v1");
         assertEquals(4_096, window, "the staging server's maxContextLength is authoritative");
+    }
+
+    @Test
+    void localServingProbeReturnsBothContextAndOutputLimits() {
+        ModelContextResolver resolver = new ModelContextResolver(fixedStatus(true, 16_384, 2_048));
+        ModelContextResolver.ModelLimits limits = resolver.resolveLimits(
+                "kompile-local", "unknown-local-model", "http://localhost:8090/v1", 0, 0);
+        assertEquals(16_384, limits.contextWindow());
+        assertEquals(2_048, limits.maxOutputTokens());
+    }
+
+    @Test
+    void explicitOverridesWinForEveryProvider() {
+        ModelContextResolver resolver = new ModelContextResolver(uri -> Optional.empty());
+        ModelContextResolver.ModelLimits limits = resolver.resolveLimits(
+                "custom", "gpt-4o", "https://example.test/v1", 32_000, 4_000);
+        assertEquals(32_000, limits.contextWindow());
+        assertEquals(4_000, limits.maxOutputTokens());
     }
 
     @Test

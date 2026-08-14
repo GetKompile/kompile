@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -68,7 +69,7 @@ public class AskGraphVerifyTool implements CliTool {
                         + "Predicate name is case-sensitive. Arguments separated by ', ' (comma-space).");
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope verification to a specific fact sheet. Null or absent = search all active fact sheets.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base.");
         props.putObject("asOf")
                 .put("type", "string")
                 .put("description", "ISO-8601 instant for temporal point-in-time verification. Absent = current truth.");
@@ -101,7 +102,7 @@ public class AskGraphVerifyTool implements CliTool {
                "has learned reasoning rules), " +
                "fragility{wouldFlipIf,minimalSupportSize,robustness} (for SUPPORTED verdicts: " +
                "robustness 0=only one fact supports it, 1=many independent supports). " +
-               "factSheetId optional — discover via knowledge_graph list_fact_sheets.";
+               "Local stdio verifies against the current folder; factSheetId is an optional remote/legacy override.";
     }
 
     @Override
@@ -114,8 +115,7 @@ public class AskGraphVerifyTool implements CliTool {
         }
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_verify requires a running kompile-app. " +
-                    "Start kompile-app or use --url to connect.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {

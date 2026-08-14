@@ -16,6 +16,7 @@
 
 package ai.kompile.model.importer.keras;
 
+import ai.kompile.utils.NativeLibraryResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
@@ -104,6 +105,7 @@ public class KerasImporterCLI implements Callable<Integer> {
     private boolean showModelInfo = false;
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         int exitCode = new CommandLine(new KerasImporterCLI()).execute(args);
         System.exit(exitCode);
     }

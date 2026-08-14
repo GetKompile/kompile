@@ -56,9 +56,11 @@ public class ProcessMiningCliTool implements CliTool {
     @Override
     public String description() {
         return "Process-mining engine: mine, inspect, and configure process models from knowledge graphs. " +
+                "Local stdio automatically initializes and uses the current folder's knowledge base; " +
+                "fact_sheet_id is only an explicit remote/legacy selector. " +
                 "Actions: " +
-                "'discover' (mine a fact sheet → process suggestion via Inductive Miner), " +
-                "'discover_all' (mine every fact sheet), " +
+                "'discover' (mine the selected graph via Inductive Miner), " +
+                "'discover_all' (mine available graphs), " +
                 "'entailment' (PSL precedence entailment: posteriors, rules, temporal verdicts, fused opinion), " +
                 "'conformance' (fitness/precision/simplicity of discovered model vs event log), " +
                 "'declare' (Declare constraints: Response/Precedence/ChainResponse/NotCoExistence/Init/End), " +
@@ -73,7 +75,7 @@ public class ProcessMiningCliTool implements CliTool {
     public String compactHint() {
         return "process_mining: mine/inspect/configure process models. " +
                 "Required: action=discover|discover_all|entailment|conformance|declare|bpmn|suggestions|suggestion|config_get|config_update. " +
-                "Most actions need fact_sheet_id. 'suggestion' needs suggestion_id. " +
+                "Local stdio defaults to the current folder; fact_sheet_id is a remote/legacy override. 'suggestion' needs suggestion_id. " +
                 "'config_update' needs config_json with mining* keys.";
     }
 
@@ -86,7 +88,7 @@ public class ProcessMiningCliTool implements CliTool {
         addStringProp(props, "action",
                 "Action: discover|discover_all|entailment|conformance|declare|bpmn|suggestions|suggestion|config_get|config_update");
         addLongProp(props, "fact_sheet_id",
-                "Fact sheet ID (required for discover, entailment, conformance, declare, bpmn)");
+                "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base");
         addNumberProp(props, "noise",
                 "Inductive Miner noise threshold 0-1, 0=classic (for discover, discover_all, conformance, bpmn)");
         addStringProp(props, "anchor_type",
@@ -120,8 +122,8 @@ public class ProcessMiningCliTool implements CliTool {
         if (action.isEmpty()) {
             return ToolResult.error("action is required");
         }
-        if (baseUrl == null || baseUrl.isEmpty()) {
-            return ToolResult.error("process_mining requires a running kompile-app. Use --url to connect.");
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         try {
@@ -141,7 +143,8 @@ public class ProcessMiningCliTool implements CliTool {
                         "declare, bpmn, suggestions, suggestion, config_get, config_update");
             };
         } catch (java.net.ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app at " + baseUrl + ". Is it running?");
+            return ToolResult.error("The explicitly configured remote process-mining service became unavailable at "
+                    + baseUrl + ". Remove --url to continue with the in-process miner.");
         } catch (Exception e) {
             return ToolResult.error("process_mining error: " + e.getMessage());
         }

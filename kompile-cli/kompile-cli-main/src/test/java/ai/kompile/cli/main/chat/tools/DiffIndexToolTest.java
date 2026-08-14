@@ -1,5 +1,7 @@
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.app.services.diffindex.DiffIndexEntry;
+import ai.kompile.app.services.diffindex.DiffIndexService;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.Set;
 
@@ -222,7 +225,7 @@ class DiffIndexToolTest {
     }
 
     @Test
-    void reportsUnavailableAdminService() throws Exception {
+    void reportsUnavailableExplicitRemoteWithoutClaimingAServiceIsRequired() throws Exception {
         backend.available = false;
         ObjectNode params = objectMapper.createObjectNode();
         params.put("action", "stats");
@@ -230,7 +233,57 @@ class DiffIndexToolTest {
         ToolResult result = tool.execute(params, context);
 
         assertTrue(result.isError());
-        assertTrue(result.getOutput().contains("running kompile admin service"));
+        assertTrue(result.getOutput().contains("explicitly configured remote"));
+        assertFalse(result.getOutput().contains("requires a running"));
+    }
+
+    @Test
+    void localGatewayQueriesPersistedIndexWithoutAnAdminService() throws Exception {
+        Path isolatedHome = workDir.resolve("home");
+        Path indexDir = isolatedHome.resolve(".kompile/agent-state/diff-index");
+        Files.createDirectories(indexDir);
+        DiffIndexEntry entry = DiffIndexEntry.builder()
+                .id("local-1")
+                .agent("codex")
+                .source("codex")
+                .sessionId("stdio-session")
+                .sessionFingerprint("codex:stdio-session")
+                .projectDirectory(workDir.toString())
+                .filePath("src/Offline.java")
+                .toolName("edit")
+                .diffType("edit")
+                .oldString("central service")
+                .newString("stdio local")
+                .unifiedDiff("-central service\n+stdio local")
+                .timestamp("2026-08-11T00:00:00Z")
+                .linesAdded(1)
+                .linesRemoved(1)
+                .build();
+        objectMapper.writeValue(indexDir.resolve("local-1.json").toFile(), entry);
+
+        String previousHome = System.getProperty("user.home");
+        try {
+            System.setProperty("user.home", isolatedHome.toString());
+            DiffIndexService service = new DiffIndexService();
+            tool = new DiffIndexTool(objectMapper,
+                    new DiffIndexTool.LocalBackendGateway(objectMapper, service));
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("action", "search");
+            params.put("query", "stdio local");
+
+            ToolResult result = tool.execute(params, context);
+
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("src/Offline.java"));
+            assertTrue(result.getOutput().contains("local-1"));
+            assertFalse(result.getOutput().contains("admin service"));
+        } finally {
+            if (previousHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", previousHome);
+            }
+        }
     }
 
     private static final class FakeBackend implements DiffIndexTool.BackendGateway {

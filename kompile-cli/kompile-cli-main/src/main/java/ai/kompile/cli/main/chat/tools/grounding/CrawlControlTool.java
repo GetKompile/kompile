@@ -49,7 +49,9 @@ public final class CrawlControlTool implements CliTool {
     public String description() {
         return "Inspect or control a crawl through the configured backend. Project-local crawls support "
                 + "preflight, start, status, list, transcript, source_types, graph_stats, and runtime_config; "
-                + "a distributed manager additionally supports clear_graph, cancel, retry, run_step, and archive_step.";
+                + "a distributed manager additionally supports clear_graph, cancel, retry, run_step, and archive_step. "
+                + "After a terminal status, call crawl_result with the same jobId for a structured result handle "
+                + "and executable knowledge/graph follow-up actions.";
     }
 
     @Override
@@ -73,7 +75,8 @@ public final class CrawlControlTool implements CliTool {
                 .put("description", "UnifiedCrawlRequest JSON for start, or endpoint body.");
         props.putObject("page").put("type", "integer");
         props.putObject("size").put("type", "integer");
-        props.putObject("factSheetId").put("type", "integer");
+        props.putObject("factSheetId").put("type", "integer")
+                .put("description", "Optional remote/legacy selector; local crawl jobs are folder-scoped.");
         return schema;
     }
 

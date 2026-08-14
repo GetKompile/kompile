@@ -17,20 +17,13 @@
       {"pattern": "META-INF/spring\\.components"},
       {"pattern": "META-INF/spring/.*\\.imports"},
       {"pattern": "META-INF/native-image/.*\\.json"},
-      {"pattern": "org/bytedeco/.*"},
-      {"pattern": "org/nd4j/.*"},
-      {"pattern": "ai/kompile/tokenizers/.*\\.so"},
-      {"pattern": "ai/kompile/tokenizers/.*\\.dll"},
-      {"pattern": "ai/kompile/tokenizers/.*\\.dylib"},
-      {"pattern": "ai/kompile/bindings/.*\\.so"},
-      {"pattern": "ai/kompile/bindings/.*\\.dll"},
-      {"pattern": "ai/kompile/bindings/.*\\.dylib"}
+      {"pattern": "org/bytedeco/.*/properties/.*"},
+      {"pattern": "org/nd4j/(linalg/factory|config)/.*"},
+      {"pattern": "org/nd4j/.*/shared-runtime-manifest\\.txt"}
     ],
     "excludes": [
       {"pattern": "META-INF/services/org\\.hibernate\\.bytecode\\.spi\\.BytecodeProvider"},
-      {"pattern": "org/nd4j/linalg/.*/linux-x86_64/.*\\.so.*"},
-      {"pattern": "org/bytedeco/.*/linux-x86_64/.*\\.so.*"},
-      {"pattern": "org/eclipse/deeplearning4j/.*/linux-x86_64/.*\\.so.*"}
+      {"pattern": ".*\\.(so(\\..*)?|dylib|dll|a|lib|o|obj|vsa|vso)$"}
     ]
   }
 }

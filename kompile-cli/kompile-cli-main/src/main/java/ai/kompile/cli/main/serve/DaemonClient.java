@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.serve;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.main.chat.enforcer.EnforcerRuntimePolicy;
 
 import java.io.*;
@@ -29,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -143,20 +145,9 @@ public class DaemonClient implements Closeable {
         runtimeDir.mkdirs();
 
         try {
-            String currentCommand = ProcessHandle.current().info().command().orElse("java");
-            ProcessBuilder pb;
-
-            if (!currentCommand.toLowerCase().contains("java")) {
-                // Native image — re-exec ourselves
-                pb = new ProcessBuilder(currentCommand, "serve",
-                        "--idle-timeout", "30");
-            } else {
-                // JVM — need classpath
-                String classPath = System.getProperty("java.class.path");
-                pb = new ProcessBuilder(currentCommand, "-cp", classPath,
-                        "ai.kompile.cli.main.MainCommand", "serve",
-                        "--idle-timeout", "30");
-            }
+            List<String> command = CliProcessLauncher.commandFor(List.of(
+                    "serve", "--idle-timeout", "30"));
+            ProcessBuilder pb = new ProcessBuilder(command);
 
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(
                     new File(runtimeDir, "daemon.log")));

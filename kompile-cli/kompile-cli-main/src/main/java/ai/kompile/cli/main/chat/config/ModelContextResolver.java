@@ -55,9 +55,12 @@ public class ModelContextResolver {
     private static final long CACHE_TTL_MS = 30_000L;
 
     private final Function<URI, Optional<JsonNode>> statusFetcher;
-    private final Map<String, CachedWindow> cache = new ConcurrentHashMap<>();
+    private final Map<String, CachedLimits> cache = new ConcurrentHashMap<>();
 
-    private record CachedWindow(int contextWindow, long expiresAtMs) {}
+    /** Effective input/output limits for one provider/model pair. */
+    public record ModelLimits(int contextWindow, int maxOutputTokens) {}
+
+    private record CachedLimits(ModelLimits limits, long expiresAtMs) {}
 
     public ModelContextResolver() {
         this.statusFetcher = defaultStatusFetcher();
@@ -75,56 +78,91 @@ public class ModelContextResolver {
      * @param modelOverride optional per-agent model override; null/blank uses the config model
      */
     public int resolveContextWindow(ChatConfig config, String modelOverride) {
+        return resolveLimits(config, modelOverride).contextWindow();
+    }
+
+    /** Resolve both limits using explicit overrides, provider-qualified metadata, and local status. */
+    public ModelLimits resolveLimits(ChatConfig config, String modelOverride) {
         String model = modelOverride != null && !modelOverride.isBlank()
                 ? modelOverride
                 : (config != null ? config.getModel() : null);
-        return resolveContextWindow(model, config != null ? config.resolveBaseUrl() : null);
+        return resolveLimits(
+                config != null ? config.getProvider() : null,
+                model,
+                config != null ? config.resolveBaseUrl() : null,
+                config != null ? config.getContextWindowTokens() : 0,
+                config != null ? config.getMaxOutputTokens() : 0);
+    }
+
+    /** Backward-compatible context-only lookup. */
+    public int resolveContextWindow(String model, String baseUrl) {
+        return resolveLimits(null, model, baseUrl, 0, 0).contextWindow();
     }
 
     /**
-     * Resolve the context window (tokens) for a model served at {@code baseUrl}.
+     * Resolve the provider/model limits. Provider qualification matters because the
+     * same model alias can have different limits in different live CLI catalogs.
      */
-    public int resolveContextWindow(String model, String baseUrl) {
-        // Catalog-known models (dynamic CLI catalog first, static table second) are authoritative.
-        if (ModelContextWindows.isKnown(model)) {
-            return ModelContextWindows.getContextWindow(model);
-        }
+    public ModelLimits resolveLimits(String provider, String model, String baseUrl,
+                                     int contextOverride, int outputOverride) {
+        String qualifiedModel = qualify(provider, model);
+        String metadataModel = ModelContextWindows.isKnown(qualifiedModel)
+                ? qualifiedModel : model;
+        boolean known = ModelContextWindows.isKnown(metadataModel);
 
-        // Unknown model on a local endpoint: likely a kompile-staged GGUF — ask the server.
-        if (isLocalEndpoint(baseUrl)) {
-            Optional<Integer> probed = probeLocalContextWindow(baseUrl, model);
+        int context = contextOverride > 0 ? contextOverride : 0;
+        int output = outputOverride > 0 ? outputOverride : 0;
+
+        if (known) {
+            if (context == 0) context = ModelContextWindows.getContextWindow(metadataModel);
+            if (output == 0) output = ModelContextWindows.getMaxOutputTokens(metadataModel);
+        } else if (isLocalEndpoint(baseUrl)) {
+            Optional<ModelLimits> probed = probeLocalLimits(baseUrl, qualifiedModel);
             if (probed.isPresent()) {
-                return probed.get();
+                if (context == 0) context = probed.get().contextWindow();
+                if (output == 0) output = probed.get().maxOutputTokens();
             }
         }
 
-        return ModelContextWindows.getContextWindow(model);
+        if (context <= 0) context = ModelContextWindows.getContextWindow(metadataModel);
+        if (output <= 0) output = ModelContextWindows.getMaxOutputTokens(metadataModel);
+        return new ModelLimits(context, output);
     }
 
-    private Optional<Integer> probeLocalContextWindow(String baseUrl, String model) {
+    private static String qualify(String provider, String model) {
+        if (model == null || model.isBlank() || model.contains("/")
+                || provider == null || provider.isBlank()) {
+            return model;
+        }
+        return provider.trim() + "/" + model.trim();
+    }
+
+    private Optional<ModelLimits> probeLocalLimits(String baseUrl, String model) {
         String key = baseUrl + "|" + (model == null ? "" : model);
         long now = System.currentTimeMillis();
-        CachedWindow cached = cache.get(key);
+        CachedLimits cached = cache.get(key);
         if (cached != null && now < cached.expiresAtMs()) {
-            return cached.contextWindow() > 0 ? Optional.of(cached.contextWindow()) : Optional.empty();
+            return cached.limits().contextWindow() > 0
+                    ? Optional.of(cached.limits()) : Optional.empty();
         }
 
         int window = 0;
+        int output = 0;
         try {
             URI statusUri = URI.create(originOf(baseUrl) + "/api/llm/status");
             JsonNode status = statusFetcher.apply(statusUri).orElse(null);
             if (status != null && status.path("loaded").asBoolean(false)) {
-                int reported = status.path("maxContextLength").asInt(0);
-                if (reported > 0) {
-                    window = reported;
-                }
+                window = status.path("maxContextLength").asInt(0);
+                output = status.path("maxOutputTokens").asInt(0);
+                if (output <= 0) output = status.path("maxOutputLength").asInt(0);
             }
         } catch (Exception ignored) {
             // Unreachable/foreign local server — negative result is cached below.
         }
 
-        cache.put(key, new CachedWindow(window, now + CACHE_TTL_MS));
-        return window > 0 ? Optional.of(window) : Optional.empty();
+        ModelLimits limits = new ModelLimits(window, output);
+        cache.put(key, new CachedLimits(limits, now + CACHE_TTL_MS));
+        return window > 0 ? Optional.of(limits) : Optional.empty();
     }
 
     /**

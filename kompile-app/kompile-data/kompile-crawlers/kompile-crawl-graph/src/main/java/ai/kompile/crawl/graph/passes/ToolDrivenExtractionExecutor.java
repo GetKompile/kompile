@@ -15,6 +15,7 @@ import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.graphrag.passes.DecomposedExtractionPipeline.LlmCaller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
@@ -56,10 +57,8 @@ public final class ToolDrivenExtractionExecutor {
                     + "corrected source-supported additions (with both arrays present); a relation may "
                     + "refer to a retained entity id. Repair or omit rejected items using SOURCE.";
     static final String TOOL_USE_REQUIREMENT = """
-            TOOL USE REQUIREMENT (this is the final instruction):
-            Complete this turn by invoking exactly one declared function through the provided chat tool
-            interface. Return no prose, markdown, planning text, explanation, or hand-written call.
-            The model-owned chat template defines the wire format.
+            FINAL: Invoke exactly one declared function through the native tool interface now.
+            Return no prose or hand-written function syntax; the chat template owns the wire format.
             """;
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper();
 
@@ -270,7 +269,8 @@ public final class ToolDrivenExtractionExecutor {
     private record StructuredRetryState(
             List<StructuredToolObservation> observations,
             String protocolFeedback,
-            String repairSeed) {
+            String repairSeed,
+            boolean sourceRecheckRequired) {
 
         private StructuredRetryState {
             observations = observations == null ? List.of() : List.copyOf(observations);
@@ -279,22 +279,29 @@ public final class ToolDrivenExtractionExecutor {
         }
 
         static StructuredRetryState protocol(String feedback) {
-            return new StructuredRetryState(List.of(), feedback, "");
+            return new StructuredRetryState(List.of(), feedback, "", false);
         }
 
         static StructuredRetryState tools(
-                List<StructuredToolObservation> observations, String previousRepairSeed) {
+                List<StructuredToolObservation> observations,
+                String previousRepairSeed,
+                boolean previousSourceRecheckRequired) {
             String nextRepairSeed = observations == null ? "" : observations.stream()
                     .map(StructuredToolObservation::result)
                     .map(ToolDrivenExtractionExecutor::validatorCleanRepairSeed)
                     .filter(seed -> !seed.isBlank())
                     .reduce((first, second) -> second)
                     .orElse(previousRepairSeed == null ? "" : previousRepairSeed);
-            return new StructuredRetryState(observations, "", nextRepairSeed);
+            boolean sourceRecheckRequired = previousSourceRecheckRequired
+                    || (observations != null && observations.stream()
+                    .anyMatch(ToolDrivenExtractionExecutor::requiresRejectedCandidateDraft));
+            return new StructuredRetryState(
+                    observations, "", nextRepairSeed, sourceRecheckRequired);
         }
 
         StructuredRetryState withProtocolFeedback(String feedback) {
-            return new StructuredRetryState(observations, feedback, repairSeed);
+            return new StructuredRetryState(
+                    observations, feedback, repairSeed, sourceRecheckRequired);
         }
     }
 
@@ -317,6 +324,15 @@ public final class ToolDrivenExtractionExecutor {
                           ExtractionToolBackend backend,
                           LlmCaller caller,
                           DecomposedExtractionExecutor.PromptProfile profile) {
+        return extract(chunkText, taskContext, backend, caller, profile, null);
+    }
+
+    public Result extract(String chunkText,
+                          ExtractionTaskContext taskContext,
+                          ExtractionToolBackend backend,
+                          LlmCaller caller,
+                          DecomposedExtractionExecutor.PromptProfile profile,
+                          String additionalInstructions) {
         if (chunkText == null || chunkText.isBlank()) {
             return new Result(null, null, 0, 0, List.of(), List.of("source shard is empty"));
         }
@@ -330,7 +346,7 @@ public final class ToolDrivenExtractionExecutor {
         int maxPromptChars = profile == null ? 14_336 : profile.maxPromptChars();
         String base = basePrompt(chunkText, taskContext,
                 backend.catalogJson(profile == null ? null : profile.tier()), profile,
-                backend.extractionTarget());
+                backend.extractionTarget(), additionalInstructions);
         if (base.length() >= maxPromptChars) {
             return new Result(null, null, 0, 0, List.of(),
                     List.of("source shard and tool contract exceed the executable prompt budget: "
@@ -345,6 +361,16 @@ public final class ToolDrivenExtractionExecutor {
 
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             rounds = round;
+            // Ontology updates are crawl-scoped. Rebuild the catalog every turn so a model that
+            // extends it sees the new revision and type vocabulary before its next submission.
+            base = basePrompt(chunkText, taskContext,
+                    backend.catalogJson(profile == null ? null : profile.tier()), profile,
+                    backend.extractionTarget(), additionalInstructions);
+            if (base.length() >= maxPromptChars) {
+                notes.add("updated ontology and tool contract exceed the executable prompt budget: "
+                        + base.length() + " > " + maxPromptChars + " characters");
+                break;
+            }
             String prompt = renderPrompt(base, toolState, maxPromptChars);
             final String response;
             try {
@@ -377,7 +403,7 @@ public final class ToolDrivenExtractionExecutor {
             toolsUsed.add(toolCall.name());
             ExtractionToolBackend.ToolExecution execution;
             try {
-                execution = backend.execute(toolCall.name(), toolCall.arguments());
+                execution = backend.execute(toolCall.name(), toolCall.arguments(), chunkText);
             } catch (RuntimeException e) {
                 execution = ExtractionToolBackend.ToolExecution.continuing(
                         errorJson("tool_execution_failed", message(e)));
@@ -416,6 +442,15 @@ public final class ToolDrivenExtractionExecutor {
                                     ExtractionToolBackend backend,
                                     StructuredLlmCaller caller,
                                     DecomposedExtractionExecutor.PromptProfile profile) {
+        return extractStructured(chunkText, taskContext, backend, caller, profile, null);
+    }
+
+    public Result extractStructured(String chunkText,
+                                    ExtractionTaskContext taskContext,
+                                    ExtractionToolBackend backend,
+                                    StructuredLlmCaller caller,
+                                    DecomposedExtractionExecutor.PromptProfile profile,
+                                    String additionalInstructions) {
         if (chunkText == null || chunkText.isBlank()) {
             return new Result(null, null, 0, 0, List.of(), List.of("source shard is empty"));
         }
@@ -430,7 +465,7 @@ public final class ToolDrivenExtractionExecutor {
         DecomposedPromptTier requestedTier = effectiveStructuredTier(
                 profile == null ? null : profile.tier());
         StructuredContract contract = structuredContract(
-                chunkText, taskContext, backend, requestedTier);
+                chunkText, taskContext, backend, requestedTier, additionalInstructions);
         List<String> notes = new ArrayList<>();
         int requestedFixedChars = contract.fixedChars();
         while (contract.fixedChars() >= maxPromptChars) {
@@ -439,7 +474,7 @@ public final class ToolDrivenExtractionExecutor {
                 break;
             }
             StructuredContract lower = structuredContract(
-                    chunkText, taskContext, backend, lowerTier);
+                    chunkText, taskContext, backend, lowerTier, additionalInstructions);
             if (lower.tools().isEmpty()) {
                 break;
             }
@@ -462,6 +497,7 @@ public final class ToolDrivenExtractionExecutor {
             return new Result(null, null, 0, 0, List.of(), notes);
         }
 
+        DecomposedPromptTier presentationTier = contract.tier();
         List<ExtractionToolBackend.ToolDefinition> tools = contract.tools();
         String submissionTool = preferredSubmissionTool(tools);
         String system = contract.system();
@@ -473,8 +509,41 @@ public final class ToolDrivenExtractionExecutor {
 
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             rounds = round;
-            List<ChatMessage> messages =
-                    structuredMessages(system, user, retryState, tools, maxPromptChars);
+            // Refresh native function enums and CURRENT STATE after an ontology update. If the
+            // enlarged ontology no longer fits, reduce only its presentation tier, never its contents.
+            contract = structuredContract(
+                    chunkText, taskContext, backend, presentationTier, additionalInstructions);
+            while (contract.fixedChars() >= maxPromptChars) {
+                DecomposedPromptTier lowerTier = lowerPresentationTier(contract.tier());
+                if (lowerTier == null) {
+                    break;
+                }
+                StructuredContract lower = structuredContract(
+                        chunkText, taskContext, backend, lowerTier, additionalInstructions);
+                if (lower.tools().isEmpty()) {
+                    break;
+                }
+                contract = lower;
+            }
+            if (contract.tools().isEmpty() || contract.fixedChars() >= maxPromptChars) {
+                notes.add("updated ontology and native tool contract exceed the executable prompt budget: "
+                        + contract.fixedChars() + " > " + maxPromptChars + " characters");
+                break;
+            }
+            if (contract.tier() != presentationTier) {
+                notes.add("native tool presentation reduced from " + presentationTier + " to "
+                        + contract.tier() + " after an ontology update");
+            }
+            presentationTier = contract.tier();
+            tools = contract.tools();
+            submissionTool = preferredSubmissionTool(tools);
+            system = contract.system();
+            user = contract.user();
+            boolean minimalDirectRequest = backend.extractionTarget() == ExtractionTarget.ENTITIES_ONLY
+                    || (!backend.ontologyUpdatesAllowed()
+                    && presentationTier == DecomposedPromptTier.COMPACT);
+            List<ChatMessage> messages = structuredMessages(
+                    system, user, retryState, tools, maxPromptChars, !minimalDirectRequest);
             if (retryState != null && notes.stream().noneMatch(note -> note.contains(
                     "fresh request instead of conversation history"))) {
                 notes.add("rendered explicit tool state into a fresh request instead of "
@@ -570,7 +639,8 @@ public final class ToolDrivenExtractionExecutor {
                                         invalidStructuredToolCallFeedback(submissionTool)))
                         : StructuredRetryState.tools(
                                 observations,
-                                retryState == null ? "" : retryState.repairSeed());
+                                retryState == null ? "" : retryState.repairSeed(),
+                                retryState != null && retryState.sourceRecheckRequired());
                 continue;
             }
 
@@ -580,7 +650,7 @@ public final class ToolDrivenExtractionExecutor {
                 ExtractionToolBackend.ToolExecution execution;
                 try {
                     execution = backend.execute(
-                            toolCall.name(), MAPPER.valueToTree(toolCall.arguments()));
+                            toolCall.name(), MAPPER.valueToTree(toolCall.arguments()), chunkText);
                 } catch (RuntimeException e) {
                     execution = ExtractionToolBackend.ToolExecution.continuing(
                             errorJson("tool_execution_failed", message(e)));
@@ -605,7 +675,9 @@ public final class ToolDrivenExtractionExecutor {
                 }
             }
             retryState = StructuredRetryState.tools(
-                    observations, retryState == null ? "" : retryState.repairSeed());
+                    observations,
+                    retryState == null ? "" : retryState.repairSeed(),
+                    retryState != null && retryState.sourceRecheckRequired());
         }
 
         return retainedResult(backend, rounds, calls, toolsUsed, notes,
@@ -616,11 +688,27 @@ public final class ToolDrivenExtractionExecutor {
             String chunkText,
             ExtractionTaskContext taskContext,
             ExtractionToolBackend backend,
-            DecomposedPromptTier tier) {
+            DecomposedPromptTier tier,
+            String additionalInstructions) {
         List<ExtractionToolBackend.ToolDefinition> tools = backend.toolDefinitions(tier);
-        String system = structuredSystemPrompt(backend.extractionTarget());
+        String system = structuredSystemPrompt(
+                backend.extractionTarget(),
+                backend.ontologyUpdatesAllowed(),
+                tier);
+        if (!backend.ontologyUpdatesAllowed()
+                && tier == DecomposedPromptTier.COMPACT
+                && additionalInstructions != null
+                && !additionalInstructions.isBlank()) {
+            system = system + " Directive: " + additionalInstructions.strip();
+        }
         String user = structuredUserPrompt(
-                chunkText, taskContext, backend.toolContextJson(tier, taskContext));
+                chunkText,
+                taskContext,
+                backend.toolContextJson(tier, taskContext),
+                additionalInstructions,
+                backend.extractionTarget(),
+                backend.ontologyUpdatesAllowed(),
+                tier);
         return new StructuredContract(
                 tier, tools, system, user,
                 system.length() + user.length() + tools.toString().length()
@@ -645,7 +733,8 @@ public final class ToolDrivenExtractionExecutor {
                                      ExtractionTaskContext task,
                                      String catalog,
                                      DecomposedExtractionExecutor.PromptProfile profile,
-                                     ExtractionTarget extractionTarget) {
+                                     ExtractionTarget extractionTarget,
+                                     String additionalInstructions) {
         StringBuilder prompt = new StringBuilder();
         if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
             prompt.append("""
@@ -658,61 +747,108 @@ public final class ToolDrivenExtractionExecutor {
                     """);
         } else {
             prompt.append("""
-                    Build a knowledge-graph delta from SOURCE. Call one tool per turn.
+                    Build a knowledge-graph delta from SOURCE as one window of the unified corpus. Call one tool per turn.
+                    TOOLS.graphSchema is the current prepass-derived ontology. Use its entity types,
+                    relationship types, and directed endpoint patterns; a relationship has its own type.
                     TOOLS.callShape is the exact JSON envelope: return only its top-level tool and args
                     keys, with no prose, markdown, catalog fields, or state fields. It defaults to
                     submit_graph_delta; fill both arrays with every source-supported entity and relation.
-                    Use graph_reasoning_query when identity, type, or relation choice is ambiguous so existing graph structure, embeddings, logic, and schema can resolve it. On an empty graph that tool
-                    may use SCHEMA or CAPABILITIES only; wait for facts before fact, identity, or path
-                    operations. Use unified_corpus only when cross-source evidence is needed. Tool results
-                    are context; SOURCE and retrieved corpus passages are evidence. Correct validation
-                    feedback and resubmit. Arrays are unlimited.
+                    Search the graph by names, emails, or aliases before creating an ambiguous identity;
+                    reuse an existing id and record source-supported aliases instead of duplicating it.
+                    Use graph_reasoning_query for existing graph structure, embeddings, logic, and schema;
+                    use unified_corpus for missing cross-source evidence. If update_ontology is declared and SOURCE
+                    establishes a reusable type or endpoint pattern missing from the ontology, call it and use
+                    the refreshed revision on the next turn. Tool results are context; SOURCE and retrieved passages are evidence.
+                    Correct validation feedback and resubmit. Arrays are unlimited.
                     TOOLS:
                     """);
         }
         prompt.append(catalog == null ? "{}" : catalog).append('\n');
 
         appendTaskHints(prompt, task);
+        appendAdditionalInstructions(prompt, additionalInstructions);
         prompt.append("SOURCE SHARD:\n").append(source).append("\nEND SOURCE SHARD\n");
         return prompt.toString();
     }
 
-    private static String structuredSystemPrompt(ExtractionTarget extractionTarget) {
+    private static String structuredSystemPrompt(
+            ExtractionTarget extractionTarget,
+            boolean ontologyUpdatesAllowed,
+            DecomposedPromptTier tier) {
         if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
+            return "Call submit_entities with each distinct name copied exactly from the text.";
+        }
+        if (!ontologyUpdatesAllowed && tier == DecomposedPromptTier.COMPACT) {
+            return "Extract Text with submit_graph_delta(format=\"indexed\"). "
+                    + "Copy distinct named entities once in Text order. Names come only from Text—not "
+                    + "instructions, tool names, or schema. Assign stated ontology types. For each "
+                    + "directed relation A to B, source is A's zero-based entity "
+                    + "index and target is B's. Close both arrays and the call. No prose.";
+        }
+        if (!ontologyUpdatesAllowed) {
             return """
-                    Copy every distinct entity name explicitly present in SOURCE.
-                    Evidence is only the current SOURCE window. All windows belong to one unified logical corpus.
-                    Call submit_entities directly with a names array. Copy each exact source name once.
-                    The engine owns ids, provisional entity records, graph admission, and later ontology typing.
-                    Do not propose relations, infer types, call another tool, or perform cross-document lookup.
-                    Follow the declared function schema exactly and emit a function call, not prose or a plan.
+                    Extract only facts explicitly stated in SOURCE SHARD.
+                    Allowed entity types, relation types, and endpoint patterns are labels, not evidence.
+                    Never copy prompt, tool, schema, or validation text into an id, name, type, or relation.
+                    Call submit_graph_delta. For each named entity, copy its exact SOURCE name, assign an
+                    allowed type, and create a short stable id. For each explicit directed relation, use the
+                    endpoint ids and an allowed relation type. Include both endpoint entities unless their ids
+                    already exist in a populated current graph.
+                    Use a lookup tool only when the current graph is populated and identity is ambiguous.
+                    Do not submit empty arrays when SOURCE explicitly states matching entities or relations.
                     """;
         }
         return """
                 Extract every SOURCE-supported fact into a graph delta with the declared tools.
-                Evidence is the current SOURCE window; graph, schema, hints, and tool state are context, not evidence.
-                All windows belong to one unified logical corpus and the graph already carries prior accepted facts.
-                Do not perform cross-document lookup or call unified_corpus during this extraction workflow.
+                Evidence is the current SOURCE window and exact passages returned by unified_corpus;
+                graph, ontology, hints, and other tool state are context, not evidence.
+                All windows belong to one unified logical corpus. The crawl started with a schema prepass,
+                and CURRENT GRAPH AND CORPUS STATE.graphSchema is the current authoritative ontology revision.
+                Use node types for entities. Extract every supported directed relation and assign it a
+                relationship type allowed by relationshipTypes and its source/relation/target pattern.
+                Search graph_reasoning_query by a name, email, or alias before creating an ambiguous entity.
+                Reuse the resolved id, attach source-supported aliases, and do not create duplicate identities.
+                Use unified_corpus when the current window needs exact cross-source evidence.
+                If update_ontology is declared and evidence establishes a missing reusable node type,
+                relationship type, property, alias, or endpoint pattern, call it alone and use the refreshed
+                ontology on the next turn. When it is not declared, the configured ontology is closed.
                 CURRENT GRAPH AND CORPUS STATE.recommendedFirstTool is guidance. Call a function, not a plan.
-                Use graph_reasoning_query only for ambiguous identity, type, or relation. On an empty graph,
-                graph_reasoning_query may use only SCHEMA or CAPABILITIES; use fact, identity, or path operations after the graph has facts.
-                Finish with submit_graph_delta. Follow its schema exactly; include every supported entity and relation.
+                Finish with submit_graph_delta and include every supported entity and typed relation.
                 Each relation endpoint must copy an id from this submission or the current graph.
-                After rejection, retained facts stay accepted; repair or omit rejected items using SOURCE.
+                After rejection, retained facts stay accepted; repair or omit rejected items using evidence.
                 """;
     }
 
     private static String structuredUserPrompt(
             String source,
             ExtractionTaskContext task,
-            String toolContext) {
+            String toolContext,
+            String additionalInstructions,
+            ExtractionTarget extractionTarget,
+            boolean ontologyUpdatesAllowed,
+            DecomposedPromptTier tier) {
+        if (extractionTarget == ExtractionTarget.ENTITIES_ONLY
+                || (!ontologyUpdatesAllowed && tier == DecomposedPromptTier.COMPACT)) {
+            return "Text: " + source.strip();
+        }
         StringBuilder prompt = new StringBuilder();
         prompt.append("CURRENT GRAPH AND CORPUS STATE (context, not evidence):\n")
                 .append(toolContext == null ? "{}" : toolContext)
                 .append('\n');
         appendTaskHints(prompt, task);
+        appendAdditionalInstructions(prompt, additionalInstructions);
         prompt.append("SOURCE SHARD:\n").append(source).append("\nEND SOURCE SHARD\n");
         return prompt.toString();
+    }
+
+    private static void appendAdditionalInstructions(
+            StringBuilder prompt, String additionalInstructions) {
+        if (additionalInstructions == null || additionalInstructions.isBlank()) {
+            return;
+        }
+        prompt.append("PROJECT EXTRACTION INSTRUCTIONS (rules, not evidence):\n")
+                .append(additionalInstructions.strip())
+                .append("\nEND PROJECT EXTRACTION INSTRUCTIONS\n");
     }
 
     private static List<ChatMessage> structuredMessages(
@@ -720,9 +856,10 @@ public final class ToolDrivenExtractionExecutor {
             String user,
             StructuredRetryState state,
             List<ExtractionToolBackend.ToolDefinition> tools,
-            int maxChars) {
+            int maxChars,
+            boolean appendToolRequirement) {
         int fixed = system.length() + user.length() + tools.toString().length()
-                + TOOL_USE_REQUIREMENT.length() + 32;
+                + (appendToolRequirement ? TOOL_USE_REQUIREMENT.length() : 0) + 32;
         int available = Math.max(0, maxChars - fixed - 64);
         String freshUser = user;
         if (state != null && available > 0) {
@@ -732,7 +869,9 @@ public final class ToolDrivenExtractionExecutor {
                 freshUser = user + "\n" + rendered.content();
             }
         }
-        freshUser = freshUser + "\n" + TOOL_USE_REQUIREMENT;
+        if (appendToolRequirement) {
+            freshUser = freshUser + "\n" + TOOL_USE_REQUIREMENT;
+        }
         return List.of(
                 ChatMessage.text("system", system),
                 ChatMessage.text("user", freshUser));
@@ -761,7 +900,10 @@ public final class ToolDrivenExtractionExecutor {
                     .append(state.repairSeed()).append('\n');
         }
         for (StructuredToolObservation observation : state.observations()) {
-            appendObservation(full, observation, hasPersistentRepairSeed);
+            boolean includeRejectedDraft = rejectedSubmission(observation)
+                    && !sourceGroundingRejected(observation)
+                    && (!hasPersistentRepairSeed || state.sourceRecheckRequired());
+            appendObservation(full, observation, includeRejectedDraft);
         }
         full.append(suffix);
         if (full.length() <= availableChars) {
@@ -777,21 +919,31 @@ public final class ToolDrivenExtractionExecutor {
         boolean rejected = rejectedSubmission(latest);
         String repairSeed = state.repairSeed();
         boolean hasRepairSeed = !repairSeed.isBlank();
+        boolean includeRejectedDraft = rejected
+                && !sourceGroundingRejected(latest)
+                && (!hasRepairSeed || state.sourceRecheckRequired());
         String prefix = COMPACTED_TOOL_STATE_MARKER + "\n"
                 + protocolSection
                 + "Function: " + latest.request().name() + "\n"
                 + (rejected ? REJECTED_SUBMISSION_GUIDANCE + "\n" : "")
                 + (hasRepairSeed ? COMPLETE_REPLACEMENT_GUIDANCE + "\n" : "");
-        String argumentsLabel = hasRepairSeed
-                ? VALIDATOR_CLEAN_REPAIR_SEED_LABEL + "\n" + repairSeed + "\n"
-                    + REJECTED_CANDIDATE_DRAFT_LABEL + "\n"
-                : rejected
-                ? REJECTED_CANDIDATE_DRAFT_LABEL + "\n"
-                : "Previous arguments:\n";
+        StringBuilder argumentsContext = new StringBuilder();
+        if (hasRepairSeed) {
+            argumentsContext.append(VALIDATOR_CLEAN_REPAIR_SEED_LABEL).append('\n')
+                    .append(repairSeed).append('\n');
+        }
+        if (includeRejectedDraft) {
+            argumentsContext.append(REJECTED_CANDIDATE_DRAFT_LABEL).append('\n');
+        } else if (!rejected) {
+            argumentsContext.append("Previous arguments:\n");
+        }
+        String argumentsLabel = argumentsContext.toString();
         String resultLabel = rejected
                 ? "Tool or validator result:\n" : "\nTool or validator result:\n";
-        String arguments = json(latest.request().arguments());
-        String result = compactToolResult(latest.result());
+        String arguments = includeRejectedDraft
+                ? rejectedCandidateDraft(latest)
+                : !rejected ? json(latest.request().arguments()) : "";
+        String result = compactToolResult(latest.result(), hasRepairSeed);
         int bodyBudget = availableChars - prefix.length() - suffix.length()
                 - argumentsLabel.length() - resultLabel.length();
         if (bodyBudget < 96) {
@@ -815,13 +967,13 @@ public final class ToolDrivenExtractionExecutor {
     private static void appendObservation(
             StringBuilder target,
             StructuredToolObservation observation,
-            boolean repairSeedAlreadyRendered) {
+            boolean includeRejectedDraft) {
         target.append("Function: ").append(observation.request().name()).append('\n');
         boolean rejected = rejectedSubmission(observation);
         if (rejected) {
             target.append(REJECTED_SUBMISSION_GUIDANCE).append('\n');
         }
-        if (!rejected || !repairSeedAlreadyRendered) {
+        if (!rejected || includeRejectedDraft) {
             target.append(rejected ? REJECTED_CANDIDATE_DRAFT_LABEL : "Previous arguments:")
                     .append('\n')
                     .append(json(observation.request().arguments())).append('\n');
@@ -843,6 +995,82 @@ public final class ToolDrivenExtractionExecutor {
                     && result.has("ok") && !result.path("ok").asBoolean();
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    private static boolean requiresRejectedCandidateDraft(StructuredToolObservation observation) {
+        if (!rejectedSubmission(observation)) {
+            return false;
+        }
+        try {
+            JsonNode result = MAPPER.readTree(observation.result());
+            if (sourceGroundingRejected(result)) {
+                return false;
+            }
+            JsonNode correction = result.path("correction");
+            JsonNode rejectedEntities = correction.path("rejectedEntities");
+            if (rejectedEntities.isArray() && !rejectedEntities.isEmpty()) {
+                return true;
+            }
+            JsonNode rejectedRelations = correction.path("rejectedRelations");
+            return rejectedRelations.isArray() && rejectedRelations.size() > 1;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean sourceGroundingRejected(StructuredToolObservation observation) {
+        if (!rejectedSubmission(observation)) {
+            return false;
+        }
+        try {
+            return sourceGroundingRejected(MAPPER.readTree(observation.result()));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean sourceGroundingRejected(JsonNode result) {
+        JsonNode errors = result == null ? null : result.path("errors");
+        if (errors == null || !errors.isArray()) {
+            return false;
+        }
+        for (JsonNode error : errors) {
+            if (error.asText("").contains("[SOURCE_GROUNDING]")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String rejectedCandidateDraft(StructuredToolObservation observation) {
+        try {
+            JsonNode submitted = MAPPER.valueToTree(observation.request().arguments());
+            JsonNode correction = MAPPER.readTree(observation.result()).path("correction");
+            ObjectNode draft = MAPPER.createObjectNode();
+            ArrayNode entities = draft.putArray("entities");
+            ArrayNode relations = draft.putArray("relations");
+            copyRejectedItems(entities, submitted.path("entities"), correction.path("rejectedEntities"));
+            copyRejectedItems(relations, submitted.path("relations"), correction.path("rejectedRelations"));
+            if (!entities.isEmpty() || !relations.isEmpty()) {
+                return MAPPER.writeValueAsString(draft);
+            }
+        } catch (Exception ignored) {
+            // Fall through to the exact submitted arguments when diagnostics are incomplete.
+        }
+        return json(observation.request().arguments());
+    }
+
+    private static void copyRejectedItems(
+            ArrayNode target, JsonNode submitted, JsonNode rejectedItems) {
+        if (!submitted.isArray() || !rejectedItems.isArray()) {
+            return;
+        }
+        for (JsonNode rejected : rejectedItems) {
+            int index = rejected.path("index").asInt(-1);
+            if (index >= 0 && index < submitted.size()) {
+                target.add(submitted.get(index));
+            }
         }
     }
 
@@ -905,6 +1133,10 @@ public final class ToolDrivenExtractionExecutor {
     }
 
     private static String compactToolResult(String content) {
+        return compactToolResult(content, false);
+    }
+
+    private static String compactToolResult(String content, boolean omitRenderedRepairSeed) {
         if (content == null || content.isBlank()) {
             return "{}";
         }
@@ -922,7 +1154,14 @@ public final class ToolDrivenExtractionExecutor {
                         "totalMatches", "results", "chunkId", "chunkIndex", "start", "end",
                         "totalChars", "hasMore", "metadata")) {
                     if (parsed.has(field)) {
-                        compact.set(field, parsed.get(field));
+                        if (omitRenderedRepairSeed && "correction".equals(field)
+                                && parsed.get(field).isObject()) {
+                            ObjectNode correction = parsed.get(field).deepCopy();
+                            correction.remove("repairSeed");
+                            compact.set(field, correction);
+                        } else {
+                            compact.set(field, parsed.get(field));
+                        }
                     }
                 }
                 boolean hasValidationErrors = parsed.path("errors").isArray()

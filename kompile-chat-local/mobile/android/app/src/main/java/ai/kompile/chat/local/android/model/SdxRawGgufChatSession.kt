@@ -6,9 +6,8 @@ import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
-import org.bytedeco.javacpp.BytePointer
-import org.bytedeco.javacpp.Pointer
 import org.json.JSONObject
+import org.nd4j.dsp.model.SdxSourceIdentity
 import org.nd4j.dsp.model.SdxTargetProfile
 import java.io.File
 import java.io.RandomAccessFile
@@ -18,6 +17,7 @@ import java.nio.charset.StandardCharsets
 
 private const val SDX_ERROR_INITIAL_CAPACITY = 2048
 private const val SDX_LLM_LIBRARY_FILE_NAME = "libsdx_llm.so"
+private const val SDX_LLM_JNI_LIBRARY_FILE_NAME = "libjnisdx_llm.so"
 
 /** One Android loader for both GGUF ingestion and canonical SDZ execution workers. */
 internal object SdxAndroidLlmLibrary {
@@ -25,10 +25,11 @@ internal object SdxAndroidLlmLibrary {
     fun configure(context: Context): File {
         val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
         val library = File(nativeDirectory, SDX_LLM_LIBRARY_FILE_NAME)
-        if (!library.isFile) {
+        val bridge = File(nativeDirectory, SDX_LLM_JNI_LIBRARY_FILE_NAME)
+        if (!library.isFile || !bridge.isFile) {
             throw ChatException(
-                "$SDX_LLM_LIBRARY_FILE_NAME is missing from this APK " +
-                    "(${nativeDirectory.absolutePath}); build it with the DL4J sdx-aot android-aot profile"
+                "The SDX Android runtime is incomplete in ${nativeDirectory.absolutePath}: " +
+                    "required=$SDX_LLM_LIBRARY_FILE_NAME,$SDX_LLM_JNI_LIBRARY_FILE_NAME"
             )
         }
 
@@ -40,6 +41,7 @@ internal object SdxAndroidLlmLibrary {
 
     fun bind(library: File): SdxAndroidLlmAbi {
         check(library.isFile) { "SDX Android runtime is missing: ${library.absolutePath}" }
+        SdxAndroidLlmAbi.ensureLoaded()
         return SdxAndroidLlmAbi
     }
 }
@@ -53,6 +55,9 @@ internal enum class PreparationStage {
 internal data class PreparedModelInfo(
     val cacheHit: Boolean,
     val sourceSha256: String,
+    val sourceBytes: Long,
+    val canonicalSdzLogicalSha256: String,
+    val canonicalSdzLogicalBytes: Long,
     val canonicalSdzPath: String,
     val canonicalSdzBytes: Long,
     val modelPath: String,
@@ -94,8 +99,9 @@ internal fun readCompleteSdxLastError(readInto: (ByteArray) -> Int): String {
  *
  * The Graal C ABI imports the container directly to canonical SDZ and populates the normal
  * immutable target cache. It never owns a chat session. Import runs in an app-private process
- * because the native image side-loads CPU JavaCPP JNI libraries whose JavaVM/class caches must
- * not coexist with ART's accelerator JavaCPP runtime. Once that process exits, callers open the
+ * because the native image side-loads CPU JavaCPP JNI libraries. The ART-facing C-ABI bridge is
+ * direct JNI so its process-global state never aliases the embedded JVM. Once that process exits,
+ * callers open the
  * returned canonical SDZ through the same [PlatformLocalChatModelFactory] used for every model.
  */
 internal object SdxGgufModelImporter {
@@ -218,7 +224,8 @@ internal object SdxGgufModelImporter {
                         )
                     ),
                     modelCache,
-                    verifiedSourceSha256
+                    verifiedSourceSha256,
+                    verifiedSourceBytes
                 )
             } catch (failure: Throwable) {
                 primaryFailure = failure
@@ -252,7 +259,8 @@ internal object SdxGgufModelImporter {
         private fun parsePreparedModel(
             json: JSONObject,
             modelCache: File,
-            expectedSourceSha256: String?
+            expectedSourceSha256: String?,
+            expectedSourceBytes: Long?
         ): PreparedModelInfo {
             val schema = json.optString(SdxRawGgufContract.PREPARED_SCHEMA_FIELD, "")
             val target = json.optString(SdxRawGgufContract.TARGET_PROFILE_FIELD, "")
@@ -281,12 +289,25 @@ internal object SdxGgufModelImporter {
             }
 
             val sourceSha256 = json.getString(SdxRawGgufContract.SOURCE_SHA256_FIELD)
+            val sourceBytes = json.getLong(SdxRawGgufContract.SOURCE_BYTES_FIELD)
+            if (!sourceSha256.matches(Regex("[0-9a-f]{64}")) || sourceBytes <= 0L) {
+                throw ChatException(
+                    "SDX prepared raw-source identity is invalid: " +
+                        "sha256='$sourceSha256' bytes=$sourceBytes"
+                )
+            }
             if (expectedSourceSha256 != null &&
                 !sourceSha256.equals(expectedSourceSha256, ignoreCase = true)
             ) {
                 throw ChatException(
                     "SDX prepared source SHA-256 does not match the verified download: " +
                         "expected=$expectedSourceSha256 actual=$sourceSha256"
+                )
+            }
+            if (expectedSourceBytes != null && sourceBytes != expectedSourceBytes) {
+                throw ChatException(
+                    "SDX prepared source byte count does not match the verified download: " +
+                        "expected=$expectedSourceBytes actual=$sourceBytes"
                 )
             }
 
@@ -305,6 +326,30 @@ internal object SdxGgufModelImporter {
                 cacheRoot,
                 json.getString(SdxRawGgufContract.MODEL_PATH_FIELD)
             )
+            val canonicalSdzLogicalSha256 = json.getString(
+                SdxRawGgufContract.CANONICAL_SDZ_LOGICAL_SHA256_FIELD
+            )
+            if (!canonicalSdzLogicalSha256.matches(Regex("[0-9a-f]{64}"))) {
+                throw ChatException(
+                    "SDX canonical SDZ logical SHA-256 is invalid: " +
+                        "'$canonicalSdzLogicalSha256'"
+                )
+            }
+            val actualCanonicalIdentity = SdxSourceIdentity.identify(canonicalSdz.toPath())
+            val canonicalSdzLogicalBytes = json.getLong(
+                SdxRawGgufContract.CANONICAL_SDZ_LOGICAL_BYTES_FIELD
+            )
+            if (canonicalSdzLogicalBytes <= 0L ||
+                actualCanonicalIdentity.sha256() != canonicalSdzLogicalSha256 ||
+                actualCanonicalIdentity.logicalBytes() != canonicalSdzLogicalBytes
+            ) {
+                throw ChatException(
+                    "SDX canonical SDZ logical identity changed after preparation: " +
+                        "declared=$canonicalSdzLogicalSha256/$canonicalSdzLogicalBytes " +
+                        "actual=${actualCanonicalIdentity.sha256()}/" +
+                        actualCanonicalIdentity.logicalBytes()
+                )
+            }
             val declaredCanonicalBytes = json.getLong(
                 SdxRawGgufContract.CANONICAL_SDZ_BYTES_FIELD
             )
@@ -317,6 +362,9 @@ internal object SdxGgufModelImporter {
             return PreparedModelInfo(
                 cacheHit = json.getBoolean(SdxRawGgufContract.CACHE_HIT_FIELD),
                 sourceSha256 = sourceSha256,
+                sourceBytes = sourceBytes,
+                canonicalSdzLogicalSha256 = canonicalSdzLogicalSha256,
+                canonicalSdzLogicalBytes = canonicalSdzLogicalBytes,
                 canonicalSdzPath = canonicalSdz.absolutePath,
                 canonicalSdzBytes = declaredCanonicalBytes,
                 modelPath = runtimeModel.absolutePath,
@@ -367,14 +415,14 @@ internal object SdxGgufModelImporter {
         private fun readAndFree(
             operation: NativeOperationTransaction,
             native: SdxAndroidLlmAbi,
-            runtime: Pointer,
-            pointer: Pointer?,
+            runtime: SdxNativeHandle,
+            pointer: SdxNativeHandle?,
             description: String
         ): String {
             val value = pointer
                 ?: throw ChatException("SDX returned a null $description pointer")
             return try {
-                BytePointer(value).string ?: ""
+                native.sdxLlmReadUtf8(value)
             } finally {
                 operation.checkpoint(NativeOperationCheckpoint.FREE_IMPORTER_RESULT)
                 native.sdxLlmFree(runtime, value)
@@ -384,7 +432,7 @@ internal object SdxGgufModelImporter {
         private fun lastError(
             operation: NativeOperationTransaction,
             native: SdxAndroidLlmAbi,
-            runtime: Pointer
+            runtime: SdxNativeHandle
         ): String = readCompleteSdxLastError { buffer ->
             operation.checkpoint(NativeOperationCheckpoint.QUERY_IMPORTER_LAST_ERROR)
             native.sdxLlmGetLastError(runtime, buffer, buffer.size)

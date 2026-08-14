@@ -76,7 +76,7 @@ public class ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--target-session-id", "-t"}, description = "UUID to use as the target session ID when resuming (instead of generating a new one)")
     private String targetSessionId;
 
-    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (kompile/claude/codex/qwen/opencode/gemini/pi)", defaultValue = "claude")
+    @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (auto/kompile/claude/codex/qwen/opencode/gemini/pi)", defaultValue = "auto")
     private String agent;
 
     @CommandLine.Option(names = {"--search", "-q"}, description = "Search conversations by keyword")
@@ -178,8 +178,9 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println();
             int printed = 0;
             for (ChatHistory.ConversationSummary c : conversations) {
+                String displayAgent = displayAgentForKompileConversation(c);
                 if (filterAgent != null && !filterAgent.isBlank()
-                        && !filterAgent.equalsIgnoreCase(c.agent())) {
+                        && !filterAgent.equalsIgnoreCase(displayAgent)) {
                     continue;
                 }
                 if (filterSource != null && !filterSource.isBlank()
@@ -187,7 +188,7 @@ public class ResumeCommand implements Callable<Integer> {
                     continue;
                 }
                 System.out.printf("  %-24s  %-20s  agent=%-8s  %s%n",
-                        c.sessionId(), c.started(), c.agent(),
+                        c.sessionId(), c.started(), displayAgent,
                         c.title().isEmpty() ? "(empty)" : c.title());
                 printed++;
             }
@@ -328,11 +329,57 @@ public class ResumeCommand implements Callable<Integer> {
         }
     }
 
+    static String displayAgentForKompileConversation(
+            ChatHistory.ConversationSummary conversation) {
+        String nativeSessionId = ChatHistory.resolveNativeSessionId(
+                conversation.sessionId(), conversation.agent());
+        return ResumeTool.isStandardKompileChatSession(
+                conversation.sessionId(), "kompile", conversation.agent(), nativeSessionId)
+                ? "kompile"
+                : conversation.agent();
+    }
+
+    static boolean shouldResumeStandardChat(
+            String sessionId,
+            String requestedAgent,
+            String recordedAgent,
+            String nativeSessionId) {
+        boolean standardTarget = requestedAgent == null
+                || requestedAgent.isBlank()
+                || "auto".equalsIgnoreCase(requestedAgent)
+                || "kompile".equalsIgnoreCase(requestedAgent);
+        return standardTarget && ResumeTool.isStandardKompileChatSession(
+                sessionId, "kompile", recordedAgent, nativeSessionId);
+    }
+
+    static String effectiveTargetAgent(String requestedAgent) {
+        return requestedAgent == null
+                || requestedAgent.isBlank()
+                || "auto".equalsIgnoreCase(requestedAgent)
+                ? "claude"
+                : requestedAgent;
+    }
+
     /**
      * Resume a conversation with a specific agent.
      */
     private int resumeConversation(String sessionId, String agent) {
         try {
+            ChatHistory.ConversationSummary kompileSummary =
+                    ChatHistory.listResumableConversations().stream()
+                            .filter(candidate -> candidate.sessionId().equals(sessionId))
+                            .findFirst()
+                            .orElse(null);
+            String recordedAgent = kompileSummary == null ? "" : kompileSummary.agent();
+            String nativeSessionId = ChatHistory.resolveNativeSessionId(sessionId, recordedAgent);
+            if (shouldResumeStandardChat(
+                    sessionId, agent, recordedAgent, nativeSessionId)) {
+                System.out.println("Resuming Kompile standard chat: " + sessionId);
+                return new CommandLine(new ChatCommand()).execute(
+                        "--resume", sessionId, "--mode", "standard");
+            }
+            agent = effectiveTargetAgent(agent);
+
             // Short-circuit: if the target agent is opencode and a target session UUID
             // is specified directly, just launch `opencode --session <uuid>` without exporting.
             if ("opencode".equalsIgnoreCase(agent) && targetSessionId != null && !targetSessionId.isBlank()) {

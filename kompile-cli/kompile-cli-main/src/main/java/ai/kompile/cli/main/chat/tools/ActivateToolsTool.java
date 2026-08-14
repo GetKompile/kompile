@@ -27,10 +27,9 @@ import java.util.Map;
 /**
  * Meta-tool that lets the LLM discover and activate tool groups on demand.
  *
- * <p>In dynamic mode, only core tools (read, write, edit, grep, glob, bash, list)
- * are listed by default. This tool exposes the available tool groups and lets
- * the LLM activate them when needed — reducing the default tool schema from
- * ~7000 tokens to ~2000 tokens.
+ * <p>In dynamic mode, only a compact project-work surface is listed initially.
+ * This tool exposes focused capability groups and activates only the group
+ * needed for the next step.
  *
  * <p>Actions:
  * <ul>
@@ -52,10 +51,11 @@ public class ActivateToolsTool implements CliTool {
 
     @Override
     public String description() {
-        return "Discover and activate additional tool groups. " +
-                "Use action='list' to see available groups, " +
-                "action='describe' with group name for details, " +
-                "action='activate' with group name (or 'all') to enable tools.";
+        List<String> groups = toolManager.availableGroupNames();
+        return "Load one focused tool group when the current task needs capabilities not already shown. "
+                + "Call action='activate' with group="
+                + (groups.isEmpty() ? "'all'" : String.join("|", groups))
+                + "; the tools appear on the next step. Use action='list' only when unsure.";
     }
 
     @Override
@@ -67,11 +67,17 @@ public class ActivateToolsTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "list, describe, or activate");
+        action.putArray("enum").add("list").add("describe").add("activate");
+        action.put("description", "Use activate to load a group; list/describe are discovery helpers.");
 
         ObjectNode group = props.putObject("group");
         group.put("type", "string");
-        group.put("description", "Group name for describe/activate (or 'all')");
+        var groupEnum = group.putArray("enum");
+        for (String groupName : toolManager.availableGroupNames()) {
+            groupEnum.add(groupName);
+        }
+        groupEnum.add("all");
+        group.put("description", "One focused group for describe/activate; use all only when explicitly necessary.");
 
         schema.putArray("required").add("action");
         return schema;
@@ -82,8 +88,8 @@ public class ActivateToolsTool implements CliTool {
 
     @Override
     public ToolResult execute(JsonNode params, ToolContext context) throws ToolExecutionException {
-        String action = params.path("action").asText("list");
-        String group = params.path("group").asText("");
+        String action = params.path("action").asText("list").trim().toLowerCase();
+        String group = params.path("group").asText("").trim().toLowerCase();
 
         return switch (action) {
             case "list" -> ToolResult.success("tool_groups",
@@ -112,7 +118,7 @@ public class ActivateToolsTool implements CliTool {
                 }
                 yield ToolResult.success("activated: " + group,
                         "Activated " + added.size() + " tools: " + String.join(", ", added) +
-                                "\n\nThese tools are now available. Call tools/list to see the updated list.",
+                                "\nThese tools are available on the next model step.",
                         Map.of("group", group, "toolsAdded", added.size()));
             }
 

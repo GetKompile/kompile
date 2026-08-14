@@ -11,6 +11,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.cli.main.chat.tools.CliTool;
 import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
+import ai.kompile.cli.main.chat.tools.OfflineToolRuntime;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -119,7 +120,7 @@ public class AskGraphSubscribeTool implements CliTool {
 
         props.putObject("factSheetId")
                 .put("type", "integer")
-                .put("description", "Scope to a specific fact sheet. Null = default (0). First-call only.");
+                .put("description", "Optional remote/legacy graph selector; omit locally to use the current folder's knowledge base. First-call only.");
         props.putObject("maxBindingsPerPredicate")
                 .put("type", "integer")
                 .put("description", "Maximum sample bindings in the initial snapshot per predicate. Default 5.");
@@ -143,7 +144,7 @@ public class AskGraphSubscribeTool implements CliTool {
         context.checkPermission(permissionKey(), "Subscribe to KB fact changes");
 
         if (!groundingClient.isAvailable()) {
-            return ToolResult.error("ask_graph_subscribe requires a running kompile-app.");
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
         }
 
         String subscriptionId = params.path("subscriptionId").asText(null);

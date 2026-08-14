@@ -28,6 +28,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -106,11 +107,15 @@ public class TerminalRenderer {
      */
     private static final Map<String, String[]> PRIMARY_PARAMS = Map.ofEntries(
             Map.entry("read", new String[]{"file_path"}),
+            Map.entry("read_batch", new String[]{"files"}),
             Map.entry("write", new String[]{"file_path"}),
             Map.entry("edit", new String[]{"file_path"}),
+            Map.entry("edit_batch", new String[]{"edits"}),
+            Map.entry("edit_patch", new String[]{"patches"}),
             Map.entry("patch", new String[]{"file_path"}),
             Map.entry("glob", new String[]{"pattern"}),
             Map.entry("grep", new String[]{"pattern", "path"}),
+            Map.entry("grep_batch", new String[]{"queries"}),
             Map.entry("bash", new String[]{"command"}),
             Map.entry("list", new String[]{"path"}),
             Map.entry("webfetch", new String[]{"url"}),
@@ -126,8 +131,19 @@ public class TerminalRenderer {
             Map.entry("memory", new String[]{"query", "key"}),
             Map.entry("explore", new String[]{"query"}),
             Map.entry("agent", new String[]{"description"}),
-            Map.entry("browser", new String[]{"url"})
+            Map.entry("browser", new String[]{"url"}),
+            Map.entry("process", new String[]{"action", "process_id", "description", "command"}),
+            Map.entry("todowrite", new String[]{"action", "subject", "task_id", "status"}),
+            Map.entry("todoread", new String[]{"action"}),
+            Map.entry("edit_coordinator", new String[]{"action", "file_path", "process_id", "agent_name"})
     );
+
+    private static final Set<String> SENSITIVE_PARAMS = Set.of(
+            "api_key", "apikey", "authorization", "cookie", "credential",
+            "password", "private_key", "secret", "token");
+
+    private static final Set<String> VERBOSE_PARAMS = Set.of(
+            "body", "config_json", "content", "new_string", "old_string", "patch", "prompt");
 
     private final boolean ansiEnabled;
 
@@ -177,23 +193,43 @@ public class TerminalRenderer {
      * Render a completed tool call with result summary.
      */
     public String renderToolCallComplete(String toolName, ToolResult result) {
+        return renderToolCallComplete(toolName, "", result);
+    }
+
+    /**
+     * Render a completed tool call while retaining the action that was attempted.
+     * This is the durable row shown after the transient running state, so it must
+     * carry enough context to remain useful on its own.
+     */
+    public String renderToolCallComplete(String toolName, String rawInput, ToolResult result) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
         String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         StringBuilder sb = new StringBuilder();
+        String action = prettifyToolInput(cleanName, rawInput, 96);
 
         if (result.isError()) {
             sb.append("  ").append(icon).append(" ").append(bold(red(displayName)));
+            if (!action.isBlank()) {
+                sb.append(" ").append(dim(action));
+            }
             sb.append(" ").append(red("✗"));
             String errorPreview = truncatePreview(result.getOutput(), 120);
-            sb.append("\n    ").append(red(errorPreview));
+            if (!errorPreview.isBlank()) {
+                sb.append(" ").append(red(errorPreview));
+            }
         } else {
             sb.append("  ").append(icon).append(" ").append(bold(green(displayName)));
+            if (!action.isBlank()) {
+                sb.append(" ").append(dim(action));
+            }
             sb.append(" ").append(green("✓"));
 
             // Show title if present
-            if (result.getTitle() != null && !result.getTitle().isEmpty() && !"error".equals(result.getTitle())) {
-                sb.append(" ").append(dim(result.getTitle()));
+            if (result.getTitle() != null && !result.getTitle().isEmpty()
+                    && !"error".equals(result.getTitle())
+                    && !result.getTitle().equals(action)) {
+                sb.append(" ").append(dim(truncatePreview(result.getTitle(), 96)));
             }
 
             // Show metadata summary
@@ -205,9 +241,12 @@ public class TerminalRenderer {
             // Show output preview for certain tools
             String output = result.getOutput();
             if (output != null && !output.isEmpty()) {
-                String preview = truncatePreview(output, 200);
-                if (shouldShowPreview(toolName, meta)) {
-                    sb.append("\n").append(dim(indentLines(preview, "    ")));
+                if (shouldShowPreview(cleanName, meta)
+                        || ((result.getTitle() == null || result.getTitle().isBlank()) && meta.isEmpty())) {
+                    String preview = firstOutputLine(output, 140);
+                    if (!preview.isBlank()) {
+                        sb.append(" ").append(dim("· " + preview));
+                    }
                 }
             }
         }
@@ -248,6 +287,12 @@ public class TerminalRenderer {
         String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         String status = isError ? red("✗") : green("✓");
         return "  " + magenta("│") + "  " + icon + " " + cyan(displayName) + " " + status;
+    }
+
+    /** Render a complete, informative tool row inside a subagent transcript. */
+    public String renderSubagentToolCall(String toolName, String rawInput, ToolResult result) {
+        String rendered = renderToolCallComplete(toolName, rawInput, result).stripLeading();
+        return "  " + magenta("│") + "  " + rendered.replace("\n", "\n  │  ");
     }
 
     /**
@@ -899,9 +944,12 @@ public class TerminalRenderer {
                 for (String key : primaryKeys) {
                     if (node.has(key) && !node.get(key).isNull()) {
                         JsonNode val = node.get(key);
-                        String valStr = val.isTextual() ? val.asText() : val.toString();
+                        String valStr = summarizeParameter(key, val);
                         if (!valStr.isEmpty()) {
-                            if (sb.length() > 0) sb.append(" in ");
+                            if (sb.length() > 0) {
+                                sb.append("grep".equals(toolName) && "path".equals(key)
+                                        ? " in " : " · ");
+                            }
                             sb.append(valStr);
                         }
                     }
@@ -917,9 +965,7 @@ public class TerminalRenderer {
             while (fields.hasNext()) {
                 Map.Entry<String, JsonNode> entry = fields.next();
                 if (sb.length() > 0) sb.append(", ");
-                String val = entry.getValue().isTextual()
-                        ? entry.getValue().asText()
-                        : entry.getValue().toString();
+                String val = summarizeParameter(entry.getKey(), entry.getValue());
                 sb.append(entry.getKey()).append("=").append(val);
                 if (sb.length() > maxLen) break;
             }
@@ -929,6 +975,79 @@ public class TerminalRenderer {
             // JSON parse failed — return truncated raw text
             return truncatePreview(trimmed, maxLen);
         }
+    }
+
+    /** Plain one-line label used by the compact activity panel and status rows. */
+    public static String summarizeToolCall(String toolName, String rawInput, int maxLen) {
+        String displayName = prettifyToolName(toolName);
+        String input = prettifyToolInput(stripMcpPrefix(toolName), rawInput,
+                Math.max(1, maxLen - displayName.length() - 1));
+        return truncatePreview(input.isBlank() ? displayName : displayName + " " + input, maxLen);
+    }
+
+    /** Plain completion detail used where ANSI rendering is inappropriate. */
+    public static String summarizeToolResult(ToolResult result, int maxLen) {
+        if (result == null) return "";
+        StringBuilder summary = new StringBuilder();
+        if (result.isError()) {
+            summary.append("failed");
+        } else if (result.getTitle() != null && !result.getTitle().isBlank()
+                && !"error".equals(result.getTitle())) {
+            summary.append(result.getTitle());
+        }
+        if (!result.getMetadata().isEmpty()) {
+            for (Map.Entry<String, Object> entry : result.getMetadata().entrySet()) {
+                if (isSensitiveParam(entry.getKey()) || "path".equals(entry.getKey())) continue;
+                if (summary.length() > 0) summary.append(" · ");
+                summary.append(entry.getKey()).append("=").append(entry.getValue());
+                if (summary.length() >= maxLen) break;
+            }
+        }
+        if ((summary.length() == 0 || result.isError())
+                && result.getOutput() != null && !result.getOutput().isBlank()) {
+            if (summary.length() > 0) summary.append(" · ");
+            summary.append(firstOutputLine(result.getOutput(), maxLen));
+        }
+        return truncatePreview(summary.toString(), maxLen);
+    }
+
+    private static String summarizeParameter(String key, JsonNode value) {
+        if (isSensitiveParam(key)) {
+            return "[redacted]";
+        }
+        if (value == null || value.isNull()) {
+            return "";
+        }
+        if (VERBOSE_PARAMS.contains(key.toLowerCase())) {
+            int length = value.isTextual() ? value.asText().length() : value.toString().length();
+            return length + " chars";
+        }
+        if (value.isArray()) {
+            if (value.size() == 1) {
+                JsonNode only = value.get(0);
+                if (only.isTextual()) return only.asText();
+                if (only.isObject()) {
+                    for (String candidate : List.of("file_path", "path", "query", "pattern", "description")) {
+                        if (only.hasNonNull(candidate)) {
+                            return only.path(candidate).asText();
+                        }
+                    }
+                }
+            }
+            return key + "=" + value.size();
+        }
+        if (value.isObject()) {
+            return key + "={" + value.size() + " fields}";
+        }
+        return value.isTextual() ? value.asText() : value.toString();
+    }
+
+    private static boolean isSensitiveParam(String key) {
+        if (key == null) return false;
+        String normalized = key.toLowerCase();
+        if (SENSITIVE_PARAMS.contains(normalized)) return true;
+        return normalized.endsWith("_token") || normalized.endsWith("_secret")
+                || normalized.endsWith("_password") || normalized.endsWith("_credential");
     }
 
     // ========================================================================
@@ -949,7 +1068,8 @@ public class TerminalRenderer {
         for (Map.Entry<String, Object> entry : meta.entrySet()) {
             String key = entry.getKey();
             // Skip verbose metadata
-            if ("path".equals(key) || "created".equals(key) || "matchType".equals(key)) continue;
+            if ("path".equals(key) || "created".equals(key) || "matchType".equals(key)
+                    || isSensitiveParam(key)) continue;
             if (!first) sb.append(", ");
             sb.append(key).append("=").append(entry.getValue());
             first = false;
@@ -960,10 +1080,28 @@ public class TerminalRenderer {
 
     public static String truncatePreview(String text, int maxLen) {
         if (text == null) return "";
+        if (maxLen <= 0) return "";
         // Replace newlines with spaces for inline preview
         String oneLine = text.replace('\n', ' ').replace('\r', ' ');
         if (oneLine.length() <= maxLen) return oneLine;
+        if (maxLen <= 3) return oneLine.substring(0, maxLen);
         return oneLine.substring(0, maxLen - 3) + "...";
+    }
+
+    private static String firstOutputLine(String output, int maxLen) {
+        if (output == null || output.isBlank()) return "";
+        String[] lines = output.split("\\R", -1);
+        String first = "";
+        int nonBlank = 0;
+        for (String line : lines) {
+            if (line.isBlank()) continue;
+            if (first.isEmpty()) first = line.strip();
+            nonBlank++;
+        }
+        if (nonBlank > 1) {
+            first += " (+" + (nonBlank - 1) + " lines)";
+        }
+        return truncatePreview(first, maxLen);
     }
 
     private String indentLines(String text, String indent) {

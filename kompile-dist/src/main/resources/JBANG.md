@@ -1,8 +1,8 @@
 # Running Kompile via JBang (JAR fallback)
 
 The native binaries in `bin/` are the primary way to run Kompile. This `jbang-catalog.json`
-and the JARs in `lib/` are the fallback path — useful when a native binary for your platform
-is not yet available or you prefer JVM execution.
+and selected product JARs in `lib/` provide a JVM path for the CLI and server personas.
+Local MCP model workers are native-only and side-load their backend libraries from `lib/`.
 
 ## Install JBang
 
@@ -18,7 +18,6 @@ Or via SDKMan: `sdk install jbang`
 # From the extracted dist directory:
 jbang --catalog ./jbang-catalog.json kompile-server
 jbang --catalog ./jbang-catalog.json kompile
-jbang --catalog ./jbang-catalog.json kompile-staging
 ```
 
 ## Run directly from GitHub Releases (no download required)
@@ -26,7 +25,6 @@ jbang --catalog ./jbang-catalog.json kompile-staging
 ```bash
 jbang kompile-server@getkompile/kompile
 jbang kompile@getkompile/kompile
-jbang kompile-staging@getkompile/kompile
 ```
 
 ## Common configuration
@@ -62,5 +60,6 @@ jbang --catalog ./jbang-catalog.json kompile-model-init
 ## Note on native binaries vs JARs
 
 Native binaries in `bin/` start faster (no JVM warmup) and use less resident memory.
-JARs in `lib/` are the fallback — identical functionality, just slower cold start.
-If `bin/kompile-server` exists, prefer it; the JBang aliases are a safety net.
+The JBang aliases cover only the listed JVM product surfaces. Model staging, model serving,
+pipeline serving, and document-model execution require their native binaries and matching
+side-loaded `lib/` payload; they do not cross into a JAR fallback.

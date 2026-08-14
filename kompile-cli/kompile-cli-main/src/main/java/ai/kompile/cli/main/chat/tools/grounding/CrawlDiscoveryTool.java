@@ -10,6 +10,7 @@ import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -25,7 +26,7 @@ import java.util.Set;
  */
 public final class CrawlDiscoveryTool implements CliTool {
     private static final Set<String> SECTIONS =
-            Set.of("all", "sources", "pipelines", "runtime", "knowledge_bases", "code_projects");
+            Set.of("all", "sources", "pipelines", "runtime", "models", "knowledge_bases", "code_projects");
 
     private final GroundingBackendClient client;
     private final ObjectMapper mapper;
@@ -52,14 +53,14 @@ public final class CrawlDiscoveryTool implements CliTool {
                 + "crawl_documents or crawl_source. Reports project-local pipelines when no crawl manager "
                 + "is configured, otherwise the live distributed surface. Returns source types, pipeline step dependencies, "
                 + "standard pipeline kinds, installed loaders and chunkers, processing routes/backends, "
-                + "capacity, runtime settings, knowledge bases, registered Kompile code projects, "
+                + "capacity, runtime settings, folder-registered models, knowledge bases, registered Kompile code projects, "
                 + "and a concise request-shape guide. "
                 + "Use section to limit the response.";
     }
 
     @Override
     public String compactHint() {
-        return "Discover crawl options. section=all|sources|pipelines|runtime|knowledge_bases|code_projects; "
+        return "Discover crawl options. section=all|sources|pipelines|runtime|models|knowledge_bases|code_projects; "
                 + "use the result to configure crawl_documents.";
     }
 
@@ -95,7 +96,7 @@ public final class CrawlDiscoveryTool implements CliTool {
         if (!SECTIONS.contains(section)) {
             return ToolResult.error("Unknown section '" + section + "'. Valid sections: " + SECTIONS);
         }
-        if (!client.isAvailable()) {
+        if (!client.isAvailable() || "models".equals(section)) {
             return localBackend.discover(section, context.getWorkingDirectory());
         }
 
@@ -120,6 +121,10 @@ public final class CrawlDiscoveryTool implements CliTool {
         if (matches(section, "runtime")) {
             fetch(catalog, "processingCapacity", "/api/unified-crawl/processing-capacity", counts);
             fetch(catalog, "runtimeConfig", "/api/unified-crawl/runtime-config", counts);
+        }
+        if (matches(section, "models")) {
+            catalog.set("models", mapper.valueToTree(
+                    LocalProjectModelBootstrap.inventory(context.getWorkingDirectory())));
         }
         if (matches(section, "knowledge_bases")) {
             fetch(catalog, "knowledgeBases", "/api/fact-sheets", counts);
@@ -201,7 +206,7 @@ public final class CrawlDiscoveryTool implements CliTool {
                 "steps", "archivedSteps", "strictSteps", "pipelines", "routeRules",
                 "defaultPipelineId", "graphExtraction", "chunking", "vectorIndex",
                 "processingRoute", "runtimeConfig", "preprocessing", "hydration",
-                "distribution", "deriveOntology", "maxValidationRetries", "config"}) {
+                "distribution", "deriveOntology", "maxValidationRetries", "modelRuntime", "config"}) {
             configurationFields.add(field);
         }
         shape.put("selectionAdvice",

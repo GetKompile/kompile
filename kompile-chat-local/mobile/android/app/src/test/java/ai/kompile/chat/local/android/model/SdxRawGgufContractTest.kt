@@ -7,6 +7,22 @@ import org.junit.Test
 class SdxRawGgufContractTest {
 
     @Test
+    fun preparedProofSchemaSeparatesRawAndCanonicalIdentity() {
+        assertEquals("sdx-prepared-text-model-v3", SdxRawGgufContract.PREPARED_SCHEMA)
+        assertEquals("sourceSha256", SdxRawGgufContract.SOURCE_SHA256_FIELD)
+        assertEquals("sourceBytes", SdxRawGgufContract.SOURCE_BYTES_FIELD)
+        assertEquals(
+            "canonicalSdzLogicalSha256",
+            SdxRawGgufContract.CANONICAL_SDZ_LOGICAL_SHA256_FIELD
+        )
+        assertEquals(
+            "canonicalSdzLogicalBytes",
+            SdxRawGgufContract.CANONICAL_SDZ_LOGICAL_BYTES_FIELD
+        )
+        assertEquals("canonicalSdzBytes", SdxRawGgufContract.CANONICAL_SDZ_BYTES_FIELD)
+    }
+
+    @Test
     fun verifiedPreparationOptionsCarryExactDownloaderAttestation() {
         val sha256 = "a".repeat(64)
 

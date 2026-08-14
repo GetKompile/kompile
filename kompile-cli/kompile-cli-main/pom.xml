@@ -231,6 +231,16 @@
             <artifactId>kompile-app-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-crawl-graph</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-diff</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- RestTemplate for GroundingBackendClient (grounding tools HTTP seam) -->
         <dependency>
@@ -254,6 +264,22 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
             <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Local crawl/enrichment tests execute the same backend-agnostic graph lifecycle as
+             production. Supply the build-selected ND4J host backend only on the test classpath;
+             distributions continue to side-load their CPU/CUDA backend from packaged assets. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.native.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
             <scope>test</scope>
         </dependency>
         <!-- MockRestServiceServer for ask_graph_* tool HTTP tests -->
@@ -282,6 +308,53 @@
             </activation>
             <build>
                 <plugins>
+                    <!-- Native payloads are never embedded in a Graal image. Unpack every
+                         runtime dependency's native members, then select and flatten only
+                         the current platform into target/lib for both direct execution and
+                         distribution packaging. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-native-payloads</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>unpack-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-libs</outputDirectory>
+                                    <includeTypes>jar</includeTypes>
+                                    <includes>**/*.so,**/*.so.*,**/*.dylib,**/*.dll,**/shared-runtime-manifest.txt</includes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>stage-native-payloads</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <arguments>
+                                        <argument>${project.basedir}/../../kompile-dist/src/main/build/stage-native-libs.sh</argument>
+                                        <argument>${project.build.directory}/native-libs</argument>
+                                        <argument>${project.build.directory}/lib</argument>
+                                        <argument>${javacpp.platform}</argument>
+                                        <argument>${javacpp.platform.extension}</argument>
+                                        <argument>none</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
@@ -334,8 +407,11 @@
                                 <buildArg>-H:IncludeResources=kompile-cli-versions\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
+                                <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
+                                <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
+                                <buildArg>-H:ExcludeResources=${native.exclude.platform.payload}</buildArg>
+                                <buildArg>-H:ExcludeResources=${native.exclude.library.payload}</buildArg>
                                 <buildArg>-H:IncludeResources=org/apache/pdfbox/resources/afm/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/jline/.*</buildArg>

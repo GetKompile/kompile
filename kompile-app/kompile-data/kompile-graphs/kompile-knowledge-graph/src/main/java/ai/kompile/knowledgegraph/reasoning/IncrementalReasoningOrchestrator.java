@@ -568,6 +568,26 @@ public class IncrementalReasoningOrchestrator {
         }
     }
 
+    /**
+     * Return the latest corpus-wide reasoning graph registered for a fact sheet.
+     *
+     * <p>The graph is the store-agnostic view shared by KGE semantic resolution, PSL,
+     * Bayesian structure, and MEBN. Callers must treat it as read-only.</p>
+     */
+    public Optional<ReasoningGraph> reasoningGraph(long factSheetId) {
+        return Optional.ofNullable(reasoningGraphs.get(factSheetId));
+    }
+
+    /**
+     * Return the MEBN theory learned/registered for a fact sheet, when available.
+     *
+     * <p>This deliberately exposes only a read-only reference so final entity resolution
+     * can consume the same corpus model instead of constructing a disconnected theory.</p>
+     */
+    public Optional<MTheory> registeredMTheory(long factSheetId) {
+        return Optional.ofNullable(mebnTheories.get(factSheetId));
+    }
+
     // ─── Internal ─────────────────────────────────────────────────────────────────
 
     /**

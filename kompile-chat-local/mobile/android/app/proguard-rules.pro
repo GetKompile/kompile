@@ -3,8 +3,8 @@
 # own reachability analysis retains everything it uses, and the core loads
 # nothing by name: it has no reflection and no Java serialization. A blanket
 # keep would pin desktop-only HTTP, subprocess, and JNA routes into the APK.
-# Android uses DL4J's JavaCPP SDX transport for both GGUF preparation and model
-# execution; the desktop-only core facade must therefore remain unreachable.
+# Android uses a direct JNI transport for the SDX C ABI. JavaCPP stays inside the
+# embedded Graal image and provider runtime; the desktop JNA facade remains unreachable.
 
 # ── Graph reasoning ──────────────────────────────────────────────────────────
 # Also not kept wholesale. Java serialization would need it, but no graph is
@@ -14,7 +14,7 @@
 # R8 reaches on its own.
 
 # ── JavaCPP / SDX native bindings ─────────────────────────────────────────────
-# JavaCPP resolves generated JNI entry points and callback methods by exact name.
+# Provider JavaCPP bindings and the direct SDX JNI class use exact native names.
 -keep class org.bytedeco.javacpp.** { *; }
 -keep class org.nd4j.dsp.model.SdxLlmNative { *; }
 -keep class org.nd4j.dsp.model.SdxLlmNative$* { *; }

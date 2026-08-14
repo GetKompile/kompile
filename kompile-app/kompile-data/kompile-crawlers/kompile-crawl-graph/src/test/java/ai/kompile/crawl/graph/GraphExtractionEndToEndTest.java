@@ -107,8 +107,33 @@ class GraphExtractionEndToEndTest {
         when(sourceLoadingService.loadSources(any(), anyInt(), any())).thenAnswer(inv ->
                 new ArrayList<>(List.of(
                         new CrawlSourceLoadingService.SourceLoadResult(0, "test", loader.load(anyDescriptor, null)))));
-        when(llmChat.prompt(anyString())).thenReturn(requestSpec);
+        when(llmChat.prompt(anyString())).thenAnswer(invocation -> {
+            String prompt = invocation.getArgument(0);
+            return isCorpusSchemaPrompt(prompt) ? emptyCorpusSchemaResponse() : requestSpec;
+        });
         when(requestSpec.call()).thenReturn(callResponseSpec);
+    }
+
+    private static boolean isCorpusSchemaPrompt(String prompt) {
+        return prompt != null
+                && prompt.contains("AUTHORITATIVE EXISTING SCHEMA")
+                && prompt.contains("CORPUS PASSAGES");
+    }
+
+    private static LLMChat.ChatClientRequestSpec emptyCorpusSchemaResponse() {
+        LLMChat.CallResponseSpec response = mock(LLMChat.CallResponseSpec.class);
+        when(response.content()).thenReturn(
+                "{\"nodeTypes\":[],\"relationshipTypes\":[],\"patterns\":[]}");
+        LLMChat.ChatClientRequestSpec request = mock(LLMChat.ChatClientRequestSpec.class);
+        when(request.call()).thenReturn(response);
+        return request;
+    }
+
+    private static String extractionPrompt(ArgumentCaptor<String> captor) {
+        return captor.getAllValues().stream()
+                .filter(prompt -> !isCorpusSchemaPrompt(prompt))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No graph extraction prompt was submitted"));
     }
 
     // ──────────────────────────────────────────────────────────────────
@@ -250,6 +275,9 @@ class GraphExtractionEndToEndTest {
                 .name("multi-doc merge")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("PERSON", "ORGANIZATION", "LOCATION"))
+                        .relationshipTypes(List.of(
+                                "WORKS_AT", "HEADQUARTERED_IN", "PRESENTED_AT"))
                         .entityResolution(true)
                         .minConfidence(0.0)
                         .build())
@@ -377,6 +405,9 @@ class GraphExtractionEndToEndTest {
 
         when(llmChat.prompt(anyString())).thenAnswer(inv -> {
             String prompt = inv.getArgument(0);
+            if (isCorpusSchemaPrompt(prompt)) {
+                return emptyCorpusSchemaResponse();
+            }
             LLMChat.CallResponseSpec resp = mock(LLMChat.CallResponseSpec.class);
             if (prompt.contains("Good doc") || prompt.contains("Carol")) {
                 when(resp.content()).thenReturn(goodResponse);
@@ -429,6 +460,7 @@ class GraphExtractionEndToEndTest {
                 .name("case-insensitive test")
                 .sources(List.of(fileSource("docs")))
                 .graphExtraction(GraphExtractionConfig.builder()
+                        .entityTypes(List.of("TECHNOLOGY"))
                         .entityResolution(true)
                         .build())
                 .vectorIndex(VectorIndexConfig.builder().enabled(false).build())
@@ -708,7 +740,7 @@ class GraphExtractionEndToEndTest {
                 + "],\"relations\":[]}";
         when(callResponseSpec.content()).thenReturn(json);
 
-        UnifiedCrawlJob job = startJobWithGraph(null);
+        UnifiedCrawlJob job = startJobWithGraph(List.of("TECHNOLOGY", "ORGANIZATION"));
         awaitCompletion(job);
 
         assertEquals(3, job.getEntitiesExtracted().get());
@@ -823,8 +855,8 @@ class GraphExtractionEndToEndTest {
 
         // Verify LLM was called with a prompt that includes custom instructions
         ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
-        verify(llmChat).prompt(promptCaptor.capture());
-        String prompt = promptCaptor.getValue();
+        verify(llmChat, atLeastOnce()).prompt(promptCaptor.capture());
+        String prompt = extractionPrompt(promptCaptor);
         assertTrue(prompt.contains("TREATMENT"));
         assertTrue(prompt.contains("DISEASE"));
         assertTrue(prompt.contains("SYMPTOM"));
@@ -852,8 +884,8 @@ class GraphExtractionEndToEndTest {
         Thread.sleep(500);
 
         ArgumentCaptor<String> promptCaptor = ArgumentCaptor.forClass(String.class);
-        verify(llmChat).prompt(promptCaptor.capture());
-        String prompt = promptCaptor.getValue();
+        verify(llmChat, atLeastOnce()).prompt(promptCaptor.capture());
+        String prompt = extractionPrompt(promptCaptor);
         assertTrue(prompt.contains("WORKS_AT"));
         assertTrue(prompt.contains("MANAGES"));
         assertTrue(prompt.contains("REPORTS_TO"));

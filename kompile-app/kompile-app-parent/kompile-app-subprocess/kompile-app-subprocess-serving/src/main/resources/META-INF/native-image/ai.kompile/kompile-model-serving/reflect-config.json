@@ -1,0 +1,128 @@
+[
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.OpaqueNDArrayArrDeallocator",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.OpaqueNDArrayDeallocator",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.OpaqueDataBufferDeallocator",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.OpaqueDataBufferDeallocator$BufferDeallocator",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.DeallocatorService",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.nd4j.linalg.api.memory.deallocation.DeallocatableReference",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "ai.kompile.app.llm.pipeline.LlmGenerateController",
+    "allDeclaredFields": true,
+    "allDeclaredClasses": true,
+    "queryAllDeclaredMethods": true,
+    "queryAllDeclaredConstructors": true,
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": ["ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl"]
+      }
+    ]
+  },
+  {
+    "name": "ai.kompile.app.llm.pipeline.LlmModelController",
+    "allDeclaredFields": true,
+    "allDeclaredClasses": true,
+    "queryAllDeclaredMethods": true,
+    "queryAllDeclaredConstructors": true,
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl",
+          "org.springframework.boot.web.client.RestTemplateBuilder",
+          "com.fasterxml.jackson.databind.ObjectMapper",
+          "org.springframework.beans.factory.ObjectProvider"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl",
+    "allDeclaredFields": true,
+    "allDeclaredClasses": true,
+    "queryAllDeclaredMethods": true,
+    "queryAllDeclaredConstructors": true,
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": ["java.util.Optional", "java.util.Optional"]
+      }
+    ]
+  },
+  {
+    "name": "ai.kompile.app.llm.pipeline.SameDiffLanguageModelImpl$LoadedModel",
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessServingConfiguration",
+    "allDeclaredFields": true,
+    "allDeclaredClasses": true,
+    "queryAllDeclaredMethods": true,
+    "queryAllDeclaredConstructors": true,
+    "methods": [
+      {"name": "<init>", "parameterTypes": []},
+      {"name": "metrics", "parameterTypes": []},
+      {"name": "objectMapper", "parameterTypes": []},
+      {"name": "profiler", "parameterTypes": []},
+      {"name": "restTemplateBuilder", "parameterTypes": []}
+    ]
+  },
+  {
+    "name": "org.springframework.boot.autoconfigure.condition.OnBeanCondition",
+    "queryAllDeclaredConstructors": true,
+    "queryAllPublicConstructors": true,
+    "methods": [{"name": "<init>", "parameterTypes": []}]
+  },
+  {
+    "name": "org.springframework.boot.autoconfigure.condition.OnPropertyCondition",
+    "methods": [{"name": "<init>", "parameterTypes": []}]
+  },
+  {
+    "name": "ai.kompile.app.subprocess.ServingSubprocessArgs",
+    "allDeclaredFields": true,
+    "queryAllDeclaredMethods": true,
+    "queryAllDeclaredConstructors": true,
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "int", "java.lang.String", "java.lang.String", "java.lang.String",
+          "java.lang.String", "java.lang.String", "java.lang.String",
+          "int", "int", "int", "long", "int", "int", "int", "int",
+          "int", "int", "int", "int", "double", "int",
+          "java.lang.Boolean", "java.lang.Boolean", "java.lang.Boolean"
+        ]
+      }
+    ]
+  }
+]

@@ -16,9 +16,13 @@
 
 package ai.kompile.cli.common;
 
+import ai.kompile.utils.NativeImageInfo;
+
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.Properties;
 
 /**
  * Central location for Kompile home directory paths.
@@ -36,6 +40,64 @@ public final class KompileHome {
      */
     public static File homeDirectory() {
         return new File(System.getProperty("user.home"), ".kompile");
+    }
+
+    /**
+     * Returns the installation root that owns executable and library artifacts.
+     * User/project state remains under {@link #homeDirectory()} and is deliberately
+     * independent from a side-loaded or custom distribution.
+     *
+     * <p>Resolution order: JVM install override, environment install override,
+     * JVM distribution override, environment distribution override, the running
+     * native executable's sibling {@code bin/}/{@code lib/} root, then
+     * {@code ~/.kompile}.</p>
+     */
+    public static File installDirectory() {
+        return resolveInstallDirectory(System.getProperties(), System.getenv(),
+                NativeImageInfo.getExecutablePathAsPath(), homeDirectory());
+    }
+
+    public static File resolveInstallDirectory(Properties properties, Map<String, String> environment,
+                                        Path executablePath, File fallbackHome) {
+        String propertyInstall = properties.getProperty("kompile.install.dir");
+        if (propertyInstall != null && !propertyInstall.isBlank()) {
+            return new File(propertyInstall);
+        }
+        String environmentInstall = environment.get("KOMPILE_INSTALL_DIR");
+        if (environmentInstall != null && !environmentInstall.isBlank()) {
+            return new File(environmentInstall);
+        }
+        String propertyDistribution = properties.getProperty("kompile.dist.home");
+        if (propertyDistribution != null && !propertyDistribution.isBlank()) {
+            return new File(propertyDistribution);
+        }
+        String environmentDistribution = environment.get("KOMPILE_DIST_HOME");
+        if (environmentDistribution != null && !environmentDistribution.isBlank()) {
+            return new File(environmentDistribution);
+        }
+        File inferredDistribution = inferDistributionHome(executablePath);
+        return inferredDistribution != null ? inferredDistribution : fallbackHome;
+    }
+
+    public static File inferDistributionHome(Path artifactPath) {
+        if (artifactPath == null) {
+            return null;
+        }
+        Path artifactDirectory = artifactPath.toAbsolutePath().normalize().getParent();
+        if (artifactDirectory == null || artifactDirectory.getFileName() == null) {
+            return null;
+        }
+        String directoryName = artifactDirectory.getFileName().toString();
+        if (!"bin".equals(directoryName) && !"lib".equals(directoryName)) {
+            return null;
+        }
+        Path distributionHome = artifactDirectory.getParent();
+        if (distributionHome == null
+                || !Files.isDirectory(distributionHome.resolve("bin"))
+                || !Files.isDirectory(distributionHome.resolve("lib"))) {
+            return null;
+        }
+        return distributionHome.toFile();
     }
 
     /**

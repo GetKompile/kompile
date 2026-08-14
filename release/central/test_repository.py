@@ -384,7 +384,7 @@ class MavenMetadataTests(unittest.TestCase):
                             updated=invalid_timestamp,
                         )
 
-    def test_classified_distribution_zip_is_materialized_and_deployed(self):
+    def test_classified_distribution_assemblies_are_materialized_and_deployed(self):
         version = "0.1.0-SNAPSHOT"
         classifier = "full-linux-x86_64"
         with tempfile.TemporaryDirectory() as temporary:
@@ -399,7 +399,9 @@ class MavenMetadataTests(unittest.TestCase):
             )
             (version_dir / f"kompile-dist-{version}.jar").unlink()
             zip_name = f"kompile-dist-{version}-{classifier}.zip"
+            tar_name = f"kompile-dist-{version}-{classifier}.tar.gz"
             (version_dir / zip_name).write_bytes(b"PK\x03\x04complete-distribution")
+            (version_dir / tar_name).write_bytes(b"complete-distribution-tar")
 
             output = root / "repository"
             repository.materialize_test_repository(
@@ -411,7 +413,17 @@ class MavenMetadataTests(unittest.TestCase):
                 metadata_updated="20260805060708",
             )
             published_zip = output / version_dir.relative_to(source) / zip_name
+            published_tar = output / version_dir.relative_to(source) / tar_name
             self.assertTrue(published_zip.is_file())
+            self.assertTrue(published_tar.is_file())
+            self.assertTrue(Path(str(published_tar) + ".sha256").is_file())
+            version_metadata = (
+                published_tar.parent / "maven-metadata.xml"
+            ).read_text(encoding="utf-8")
+            self.assertIn("<extension>tar.gz</extension>", version_metadata)
+            self.assertIn(
+                f"<classifier>{classifier}</classifier>", version_metadata
+            )
 
             commands = repository.snapshot_deploy_commands(
                 output, version, "dl4j-release", "https://repo.example/snapshots",
@@ -420,9 +432,22 @@ class MavenMetadataTests(unittest.TestCase):
                 item for item in commands
                 if any("kompile-dist" in argument for argument in item)
             )
-            self.assertIn(f"-Dfiles={published_zip}", command)
-            self.assertIn(f"-Dclassifiers={classifier}", command)
-            self.assertIn("-Dtypes=zip", command)
+            files = next(
+                argument for argument in command if argument.startswith("-Dfiles=")
+            )
+            classifiers = next(
+                argument for argument in command
+                if argument.startswith("-Dclassifiers=")
+            )
+            types = next(
+                argument for argument in command if argument.startswith("-Dtypes=")
+            )
+            self.assertIn(str(published_zip), files)
+            self.assertIn(str(published_tar), files)
+            self.assertEqual(
+                f"-Dclassifiers={classifier},{classifier}", classifiers
+            )
+            self.assertEqual("-Dtypes=tar.gz,zip", types)
 
 
 if __name__ == "__main__":

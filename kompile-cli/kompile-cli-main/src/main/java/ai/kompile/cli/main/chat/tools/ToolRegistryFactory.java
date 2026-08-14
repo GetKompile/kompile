@@ -39,6 +39,8 @@ import ai.kompile.cli.main.chat.tools.grounding.AskGraphVerifyTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
+import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
+import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphImportTool;
@@ -107,7 +109,8 @@ public class ToolRegistryFactory {
                                        RoleManager roleManager,
                                        String crawlBaseUrlOverride) {
         ToolRegistry registry = new ToolRegistry(objectMapper);
-        String graphBaseUrl = GraphServiceRouting.resolve(null).baseUrl();
+        GraphServiceRouting.Resolution graphResolution = GraphServiceRouting.resolve(null);
+        String graphBaseUrl = resolveGraphBaseUrl(baseUrl, graphResolution);
         String crawlRoutingUrl = crawlBaseUrlOverride == null || crawlBaseUrlOverride.isBlank()
                 ? baseUrl : crawlBaseUrlOverride;
         String crawlBaseUrl = crawlRoutingUrl == null || crawlRoutingUrl.isBlank()
@@ -144,6 +147,7 @@ public class ToolRegistryFactory {
         registry.register(new TodoWriteTool());
         registry.register(new TodoReadTool());
         registry.register(new SidePanelTool(new SidePanelManager()));
+        registry.register(new ActivateToolsTool(registry.getDynamicToolManager()));
 
         // Process management tools
         if (processManager != null) {
@@ -177,7 +181,9 @@ public class ToolRegistryFactory {
         registry.register(new CrawlSourceTool(crawlBaseUrl, objectMapper));
         registry.register(new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
         registry.register(new CrawlDiscoveryTool(crawlBaseUrl, objectMapper));
+        registry.register(new ModelRuntimeTool(objectMapper));
         registry.register(new CrawlControlTool(crawlBaseUrl, objectMapper));
+        registry.register(new CrawlResultTool(crawlBaseUrl, objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));
         registry.register(new AskGraphClaimTool(baseUrl, objectMapper));
         registry.register(new GraphReasoningQueryTool(graphBaseUrl, objectMapper));
@@ -209,5 +215,23 @@ public class ToolRegistryFactory {
         }
 
         return registry;
+    }
+
+    /**
+     * Standard local chat owns a project-local graph archive. Default and discovered managed
+     * routes are intentionally ignored in that mode because registrations can outlive their
+     * process. A deliberate property, environment, or explicit route still overrides local.
+     */
+    static String resolveGraphBaseUrl(
+            String appBaseUrl, GraphServiceRouting.Resolution graphResolution) {
+        boolean localChat = appBaseUrl == null || appBaseUrl.isBlank();
+        boolean explicitlyConfigured = switch (graphResolution.source()) {
+            case EXPLICIT, SYSTEM_PROPERTY, ENVIRONMENT -> true;
+            case MANAGED_INSTANCE, DEFAULT -> false;
+        };
+        if (localChat && !explicitlyConfigured) {
+            return null;
+        }
+        return graphResolution.baseUrl();
     }
 }

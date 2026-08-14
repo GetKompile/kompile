@@ -17,6 +17,7 @@
 package ai.kompile.crawl.graph;
 
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.graphrag.ExtractorUtils;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.format.GraphExtractionSchema;
 import ai.kompile.knowledgegraph.domain.EdgeProvenance;
@@ -161,16 +162,20 @@ class RuleBasedDocumentGraphExtractor {
 
             try {
                 // Merge results from all matching extractors
-                List<GraphExtractionSchema.ExtractedEntity> allEntities = new ArrayList<>();
-                List<GraphExtractionSchema.ExtractedRelation> allRelations = new ArrayList<>();
+                Map<String, GraphExtractionSchema.ExtractedEntity> entityIndex = new LinkedHashMap<>();
+                Map<String, GraphExtractionSchema.ExtractedRelation> relationIndex = new LinkedHashMap<>();
                 for (ai.kompile.core.graphrag.DocumentGraphExtractor extractor : matchingExtractors) {
                     if (job != null && isCancelled(job)) {
                         return;
                     }
                     GraphExtractionSchema.ExtractionResult partial = extractor.extract(doc);
-                    allEntities.addAll(partial.entities());
-                    allRelations.addAll(partial.relations());
+                    partial.entities().forEach(entity -> ExtractorUtils.addEntity(entityIndex, entity));
+                    partial.relations().forEach(relation -> ExtractorUtils.addRelation(relationIndex, relation));
                 }
+                List<GraphExtractionSchema.ExtractedEntity> allEntities =
+                        new ArrayList<>(entityIndex.values());
+                List<GraphExtractionSchema.ExtractedRelation> allRelations =
+                        new ArrayList<>(relationIndex.values());
                 if (job != null && isCancelled(job)) {
                     return;
                 }

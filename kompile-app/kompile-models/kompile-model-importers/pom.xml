@@ -29,6 +29,14 @@
     <name>Kompile Model Importers</name>
     <description>Parent module for model importer CLI tools (TensorFlow, ONNX, Keras)</description>
 
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-utils</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+
     <modules>
         <module>kompile-model-importer-tensorflow</module>
         <module>kompile-model-importer-onnx</module>

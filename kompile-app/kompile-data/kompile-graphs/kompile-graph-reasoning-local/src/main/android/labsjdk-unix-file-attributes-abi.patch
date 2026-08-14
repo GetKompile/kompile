@@ -10,7 +10,7 @@ diff --git a/src/java.base/unix/native/libnio/fs/UnixNativeDispatcher.c b/src/ja
 -#endif
  
  static jfieldID attrs_f_frsize;
-@@ -342,9 +339,5 @@ Java_sun_nio_fs_UnixNativeDispatcher_init(JNIEnv* env, jclass this)
+@@ -343,9 +340,5 @@ Java_sun_nio_fs_UnixNativeDispatcher_init(JNIEnv* env, jclass this)
      attrs_st_birthtime_sec = (*env)->GetFieldID(env, clazz, "st_birthtime_sec", "J");
      CHECK_NULL_RETURN(attrs_st_birthtime_sec, 0);
  #endif

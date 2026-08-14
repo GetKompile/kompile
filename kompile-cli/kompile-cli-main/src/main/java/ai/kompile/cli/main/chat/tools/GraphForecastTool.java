@@ -44,11 +44,13 @@ public class GraphForecastTool implements CliTool {
 
     private final KompileBackendClient backend;
     private final ObjectMapper objectMapper;
+    private final boolean remoteConfigured;
 
     public GraphForecastTool(String baseUrl, ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.backend = KompileBackendClient.getInstance();
-        if (baseUrl != null && !baseUrl.isEmpty()) {
+        this.remoteConfigured = baseUrl != null && !baseUrl.isBlank();
+        if (remoteConfigured) {
             backend.setBaseUrl(baseUrl);
         }
     }
@@ -100,7 +102,7 @@ public class GraphForecastTool implements CliTool {
 
         ObjectNode graphId = props.putObject("graph_id");
         graphId.put("type", "string");
-        graphId.put("description", "Specific graph ID (e.g. 'factsheet_42'). Omit to search all loaded graphs.");
+        graphId.put("description", "Optional remote/legacy graph selector. Omit locally to use the current folder's knowledge base.");
 
         ObjectNode llmProvider = props.putObject("preferred_llm_provider");
         llmProvider.put("type", "string");
@@ -123,10 +125,13 @@ public class GraphForecastTool implements CliTool {
             return ToolResult.error("root_type is required");
         }
 
+        if (!remoteConfigured) {
+            return OfflineToolRuntime.execute(id(), params, context, objectMapper);
+        }
         if (!backend.isAvailable("/api/graph/forecast")) {
-            return ToolResult.error("Graph forecast requires a running kompile-app-chat instance at "
+            return ToolResult.error("The explicitly configured remote graph forecast service is unavailable at "
                     + backend.baseUrlFor("/api/graph/forecast")
-                    + ". Start it with: kompile manage start kompile-app-chat, or use --url to connect.");
+                    + ". Remove --url to use the in-process graph.");
         }
 
         try {
@@ -163,7 +168,8 @@ public class GraphForecastTool implements CliTool {
             return formatResult(rootType, params, result);
 
         } catch (ConnectException e) {
-            return ToolResult.error("Cannot connect to kompile-app. " + e.getMessage());
+            return ToolResult.error("The explicitly configured remote graph forecast service became unavailable. "
+                    + "Remove --url to continue with the in-process graph. " + e.getMessage());
         } catch (java.net.http.HttpTimeoutException e) {
             return ToolResult.error("Graph forecast timed out after 60s.");
         } catch (Exception e) {

@@ -189,6 +189,12 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void standardChatExposesExplicitDangerousPermissionBypass() {
+        assertFalse(parse().dangerouslySkipsPermissions());
+        assertTrue(parse("--dangerously-skip-permissions").dangerouslySkipsPermissions());
+    }
+
+    @Test
     void chatHelpKeepsUrlAndModelExamplesReadable() {
         String usage = new CommandLine(new ChatCommand()).getUsageMessage();
 
@@ -196,6 +202,7 @@ class ChatCommandRoutingTest {
         assertTrue(usage.contains("Examples: haiku, gpt-5.2-codex"), usage);
         assertTrue(usage.contains("--[no-]start"), usage);
         assertTrue(usage.contains("--startup-timeout"), usage);
+        assertTrue(usage.contains("--dangerously-skip-permissions"), usage);
         assertFalse(usage.contains("--project"), usage);
         assertFalse(usage.contains("http:\n"), usage);
         assertFalse(usage.contains("gpt-5.\n"), usage);

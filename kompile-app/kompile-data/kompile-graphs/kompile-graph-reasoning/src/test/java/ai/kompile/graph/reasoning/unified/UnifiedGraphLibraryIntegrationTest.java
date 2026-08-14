@@ -23,6 +23,7 @@ import ai.kompile.graph.reasoning.embedding.Embeddings;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingConfig;
 import ai.kompile.graph.reasoning.embedding.learn.EmbeddingTable;
 import ai.kompile.graph.reasoning.embedding.learn.Node2VecLearner;
+import ai.kompile.graph.reasoning.lifecycle.UnifiedGraphReasoningLifecycle;
 import ai.kompile.graph.reasoning.mebn.type.TypeRegistry;
 import ai.kompile.graph.reasoning.model.ReasoningGraph;
 import ai.kompile.graph.reasoning.model.SimpleGraphEntity;
@@ -85,6 +86,19 @@ class UnifiedGraphLibraryIntegrationTest {
         PslProgram program = new GraphPslProgramBuilder().build(fixture());
         assertNotNull(program);
         assertNotNull(program.rules());
+    }
+
+    @Test
+    void portableReasoningLifecycleLearnsDirectlyFromGroundedGraphFacts() {
+        UnifiedGraph graph = fixture();
+
+        UnifiedGraphReasoningLifecycle.Summary summary = UnifiedGraphReasoningLifecycle.learn(
+                graph, new UnifiedGraphReasoningLifecycle.Config(true, 1, 1, 1, 0.35, 2));
+
+        assertTrue(summary.enabled());
+        assertTrue(summary.mebnLearned());
+        assertEquals(6, summary.observedTargetCount());
+        assertNotNull(graph.model(UnifiedGraphReasoningLifecycle.MEBN_THEORY_ARTIFACT));
     }
 
     @Test

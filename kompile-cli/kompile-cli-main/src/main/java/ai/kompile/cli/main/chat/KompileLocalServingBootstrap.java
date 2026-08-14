@@ -17,6 +17,7 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
+import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
@@ -57,14 +58,15 @@ import java.util.concurrent.TimeUnit;
  * loopback LLM API; it is not a full Kompile instance and is stopped with the
  * CLI chat session.</p>
  */
-final class KompileLocalServingBootstrap {
+public final class KompileLocalServingBootstrap {
 
     static final String DEFAULT_MODEL = "Qwen2.5-0.5B-Instruct";
-    static final String SERVING_EXECUTABLE_PROPERTY = "kompile.chat.serving.executable";
-    static final String SERVING_EXECUTABLE_ENV = "KOMPILE_CHAT_SERVING_EXECUTABLE";
-    static final String SERVING_JAR_PROPERTY = "kompile.chat.serving.jar";
-    static final String SERVING_JAR_ENV = "KOMPILE_CHAT_SERVING_JAR";
-    static final String JAVA_EXECUTABLE_PROPERTY = "kompile.chat.serving.java";
+    static final String SERVING_EXECUTABLE_PROPERTY = "kompile.model.serving.executable";
+    static final String SERVING_EXECUTABLE_ENV = "KOMPILE_MODEL_SERVING_EXECUTABLE";
+    static final String SERVING_JAR_PROPERTY = "kompile.model.serving.jar";
+    static final String SERVING_JAR_ENV = "KOMPILE_MODEL_SERVING_JAR";
+    static final String JAVA_EXECUTABLE_PROPERTY = "kompile.model.serving.java";
+    static final String HEAP_PROPERTY = "kompile.model.serving.heap";
     static final String PORT_PROPERTY = "kompile.chat.serving.port";
     static final String MODEL_ENV = "KOMPILE_CHAT_MODEL_PATH";
     static final String TOKENIZER_ENV = "KOMPILE_CHAT_TOKENIZER_PATH";
@@ -79,8 +81,8 @@ final class KompileLocalServingBootstrap {
     record ResolvedModel(String modelId, Path modelPath, Path tokenizerPath) {
     }
 
-    record LauncherArtifact(Path path, boolean nativeExecutable) {
-        LauncherArtifact {
+    public record LauncherArtifact(Path path, boolean nativeExecutable) {
+        public LauncherArtifact {
             path = path.toAbsolutePath().normalize();
         }
     }
@@ -89,7 +91,7 @@ final class KompileLocalServingBootstrap {
      * Transient runtime values for one CLI chat session. Closing the result
      * stops only the child started by this bootstrap.
      */
-    record StartupResult(
+    public record StartupResult(
             String modelId,
             Path modelPath,
             Path tokenizerPath,
@@ -124,16 +126,75 @@ final class KompileLocalServingBootstrap {
         }
     }
 
-    static StartupResult ensureReady(ChatConfig config, int timeoutSeconds)
+    public static StartupResult ensureReady(ChatConfig config, int timeoutSeconds)
             throws BootstrapException {
-        if (config == null || !config.isKompileLocalServing()) {
-            throw new BootstrapException(
-                    "Kompile local serving requires provider 'kompile-local'.");
+        requireLocalProvider(config);
+        Path componentDirectory = componentDirectory();
+        Path installHome = resolveInstallHome(componentDirectory);
+        try {
+            ResolvedModel model = resolveModel(
+                    config.getModel(), installHome, KompileHome.homeDirectory().toPath(),
+                    System.getenv());
+            return startResolved(
+                    model, timeoutSeconds, componentDirectory,
+                    System.getProperties(), System.getenv(), Map.of());
+        } catch (IOException e) {
+            throw new BootstrapException(e.getMessage(), e);
         }
+    }
 
-        Path componentDirectory = new ComponentRegistry()
-                .getInstallDirectory(ComponentRegistry.KOMPILE_APP_MAIN)
-                .toPath().toAbsolutePath().normalize();
+    /**
+     * Start the standalone serving component with a model already resolved by a
+     * folder-local project bootstrap.
+     */
+    public static StartupResult ensureReady(
+            ChatConfig config,
+            int timeoutSeconds,
+            String modelId,
+            Path modelPath,
+            Path tokenizerPath,
+            Map<String, Object> runtimeOptions) throws BootstrapException {
+        requireLocalProvider(config);
+        if (modelPath == null || !Files.isRegularFile(modelPath)) {
+            throw new BootstrapException("Resolved project model does not exist: " + modelPath);
+        }
+        Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
+        Properties properties = new Properties();
+        properties.putAll(System.getProperties());
+        copyOption(properties, SERVING_EXECUTABLE_PROPERTY, options, "servingExecutable");
+        copyOption(properties, SERVING_JAR_PROPERTY, options, "servingJar");
+        copyOption(properties, JAVA_EXECUTABLE_PROPERTY, options, "javaExecutable");
+        copyOption(properties, HEAP_PROPERTY, options, "heapSize");
+
+        Map<String, String> childEnvironment = new java.util.LinkedHashMap<>();
+        Object environment = options.get("environment");
+        if (environment instanceof Map<?, ?> values) {
+            for (Map.Entry<?, ?> entry : values.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null) {
+                    childEnvironment.put(
+                            String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
+                }
+            }
+        }
+        return startResolved(
+                new ResolvedModel(
+                        firstNonBlank(modelId, modelPath.getFileName().toString()),
+                        modelPath.toAbsolutePath().normalize(),
+                        tokenizerPath == null ? null : tokenizerPath.toAbsolutePath().normalize()),
+                timeoutSeconds,
+                componentDirectory(),
+                properties,
+                System.getenv(),
+                childEnvironment);
+    }
+
+    private static StartupResult startResolved(
+            ResolvedModel model,
+            int timeoutSeconds,
+            Path componentDirectory,
+            Properties properties,
+            Map<String, String> environment,
+            Map<String, String> childEnvironment) throws BootstrapException {
         Path installHome = resolveInstallHome(componentDirectory);
         Process process = null;
         Path argsFile = null;
@@ -141,26 +202,23 @@ final class KompileLocalServingBootstrap {
         List<String> outputTail = new ArrayList<>();
 
         try {
-            ResolvedModel model = resolveModel(
-                    config.getModel(), installHome, KompileHome.homeDirectory().toPath(),
-                    System.getenv());
             LauncherArtifact launcher = resolveLauncher(
-                    installHome, componentDirectory, System.getProperties(), System.getenv());
-            int port = resolvePort(System.getProperties());
+                    installHome, componentDirectory, properties, environment);
+            int port = resolvePort(properties);
             URI baseUrl = URI.create("http://" + HOST + ":" + port);
             argsFile = writeServingArgs(model, port);
 
-            List<String> command = buildCommand(
-                    launcher, argsFile, System.getProperties());
+            List<String> command = buildCommand(launcher, argsFile, properties);
             ProcessBuilder processBuilder = new ProcessBuilder(command);
             processBuilder.redirectErrorStream(true);
+            processBuilder.environment().putAll(childEnvironment);
             process = processBuilder.start();
             outputReader = drainOutput(process, outputTail);
 
             waitForReady(
                     process, baseUrl, model.modelId(), Math.max(1, timeoutSeconds), outputTail);
 
-            System.out.println("Using Kompile's first-party serving subprocess:");
+            System.out.println("Using Kompile's standalone model-serving subprocess:");
             System.out.println("  Runtime: " + launcher.path());
             System.out.println("  Model: " + model.modelPath());
             System.out.println("  Endpoint: " + baseUrl);
@@ -186,6 +244,30 @@ final class KompileLocalServingBootstrap {
         }
     }
 
+    private static void requireLocalProvider(ChatConfig config) throws BootstrapException {
+        if (config == null || !config.isKompileLocalServing()) {
+            throw new BootstrapException(
+                    "Kompile local serving requires provider 'kompile-local'.");
+        }
+    }
+
+    private static Path componentDirectory() {
+        return new ComponentRegistry()
+                .getInstallDirectory(ComponentRegistry.KOMPILE_MODEL_SERVING)
+                .toPath().toAbsolutePath().normalize();
+    }
+
+    private static void copyOption(
+            Properties properties,
+            String property,
+            Map<String, Object> options,
+            String key) {
+        Object value = options.get(key);
+        if (value != null && !String.valueOf(value).isBlank()) {
+            properties.setProperty(property, String.valueOf(value).trim());
+        }
+    }
+
     static Path resolveInstallHome(Path componentDirectory) {
         Path cursor = componentDirectory;
         for (int i = 0; i < 3 && cursor != null; i++) {
@@ -201,6 +283,16 @@ final class KompileLocalServingBootstrap {
             Path componentDirectory,
             Properties properties,
             Map<String, String> environment) throws IOException {
+        return resolveLauncher(installHome, componentDirectory, properties, environment,
+                CliProcessLauncher.requiresNativeChildren());
+    }
+
+    static LauncherArtifact resolveLauncher(
+            Path installHome,
+            Path componentDirectory,
+            Properties properties,
+            Map<String, String> environment,
+            boolean nativeParent) throws IOException {
         String explicitExecutable = firstNonBlank(
                 property(properties, SERVING_EXECUTABLE_PROPERTY),
                 environment == null ? null : environment.get(SERVING_EXECUTABLE_ENV));
@@ -222,6 +314,11 @@ final class KompileLocalServingBootstrap {
                 throw new IOException("Configured " + SERVING_JAR_ENV
                         + " is not a readable JAR: " + path);
             }
+            if (nativeParent) {
+                throw new IOException("Native Kompile execution requires a native "
+                        + "kompile-model-serving child executable, but "
+                        + SERVING_JAR_ENV + " points to an executable JAR: " + path + ".");
+            }
             return new LauncherArtifact(path, false);
         }
 
@@ -229,9 +326,8 @@ final class KompileLocalServingBootstrap {
             String suffix = OSResolver.isWindows() ? ".exe" : "";
             Path bin = installHome.toAbsolutePath().normalize().resolve("bin");
             for (String name : List.of(
-                    "kompile-app-main" + suffix,
-                    "kompile-app" + suffix,
-                    "kompile-server" + suffix)) {
+                    "kompile-model-serving" + suffix,
+                    "kompile-serving" + suffix)) {
                 Path candidate = bin.resolve(name);
                 if (isRunnable(candidate)) {
                     return new LauncherArtifact(candidate, true);
@@ -239,16 +335,28 @@ final class KompileLocalServingBootstrap {
             }
         }
 
-        Path componentJar = findAppJar(componentDirectory);
+        if (nativeParent) {
+            throw new IOException(
+                    "The native Kompile distribution does not contain bin/kompile-model-serving. "
+                            + "Refusing to fall back to an executable JAR from a native chat or "
+                            + "MCP process. Install the matching native local-model runtime or set "
+                            + SERVING_EXECUTABLE_ENV + ".");
+        }
+
+        Path componentJar = findServingJar(componentDirectory);
         if (componentJar != null) {
             return new LauncherArtifact(componentJar, false);
         }
 
         if (installHome != null) {
-            for (String name : List.of("kompile-app-main.jar", "kompile-server.jar")) {
-                Path candidate = installHome.resolve("bin").resolve(name);
-                if (Files.isRegularFile(candidate)) {
-                    return new LauncherArtifact(candidate, false);
+            for (String directory : List.of("lib", "bin")) {
+                for (String name : List.of(
+                        "kompile-model-serving.jar",
+                        "kompile-app-subprocess-serving-exec.jar")) {
+                    Path candidate = installHome.resolve(directory).resolve(name);
+                    if (Files.isRegularFile(candidate)) {
+                        return new LauncherArtifact(candidate, false);
+                    }
                 }
             }
         }
@@ -259,14 +367,16 @@ final class KompileLocalServingBootstrap {
         }
 
         throw new IOException(
-                "The installed Kompile distribution does not contain its serving runtime. "
-                        + "Expected the kompile-app native executable or kompile-app-main fat JAR. "
+                "The installed Kompile distribution does not contain its model-serving runtime. "
+                        + "Expected kompile-model-serving or the standalone serving executable JAR. "
                         + "Install a full Kompile distribution, or set "
                         + SERVING_EXECUTABLE_ENV + " / " + SERVING_JAR_ENV + ".");
     }
 
     static List<String> buildCommand(
             LauncherArtifact launcher, Path argsFile, Properties properties) throws IOException {
+        CliProcessLauncher.requireCompatibleChild(
+                "kompile-model-serving", launcher.nativeExecutable(), launcher.path());
         List<String> command = new ArrayList<>();
         if (launcher.nativeExecutable()) {
             command.add(launcher.path().toString());
@@ -287,15 +397,15 @@ final class KompileLocalServingBootstrap {
             }
         }
 
-        command.add("-Xmx8g");
-        command.add("-Dfile.encoding=UTF-8");
-        command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
-        command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
         if (!launcher.nativeExecutable()) {
+            command.add("-Xmx" + firstNonBlank(
+                    property(properties, HEAP_PROPERTY), "8g"));
+            command.add("-Dfile.encoding=UTF-8");
+            command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
+            command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
             command.add("-jar");
             command.add(launcher.path().toString());
         }
-        command.add("--subprocess=serving");
         command.add(argsFile.toAbsolutePath().normalize().toString());
         return command;
     }
@@ -304,7 +414,7 @@ final class KompileLocalServingBootstrap {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("port", port);
         root.put("host", HOST);
-        root.put("stagingUrl", "http://127.0.0.1:8090");
+        root.putNull("stagingUrl");
         root.put("modelId", model.modelId());
         root.put("modelPath", model.modelPath().toAbsolutePath().normalize().toString());
         if (model.tokenizerPath() == null) {
@@ -458,13 +568,15 @@ final class KompileLocalServingBootstrap {
         }
     }
 
-    private static Path findAppJar(Path directory) throws IOException {
+    private static Path findServingJar(Path directory) throws IOException {
         if (directory == null || !Files.isDirectory(directory)) return null;
         try (var files = Files.list(directory)) {
             return files.filter(Files::isRegularFile)
                     .filter(path -> {
                         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-                        return name.startsWith("kompile-app-main-") && name.endsWith(".jar");
+                        return (name.startsWith("kompile-app-subprocess-serving-")
+                                || name.startsWith("kompile-model-serving-"))
+                                && name.endsWith(".jar");
                     })
                     .sorted(Comparator.comparingLong(KompileLocalServingBootstrap::sizeOrZero)
                             .reversed())
@@ -487,7 +599,8 @@ final class KompileLocalServingBootstrap {
         for (int i = 0; i < 7 && cursor != null; i++, cursor = cursor.getParent()) {
             Path target = cursor.resolve("kompile-app")
                     .resolve("kompile-app-parent")
-                    .resolve("kompile-app-main")
+                    .resolve("kompile-app-subprocess")
+                    .resolve("kompile-app-subprocess-serving")
                     .resolve("target");
             if (!Files.isDirectory(target)) continue;
             try (var files = Files.list(target)) {
@@ -740,7 +853,7 @@ final class KompileLocalServingBootstrap {
         return second == null || second.isBlank() ? null : second.trim();
     }
 
-    static final class BootstrapException extends Exception {
+    public static final class BootstrapException extends Exception {
         BootstrapException(String message) {
             super(message);
         }

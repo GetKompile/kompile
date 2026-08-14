@@ -56,7 +56,7 @@ public class KnowledgeSearchCliTool implements CliTool {
     @Override
     public String description() {
         return "Search knowledge sources with a natural language question. " +
-                "Without a configured server this searches project-local crawl chunks; with a server it " +
+                "Without a configured server this initializes the current folder's knowledge base when needed and searches its local crawl chunks; with a server it " +
                 "searches indexed documents and the knowledge graph in parallel. Returns relevant content with source attribution. " +
                 "Optionally use topic to narrow results to a specific subject area.";
     }
@@ -76,7 +76,7 @@ public class KnowledgeSearchCliTool implements CliTool {
                 .put("description", "Optional: filter results to a specific topic or source collection");
         props.putObject("knowledgeBase")
                 .put("type", "string")
-                .put("description", "Optional project-local knowledge-base id, name, or collection.");
+                .put("description", "Optional explicit project-local selector. Omit to use and initialize the current folder's knowledge base.");
         props.putObject("limit")
                 .put("type", "integer")
                 .put("minimum", 1)
@@ -107,9 +107,7 @@ public class KnowledgeSearchCliTool implements CliTool {
         }
 
         if (baseUrl == null || baseUrl.isEmpty()) {
-            return localBackend.search(query,
-                    knowledgeBase != null && !knowledgeBase.isBlank() ? knowledgeBase : topic,
-                    limit, context.getWorkingDirectory());
+            return localBackend.search(query, knowledgeBase, limit, context);
         }
 
         try {
@@ -142,9 +140,7 @@ public class KnowledgeSearchCliTool implements CliTool {
             return formatResponse(query, result);
 
         } catch (java.net.ConnectException e) {
-            return localBackend.search(query,
-                    knowledgeBase != null && !knowledgeBase.isBlank() ? knowledgeBase : topic,
-                    limit, context.getWorkingDirectory());
+            return localBackend.search(query, knowledgeBase, limit, context);
         } catch (Exception e) {
             return ToolResult.error("Knowledge search error: " + e.getMessage());
         }

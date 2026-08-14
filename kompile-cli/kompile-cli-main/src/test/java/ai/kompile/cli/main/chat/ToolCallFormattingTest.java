@@ -295,6 +295,29 @@ class ToolCallFormattingTest {
             String result = TerminalRenderer.prettifyToolInput("memory", input, 80);
             assertEquals("user_preferences", result);
         }
+
+        @Test
+        void processToolShouldShowOperationAndTarget() {
+            String input = "{\"action\":\"output\",\"process_id\":\"proc-042\",\"tail_lines\":200}";
+            String result = TerminalRenderer.prettifyToolInput("process", input, 80);
+            assertEquals("output · proc-042", result);
+        }
+
+        @Test
+        void batchToolsShouldShowCountsInsteadOfDumpingJson() {
+            String input = "{\"queries\":[{\"pattern\":\"one\"},{\"pattern\":\"two\"}]}";
+            assertEquals("queries=2", TerminalRenderer.prettifyToolInput("grep_batch", input, 80));
+        }
+
+        @Test
+        void fallbackRedactsSecretsAndCollapsesLargePayloads() {
+            String input = "{\"action\":\"run\",\"api_key\":\"do-not-print\",\"prompt\":\"large body\"}";
+            String result = TerminalRenderer.prettifyToolInput("custom_tool", input, 120);
+            assertTrue(result.contains("api_key=[redacted]"));
+            assertTrue(result.contains("prompt=10 chars"));
+            assertFalse(result.contains("do-not-print"));
+            assertFalse(result.contains("large body"));
+        }
     }
 
     // ===================================================================
@@ -467,6 +490,18 @@ class ToolCallFormattingTest {
             ToolResult result = ToolResult.error("Permission denied: /etc/shadow");
             String output = renderer.renderToolCallComplete("read", result);
             assertTrue(output.contains("Permission denied"), "Error details should be shown");
+        }
+
+        @Test
+        void completionRetainsAttemptedActionAndStaysCompact() {
+            ToolResult result = ToolResult.success("AGENTS.md", "file contents",
+                    Map.of("totalLines", 252));
+            String output = renderer.renderToolCallComplete("read",
+                    "{\"file_path\":\"AGENTS.md\",\"limit\":250}", result);
+            assertTrue(output.contains("Read"));
+            assertTrue(output.contains("AGENTS.md"));
+            assertTrue(output.contains("totalLines=252"));
+            assertFalse(output.contains("\n"), "Compact completion rows should remain one line");
         }
     }
 

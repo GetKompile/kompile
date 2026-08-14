@@ -3,8 +3,10 @@ package ai.kompile.app.subprocess;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -50,6 +52,17 @@ class ServingSubprocessArgsRoundTripTest {
     @Test
     void defaultsBindOnlyToLoopback() {
         assertEquals("127.0.0.1", ServingSubprocessArgs.defaults().host());
+    }
+
+    @Test
+    void nativeImageRegistersServingArgumentsForJackson() throws Exception {
+        String resource = "META-INF/native-image/ai.kompile/kompile-model-serving/reflect-config.json";
+        try (InputStream input = getClass().getClassLoader().getResourceAsStream(resource)) {
+            String metadata = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    metadata.contains("ai.kompile.app.subprocess.ServingSubprocessArgs"));
+            org.junit.jupiter.api.Assertions.assertTrue(metadata.contains("\"<init>\""));
+        }
     }
 
     @Test

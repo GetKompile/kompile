@@ -116,22 +116,25 @@ class McpToolInjectionTest {
     }
 
     @Test
-    void staleAbsoluteBinaryOverrideFallsBackToRunnableLauncher() {
+    void staleAbsoluteBinaryOverrideFallsBackToExecutableJar() throws Exception {
         String previousBinary = System.getProperty("kompile.cli.binary");
+        String previousJar = System.getProperty("kompile.cli.jar");
         Path staleBinary = tempDir.resolve("missing-kompile-cli").toAbsolutePath();
+        Path executableJar = Files.writeString(
+                tempDir.resolve("kompile-cli-main-exec.jar"), "executable jar");
         try {
             System.setProperty("kompile.cli.binary", staleBinary.toString());
+            System.setProperty("kompile.cli.jar", executableJar.toString());
 
             McpToolInjectionSupport.CliLauncher launcher = McpToolInjectionSupport.findCliLauncher();
 
             assertNotNull(launcher);
             assertNotEquals(staleBinary.toString(), launcher.command());
+            assertEquals(List.of("-jar", executableJar.toAbsolutePath().toString()),
+                    launcher.prefixArgs());
         } finally {
-            if (previousBinary == null) {
-                System.clearProperty("kompile.cli.binary");
-            } else {
-                System.setProperty("kompile.cli.binary", previousBinary);
-            }
+            restoreProperty("kompile.cli.binary", previousBinary);
+            restoreProperty("kompile.cli.jar", previousJar);
         }
     }
 

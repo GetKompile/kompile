@@ -1184,7 +1184,6 @@
                 <buildArg>--enable-url-protocols=https,http</buildArg>
                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
@@ -1283,7 +1282,6 @@
                 <buildArg>--enable-url-protocols=https,http</buildArg>
                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
@@ -1382,7 +1380,6 @@
                 <buildArg>--enable-url-protocols=https,http</buildArg>
                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
@@ -1481,7 +1478,6 @@
                 <buildArg>--enable-url-protocols=https,http</buildArg>
                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
@@ -1580,7 +1576,6 @@
                 <buildArg>--enable-url-protocols=https,http</buildArg>
                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
                 <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>

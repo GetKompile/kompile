@@ -22,8 +22,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 
@@ -48,6 +49,9 @@ class GraphReasonToolTest {
     private ObjectMapper om;
     private ToolContext ctx;
 
+    @TempDir
+    Path tempDir;
+
     /** Known jargon strings that must NOT appear in any user-facing output. */
     private static final List<String> JARGON_STRINGS = List.of(
             "MEBN", "PSL", "SSBN", "MFrag", "inferenceMode"
@@ -64,7 +68,7 @@ class GraphReasonToolTest {
         perms.setUserOverride("ask_graph_mebn", PermissionService.PermissionLevel.ALLOW);
         perms.setUserOverride("ask_graph_explain", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
-        ctx = new ToolContext("test-session", agent, perms, Paths.get("."), registry);
+        ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
     }
 
     // ── Metadata ─────────────────────────────────────────────────────────────────
@@ -202,15 +206,15 @@ class GraphReasonToolTest {
         }
 
         @Test
-        @DisplayName("missing project-local graph returns descriptive error")
+        @DisplayName("missing project-local graph is bootstrapped")
         void missingLocalGraph_returnsDescriptiveError() throws Exception {
             ObjectNode params = om.createObjectNode();
             params.put("target", "Alice Smith");
             ToolResult result = tool.execute(params, ctx);
-            assertTrue(result.isError(), "Expected error when no local graph exists");
-            assertTrue(result.getOutput().contains("graph_reason local error"));
-            assertTrue(result.getOutput().contains("project-local"),
-                    "Error should mention the project-local graph; was: " + result.getOutput());
+            assertFalse(result.isError(), result.getOutput());
+            assertTrue(result.getOutput().contains("Entity not found: Alice Smith"),
+                    "The bootstrapped graph should return a normal empty-result response; was: "
+                            + result.getOutput());
         }
     }
 

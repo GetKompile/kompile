@@ -361,20 +361,28 @@ public class ImapPopDocumentLoader implements DocumentLoader {
 
         content.append("\n");
 
-        // Extract body text
+        // Preserve raw HTML for graph extraction while presenting readable body text.
+        if (config.isIncludeHtmlBody()) {
+            String htmlBody = extractHtmlContent(message);
+            if (htmlBody != null && !htmlBody.isBlank()) {
+                metadata.put("email.htmlBody", htmlBody);
+            }
+        }
         String bodyText = extractTextContent(message, config.isIncludeHtmlBody());
         if (bodyText != null && !bodyText.trim().isEmpty()) {
             content.append(bodyText);
         }
 
-        // Add source metadata
+        // Add source metadata using the canonical crawl schema.
         metadata.put("email.folder", folderName);
-        metadata.put("source_type", "EMAIL");
+        metadata.put("source_type", "EMAIL_INBOX");
         metadata.put("loader", getName());
-        metadata.put("source", String.format("%s://%s/%s",
+        String sourcePath = String.format("%s://%s/%s",
                 config.getProtocol().name().toLowerCase(),
                 config.getHost(),
-                folderName));
+                folderName);
+        metadata.put("source", sourcePath);
+        metadata.put("source_path", sourcePath);
 
         return new Document(content.toString(), metadata);
     }
@@ -397,6 +405,31 @@ public class ImapPopDocumentLoader implements DocumentLoader {
             return extractTextFromMultipart((MimeMultipart) content, processHtml);
         }
 
+        return null;
+    }
+
+    /**
+     * Finds the raw HTML body without changing the text representation selected for the document.
+     */
+    private String extractHtmlContent(Part part) throws MessagingException, IOException {
+        if (part.isMimeType("text/html")) {
+            Object html = part.getContent();
+            return html instanceof String ? (String) html : null;
+        }
+        if (!part.isMimeType("multipart/*")) {
+            return null;
+        }
+
+        Object content = part.getContent();
+        if (!(content instanceof Multipart multipart)) {
+            return null;
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            String html = extractHtmlContent(multipart.getBodyPart(i));
+            if (html != null && !html.isBlank()) {
+                return html;
+            }
+        }
         return null;
     }
 

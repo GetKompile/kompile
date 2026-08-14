@@ -208,6 +208,55 @@ class LlmRelationExtractionAgentTest {
     }
 
     @Test
+    void extractMergesEntityAndRelationEvidenceAcrossChunks() {
+        agent.setLlmServiceRegistry(registry);
+        when(registry.getOrFallback(isNull())).thenReturn(llmService);
+        when(llmService.complete(anyString())).thenReturn(
+                """
+                {"entities":[
+                  {"id":"e1","name":"Alice","type":"PERSON","aliases":["A."],
+                   "description":"person","confidence":0.6,"properties":{"first":"one"}},
+                  {"id":"e2","name":"Acme","type":"ORGANIZATION"}
+                ],"relations":[
+                  {"source":"e1","target":"e2","type":"WORKS_AT","confidence":0.6,
+                   "properties":{"sourceChunk":"one"}}
+                ]}
+                """,
+                """
+                {"entities":[
+                  {"id":"e1","name":"Alice Smith","type":"PERSON","aliases":["Al"],
+                   "description":"a more complete person description","confidence":0.9,
+                   "properties":{"second":"two"}},
+                  {"id":"e2","name":"Acme","type":"ORGANIZATION"}
+                ],"relations":[
+                  {"source":"e1","target":"e2","type":"WORKS_AT","confidence":0.95,
+                   "properties":{"reviewed":"true"}}
+                ]}
+                """);
+
+        ExtractionResult result = agent.extract(
+                List.of(
+                        new RetrievedDoc("id1", "Alice works at Acme.", Map.of()),
+                        new RetrievedDoc("id2", "Alice Smith works at Acme.", Map.of())),
+                ExtractionConfig.defaults());
+
+        var alice = result.graph().getEntities().stream()
+                .filter(entity -> "e1".equals(entity.getId()))
+                .findFirst().orElseThrow();
+        assertEquals(List.of("A.", "Al", "Alice Smith"), alice.getAliases());
+        assertEquals("one", alice.getMetadata().get("first"));
+        assertEquals("two", alice.getMetadata().get("second"));
+        assertEquals(0.9, alice.getConfidence());
+
+        var worksAt = result.graph().getRelationships().stream()
+                .filter(relation -> "WORKS_AT".equals(relation.getType()))
+                .findFirst().orElseThrow();
+        assertEquals("one", worksAt.getMetadata().get("sourceChunk"));
+        assertEquals("true", worksAt.getMetadata().get("reviewed"));
+        assertEquals(0.95, worksAt.getConfidence());
+    }
+
+    @Test
     void extractFiltersLowConfidenceEntities() {
         agent.setLlmServiceRegistry(registry);
         when(registry.getOrFallback(isNull())).thenReturn(llmService);

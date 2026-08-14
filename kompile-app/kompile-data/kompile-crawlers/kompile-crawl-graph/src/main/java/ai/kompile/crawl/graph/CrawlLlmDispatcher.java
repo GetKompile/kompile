@@ -136,6 +136,66 @@ class CrawlLlmDispatcher {
                 structuredChatLanguageModel, "structuredChatLanguageModel");
     }
 
+    /**
+     * Headless wiring used by local crawl front ends. This keeps CLI-agent and serving-subprocess
+     * execution on the exact dispatcher used by the scheduled/UI crawl without requiring a Spring
+     * application context or a running MCP server.
+     */
+    CrawlLlmDispatcher(CliAgentRunner cliAgentRunner,
+                       LocalServingBackend localServingBackend) {
+        this.cliAgentRunner = cliAgentRunner;
+        this.localServingBackend = localServingBackend;
+        this.processingCapacityTracker = new HeadlessProcessingCapacityTracker();
+    }
+
+    /**
+     * Local requests have no cluster capacity service. They still honor the configured backend
+     * priority/capability chain; the subprocess itself remains the capacity boundary.
+     */
+    private static final class HeadlessProcessingCapacityTracker
+            implements ProcessingCapacityTracker {
+        @Override
+        public Optional<ProcessingRouteConfig.ProcessingBackend> selectBackend(
+                String taskType, ProcessingRouteConfig config) {
+            if (config == null || config.getBackends() == null) {
+                return Optional.empty();
+            }
+            return config.getBackends().stream()
+                    .filter(ProcessingRouteConfig.ProcessingBackend::isEnabled)
+                    .filter(backend -> backend.getCapabilities() == null
+                            || backend.getCapabilities().isEmpty()
+                            || backend.getCapabilities().contains(taskType))
+                    .sorted(java.util.Comparator.comparingInt(
+                            ProcessingRouteConfig.ProcessingBackend::getPriority))
+                    .findFirst();
+        }
+
+        @Override
+        public boolean canAccept(ProcessingRouteConfig.ProcessingBackend backend,
+                                 String taskType) {
+            return backend != null && backend.isEnabled()
+                    && (backend.getCapabilities() == null
+                    || backend.getCapabilities().isEmpty()
+                    || backend.getCapabilities().contains(taskType));
+        }
+
+        @Override
+        public void recordDispatch(String backendId, String taskType) {
+            // A local subprocess owns its own concurrency and quota boundary.
+        }
+
+        @Override
+        public void recordCompletion(String backendId, String taskType, boolean success) {
+            // A local subprocess owns its own concurrency and quota boundary.
+        }
+
+        @Override
+        public List<ProcessingRouteConfig.CapacitySnapshot> getCapacitySnapshot(
+                ProcessingRouteConfig config) {
+            return List.of();
+        }
+    }
+
     @PreDestroy
     void shutdownLlmTimeoutExecutor() {
         llmTimeoutExecutor.shutdownNow();
@@ -232,6 +292,31 @@ class CrawlLlmDispatcher {
     boolean hasStructuredChatBackend() {
         return structuredChatLanguageModel != null
                 || (localServingBackend != null && localServingBackend.supportsStructuredChat());
+    }
+
+    /**
+     * Reports whether this dispatcher has any configured route that can execute a model prompt.
+     *
+     * <p>This is intentionally broader than {@link #hasLlmChat()} and
+     * {@link #hasStructuredChatBackend()}: headless/local crawls commonly use a CLI-agent route
+     * through {@link CliAgentRunner}, and the scheduled crawl can select API/CLI backends through
+     * {@link ProcessingCapacityTracker}. Availability and response validity are still checked by
+     * the real dispatch call so a configured-but-broken backend fails the ontology pre-pass
+     * loudly.</p>
+     */
+    boolean hasModelBackend(UnifiedCrawlJob job) {
+        if (hasStructuredChatBackend() || llmChat != null || localServingBackend != null) {
+            return true;
+        }
+        if (processingCapacityTracker == null || job == null || job.getRequest() == null) {
+            return false;
+        }
+        ProcessingRouteConfig route = job.getRequest().getProcessingRoute();
+        return route != null
+                && route.isFallbackEnabled()
+                && route.getBackends() != null
+                && route.getBackends().stream()
+                .anyMatch(ProcessingRouteConfig.ProcessingBackend::isEnabled);
     }
 
     /**

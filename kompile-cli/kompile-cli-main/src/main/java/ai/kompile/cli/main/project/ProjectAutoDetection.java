@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main.project;
 
+import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectModel;
 
 import java.io.IOException;
@@ -260,6 +261,52 @@ public final class ProjectAutoDetection {
             }
         } catch (IOException ignored) {}
         return null;
+    }
+
+    /**
+     * Builds the canonical code-project registration for a folder-owned local project.
+     *
+     * <p>The folder itself remains the source root even when a nested build is detected. The
+     * project store supplies the standard context, metadata, index, chat, and AGENTS paths when
+     * this registration is persisted.</p>
+     */
+    public static KompileCodingProject buildDirectoryCodingProject(Path projectRoot) {
+        Path normalized = projectRoot.toAbsolutePath().normalize();
+        CodeProjectSignal detected = detectCodeProject(normalized);
+        boolean detectedAtRoot = detected != null
+                && normalized.equals(detected.root().toAbsolutePath().normalize());
+        String language = detectedAtRoot ? detected.language() : "Code";
+        String directoryName = normalized.getFileName() != null
+                ? normalized.getFileName().toString() : "project";
+        String directoryId = directoryName.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9._-]+", "-")
+                .replaceAll("(^-+|-+$)", "");
+        if (directoryId.isBlank()) directoryId = "project";
+
+        KompileCodingProject project = new KompileCodingProject();
+        project.setId(directoryId);
+        project.setCodeProjectId(directoryId);
+        project.setName(language + " project (" + directoryName + ")");
+        project.setRootPath(normalized.toString());
+        project.setAutoIndex(true);
+        List<String> tags = new ArrayList<>();
+        tags.add("code");
+        String languageTag = language.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-+|-+$)", "");
+        if (!languageTag.isBlank() && !"code".equals(languageTag)) {
+            tags.add(languageTag);
+        }
+        tags.add("auto-detected");
+        tags.add("directory-project");
+        project.setTags(tags);
+        project.getMetadata().put("detection.language", language);
+        if (detectedAtRoot && detected.buildFile() != null) {
+            project.getMetadata().put("detection.buildFile", detected.buildFile());
+        }
+        project.setCreatedAt(Instant.now());
+        project.setUpdatedAt(Instant.now());
+        return project;
     }
 
     public static String inferCrawlSourceType(String source) {

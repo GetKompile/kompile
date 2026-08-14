@@ -1,0 +1,191 @@
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+$ConfigB64 = '__KOMPILE_AZURE_WORKER_CONFIG_B64__'
+$BuildDriverB64 = '__KOMPILE_BUILD_DRIVER_B64__'
+$WorkRoot = 'C:\kompile-release'
+$SourceDir = Join-Path $WorkRoot 'source'
+$OutputDir = Join-Path $WorkRoot 'output'
+$MavenRepo = Join-Path $WorkRoot 'm2'
+$ConfigFile = Join-Path $WorkRoot 'worker.json'
+$BuildDriver = Join-Path $WorkRoot 'build-platform.py'
+$BootstrapLog = Join-Path $OutputDir 'bootstrap.log'
+$BuildLog = Join-Path $OutputDir 'build.log'
+New-Item -ItemType Directory -Force -Path $WorkRoot,$OutputDir,$MavenRepo | Out-Null
+[IO.File]::WriteAllBytes($ConfigFile, [Convert]::FromBase64String($ConfigB64))
+[IO.File]::WriteAllBytes($BuildDriver, [Convert]::FromBase64String($BuildDriverB64))
+$Config = Get-Content -Raw $ConfigFile | ConvertFrom-Json
+$Shard = $Config.shard
+$BlobRoot = "https://$($Config.storageAccount).blob.core.windows.net/$($Config.artifactContainer)/$($Config.artifactPrefix)/$($Config.runId)/$($Shard.id)"
+$ExitCode = 1
+$UploadFailed = $false
+$TranscriptStarted = $false
+$AzCopy = Join-Path $WorkRoot 'azcopy.exe'
+
+function Invoke-AzCopyRetry([string[]]$Arguments) {
+  foreach ($Attempt in 1..10) {
+    & $AzCopy @Arguments
+    if ($LASTEXITCODE -eq 0) { return }
+    Start-Sleep -Seconds ($Attempt * 6)
+  }
+  throw "AzCopy failed after retries: $($Arguments[0])"
+}
+
+function Upload-IfPresent([string]$Path, [string]$Name) {
+  if (Test-Path $Path) {
+    try {
+      Invoke-AzCopyRetry @('copy', $Path, "$BlobRoot/$Name", '--overwrite=true')
+    }
+    catch {
+      $script:UploadFailed = $true
+      Write-Warning "Upload failed: $Name"
+    }
+  }
+}
+
+function Test-KillSwitch {
+  $Target = Join-Path $WorkRoot 'kill-switch.json'
+  Remove-Item $Target -Force -ErrorAction SilentlyContinue
+  try {
+    & $AzCopy copy $Config.killSwitchUrl $Target '--overwrite=true' | Out-Null
+    if ($LASTEXITCODE -ne 0) { return $true }
+    $Value = Get-Content -Raw $Target | ConvertFrom-Json
+    return [bool]$Value.enabled
+  }
+  catch {
+    return $true
+  }
+}
+
+try {
+  Start-Transcript -Path $BootstrapLog -Append -Force | Out-Null
+  $TranscriptStarted = $true
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+    Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+  }
+  choco install -y --no-progress ccache cmake git maven ninja temurin11 temurin17 python312 7zip msys2 rustup.install visualstudio2022buildtools visualstudio2022-workload-vctools
+  $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+
+  $AzCopyZip = Join-Path $WorkRoot 'azcopy.zip'
+  $AzCopyDir = Join-Path $WorkRoot 'azcopy'
+  Invoke-WebRequest 'https://aka.ms/downloadazcopy-v10-windows' -OutFile $AzCopyZip -UseBasicParsing
+  Expand-Archive $AzCopyZip $AzCopyDir -Force
+  $DownloadedAzCopy = Get-ChildItem $AzCopyDir -Filter azcopy.exe -Recurse | Select-Object -First 1
+  Copy-Item $DownloadedAzCopy.FullName $AzCopy -Force
+  & $AzCopy login --identity --identity-client-id $Config.managedIdentityClientId
+  if ($LASTEXITCODE -ne 0) { throw 'AzCopy managed-identity login failed' }
+
+  $JavaHome = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+  if (-not $JavaHome) {
+    $JavaHome = Get-ChildItem 'C:\Program Files\Java' -Directory | Sort-Object Name -Descending | Select-Object -First 1
+  }
+  $env:JAVA_HOME = $JavaHome.FullName
+  $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+  $env:CCACHE_DIR = Join-Path $WorkRoot 'ccache'
+  $env:CMAKE_C_COMPILER_LAUNCHER = 'ccache'
+  $env:CMAKE_CXX_COMPILER_LAUNCHER = 'ccache'
+  New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
+  ccache --max-size=100G
+
+  & C:\tools\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm base-devel git tar pkg-config unzip p7zip zip autoconf autoconf-archive automake patch make diffutils grep gzip mingw-w64-x86_64-make mingw-w64-x86_64-gnupg mingw-w64-x86_64-cmake mingw-w64-x86_64-nasm mingw-w64-x86_64-toolchain mingw-w64-x86_64-libtool mingw-w64-x86_64-gcc mingw-w64-x86_64-gcc-fortran mingw-w64-x86_64-libwinpthread-git mingw-w64-x86_64-SDL2 mingw-w64-x86_64-ragel mingw-w64-x86_64-sed mingw-w64-x86_64-ninja"
+  $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+  rustup toolchain install stable-x86_64-pc-windows-gnu
+  rustup default stable-x86_64-pc-windows-gnu
+  $env:CARGO_BUILD_TARGET = 'x86_64-pc-windows-gnu'
+  cargo install --locked cbindgen
+  if ($LASTEXITCODE -ne 0) { throw 'cbindgen installation failed' }
+
+  if ($Shard.build.backend -eq 'vulkan') {
+    choco install -y --no-progress vulkan-sdk
+  }
+
+  if ($Shard.build.backend -eq 'cuda') {
+    $env:CUDA_VERSION = $Shard.build.cudaVersion
+    $Installer = Join-Path $WorkRoot 'install_cuda_windows.ps1'
+    Invoke-WebRequest 'https://raw.githubusercontent.com/KonduitAI/cuda-install/master/.github/actions/install-cuda-windows/install_cuda_windows.ps1' -OutFile $Installer -UseBasicParsing
+    & $Installer
+    $CudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$($Shard.build.cudaVersion)"
+    $SparseVersion = if ($Shard.build.cudaVersion -eq '12.9') { '12.5.10.65' } else { '12.5.4.2' }
+    $SparseZip = Join-Path $WorkRoot 'cusparse.zip'
+    $SparseDir = Join-Path $WorkRoot 'cusparse'
+    Invoke-WebRequest "https://developer.download.nvidia.com/compute/cuda/redist/libcusparse/windows-x86_64/libcusparse-windows-x86_64-$SparseVersion-archive.zip" -OutFile $SparseZip -UseBasicParsing
+    Expand-Archive $SparseZip $SparseDir -Force
+    $SparseRoot = Get-ChildItem $SparseDir -Directory | Select-Object -First 1
+    Copy-Item "$($SparseRoot.FullName)\include\*" "$CudaPath\include\" -Recurse -Force
+    Copy-Item "$($SparseRoot.FullName)\lib\x64\*" "$CudaPath\lib\x64\" -Recurse -Force
+    if (Test-Path "$($SparseRoot.FullName)\bin") {
+      Copy-Item "$($SparseRoot.FullName)\bin\*" "$CudaPath\bin\" -Recurse -Force
+    }
+    $env:CUDA_PATH = $CudaPath
+    $env:CUDNN_ROOT_DIR = $CudaPath
+    $env:PATH = "$CudaPath\bin;$CudaPath\libnvvp;$env:PATH"
+  }
+
+  if (Test-KillSwitch) { throw 'Azure release kill switch is enabled or unreadable' }
+  git init $SourceDir
+  git -C $SourceDir remote add origin $Config.repository
+  if ($Config.branch) {
+    $BranchRef = "refs/heads/$($Config.branch)"
+    $RemoteRef = "refs/remotes/origin/$($Config.branch)"
+    git -C $SourceDir fetch --depth=1 origin "+${BranchRef}:${RemoteRef}"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch branch $($Config.branch)" }
+    $BranchCommit = git -C $SourceDir rev-parse "${RemoteRef}^{commit}"
+    if ($BranchCommit.Trim() -ne $Config.commit) {
+      throw "Branch $($Config.branch) resolved to $BranchCommit, expected $($Config.commit)"
+    }
+  }
+  else {
+    git -C $SourceDir fetch --depth=1 origin $Config.commit
+    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch commit $($Config.commit)" }
+  }
+  git -C $SourceDir checkout --detach $Config.commit
+  $Actual = git -C $SourceDir rev-parse HEAD
+  if ($Actual.Trim() -ne $Config.commit) { throw "Commit mismatch: $Actual" }
+
+  $MavenOutput = Join-Path $OutputDir 'maven-repository'
+  $SdkOutput = Join-Path $OutputDir 'sdk-assets'
+  New-Item -ItemType Directory -Force -Path $MavenOutput,$SdkOutput | Out-Null
+  Stop-Transcript | Out-Null
+  $TranscriptStarted = $false
+  Get-Content $BootstrapLog | Add-Content $BuildLog
+
+  $Arguments = @($BuildDriver, '--config', $ConfigFile, '--source', $SourceDir, '--repository', $MavenRepo, '--maven-output', $MavenOutput, '--sdk-output', $SdkOutput)
+  $Process = Start-Process python -ArgumentList $Arguments -RedirectStandardOutput $BuildLog -RedirectStandardError "$BuildLog.err" -PassThru -NoNewWindow
+  while (-not $Process.HasExited) {
+    Start-Sleep -Seconds 20
+    if (Test-KillSwitch) {
+      taskkill /PID $Process.Id /T /F | Out-Null
+      throw 'Azure release kill switch stopped the build'
+    }
+    $Process.Refresh()
+  }
+  if ($Process.ExitCode -ne 0) { throw "Build failed with exit code $($Process.ExitCode)" }
+  if (Test-Path "$BuildLog.err") { Get-Content "$BuildLog.err" | Add-Content $BuildLog }
+
+  python -c "import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); c=json.load(open(sys.argv[2])); files=[]; [(lambda p: files.append({'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size}))(p) for p in sorted(root.rglob('*')) if p.is_file()]; json.dump({'schemaVersion':2,'provider':'azure','runId':c['runId'],'shard':c['shard']['id'],'commit':c['commit'],'dl4jCommit':c.get('dl4jCommit',''),'dl4jInputMode':c['dl4jInputMode'],'releaseVersion':c['releaseVersion'],'classifiers':[v.get('classifier',v.get('distributionClassifier',v['name'])) for v in c['shard']['build']['variants']],'files':files},open(root/'shard-manifest.json','w'),indent=2,sort_keys=True)" $OutputDir $ConfigFile
+  python -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $MavenOutput (Join-Path $OutputDir 'maven-repository.tar.gz')
+  python -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $SdkOutput (Join-Path $OutputDir 'sdk-assets.tar.gz')
+  $ExitCode = 0
+}
+catch {
+  $_ | Out-String | Tee-Object -FilePath $BuildLog -Append
+  $ExitCode = 1
+}
+finally {
+  if ($TranscriptStarted) {
+    Stop-Transcript | Out-Null
+    Get-Content $BootstrapLog | Add-Content $BuildLog
+  }
+  Upload-IfPresent $BuildLog 'build.log'
+  Upload-IfPresent (Join-Path $OutputDir 'maven-repository.tar.gz') 'maven-repository.tar.gz'
+  Upload-IfPresent (Join-Path $OutputDir 'sdk-assets.tar.gz') 'sdk-assets.tar.gz'
+  Upload-IfPresent (Join-Path $OutputDir 'shard-manifest.json') 'shard-manifest.json'
+  if ($UploadFailed) { $ExitCode = 1 }
+  @{shard=$Shard.id; exitCode=$ExitCode; completedAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()} | ConvertTo-Json | Set-Content (Join-Path $OutputDir 'status.json')
+  # status.json is uploaded last and is the controller's durable completion marker.
+  Upload-IfPresent (Join-Path $OutputDir 'status.json') 'status.json'
+  if ($UploadFailed) { $ExitCode = 1 }
+  shutdown.exe /s /t 0 /f
+}
+exit $ExitCode

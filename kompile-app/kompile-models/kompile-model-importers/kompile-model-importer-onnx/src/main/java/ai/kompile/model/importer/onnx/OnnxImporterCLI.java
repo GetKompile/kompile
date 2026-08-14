@@ -16,6 +16,7 @@
 
 package ai.kompile.model.importer.onnx;
 
+import ai.kompile.utils.NativeLibraryResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SameDiffSerializer;
@@ -102,6 +103,7 @@ public class OnnxImporterCLI implements Callable<Integer> {
     private boolean showModelInfo = false;
 
     public static void main(String[] args) {
+        NativeLibraryResolver.bootstrapOrThrow();
         int exitCode = new CommandLine(new OnnxImporterCLI()).execute(args);
         System.exit(exitCode);
     }
