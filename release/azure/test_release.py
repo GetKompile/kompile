@@ -429,6 +429,7 @@ class AzureProviderContractTest(unittest.TestCase):
     def test_worker_log_decoder_handles_utf8_and_windows_utf16(self):
         value = "bootstrap line\nerror line\n"
         self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-8")))
+        self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-8-sig")))
         self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-16")))
         self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-16-le")))
 
@@ -655,6 +656,22 @@ class WorkerContractTest(unittest.TestCase):
             powershell,
         )
         self.assertNotIn("rustup default stable-x86_64-pc-windows-gnu", powershell)
+
+    def test_windows_worker_combines_build_streams_before_exit_check(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        wait = powershell.index("$Process.WaitForExit()")
+        capture_exit = powershell.index("$BuildExitCode = $Process.ExitCode")
+        append_stderr = powershell.index(
+            "Get-Content $BuildStderr | Add-Content $BuildLog -Encoding UTF8"
+        )
+        check_exit = powershell.index(
+            'if ($BuildExitCode -ne 0) { throw "Build failed with exit code '
+        )
+        self.assertLess(wait, capture_exit)
+        self.assertLess(capture_exit, append_stderr)
+        self.assertLess(append_stderr, check_exit)
+        self.assertNotIn("-RedirectStandardOutput $BuildLog", powershell)
+        self.assertNotIn("-RedirectStandardError \"$BuildLog.err\"", powershell)
 
     def test_status_is_uploaded_after_artifacts(self):
         for name in ("worker.sh", "worker.ps1"):

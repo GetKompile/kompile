@@ -1381,6 +1381,8 @@ def status(args: argparse.Namespace) -> None:
 
 
 def decode_worker_log(payload: bytes) -> str:
+    if payload.startswith(b"\xef\xbb\xbf"):
+        return payload.decode("utf-8-sig", errors="replace")
     if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
         return payload.decode("utf-16", errors="replace")
     if payload and payload.count(b"\x00") > len(payload) // 4:

@@ -153,10 +153,10 @@ try {
   New-Item -ItemType Directory -Force -Path $MavenOutput,$SdkOutput | Out-Null
   Stop-Transcript | Out-Null
   $TranscriptStarted = $false
-  Get-Content $BootstrapLog | Add-Content $BuildLog
-
+  $BuildStdout = Join-Path $OutputDir 'build.stdout.log'
+  $BuildStderr = Join-Path $OutputDir 'build.stderr.log'
   $Arguments = @($BuildDriver, '--config', $ConfigFile, '--source', $SourceDir, '--repository', $MavenRepo, '--maven-output', $MavenOutput, '--sdk-output', $SdkOutput)
-  $Process = Start-Process python -ArgumentList $Arguments -RedirectStandardOutput $BuildLog -RedirectStandardError "$BuildLog.err" -PassThru -NoNewWindow
+  $Process = Start-Process python -ArgumentList $Arguments -RedirectStandardOutput $BuildStdout -RedirectStandardError $BuildStderr -PassThru -NoNewWindow
   while (-not $Process.HasExited) {
     Start-Sleep -Seconds 20
     if (Test-KillSwitch) {
@@ -165,8 +165,16 @@ try {
     }
     $Process.Refresh()
   }
-  if ($Process.ExitCode -ne 0) { throw "Build failed with exit code $($Process.ExitCode)" }
-  if (Test-Path "$BuildLog.err") { Get-Content "$BuildLog.err" | Add-Content $BuildLog }
+  $Process.WaitForExit()
+  $BuildExitCode = $Process.ExitCode
+  Get-Content $BootstrapLog | Set-Content $BuildLog -Encoding UTF8
+  if (Test-Path $BuildStdout) {
+    Get-Content $BuildStdout | Add-Content $BuildLog -Encoding UTF8
+  }
+  if (Test-Path $BuildStderr) {
+    Get-Content $BuildStderr | Add-Content $BuildLog -Encoding UTF8
+  }
+  if ($BuildExitCode -ne 0) { throw "Build failed with exit code $BuildExitCode" }
 
   python -c "import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); c=json.load(open(sys.argv[2])); files=[]; [(lambda p: files.append({'path':p.relative_to(root).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size}))(p) for p in sorted(root.rglob('*')) if p.is_file()]; json.dump({'schemaVersion':2,'provider':'azure','runId':c['runId'],'shard':c['shard']['id'],'commit':c['commit'],'dl4jCommit':c.get('dl4jCommit',''),'dl4jInputMode':c['dl4jInputMode'],'releaseVersion':c['releaseVersion'],'classifiers':[v.get('classifier',v.get('distributionClassifier',v['name'])) for v in c['shard']['build']['variants']],'files':files},open(root/'shard-manifest.json','w'),indent=2,sort_keys=True)" $OutputDir $ConfigFile
   python -c "import pathlib,tarfile,sys; root=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); t=tarfile.open(out,'w:gz'); t.add(root,arcname='.'); t.close()" $MavenOutput (Join-Path $OutputDir 'maven-repository.tar.gz')
@@ -174,13 +182,13 @@ try {
   $ExitCode = 0
 }
 catch {
-  $_ | Out-String | Tee-Object -FilePath $BuildLog -Append
+  $_ | Out-String | Add-Content $BuildLog -Encoding UTF8
   $ExitCode = 1
 }
 finally {
   if ($TranscriptStarted) {
     Stop-Transcript | Out-Null
-    Get-Content $BootstrapLog | Add-Content $BuildLog
+    Get-Content $BootstrapLog | Add-Content $BuildLog -Encoding UTF8
   }
   Upload-IfPresent $BuildLog 'build.log'
   Upload-IfPresent (Join-Path $OutputDir 'maven-repository.tar.gz') 'maven-repository.tar.gz'
