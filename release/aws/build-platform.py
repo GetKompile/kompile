@@ -32,6 +32,22 @@ OWNED_DL4J_JAVA_ARTIFACTS = (
 )
 
 
+def dl4j_java_native_closure_present(
+    repository: Path, version: str, platform_name: str,
+) -> bool:
+    """Return whether the Java reactor's CPU backend closure is installed."""
+    coordinates = (
+        ("nd4j-native", f"nd4j-native-{version}-{platform_name}.jar"),
+        ("nd4j-native-preset", f"nd4j-native-preset-{version}-{platform_name}.jar"),
+        ("nd4j-cpu-backend-common", f"nd4j-cpu-backend-common-{version}.jar"),
+    )
+    return all(
+        (repository / "org" / "eclipse" / "deeplearning4j" / artifact_id /
+         version / file_name).is_file()
+        for artifact_id, file_name in coordinates
+    )
+
+
 def phase(name: str) -> None:
     print(f"::phase::{name}", flush=True)
 
@@ -386,6 +402,30 @@ def configure_dl4j_environment(config: dict[str, Any], env: dict[str, str]) -> N
         env["DL4J_MAVEN_REPOSITORY_ID"] = config.get("dl4jMavenRepositoryId", "dl4j-release")
 
 
+def dl4j_sdk_artifact_ids(build: dict[str, Any]) -> list[str]:
+    """Return the native coordinates owned by a DL4J SDK lane."""
+    backend = str(build["backend"])
+    platform_name = str(build["javacppPlatform"])
+    if backend == "cpu":
+        artifacts = ["nd4j-native", "nd4j-native-preset", "nd4j-cpu-backend-common"]
+        if platform_name in {"linux-x86_64", "windows-x86_64"}:
+            artifacts.append("nd4j-native-platform")
+        if platform_name in {
+            "linux-x86_64", "windows-x86_64", "linux-arm64", "macosx-arm64",
+        }:
+            artifacts.extend([
+                "libtokenizers", "tokenizers-native-preset", "tokenizers-native",
+            ])
+        return artifacts
+    if backend == "cuda":
+        cuda_version = str(build["cudaVersion"])
+        base = f"nd4j-cuda-{cuda_version}"
+        return [base, f"{base}-preset", f"{base}-platform"]
+    raise RuntimeError(
+        f"repository-backed SDK hydration is unsupported for backend {backend!r}"
+    )
+
+
 def hydrate_dl4j_sdk_jars(
     config: dict[str, Any],
     source: Path,
@@ -397,27 +437,20 @@ def hydrate_dl4j_sdk_jars(
     build = config["shard"]["build"]
     backend = str(build["backend"])
     platform_name = str(build["javacppPlatform"])
-    if backend == "cpu":
-        artifacts = ["nd4j-native", "nd4j-native-preset"]
-        if platform_name in {"linux-x86_64", "windows-x86_64"}:
-            artifacts.append("nd4j-native-platform")
-        if platform_name in {
-            "linux-x86_64", "windows-x86_64", "linux-arm64", "macosx-arm64",
-        }:
-            artifacts.extend([
-                "libtokenizers", "tokenizers-native-preset", "tokenizers-native",
-            ])
-    elif backend == "cuda":
-        cuda_version = str(build["cudaVersion"])
-        base = f"nd4j-cuda-{cuda_version}"
-        artifacts = [base, f"{base}-preset", f"{base}-platform"]
-    else:
-        raise RuntimeError(
-            f"repository-backed SDK hydration is unsupported for backend {backend!r}"
-        )
+    # The Java reactor (including samediff-llm) consumes the common CPU
+    # backend even when the selected native SDK is an extended classifier.
+    artifacts = dl4j_sdk_artifact_ids(build)
 
     coordinates = [(artifact, "") for artifact in artifacts]
     coordinates.extend([(artifacts[0], classifier), (artifacts[1], classifier)])
+    # A compile/accelerator classifier does not replace the base platform
+    # classifier required by Java test dependencies. Hydrate both from the
+    # configured repository before the reactor starts.
+    if backend == "cpu" and classifier != platform_name:
+        coordinates.extend([
+            (artifacts[0], platform_name),
+            (artifacts[1], platform_name),
+        ])
     jars = destination / "jars"
     shutil.rmtree(jars, ignore_errors=True)
     jars.mkdir(parents=True)
@@ -452,6 +485,67 @@ def stage_kompile_maven_artifacts(repository: Path, maven_output: Path) -> None:
     destination = maven_output / "ai" / "kompile"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+def stage_dl4j_release_artifacts(
+    repository: Path, maven_output: Path, artifact_ids: tuple[str, ...] | list[str],
+) -> None:
+    """Stage installed DL4J coordinates without applying classifier filters."""
+    source = repository / "org" / "eclipse" / "deeplearning4j"
+    destination = maven_output / "org" / "eclipse" / "deeplearning4j"
+    destination.mkdir(parents=True, exist_ok=True)
+    for artifact_id in artifact_ids:
+        if not (source / artifact_id).is_dir():
+            continue
+        shutil.copytree(
+            source / artifact_id,
+            destination / artifact_id,
+            dirs_exist_ok=True,
+        )
+
+
+def stage_dl4j_java_artifacts(repository: Path, maven_output: Path) -> None:
+    """Stage the source-owned DL4J Java modules for collector publication."""
+    source = repository / "org" / "eclipse" / "deeplearning4j"
+    missing = [artifact_id for artifact_id in OWNED_DL4J_JAVA_ARTIFACTS
+               if not (source / artifact_id).is_dir()]
+    if missing:
+        raise RuntimeError(
+            "DL4J Java artifacts were not installed under the worker repository: "
+            + ", ".join(missing)
+        )
+    stage_dl4j_release_artifacts(
+        repository, maven_output, list(OWNED_DL4J_JAVA_ARTIFACTS),
+    )
+
+
+def ensure_source_dl4j_cpu_native_closure(
+    config: dict[str, Any], source: Path, repository: Path,
+    maven_output: Path,
+) -> None:
+    """Build the base CPU native pair needed by a source Java co-build."""
+    build = config["shard"]["build"]
+    if uses_prebuilt_dl4j(config) or build.get("backend") != "cpu":
+        return
+    platform_name = str(build["javacppPlatform"])
+    version = config["snapshotVersion"]
+    if dl4j_java_native_closure_present(repository, version, platform_name):
+        return
+    with tempfile.TemporaryDirectory(prefix="dl4j-java-native-closure-") as temporary:
+        sdk_output = Path(temporary) / "sdk-output"
+        sdk_output.mkdir(parents=True)
+        phase("dl4j-java-native-closure")
+        run_dl4j_release_lane(
+            config,
+            source,
+            repository,
+            maven_output,
+            sdk_output,
+            str(build.get("dl4jLane", dl4j_lane_id(config["shard"]))),
+            ["base"],
+            require_sdk=False,
+            build_cross_platform=False,
+        )
 
 
 def dl4j_lane_id(shard: dict[str, Any]) -> str:
@@ -528,12 +622,18 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
             "--source", str(dl4j), "--repository", str(repository),
             "--maven-output", str(maven_output), "--sdk-output", str(assets),
         ], dl4j)
+        stage_dl4j_release_artifacts(
+            repository,
+            maven_output,
+            list(lane.get("artifactRules", {}).get("artifactIds", [])),
+        )
     finally:
         config_path.unlink(missing_ok=True)
 
 
 def run_dl4j_java_reactor(
     config: dict[str, Any], source: Path, repository: Path,
+    maven_output: Path | None = None,
 ) -> None:
     """Co-build DL4J's owned Java stack at the pinned source commit.
 
@@ -595,20 +695,22 @@ def run_dl4j_java_reactor(
             "--maven-output", str(temporary_root / "maven-output"),
             "--sdk-output", str(temporary_root / "sdk-output"),
         ], dl4j)
-
-    version = config["snapshotVersion"]
-    missing = [
-        artifact_id
-        for artifact_id in OWNED_DL4J_JAVA_ARTIFACTS
-        if not (
-            repository / "org" / "eclipse" / "deeplearning4j" / artifact_id /
-            version / f"{artifact_id}-{version}.jar"
-        ).is_file()
-    ]
-    if missing:
-        raise RuntimeError(
-            "DL4J Java co-build did not install owned artifacts: " + ", ".join(missing)
-        )
+        version = config["snapshotVersion"]
+        missing = [
+            artifact_id
+            for artifact_id in OWNED_DL4J_JAVA_ARTIFACTS
+            if not (
+                repository / "org" / "eclipse" / "deeplearning4j" / artifact_id /
+                version / f"{artifact_id}-{version}.jar"
+            ).is_file()
+        ]
+        if missing:
+            raise RuntimeError(
+                "DL4J Java co-build did not install owned artifacts: "
+                + ", ".join(missing)
+            )
+        if maven_output is not None:
+            stage_dl4j_java_artifacts(repository, maven_output)
 
 
 def distribution_backend_lane(config: dict[str, Any], variant: str) -> tuple[str, list[str]] | None:
@@ -722,12 +824,18 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
                     hydrate_dl4j_sdk_jars(
                         config, source, repository, sdk_assets, classifier,
                     )
+                    stage_dl4j_release_artifacts(
+                        repository,
+                        maven_output,
+                        dl4j_sdk_artifact_ids(build)
+                        if build.get("backend") in {"cpu", "cuda"} else [],
+                    )
             else:
                 run_dl4j_release_lane(
                     config,
                     source,
                     repository,
-                    temporary_root / "maven-output",
+                    maven_output,
                     sdk_assets,
                     lane_id,
                     [dl4j_variant],
@@ -740,7 +848,12 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
                     )
 
             if not java_built:
-                run_dl4j_java_reactor(config, source, repository)
+                ensure_source_dl4j_cpu_native_closure(
+                    config, source, repository, maven_output,
+                )
+                run_dl4j_java_reactor(
+                    config, source, repository, maven_output,
+                )
                 java_built = True
 
             command = [

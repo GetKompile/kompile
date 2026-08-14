@@ -259,7 +259,24 @@ class BuildPlatformParityTest(unittest.TestCase):
                 (jars / "nd4j-native-platform-1.0.0-SNAPSHOT.jar").is_file()
             )
             commands = [item.args[0] for item in run.call_args_list]
-            self.assertEqual(8, len(commands))
+            self.assertEqual(11, len(commands))
+            coordinates = [
+                next(item.removeprefix("-Dartifact=") for item in command
+                     if item.startswith("-Dartifact="))
+                for command in commands
+            ]
+            self.assertIn(
+                "org.eclipse.deeplearning4j:nd4j-cpu-backend-common:1.0.0-SNAPSHOT:jar",
+                coordinates,
+            )
+            self.assertIn(
+                "org.eclipse.deeplearning4j:nd4j-native:1.0.0-SNAPSHOT:jar:windows-x86_64",
+                coordinates,
+            )
+            self.assertIn(
+                "org.eclipse.deeplearning4j:nd4j-native-preset:1.0.0-SNAPSHOT:jar:windows-x86_64",
+                coordinates,
+            )
             for command in commands:
                 self.assertIn(
                     "-Ddl4j.repository.url="
@@ -507,7 +524,9 @@ class BuildPlatformParityTest(unittest.TestCase):
             }
             with patch.object(BUILD_MODULE, "ensure_dl4j_checkout", return_value=dl4j), \
                  patch.object(BUILD_MODULE, "run", side_effect=build_owned_artifacts):
-                BUILD_MODULE.run_dl4j_java_reactor(config, root, repository)
+                BUILD_MODULE.run_dl4j_java_reactor(
+                    config, root, repository, root / "maven-output",
+                )
 
             self.assertEqual("cross-platform", captured["shard"]["build"]["kind"])
             self.assertEqual("1.0.0-SNAPSHOT", captured["releaseVersion"])
@@ -515,6 +534,13 @@ class BuildPlatformParityTest(unittest.TestCase):
             self.assertIn(
                 "samediff-llm",
                 captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
+            )
+            self.assertTrue(
+                (
+                    root / "maven-output" / "org" / "eclipse" /
+                    "deeplearning4j" / "samediff-llm" /
+                    "1.0.0-SNAPSHOT" / "samediff-llm-1.0.0-SNAPSHOT.jar"
+                ).is_file()
             )
 
     def test_full_repository_platform_co_builds_dl4j_java_once(self):
@@ -556,7 +582,9 @@ class BuildPlatformParityTest(unittest.TestCase):
                 BUILD_MODULE.build_full_platform(
                     config, root, root / "m2", root / "maven-output", root / "assets",
                 )
-            java.assert_called_once_with(config, root, root / "m2")
+            java.assert_called_once_with(
+                config, root, root / "m2", root / "maven-output",
+            )
 
     def test_repository_mode_skips_dl4j_source_lane_and_propagates_repository(self):
         config = {

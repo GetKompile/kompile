@@ -836,9 +836,14 @@ class FullPlatformBuildTest(unittest.TestCase):
                 BUILD_MODULE.build_full_platform(
                     self.config(False), source, repository, output, assets
                 )
-            self.assertEqual(
-                ("linux-x86_64-cpu", ["compile-avx2"]),
-                (dl4j.call_args.args[5], dl4j.call_args.args[6]),
+            delegated = [
+                (call.args[5], call.args[6]) for call in dl4j.call_args_list
+            ]
+            self.assertIn(
+                ("linux-x86_64-cpu", ["compile-avx2"]), delegated,
+            )
+            self.assertIn(
+                ("linux-x86_64-cpu", ["base"]), delegated,
             )
             command = run.call_args.args[0]
             self.assertIn("linux-x86_64-compile-avx2", command)
