@@ -654,10 +654,6 @@ public class SdxProjectOutputService {
         return requireMobileTarget(value).id();
     }
 
-    public static String normalizeTargetSoc(String targetProfile, String value) {
-        return normalizeTargetSoc(requireMobileTarget(targetProfile), value);
-    }
-
     public static String normalizeTargetSoc(SdxTargetProfile target, String value) {
         String resolved = value == null || value.isBlank()
                 ? defaultTargetSoc(target)

@@ -390,34 +390,6 @@ def configure_dl4j_environment(config: dict[str, Any], env: dict[str, str]) -> N
         env["DL4J_MAVEN_REPOSITORY_ID"] = config.get("dl4jMavenRepositoryId", "dl4j-release")
 
 
-def maven_artifact_available(
-    config: dict[str, Any],
-    source: Path,
-    repository: Path,
-    artifact_id: str,
-) -> bool:
-    """Probe an optional DL4J snapshot without weakening required artifact checks."""
-    coordinate = (
-        f"org.eclipse.deeplearning4j:{artifact_id}:"
-        f"{config['snapshotVersion']}:jar"
-    )
-    command = [
-        maven(), "--batch-mode", "--no-transfer-progress", "-U", "-N",
-        "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:get",
-        "-Dtransitive=false",
-        f"-Dartifact={coordinate}",
-        f"-Dmaven.repo.local={repository}",
-        *dl4j_maven_arguments(config),
-    ]
-    print("+ " + " ".join(command), flush=True)
-    completed = subprocess.run(
-        subprocess_command(command),
-        cwd=source,
-        check=False,
-    )
-    return completed.returncode == 0
-
-
 def hydrate_dl4j_sdk_jars(
     config: dict[str, Any],
     source: Path,
@@ -646,15 +618,6 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
     env["NATIVE_TARGETS"] = str(build.get("nativeTargets", "all"))
     env["KOMPILE_NATIVE_QUICK_BUILD"] = "0"
     configure_dl4j_environment(config, env)
-    if uses_prebuilt_dl4j(config):
-        phase("probe-optional-dl4j-artifacts")
-        env["KOMPILE_SDX_MODEL_AVAILABLE"] = (
-            "1"
-            if maven_artifact_available(
-                config, source, repository, "nd4j-sdx-model",
-            )
-            else "0"
-        )
 
     for variant in build["variants"]:
         classifier = str(variant["classifier"])

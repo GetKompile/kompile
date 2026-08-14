@@ -421,11 +421,6 @@ kompile_prepare_dependency_maven_args() {
       "-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"
     )
   fi
-  if [ "${KOMPILE_SDX_MODEL_AVAILABLE:-1}" = "0" ]; then
-    KOMPILE_DEPENDENCY_MAVEN_ARGS+=(
-      "-Dkompile.dl4j.sdx-model.unavailable=true"
-    )
-  fi
 }
 
 kompile_prepare_deploy_maven_args() {

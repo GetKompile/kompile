@@ -822,15 +822,7 @@ class FullPlatformBuildTest(unittest.TestCase):
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}), \
-                 patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download, \
-                 patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars") as hydrate, \
-                 patch.object(
-                     BUILD_MODULE, "maven_artifact_available", return_value=False
-                 ) as optional_artifact, \
-                 patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j, \
-                 patch.object(BUILD_MODULE, "run") as run, \
-                 patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}),                  patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download,                  patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars") as hydrate,                  patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j,                  patch.object(BUILD_MODULE, "run"),                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
                 BUILD_MODULE.build_full_platform(
                     self.config(True),
                     source,
@@ -840,10 +832,7 @@ class FullPlatformBuildTest(unittest.TestCase):
                 )
             download.assert_called_once()
             hydrate.assert_called_once()
-            optional_artifact.assert_called_once()
             dl4j.assert_not_called()
-            environment = run.call_args.args[2]
-            self.assertEqual("0", environment["KOMPILE_SDX_MODEL_AVAILABLE"])
 
     def test_cli_light_lane_builds_and_stages_maven_assemblies_without_dl4j(self):
         plan = MODULE.load_plan(ROOT / "release-plan.json")

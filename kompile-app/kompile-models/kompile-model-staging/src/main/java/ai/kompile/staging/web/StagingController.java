@@ -39,6 +39,7 @@ import ai.kompile.core.staging.StagingStatus;
 import ai.kompile.staging.staging.ModelIdPolicy;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.sdx.SdxProjectOutputService;
+import org.nd4j.dsp.model.SdxTargetProfile;
 import ai.kompile.staging.web.dto.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -792,7 +793,7 @@ public class StagingController {
                 targetProfile =
                         SdxProjectOutputService.normalizeTargetProfile(targetProfile);
                 targetSoc = SdxProjectOutputService.normalizeTargetSoc(
-                        targetProfile,
+                        SdxTargetProfile.fromId(targetProfile),
                         targetSoc);
                 textAssets = validateRunnableTextSource(request, textAssets);
             }

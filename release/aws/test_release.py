@@ -503,33 +503,6 @@ class BuildPlatformParityTest(unittest.TestCase):
             "-Ddl4j.repository.url=https://repo.example/snapshots",
         ], BUILD_MODULE.dl4j_maven_arguments(config))
 
-    def test_optional_repository_artifact_probe_is_non_fatal(self):
-        config = {
-            "snapshotVersion": "1.0.0-SNAPSHOT",
-            "dl4jMavenRepositoryUrl": "https://repo.example/snapshots",
-            "dl4jMavenRepositoryId": "shared-release",
-        }
-        completed = Mock(returncode=1)
-        with patch.object(BUILD_MODULE.subprocess, "run", return_value=completed) as run:
-            available = BUILD_MODULE.maven_artifact_available(
-                config,
-                pathlib.Path("/source"),
-                pathlib.Path("/m2"),
-                "nd4j-sdx-model",
-            )
-        self.assertFalse(available)
-        command = run.call_args.args[0]
-        self.assertIn(
-            "-Dartifact=org.eclipse.deeplearning4j:nd4j-sdx-model:"
-            "1.0.0-SNAPSHOT:jar",
-            command,
-        )
-        self.assertIn(
-            "-Ddl4j.repository.url=https://repo.example/snapshots",
-            command,
-        )
-        self.assertFalse(run.call_args.kwargs["check"])
-
     def test_repository_sdk_archive_is_checksum_verified_and_safely_extracted(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
