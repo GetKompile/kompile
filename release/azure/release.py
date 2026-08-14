@@ -744,7 +744,7 @@ def configure_storage(
     }
 
 
-def user_delegation_sas(
+def bootstrap_blob_sas(
     account: str, container: str, name: str, timeout_hours: int,
 ) -> str:
     expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
@@ -753,8 +753,7 @@ def user_delegation_sas(
     return str(az([
         "storage", "blob", "generate-sas",
         "--account-name", account,
-        "--auth-mode", "login",
-        "--as-user",
+        "--auth-mode", "key",
         "--container-name", container,
         "--name", name,
         "--permissions", "r",
@@ -803,7 +802,7 @@ def upload_worker(
         upload_blob(account, plan["controlContainer"], blob_name, path)
     finally:
         path.unlink(missing_ok=True)
-    return user_delegation_sas(
+    return bootstrap_blob_sas(
         account, plan["controlContainer"], blob_name, timeout_hours
     )
 

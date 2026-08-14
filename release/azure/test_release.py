@@ -503,19 +503,21 @@ class AzureProviderContractTest(unittest.TestCase):
                     "sub", "eastus", "rg", "account", self.plan,
                 )
 
-    def test_bootstrap_sas_is_user_delegation_read_only_and_https(self):
+    def test_bootstrap_sas_is_blob_scoped_read_only_and_https(self):
         with patch.object(
             MODULE, "az",
             return_value="https://account.blob.core.windows.net/control/worker?sig=x",
         ) as azure:
-            value = MODULE.user_delegation_sas(
+            value = MODULE.bootstrap_blob_sas(
                 "account", "control", "worker", 48,
             )
         arguments = azure.call_args.args[0]
-        self.assertIn("--as-user", arguments)
+        self.assertNotIn("--as-user", arguments)
         self.assertIn("--https-only", arguments)
-        self.assertEqual("login", arguments[arguments.index("--auth-mode") + 1])
+        self.assertEqual("key", arguments[arguments.index("--auth-mode") + 1])
         self.assertEqual("r", arguments[arguments.index("--permissions") + 1])
+        self.assertEqual("control", arguments[arguments.index("--container-name") + 1])
+        self.assertEqual("worker", arguments[arguments.index("--name") + 1])
         self.assertTrue(value.startswith("https://"))
 
     def test_linux_and_windows_use_managed_identity_custom_script(self):
