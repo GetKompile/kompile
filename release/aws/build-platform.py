@@ -611,6 +611,7 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
         source / ".external-tools", shard["architecture"], "graalvm-community",
     )
     env["MAVEN_OPTS"] = f"-Xmx{build.get('mavenHeapGiB', 32)}g"
+    env["MVN"] = maven()
     env["MAVEN_REPO_LOCAL"] = str(repository)
     env["KOMPILE_MAVEN_REPO"] = str(repository)
     env["BUILD_THREADS"] = str(build.get("buildThreads", 64))

@@ -134,7 +134,17 @@ fi
 # 1. KOMPILE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-MVN="${MVN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
+if [ -z "${MVN:-}" ]; then
+  if command -v mvn >/dev/null 2>&1; then
+    MVN="mvn"
+  elif command -v mvn.cmd >/dev/null 2>&1; then
+    MVN="mvn.cmd"
+  elif [ -x "/home/agibsonccc/dev-apps/mvn/bin/mvn" ]; then
+    MVN="/home/agibsonccc/dev-apps/mvn/bin/mvn"
+  else
+    MVN="mvn"
+  fi
+fi
 BUILD_THREADS="${BUILD_THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 
 # DL4J dependency source. When DL4J_MAVEN_REPOSITORY_URL is non-empty,

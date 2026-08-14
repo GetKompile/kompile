@@ -286,6 +286,12 @@ class BuildPlatformParityTest(unittest.TestCase):
         with patch.object(BUILD_MODULE.os, "name", "posix"):
             self.assertEqual("native-image", BUILD_MODULE.native_image())
 
+    def test_windows_maven_uses_cmd_launcher(self):
+        with patch.object(BUILD_MODULE.os, "name", "nt"):
+            self.assertEqual("mvn.cmd", BUILD_MODULE.maven())
+        with patch.object(BUILD_MODULE.os, "name", "posix"):
+            self.assertEqual("mvn", BUILD_MODULE.maven())
+
     def test_windows_batch_commands_run_through_cmd(self):
         original = ["mvn.cmd", "--batch-mode", "-Dvalue=space value"]
         with patch.object(BUILD_MODULE.os, "name", "nt"):
