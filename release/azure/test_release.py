@@ -121,10 +121,11 @@ class AzurePlanTest(unittest.TestCase):
             self.assertIn(f"<id>backend-{profile}</id>", pom, classifier)
             self.assertIn(f"<value>{profile}</value>", pom, classifier)
 
-    def test_azure_uses_large_cpu_compile_hosts(self):
+    def test_azure_uses_memory_sized_cpu_compile_hosts(self):
         defaults = self.plan["defaults"]
-        self.assertGreaterEqual(defaults["maxCores"], 64)
-        self.assertGreaterEqual(defaults["maxTotalCores"], 4 * 64)
+        self.assertEqual(64, defaults["minMemoryGiB"])
+        self.assertLessEqual(defaults["maxCores"], 16)
+        self.assertGreaterEqual(defaults["maxTotalCores"], 4 * 16)
         self.assertGreaterEqual(defaults["rootVolumeGiB"], 512)
         for candidate in (
             defaults["x86MachineCandidates"] + defaults["armMachineCandidates"]
@@ -295,7 +296,7 @@ class SelectionAndInputTest(unittest.TestCase):
             MODULE, "fetch_json_url", return_value=self.dl4j_marker()
         ):
             values = MODULE.source_inputs(args, selected)
-        self.assertEqual("azure-blob-maven", values["dl4jInputMode"])
+        self.assertEqual("azure-blob-maven+source", values["dl4jInputMode"])
         self.assertTrue(values["dl4jMavenRepositoryUrl"].endswith("/"))
         self.assertIn("{lane}", values["dl4jSdkAssetsUrl"])
         self.assertEqual("b" * 40, values["dl4jCommit"])
@@ -332,21 +333,41 @@ class SelectionAndInputTest(unittest.TestCase):
             "--dl4j-maven-repository-id", "sonatype-snapshots",
             "--dl4j-sdk-assets-url",
             "https://builds.blob.core.windows.net/releases/{lane}/sdk-assets.tar.gz",
+            "--dl4j-branch", "release/snapshot",
         ])
         selected = MODULE.selected_executions(
             self.plan, ["windows-x86_64-compile"]
         )
-        with patch.object(MODULE, "fetch_json_url") as fetch:
+        with patch.object(MODULE, "fetch_json_url") as fetch, patch.object(
+            MODULE, "resolve_commit", return_value="b" * 40,
+        ):
             values = MODULE.source_inputs(args, selected)
         fetch.assert_not_called()
-        self.assertEqual("maven", values["dl4jInputMode"])
+        self.assertEqual("maven+source", values["dl4jInputMode"])
         self.assertEqual(
             "https://central.sonatype.com/repository/maven-snapshots/",
             values["dl4jMavenRepositoryUrl"],
         )
         self.assertEqual("sonatype-snapshots", values["dl4jMavenRepositoryId"])
         self.assertEqual("", values["dl4jRepositoryMarkerUrl"])
-        self.assertEqual("", values["dl4jCommit"])
+        self.assertEqual("release/snapshot", values["dl4jBranch"])
+        self.assertEqual("b" * 40, values["dl4jCommit"])
+
+    def test_sonatype_repository_requires_dl4j_source_ref(self):
+        args = MODULE.parser().parse_args([
+            "start",
+            "--version", "1.2.3",
+            "--commit", "a" * 40,
+            "--dl4j-maven-repository-url",
+            "https://central.sonatype.com/repository/maven-snapshots/",
+            "--dl4j-sdk-assets-url",
+            "https://builds.blob.core.windows.net/releases/{lane}/sdk-assets.tar.gz",
+        ])
+        selected = MODULE.selected_executions(
+            self.plan, ["windows-x86_64-compile"]
+        )
+        with self.assertRaisesRegex(ValueError, "owned DL4J Java modules"):
+            MODULE.source_inputs(args, selected)
 
     def test_repository_url_rejects_insecure_or_credentialed_urls(self):
         selected = MODULE.selected_executions(
@@ -394,11 +415,12 @@ class MachineSelectionTest(unittest.TestCase):
             self.plan, ["linux-x86_64-cpu", "linux-x86_64-cuda-12-6"]
         )
         inventory = {
-            "Standard_F72s_v2": {
-                "name": "Standard_F72s_v2",
-                "vcpus": 72,
+            "Standard_E8ds_v7": {
+                "name": "Standard_E8ds_v7",
+                "vcpus": 8,
+                "memoryGiB": 64.0,
                 "restricted": False,
-                "capabilities": {},
+                "capabilities": {"MemoryGB": "64"},
             }
         }
         MODULE.select_machines(
@@ -407,12 +429,12 @@ class MachineSelectionTest(unittest.TestCase):
             inventory,
             machine_type=None,
             lane_machines={},
-            max_cores=72,
+            max_cores=16,
         )
-        batches = MODULE.execution_batches(selected, 72)
+        batches = MODULE.execution_batches(selected, 8)
         self.assertEqual(2, len(batches))
         self.assertEqual(
-            {"Standard_F72s_v2"},
+            {"Standard_E8ds_v7"},
             {item["selectedMachine"]["name"] for item in selected},
         )
 
@@ -801,7 +823,7 @@ class FullPlatformBuildTest(unittest.TestCase):
             repository = root / "m2"
             output = root / "maven"
             assets = root / "assets"
-            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}),                  patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j,                  patch.object(BUILD_MODULE, "validate_sdk_assets"),                  patch.object(BUILD_MODULE, "run") as run,                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}),                  patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j,                  patch.object(BUILD_MODULE, "run_dl4j_java_reactor") as java,                  patch.object(BUILD_MODULE, "validate_sdk_assets"),                  patch.object(BUILD_MODULE, "run") as run,                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
                 BUILD_MODULE.build_full_platform(
                     self.config(False), source, repository, output, assets
                 )
@@ -816,13 +838,14 @@ class FullPlatformBuildTest(unittest.TestCase):
             )
             self.assertIn("--skip-dl4j", command)
             self.assertIn("--dl4j-sdk-assets", command)
+            java.assert_called_once()
 
-    def test_repository_mode_downloads_sdk_and_never_builds_dl4j(self):
+    def test_repository_mode_downloads_native_sdk_and_co_builds_dl4j_java(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
-            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}),                  patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download,                  patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars") as hydrate,                  patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j,                  patch.object(BUILD_MODULE, "run"),                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}),                  patch.object(BUILD_MODULE, "download_dl4j_sdk_assets") as download,                  patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars") as hydrate,                  patch.object(BUILD_MODULE, "run_dl4j_release_lane") as dl4j,                  patch.object(BUILD_MODULE, "run_dl4j_java_reactor") as java,                  patch.object(BUILD_MODULE, "run"),                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
                 BUILD_MODULE.build_full_platform(
                     self.config(True),
                     source,
@@ -833,6 +856,7 @@ class FullPlatformBuildTest(unittest.TestCase):
             download.assert_called_once()
             hydrate.assert_called_once()
             dl4j.assert_not_called()
+            java.assert_called_once()
 
     def test_cli_light_lane_builds_and_stages_maven_assemblies_without_dl4j(self):
         plan = MODULE.load_plan(ROOT / "release-plan.json")

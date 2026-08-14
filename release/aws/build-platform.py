@@ -21,6 +21,17 @@ from pathlib import Path
 from typing import Any
 
 
+OWNED_DL4J_JAVA_ARTIFACTS = (
+    "samediff-llm",
+    "samediff-vlm",
+    "samediff-audio",
+    "samediff-pipeline-core",
+    "samediff-pipeline-safetensors",
+    "samediff-pipeline-ggml",
+    "samediff-pipeline-onnx",
+)
+
+
 def phase(name: str) -> None:
     print(f"::phase::{name}", flush=True)
 
@@ -477,7 +488,8 @@ def dl4j_lane_id(shard: dict[str, Any]) -> str:
 def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path,
                           maven_output: Path, assets: Path, lane_id: str,
                           variants: list[str] | None = None,
-                          require_sdk: bool = True) -> None:
+                          require_sdk: bool = True,
+                          build_cross_platform: bool = True) -> None:
     """Delegate native SDK construction to the exact DL4J branch release driver."""
     dl4j = ensure_dl4j_checkout(config, source)
     driver = dl4j / "release" / "aws" / "build-platform.py"
@@ -502,6 +514,8 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
             raise RuntimeError(
                 f"DL4J lane {lane_id} does not define requested variants {sorted(requested - found)}"
             )
+    if not build_cross_platform:
+        lane["build"]["buildCrossPlatform"] = False
     lane["workloads"] = ["maven", "sdk"] if require_sdk else ["maven"]
     # Preserve the lane's artifactIds/classifiers: the upstream SDK packager
     # uses them to select jars/ and hard-fails an SDK workload if none remain.
@@ -510,7 +524,9 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
     lane["build"]["mavenHeapGiB"] = int(kompile_build.get("mavenHeapGiB", 24))
     lane_config = {
         "runId": config["runId"],
-        "releaseVersion": config["releaseVersion"],
+        # DL4J and Kompile have independent release coordinates. The native lane
+        # must install the version Kompile requests, never Kompile's own version.
+        "releaseVersion": config["snapshotVersion"],
         "snapshotVersion": config["snapshotVersion"],
         "commit": config["dl4jCommit"],
         "sourceBranch": None,
@@ -529,6 +545,85 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
         ], dl4j)
     finally:
         config_path.unlink(missing_ok=True)
+
+
+def run_dl4j_java_reactor(
+    config: dict[str, Any], source: Path, repository: Path,
+) -> None:
+    """Co-build DL4J's owned Java stack at the pinned source commit.
+
+    Native classifier artifacts may be sourced from the configured Maven
+    repository and SDK bundle, but source-owned modules such as samediff-llm
+    are always installed from the selected DL4J branch/commit into the same
+    worker-local Maven repository used to build Kompile.
+    """
+    dl4j = ensure_dl4j_checkout(config, source)
+    driver = dl4j / "release" / "aws" / "build-platform.py"
+    if not driver.is_file():
+        raise RuntimeError(
+            f"DL4J commit {config['dl4jCommit']} does not contain the release build driver"
+        )
+    shard = config["shard"]
+    build = shard["build"]
+    artifact_ids = list(OWNED_DL4J_JAVA_ARTIFACTS)
+    java_shard = {
+        "id": f"kompile-{build['javacppPlatform']}-java",
+        "os": shard["os"],
+        "architecture": shard["architecture"],
+        "workloads": ["maven"],
+        "artifactRules": {
+            "mode": "classifier",
+            "artifactIds": artifact_ids,
+            "unclassifiedArtifactIds": artifact_ids,
+            "includeMetadata": True,
+        },
+        "build": {
+            "kind": "cross-platform",
+            "backend": "cpu",
+            "javacppPlatform": build["javacppPlatform"],
+            "variants": [],
+            "buildThreads": int(build.get("buildThreads", 16)),
+            "mavenHeapGiB": int(build.get("mavenHeapGiB", 24)),
+        },
+    }
+    java_config = {
+        "runId": config["runId"],
+        "releaseVersion": config["snapshotVersion"],
+        "snapshotVersion": config["snapshotVersion"],
+        "commit": config["dl4jCommit"],
+        "sourceBranch": config.get("dl4jBranch") or None,
+        "repository": config["dl4jRepository"],
+        "selectedMachine": config.get("selectedMachine"),
+        "shard": java_shard,
+    }
+    with tempfile.TemporaryDirectory(prefix="kompile-dl4j-java-") as temporary:
+        temporary_root = Path(temporary)
+        config_path = temporary_root / "worker.json"
+        config_path.write_text(
+            json.dumps(java_config, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        phase("dl4j-java-reactor")
+        run([
+            sys.executable, str(driver), "--config", str(config_path),
+            "--source", str(dl4j), "--repository", str(repository),
+            "--maven-output", str(temporary_root / "maven-output"),
+            "--sdk-output", str(temporary_root / "sdk-output"),
+        ], dl4j)
+
+    version = config["snapshotVersion"]
+    missing = [
+        artifact_id
+        for artifact_id in OWNED_DL4J_JAVA_ARTIFACTS
+        if not (
+            repository / "org" / "eclipse" / "deeplearning4j" / artifact_id /
+            version / f"{artifact_id}-{version}.jar"
+        ).is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            "DL4J Java co-build did not install owned artifacts: " + ", ".join(missing)
+        )
 
 
 def distribution_backend_lane(config: dict[str, Any], variant: str) -> tuple[str, list[str]] | None:
@@ -618,6 +713,7 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
     env["NATIVE_TARGETS"] = str(build.get("nativeTargets", "all"))
     env["KOMPILE_NATIVE_QUICK_BUILD"] = "0"
     configure_dl4j_environment(config, env)
+    java_built = False
 
     for variant in build["variants"]:
         classifier = str(variant["classifier"])
@@ -651,11 +747,16 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
                     lane_id,
                     [dl4j_variant],
                     require_sdk=require_sdk,
+                    build_cross_platform=False,
                 )
                 if require_sdk:
                     validate_sdk_assets(
                         sdk_assets, f"DL4J source lane {lane_id}--{dl4j_variant}",
                     )
+
+            if not java_built:
+                run_dl4j_java_reactor(config, source, repository)
+                java_built = True
 
             command = [
                 "bash", "./build-scripts/build-kompile-platform.sh", classifier,

@@ -106,7 +106,7 @@ def load_plan(path: Path) -> dict[str, Any]:
     if not isinstance(defaults, dict):
         raise ValueError("Azure release plan requires defaults")
     for key in (
-        "rootVolumeGiB", "mavenHeapGiB", "buildThreads",
+        "rootVolumeGiB", "mavenHeapGiB", "buildThreads", "minMemoryGiB",
         "maxCores", "maxTotalCores",
     ):
         if not isinstance(defaults.get(key), int) or defaults[key] < 1:
@@ -326,6 +326,15 @@ def fetch_json_url(url: str) -> dict[str, Any]:
 
 
 def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) -> dict[str, Any]:
+    source_commit = ""
+    source_branch = args.dl4j_branch or ""
+    if args.dl4j_commit:
+        source_commit = args.dl4j_commit.lower()
+        if not COMMIT_PATTERN.fullmatch(source_commit):
+            raise ValueError("--dl4j-commit must be a full 40-character Git commit")
+    elif source_branch:
+        source_commit = resolve_commit(args.dl4j_repository, source_branch)
+
     if args.dl4j_maven_repository_url:
         repository_url = https_url(
             args.dl4j_maven_repository_url,
@@ -357,7 +366,7 @@ def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) ->
         marker_commit = ""
         marker_version = ""
         marker_run_id = ""
-        input_mode = "maven"
+        input_mode = "maven+source"
         if azure_repository:
             marker_url = azure_blob_url(
                 args.dl4j_maven_marker_url
@@ -386,11 +395,22 @@ def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) ->
                     "DL4J Maven completion marker snapshotVersion does not match "
                     "--snapshot-version"
                 )
-            input_mode = "azure-blob-maven"
+            if source_commit and source_commit != marker_commit:
+                raise ValueError(
+                    "the requested DL4J source ref does not match the Azure Maven "
+                    "repository completion marker"
+                )
+            source_commit = source_commit or marker_commit
+            input_mode = "azure-blob-maven+source"
+        elif not source_commit:
+            raise ValueError(
+                "a non-Azure Maven repository requires --dl4j-branch or "
+                "--dl4j-commit so owned DL4J Java modules can be co-built"
+            )
         return {
             "dl4jRepository": args.dl4j_repository,
-            "dl4jBranch": "",
-            "dl4jCommit": marker_commit,
+            "dl4jBranch": source_branch,
+            "dl4jCommit": source_commit,
             "dl4jMavenRepositoryUrl": repository_url,
             "dl4jMavenRepositoryId": args.dl4j_maven_repository_id,
             "dl4jSdkAssetsUrl": sdk_url,
@@ -399,17 +419,15 @@ def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) ->
             "dl4jRunId": marker_run_id,
             "dl4jInputMode": input_mode,
         }
-    commit = (
-        args.dl4j_commit.lower()
-        if args.dl4j_commit
-        else resolve_commit(args.dl4j_repository, args.dl4j_branch)
-    )
-    if not COMMIT_PATTERN.fullmatch(commit):
-        raise ValueError("--dl4j-commit must be a full 40-character Git commit")
+    if not source_commit:
+        raise ValueError(
+            "one of --dl4j-branch, --dl4j-commit, or an Azure Blob Maven "
+            "repository with a completion marker is required"
+        )
     return {
         "dl4jRepository": args.dl4j_repository,
-        "dl4jBranch": args.dl4j_branch or "",
-        "dl4jCommit": commit,
+        "dl4jBranch": source_branch,
+        "dl4jCommit": source_commit,
         "dl4jMavenRepositoryUrl": "",
         "dl4jMavenRepositoryId": args.dl4j_maven_repository_id,
         "dl4jSdkAssetsUrl": "",
@@ -467,10 +485,15 @@ def sku_inventory(location: str) -> dict[str, dict[str, Any]]:
             cores = int(capabilities.get("vCPUs", "0"))
         except ValueError:
             cores = 0
+        try:
+            memory_gib = float(capabilities.get("MemoryGB", "0"))
+        except ValueError:
+            memory_gib = 0.0
         restricted = bool(record.get("restrictions"))
         result[str(record.get("name"))] = {
             "name": str(record.get("name")),
             "vcpus": cores,
+            "memoryGiB": memory_gib,
             "restricted": restricted,
             "capabilities": capabilities,
         }
@@ -526,6 +549,11 @@ def select_machines(
                 rejected.append(f"{name}: vCPU count unavailable")
             elif sku["vcpus"] > max_cores:
                 rejected.append(f"{name}: {sku['vcpus']} exceeds max {max_cores}")
+            elif float(sku.get("memoryGiB", 0)) < defaults["minMemoryGiB"]:
+                rejected.append(
+                    f"{name}: {sku.get('memoryGiB', 0)} GiB is below required "
+                    f"{defaults['minMemoryGiB']} GiB"
+                )
             else:
                 selected = copy.deepcopy(sku)
                 break
@@ -1495,10 +1523,10 @@ def parser() -> argparse.ArgumentParser:
     source.add_argument("--commit")
     source.add_argument("--branch")
     launch.add_argument("--repository", default=DEFAULT_REPOSITORY)
-    dl4j = launch.add_mutually_exclusive_group(required=True)
+    dl4j = launch.add_mutually_exclusive_group()
     dl4j.add_argument("--dl4j-commit")
     dl4j.add_argument("--dl4j-branch")
-    dl4j.add_argument("--dl4j-maven-repository-url")
+    launch.add_argument("--dl4j-maven-repository-url")
     launch.add_argument("--dl4j-repository", default=DEFAULT_DL4J_REPOSITORY)
     launch.add_argument("--dl4j-maven-repository-id", default="dl4j-release")
     launch.add_argument("--dl4j-maven-marker-url")

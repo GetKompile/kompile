@@ -462,6 +462,99 @@ class BuildPlatformParityTest(unittest.TestCase):
                 )
             self.assertEqual(rules, captured["shard"]["artifactRules"])
             self.assertEqual(["maven", "sdk"], captured["shard"]["workloads"])
+            self.assertEqual("1.0.0-SNAPSHOT", captured["releaseVersion"])
+
+    def test_dl4j_java_reactor_builds_owned_modules_from_pinned_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            dl4j = root / "deeplearning4j"
+            driver = dl4j / "release" / "aws" / "build-platform.py"
+            driver.parent.mkdir(parents=True)
+            driver.write_text("# test driver\n", encoding="utf-8")
+            repository = root / "m2"
+            captured = {}
+
+            def build_owned_artifacts(command, _cwd, _env=None):
+                config_path = pathlib.Path(command[command.index("--config") + 1])
+                captured.update(json.loads(config_path.read_text(encoding="utf-8")))
+                version = captured["snapshotVersion"]
+                for artifact_id in BUILD_MODULE.OWNED_DL4J_JAVA_ARTIFACTS:
+                    target = (
+                        repository / "org" / "eclipse" / "deeplearning4j" /
+                        artifact_id / version / f"{artifact_id}-{version}.jar"
+                    )
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"owned-source")
+
+            config = {
+                "runId": "test",
+                "releaseVersion": "0.1.0-SNAPSHOT",
+                "snapshotVersion": "1.0.0-SNAPSHOT",
+                "dl4jBranch": "release/snapshot",
+                "dl4jCommit": "b" * 40,
+                "dl4jRepository": "https://example.invalid/dl4j.git",
+                "shard": {
+                    "os": "windows",
+                    "architecture": "x86_64",
+                    "build": {
+                        "javacppPlatform": "windows-x86_64",
+                        "buildThreads": 8,
+                        "mavenHeapGiB": 40,
+                    },
+                },
+            }
+            with patch.object(BUILD_MODULE, "ensure_dl4j_checkout", return_value=dl4j), \
+                 patch.object(BUILD_MODULE, "run", side_effect=build_owned_artifacts):
+                BUILD_MODULE.run_dl4j_java_reactor(config, root, repository)
+
+            self.assertEqual("cross-platform", captured["shard"]["build"]["kind"])
+            self.assertEqual("1.0.0-SNAPSHOT", captured["releaseVersion"])
+            self.assertEqual("release/snapshot", captured["sourceBranch"])
+            self.assertIn(
+                "samediff-llm",
+                captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
+            )
+
+    def test_full_repository_platform_co_builds_dl4j_java_once(self):
+        config = {
+            "runId": "test",
+            "releaseVersion": "0.1.0-SNAPSHOT",
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jBranch": "release/snapshot",
+            "dl4jCommit": "b" * 40,
+            "dl4jRepository": "https://example.invalid/dl4j.git",
+            "dl4jMavenRepositoryUrl": "https://repo.example/snapshots/",
+            "dl4jMavenRepositoryId": "sonatype-snapshots",
+            "dl4jSdkAssetsUrl": "https://downloads.example/{lane}.tar.gz",
+            "shard": {
+                "os": "windows",
+                "architecture": "x86_64",
+                "build": {
+                    "kind": "platform",
+                    "backend": "cpu",
+                    "javacppPlatform": "windows-x86_64",
+                    "dl4jLane": "windows-x86_64-cpu",
+                    "buildThreads": 8,
+                    "mavenHeapGiB": 40,
+                    "variants": [{
+                        "name": "compile",
+                        "classifier": "windows-x86_64-compile",
+                    }],
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}), \
+                 patch.object(BUILD_MODULE, "download_dl4j_sdk_assets"), \
+                 patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars"), \
+                 patch.object(BUILD_MODULE, "run_dl4j_java_reactor") as java, \
+                 patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"), \
+                 patch.object(BUILD_MODULE, "run"):
+                BUILD_MODULE.build_full_platform(
+                    config, root, root / "m2", root / "maven-output", root / "assets",
+                )
+            java.assert_called_once_with(config, root, root / "m2")
 
     def test_repository_mode_skips_dl4j_source_lane_and_propagates_repository(self):
         config = {

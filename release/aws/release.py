@@ -1802,8 +1802,9 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--dl4j-repository", default="https://github.com/deeplearning4j/deeplearning4j.git")
     launch.add_argument(
         "--dl4j-maven-repository-url",
-        help=("resolve the requested DL4J snapshot/classifiers from this anonymous-read Maven "
-              "repository instead of building them; fresh AWS workers do not receive credentials"),
+        help=("resolve native DL4J snapshot/classifier inputs from this anonymous-read Maven "
+              "repository while co-building owned Java modules from the selected DL4J source; "
+              "fresh AWS workers do not receive credentials"),
     )
     launch.add_argument(
         "--dl4j-maven-repository-id", default="dl4j-release",

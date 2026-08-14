@@ -43,7 +43,9 @@ existing AWS dedicated-host lane.
 
 ## DL4J input modes
 
-Exactly one DL4J input mode is required for `start`.
+A DL4J branch or immutable commit is required for source-owned Java modules.
+An optional Maven repository can supply the native snapshot/classifier inputs;
+an Azure Blob Maven repository may instead supply its attested source commit.
 
 ### Build DL4J from source
 
@@ -67,12 +69,17 @@ Git remotes. Source mode delegates each selected lane/variant to the release
 driver at the verified DL4J branch commit; it does not silently fall back to
 another checkout or Maven repository.
 
-### Consume a prebuilt DL4J Maven repository
+### Co-build DL4J Java modules with a Maven repository
 
 Pass any credential-free HTTPS Maven 2 URL, including Sonatype Central
-snapshots or the repository produced by the DL4J Azure collector. Runtime
-classifiers also need the matching per-lane SDK archive, because DL4J publishes
-runtime ZIP/AAR payloads beside Maven rather than inside Maven coordinates.
+snapshots or the repository produced by the DL4J Azure collector. Kompile still
+checks out the selected DL4J commit and runs DL4J's canonical cross-platform
+Java reactor, installing owned modules such as `samediff-llm`, `samediff-vlm`,
+and the SameDiff pipelines into the worker-local Maven repository. The remote
+repository supplies native snapshot/classifier inputs; it never replaces owned
+source modules. Runtime classifiers also need the matching per-lane SDK archive,
+because DL4J publishes runtime ZIP/AAR payloads beside Maven rather than inside
+Maven coordinates.
 
 A Windows compile-classifier smoke run using Sonatype snapshots looks like:
 
@@ -82,6 +89,7 @@ release/azure/run.sh start \
   --location eastus2 \
   --version 0.1.0-SNAPSHOT \
   --branch "$KOMPILE_BRANCH" \
+  --dl4j-branch ag_new_release_updates_2 \
   --shard windows-x86_64-compile \
   --dl4j-maven-repository-url \
     https://central.sonatype.com/repository/maven-snapshots/ \
@@ -100,38 +108,39 @@ For an Azure Blob Maven repository, the controller reads
 `MAVEN_URL/.dl4j/complete.json` before provisioning and binds the Maven and
 SDK inputs to the Azure run, immutable commit, and release version. Use
 `--dl4j-maven-marker-url` only when that Azure collector exposes the marker
-elsewhere. Sonatype has no DL4J Azure completion marker, so it is recorded as
-the generic `maven` input mode and the SDK archive is checksum-attested but
-not identity-bound to the mutable snapshot repository.
+elsewhere. Sonatype has no DL4J Azure completion marker, so an explicit
+`--dl4j-branch` or `--dl4j-commit` is required. It is recorded as the generic
+`maven+source` input mode and the SDK archive is checksum-attested but not
+identity-bound to the mutable snapshot repository.
 
 ## Machine sizing
 
-The default x86 preference is:
+The default x86 preference targets approximately 64 GiB of RAM without paying
+for very high core counts:
 
 ```text
-Standard_F72s_v2
-Standard_F64s_v2
-Standard_D64ds_v5
-Standard_F48s_v2
-Standard_F32s_v2
+Standard_E8ds_v7
+Standard_E8ds_v6
+Standard_E8ds_v5
+Standard_D16ds_v5
 ```
 
-ARM64 prefers `Standard_D64ps_v5`, then 48- and 32-core variants. The
-controller queries regional SKU restrictions before provisioning. Defaults are
-72 vCPUs per VM, 288 aggregate concurrent vCPUs, a 1 TiB OS disk, 48 GiB Maven
-heap, and up to 64 build threads.
+ARM64 prefers `Standard_D16ps_v5`. The controller queries regional SKU
+restrictions and rejects machines with less than 64 GiB before provisioning.
+Defaults are at most 16 vCPUs per VM, 64 aggregate concurrent vCPUs, a 1 TiB OS
+disk, a 40 GiB Maven heap, and up to 16 build threads.
 
 Use these controls when quota or regional availability differs:
 
 ```bash
 release/azure/run.sh preflight \
   --location eastus \
-  --max-cores 72 \
-  --max-total-cores 288 \
-  --lane-machine linux-x86_64-cpu=Standard_F72s_v2
+  --max-cores 16 \
+  --max-total-cores 64 \
+  --lane-machine linux-x86_64-cpu=Standard_E8ds_v7
 
 release/azure/run.sh start ... \
-  --machine-type Standard_D64ds_v5 \
+  --machine-type Standard_E8ds_v7 \
   --max-total-cores 128
 ```
 

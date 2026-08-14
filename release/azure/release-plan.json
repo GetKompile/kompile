@@ -16,21 +16,19 @@
   },
   "defaults": {
     "rootVolumeGiB": 1024,
-    "mavenHeapGiB": 48,
-    "buildThreads": 64,
-    "maxCores": 72,
-    "maxTotalCores": 288,
+    "mavenHeapGiB": 40,
+    "buildThreads": 16,
+    "minMemoryGiB": 64,
+    "maxCores": 16,
+    "maxTotalCores": 64,
     "x86MachineCandidates": [
-      "Standard_F72s_v2",
-      "Standard_F64s_v2",
-      "Standard_D64ds_v5",
-      "Standard_F48s_v2",
-      "Standard_F32s_v2"
+      "Standard_E8ds_v7",
+      "Standard_E8ds_v6",
+      "Standard_E8ds_v5",
+      "Standard_D16ds_v5"
     ],
     "armMachineCandidates": [
-      "Standard_D64ps_v5",
-      "Standard_D48ps_v5",
-      "Standard_D32ps_v5"
+      "Standard_D16ps_v5"
     ],
     "linuxImage": "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest",
     "windowsImage": "MicrosoftWindowsServer:WindowsServer:2022-datacenter-g2:latest"
