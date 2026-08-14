@@ -577,7 +577,16 @@ class AzureProviderContractTest(unittest.TestCase):
             for call in extensions
         ]
         self.assertTrue(any("systemd-run" in command for command in commands))
-        self.assertTrue(any("-EncodedCommand" in command for command in commands))
+        windows_command = next(
+            command for command in commands if "-EncodedCommand" in command
+        )
+        encoded = windows_command.rsplit(" ", 1)[1]
+        bootstrap = __import__("base64").b64decode(encoded).decode("utf-16le")
+        self.assertIn("$ErrorActionPreference = 'Stop'", bootstrap)
+        self.assertIn("-Filter 'worker.ps1' -File -Recurse", bootstrap)
+        self.assertIn("Expected exactly one downloaded worker.ps1", bootstrap)
+        self.assertIn("-PassThru", bootstrap)
+        self.assertIn("Worker exited prematurely", bootstrap)
 
     def test_stopped_vm_without_status_fails_immediately(self):
         execution = {"id": "linux-x86_64-cpu", "os": "linux"}

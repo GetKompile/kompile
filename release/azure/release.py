@@ -865,11 +865,21 @@ def create_vm(
         publisher = "Microsoft.Compute"
         extension = "CustomScriptExtension"
         bootstrap = (
-            "Copy-Item -LiteralPath worker.ps1 -Destination "
-            "'C:\\kompile-azure-worker.ps1' -Force; "
-            "Start-Process -FilePath powershell.exe -ArgumentList "
-            "'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-            "-File C:\\kompile-azure-worker.ps1' -WindowStyle Hidden"
+            "$ErrorActionPreference = 'Stop'; "
+            "$workers = @(Get-ChildItem -LiteralPath (Get-Location).Path "
+            "-Filter 'worker.ps1' -File -Recurse | Select-Object -First 2); "
+            "if ($workers.Count -ne 1) { "
+            "throw \"Expected exactly one downloaded worker.ps1, found "
+            "$($workers.Count)\"; }; "
+            "$target = 'C:\\kompile-azure-worker.ps1'; "
+            "Copy-Item -LiteralPath $workers[0].FullName "
+            "-Destination $target -Force; "
+            "$process = Start-Process -FilePath powershell.exe -ArgumentList "
+            "@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy',"
+            "'Bypass','-File',$target) -WindowStyle Hidden -PassThru; "
+            "Start-Sleep -Seconds 2; "
+            "if ($process.HasExited) { "
+            "throw \"Worker exited prematurely with code $($process.ExitCode)\"; }"
         )
         encoded = base64.b64encode(bootstrap.encode("utf-16le")).decode("ascii")
         command_line = (
