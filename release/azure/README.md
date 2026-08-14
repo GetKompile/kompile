@@ -113,6 +113,12 @@ elsewhere. Sonatype has no DL4J Azure completion marker, so an explicit
 `maven+source` input mode and the SDK archive is checksum-attested but not
 identity-bound to the mutable snapshot repository.
 
+Collected Kompile coordinates are published into the established public DL4J
+Maven tree at
+`https://ACCOUNT.blob.core.windows.net/releases/deeplearning4j/releases/maven-repository/`.
+Only `ai/kompile` is promoted there; per-worker archives and logs remain in the
+private `kompile-artifacts` container.
+
 ## Machine sizing
 
 The default x86 preference targets approximately 64 GiB of RAM without paying
@@ -168,7 +174,8 @@ also needs Blob data access and permission to create a user-delegation key.
 The controller creates:
 
 - a retained base resource group and StorageV2 account;
-- private `releases` artifact and `control` containers plus a public-read `maven` container;
+- private `kompile-artifacts` and `control` containers plus the public-read
+  `releases` container that already holds the canonical DL4J Maven tree;
 - one reusable user-assigned worker identity with Blob Data Contributor on the private artifact container and Blob Data Reader on the control container;
 - one compute resource group per run, containing its VNet and VMs.
 

@@ -30,6 +30,16 @@ class AzurePlanTest(unittest.TestCase):
         self.plan = MODULE.load_plan(ROOT / "release-plan.json")
         self.classifiers = MODULE.release_classifiers(self.plan)
 
+    def test_publication_targets_the_canonical_dl4j_maven_tree(self):
+        self.assertEqual("releases", self.plan["repositoryContainer"])
+        self.assertEqual(
+            "deeplearning4j/releases/maven-repository",
+            self.plan["mavenRepositoryPrefix"],
+        )
+        self.assertNotEqual(
+            self.plan["artifactContainer"], self.plan["repositoryContainer"]
+        )
+
     def test_plan_matches_dl4j_azure_classifier_matrix(self):
         expected = {
             "linux-x86_64",
@@ -507,7 +517,7 @@ class AzureProviderContractTest(unittest.TestCase):
         reader = by_role[MODULE.BLOB_DATA_READER]
         self.assertTrue(
             contributor[contributor.index("--scope") + 1].endswith(
-                "/blobServices/default/containers/releases"
+                "/blobServices/default/containers/" + self.plan["artifactContainer"]
             )
         )
         self.assertTrue(

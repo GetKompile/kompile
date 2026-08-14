@@ -2,11 +2,11 @@
   "schemaVersion": 2,
   "provider": "azure",
   "projectTag": "kompile-release",
-  "artifactContainer": "releases",
-  "repositoryContainer": "maven",
+  "artifactContainer": "kompile-artifacts",
+  "repositoryContainer": "releases",
   "controlContainer": "control",
   "artifactPrefix": "kompile/releases",
-  "mavenRepositoryPrefix": "kompile/releases/maven-repository",
+  "mavenRepositoryPrefix": "deeplearning4j/releases/maven-repository",
   "unsupportedWorkflows": {
     "macos": "Azure has no macOS VM offering; retain the AWS dedicated-host lane for macosx-arm64."
   },
