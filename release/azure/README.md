@@ -71,8 +71,8 @@ another checkout or Maven repository.
 
 ### Co-build DL4J Java modules with a Maven repository
 
-Pass any credential-free HTTPS Maven 2 URL, including Sonatype Central
-snapshots or the repository produced by the DL4J Azure collector. Kompile still
+Pass any credential-free HTTPS Maven 2 URL, including the published Sonatype
+Maven snapshot repository or the repository produced by the DL4J Azure collector. Kompile still
 checks out the selected DL4J commit and runs DL4J's canonical cross-platform
 Java reactor, installing owned modules such as `samediff-llm`, `samediff-vlm`,
 and the SameDiff pipelines into the worker-local Maven repository. The remote

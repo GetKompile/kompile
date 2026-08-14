@@ -50,13 +50,14 @@ python3 release/aws/release.py logs --run-id <run-id> --shard native-linux-x86_6
 
 `start` creates or reuses an encrypted, private, versioned bucket named `kompile-release-<account>-<region>`, a least-privilege instance role/profile, the CloudWatch log group, and the global SSM kill switch. It prints a run event with exact status, log, and shutdown commands, launches one lane, streams readiness/build events until its status object is available, terminates it, and only then launches the next lane. Variants inside a lane share Maven and ccache state.
 
-To build Kompile without compiling DL4J, provide the anonymous-read Maven
-repository and the matching DL4J SDK asset shard:
+To build Kompile while consuming the published DL4J Sonatype snapshots,
+provide the snapshot repository and matching DL4J SDK asset shard:
 
 ```bash
-python3 release/aws/release.py start --branch main --dl4j-commit <dl4j-sha> \
+python3 release/aws/release.py start --branch main --dl4j-branch ag_new_release_updates_2 \
   --version 0.1.0-SNAPSHOT --snapshot-version 1.0.0-SNAPSHOT \
-  --dl4j-maven-repository-url https://repo.example/maven2 \
+  --dl4j-maven-repository-url https://central.sonatype.com/repository/maven-snapshots/ \
+  --dl4j-maven-repository-id sonatype-snapshots \
   --dl4j-sdk-assets-url 'https://downloads.example/sdk-assets-{lane}.tar.gz' \
   --reset-kill-switch
 ```
