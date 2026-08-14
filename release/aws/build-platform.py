@@ -22,6 +22,7 @@ from typing import Any
 
 
 OWNED_DL4J_JAVA_ARTIFACTS = (
+    "nd4j-sdx-model",
     "samediff-llm",
     "samediff-vlm",
     "samediff-audio",
@@ -30,6 +31,14 @@ OWNED_DL4J_JAVA_ARTIFACTS = (
     "samediff-pipeline-ggml",
     "samediff-pipeline-onnx",
 )
+
+# These modules are part of an upstream Maven profile rather than the default
+# cross-platform Java reactor.  Keep the profile requirement next to the
+# source-owned artifact declaration so a pinned DL4J branch is built with the
+# profile it actually defines.
+DL4J_JAVA_MODULE_PROFILES = {
+    "nd4j-sdx-model": ("sdx",),
+}
 
 
 def dl4j_java_native_closure_present(
@@ -696,6 +705,29 @@ def run_dl4j_java_reactor(
             "--maven-output", str(temporary_root / "maven-output"),
             "--sdk-output", str(temporary_root / "sdk-output"),
         ], dl4j)
+        for artifact_id, profiles in DL4J_JAVA_MODULE_PROFILES.items():
+            profile_args = [f"-P{','.join(profiles)}"] if profiles else []
+            module_command = [
+                maven(),
+                *profile_args,
+                "-pl", f":{artifact_id}",
+                "--also-make",
+                f"-Dmaven.repo.local={repository}",
+                f"-Djavacpp.platform={build['javacppPlatform']}",
+                "-DskipTestResourceEnforcement=true",
+                "-Dmaven.javadoc.failOnError=false",
+                "-Dmaven.test.skip=true",
+                "--no-transfer-progress",
+                "--batch-mode",
+                "install",
+            ]
+            module_env = os.environ.copy()
+            module_env["MAVEN_OPTS"] = (
+                f"-Xmx{int(build.get('mavenHeapGiB', 24))}g "
+                f"-Dmaven.repo.local={repository}"
+            )
+            phase(f"dl4j-java-module-{artifact_id}")
+            run(module_command, dl4j, module_env)
         version = config["snapshotVersion"]
         missing = [
             artifact_id

@@ -494,6 +494,9 @@ class BuildPlatformParityTest(unittest.TestCase):
             captured = {}
 
             def build_owned_artifacts(command, _cwd, _env=None):
+                captured.setdefault("commands", []).append(command)
+                if "--config" not in command:
+                    return
                 config_path = pathlib.Path(command[command.index("--config") + 1])
                 captured.update(json.loads(config_path.read_text(encoding="utf-8")))
                 version = captured["snapshotVersion"]
@@ -539,6 +542,16 @@ class BuildPlatformParityTest(unittest.TestCase):
                 "samediff-llm",
                 captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
             )
+            self.assertIn(
+                "nd4j-sdx-model",
+                captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
+            )
+            module_commands = [
+                command for command in captured["commands"] if "--config" not in command
+            ]
+            self.assertEqual(1, len(module_commands))
+            self.assertIn("-Psdx", module_commands[0])
+            self.assertIn(":nd4j-sdx-model", module_commands[0])
             self.assertTrue(
                 (
                     root / "maven-output" / "org" / "eclipse" /
