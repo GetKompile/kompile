@@ -667,6 +667,7 @@ def run_dl4j_java_reactor(
             "backend": "cpu",
             "javacppPlatform": build["javacppPlatform"],
             "variants": [],
+            "modules": [f":{artifact_id}" for artifact_id in artifact_ids],
             "buildThreads": int(build.get("buildThreads", 16)),
             "mavenHeapGiB": int(build.get("mavenHeapGiB", 24)),
         },

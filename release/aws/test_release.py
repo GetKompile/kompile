@@ -531,6 +531,10 @@ class BuildPlatformParityTest(unittest.TestCase):
             self.assertEqual("cross-platform", captured["shard"]["build"]["kind"])
             self.assertEqual("1.0.0-SNAPSHOT", captured["releaseVersion"])
             self.assertEqual("release/snapshot", captured["sourceBranch"])
+            self.assertEqual(
+                [f":{artifact_id}" for artifact_id in BUILD_MODULE.OWNED_DL4J_JAVA_ARTIFACTS],
+                captured["shard"]["build"]["modules"],
+            )
             self.assertIn(
                 "samediff-llm",
                 captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
