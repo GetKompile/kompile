@@ -812,6 +812,11 @@ def vm_name(run_id: str, execution_id: str) -> str:
     return normalized_name(f"kompile-{run_id}-{execution_id}", 60)
 
 
+def windows_computer_name(run_id: str, execution_id: str) -> str:
+    digest = hashlib.sha256(f"{run_id}/{execution_id}".encode()).hexdigest()[:7]
+    return f"kompile-{digest}"
+
+
 def create_vm(
     args: argparse.Namespace,
     plan: dict[str, Any],
@@ -847,6 +852,7 @@ def create_vm(
             "Kompile!" + secrets.token_urlsafe(24) + "9a"
         )
         create.extend([
+            "--computer-name", windows_computer_name(config["runId"], execution["id"]),
             "--admin-username", "kompile",
             "--admin-password", password,
         ])

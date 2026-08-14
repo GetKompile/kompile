@@ -557,6 +557,11 @@ class AzureProviderContractTest(unittest.TestCase):
         self.assertEqual(2, len(creates))
         self.assertEqual(2, len(extensions))
         self.assertTrue(all("--assign-identity" in call for call in creates))
+        self.assertNotIn("--computer-name", creates[0])
+        self.assertIn("--computer-name", creates[1])
+        computer_name = creates[1][creates[1].index("--computer-name") + 1]
+        self.assertLessEqual(len(computer_name), 15)
+        self.assertRegex(computer_name, r"^kompile-[0-9a-f]{7}$")
         publishers = {
             call[call.index("--publisher") + 1] for call in extensions
         }
