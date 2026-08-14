@@ -1380,6 +1380,14 @@ def status(args: argparse.Namespace) -> None:
     print(json.dumps({"runs": runs}, indent=2))
 
 
+def decode_worker_log(payload: bytes) -> str:
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return payload.decode("utf-16", errors="replace")
+    if payload and payload.count(b"\x00") > len(payload) // 4:
+        return payload.decode("utf-16-le", errors="replace")
+    return payload.decode("utf-8", errors="replace")
+
+
 def logs(args: argparse.Namespace) -> None:
     plan = load_plan(args.plan)
     subscription = subscription_id(args.subscription)
@@ -1393,7 +1401,12 @@ def logs(args: argparse.Namespace) -> None:
         path = Path(stream.name)
     try:
         download_blob(account, plan["artifactContainer"], name, path)
-        sys.stdout.write(path.read_text(encoding="utf-8", errors="replace"))
+        content = decode_worker_log(path.read_bytes())
+        if args.tail_lines is not None:
+            if args.tail_lines < 1:
+                raise ValueError("--tail-lines must be positive")
+            content = "".join(content.splitlines(keepends=True)[-args.tail_lines:])
+        sys.stdout.write(content)
     finally:
         path.unlink(missing_ok=True)
 
@@ -1509,6 +1522,7 @@ def parser() -> argparse.ArgumentParser:
     add_cloud_options(show_logs)
     show_logs.add_argument("--run-id", required=True)
     show_logs.add_argument("--execution", required=True)
+    show_logs.add_argument("--tail-lines", type=int)
     show_logs.set_defaults(func=logs)
 
     gather = sub.add_parser("collect")

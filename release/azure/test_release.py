@@ -426,6 +426,12 @@ class AzureProviderContractTest(unittest.TestCase):
         self.assertEqual("account", arguments[arguments.index("--account-name") + 1])
         self.assertEqual("key", arguments[arguments.index("--auth-mode") + 1])
 
+    def test_worker_log_decoder_handles_utf8_and_windows_utf16(self):
+        value = "bootstrap line\nerror line\n"
+        self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-8")))
+        self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-16")))
+        self.assertEqual(value, MODULE.decode_worker_log(value.encode("utf-16-le")))
+
     def test_worker_identity_has_container_scoped_least_privilege_roles(self):
         storage_shows = 0
         calls = []
@@ -636,6 +642,19 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn(
             'git -C $SourceDir rev-parse "${RemoteRef}^{commit}"', powershell
         )
+
+    def test_windows_worker_pins_gnu_rust_toolchain_for_cbindgen(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            "$RustToolchain = 'stable-x86_64-pc-windows-gnu'", powershell,
+        )
+        self.assertIn("'.cargo\\bin\\rustup.exe'", powershell)
+        self.assertIn("$env:RUSTUP_TOOLCHAIN = $RustToolchain", powershell)
+        self.assertIn(
+            "& $Rustup run $RustToolchain cargo install --locked cbindgen",
+            powershell,
+        )
+        self.assertNotIn("rustup default stable-x86_64-pc-windows-gnu", powershell)
 
     def test_status_is_uploaded_after_artifacts(self):
         for name in ("worker.sh", "worker.ps1"):
