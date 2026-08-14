@@ -63,13 +63,6 @@
             <artifactId>kompile-utils</artifactId>
         </dependency>
 
-        <!-- Canonical SDZ identity, target compiler/cache, embedded target packaging. -->
-        <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>nd4j-sdx-model</artifactId>
-            <version>${nd4j.version}</version>
-        </dependency>
-
         <!-- GGML model import used by ConversionService (org.nd4j.ggml.*); was only ever
              satisfied transitively, which broke when upstream jars stopped leaking it. -->
         <dependency>
@@ -258,6 +251,92 @@
     </dependencies>
 
     <profiles>
+        <profile>
+            <id>Current DL4J integrations</id>
+            <activation>
+                <property>
+                    <name>!kompile.dl4j.sdx-model.unavailable</name>
+                </property>
+            </activation>
+            <dependencies>
+                <!-- Canonical SDZ identity, target compiler/cache, embedded target packaging. -->
+                <dependency>
+                    <groupId>org.eclipse.deeplearning4j</groupId>
+                    <artifactId>nd4j-sdx-model</artifactId>
+                    <version>${nd4j.version}</version>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-dl4j-sdx-model-source</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/sdxModel/java</source>
+                                        <source>src/dl4jCurrent/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>add-dl4j-sdx-model-test-source</id>
+                                <phase>generate-test-sources</phase>
+                                <goals>
+                                    <goal>add-test-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/sdxModelTest/java</source>
+                                        <source>src/dl4jCurrentTest/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>DL4J repository without SDX model</id>
+            <activation>
+                <property>
+                    <name>kompile.dl4j.sdx-model.unavailable</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-dl4j-repository-compat-source</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/sonatypeCompat/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <profile>
             <!--
                 Profile to install node and npm dependencies.

@@ -1772,7 +1772,7 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 tokens = header.getTokens();
                 bosId = header.getBosTokenId();
                 eosId = header.getEosTokenId();
-                padId = header.getPadTokenId();
+                padId = header.getMetadataInt(GGUFHeader.KEY_TOKENIZER_PAD_ID, eosId);
             }
 
             ObjectNode config = Files.isRegularFile(configPath)
