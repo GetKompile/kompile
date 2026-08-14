@@ -567,7 +567,7 @@ def execution_batches(
 
 
 def blob_arguments(account: str) -> list[str]:
-    return ["--account-name", account, "--auth-mode", "login"]
+    return ["--account-name", account, "--auth-mode", "key"]
 
 
 def blob_exists(account: str, container: str, name: str) -> bool:
@@ -752,7 +752,8 @@ def user_delegation_sas(
     )
     return str(az([
         "storage", "blob", "generate-sas",
-        *blob_arguments(account),
+        "--account-name", account,
+        "--auth-mode", "login",
         "--as-user",
         "--container-name", container,
         "--name", name,

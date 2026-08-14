@@ -421,6 +421,11 @@ class AzureProviderContractTest(unittest.TestCase):
     def setUp(self):
         self.plan = MODULE.load_plan(ROOT / "release-plan.json")
 
+    def test_controller_blob_operations_use_storage_key_auth(self):
+        arguments = MODULE.blob_arguments("account")
+        self.assertEqual("account", arguments[arguments.index("--account-name") + 1])
+        self.assertEqual("key", arguments[arguments.index("--auth-mode") + 1])
+
     def test_worker_identity_has_container_scoped_least_privilege_roles(self):
         storage_shows = 0
         calls = []
