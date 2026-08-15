@@ -104,7 +104,8 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>runtime</scope>
+            <!-- Spring AOT emits H2ConsoleAutoConfiguration sources that javac must resolve. -->
+            <scope>compile</scope>
         </dependency>
 
         <dependency>
