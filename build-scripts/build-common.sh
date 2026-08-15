@@ -171,7 +171,7 @@ if [ -n "${GRAALVM_HOME:-}" ] && command -v cygpath >/dev/null 2>&1; then
 fi
 
 kompile_has_native_image() {
-  [ -x "$1/bin/native-image" ] || [ -x "$1/bin/native-image.cmd" ]
+  [ -x "$1/bin/native-image" ] || [ -f "$1/bin/native-image.cmd" ]
 }
 
 if [ -z "${GRAALVM_HOME:-}" ]; then
@@ -356,6 +356,23 @@ kompile_check_graalvm() {
   fi
   log "GraalVM: ${GRAALVM_HOME}"
   return 0
+}
+
+# Run the Windows batch launcher explicitly from MSYS/Git Bash. Git Bash does
+# not always mark .cmd files executable, and cmd.exe needs a Windows path.
+kompile_native_image_version() {
+  case "${KOMPILE_NATIVE_IMAGE}" in
+    *.cmd)
+      local native_image_path="${KOMPILE_NATIVE_IMAGE}"
+      if command -v cygpath >/dev/null 2>&1; then
+        native_image_path="$(cygpath -w "${native_image_path}")"
+      fi
+      MSYS_NO_PATHCONV=1 cmd.exe /d /s /c "\"${native_image_path}\" --version"
+      ;;
+    *)
+      "${KOMPILE_NATIVE_IMAGE}" --version
+      ;;
+  esac
 }
 
 # Resolve the public Kompile backend alias from an attested classifier.
@@ -831,7 +848,7 @@ kompile_native_fingerprint() {
     rm -rf "${probe_dir}"
     return 1
   fi
-  graal_version="$("${KOMPILE_NATIVE_IMAGE}" --version 2>&1)"
+  graal_version="$(kompile_native_image_version 2>&1)"
 
   local aot_fingerprint runtime_fingerprint
   aot_fingerprint="$({
