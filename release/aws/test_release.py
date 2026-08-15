@@ -595,12 +595,21 @@ class BuildPlatformParityTest(unittest.TestCase):
                  patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars"), \
                  patch.object(BUILD_MODULE, "run_dl4j_java_reactor") as java, \
                  patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"), \
-                 patch.object(BUILD_MODULE, "run"):
+                 patch.object(BUILD_MODULE, "run") as run:
                 BUILD_MODULE.build_full_platform(
                     config, root, root / "m2", root / "maven-output", root / "assets",
                 )
             java.assert_called_once_with(
                 config, root, root / "m2", root / "maven-output",
+            )
+            platform_runs = [
+                call for call in run.call_args_list
+                if call.args[0][1] == "./build-scripts/build-kompile-platform.sh"
+            ]
+            self.assertEqual(1, len(platform_runs))
+            self.assertEqual(
+                ",".join(BUILD_MODULE.FULL_DISTRIBUTION_NATIVE_TARGETS),
+                platform_runs[0].args[2]["NATIVE_TARGETS"],
             )
 
     def test_repository_mode_skips_dl4j_source_lane_and_propagates_repository(self):

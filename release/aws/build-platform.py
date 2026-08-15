@@ -40,6 +40,20 @@ DL4J_JAVA_MODULE_PROFILES = {
     "nd4j-sdx-model": ("sdx",),
 }
 
+# The full distribution's native closure is intentionally smaller than the
+# development "all" target set. Keep this default aligned with build-dist.sh:
+# CLI, server personas, staging, request-scoped runtimes, and the VLM worker.
+FULL_DISTRIBUTION_NATIVE_TARGETS = (
+    "cli",
+    "app",
+    "chat",
+    "crawl-manager",
+    "staging",
+    "model-serving",
+    "pipeline-serving",
+    "vlm-test",
+)
+
 
 def dl4j_java_native_closure_present(
     repository: Path, version: str, platform_name: str,
@@ -834,7 +848,9 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
     env["MAVEN_REPO_LOCAL"] = str(repository)
     env["KOMPILE_MAVEN_REPO"] = str(repository)
     env["BUILD_THREADS"] = str(build.get("buildThreads", 64))
-    env["NATIVE_TARGETS"] = str(build.get("nativeTargets", "all"))
+    env["NATIVE_TARGETS"] = str(build.get(
+        "nativeTargets", ",".join(FULL_DISTRIBUTION_NATIVE_TARGETS),
+    ))
     env["KOMPILE_NATIVE_QUICK_BUILD"] = "0"
     configure_dl4j_environment(config, env)
     java_built = False
