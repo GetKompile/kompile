@@ -675,6 +675,14 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("git config --system core.longpaths true", powershell)
         self.assertIn("Failed to enable Git long-path support", powershell)
 
+    def test_windows_worker_uses_short_workspace_for_aot_classpaths(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        self.assertIn("$PhysicalWorkRoot =", powershell)
+        self.assertIn("$ShortWorkDrive = 'K:'", powershell)
+        self.assertIn("subst $ShortWorkDrive $PhysicalWorkRoot", powershell)
+        self.assertIn("Spring Boot's process-aot", powershell)
+        self.assertIn("nodejs", powershell)
+
     def test_windows_worker_refreshes_native_tool_paths(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
         self.assertIn(

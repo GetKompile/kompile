@@ -2,7 +2,20 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ConfigB64 = '__KOMPILE_AZURE_WORKER_CONFIG_B64__'
 $BuildDriverB64 = '__KOMPILE_BUILD_DRIVER_B64__'
-$WorkRoot = 'C:\kompile-release'
+$PhysicalWorkRoot = 'C:\kompile-release'
+# Spring Boot's process-aot launches a JVM with the complete runtime classpath. On
+# Windows that command line is capped at 32,767 characters, so use a short DOS
+# drive alias for the workspace and Maven cache. Keep the physical path stable for
+# diagnostics, but make every build-facing path use the alias.
+New-Item -ItemType Directory -Force -Path $PhysicalWorkRoot | Out-Null
+$ShortWorkDrive = 'K:'
+subst $ShortWorkDrive /d 2>$null | Out-Null
+subst $ShortWorkDrive $PhysicalWorkRoot | Out-Null
+if ($LASTEXITCODE -eq 0) {
+  $WorkRoot = "$ShortWorkDrive\"
+} else {
+  $WorkRoot = $PhysicalWorkRoot
+}
 $SourceDir = Join-Path $WorkRoot 'source'
 $OutputDir = Join-Path $WorkRoot 'output'
 $MavenRepo = Join-Path $WorkRoot 'm2'
@@ -64,7 +77,7 @@ try {
   if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
   }
-  choco install -y --no-progress ccache cmake git maven ninja temurin11 temurin17 python312 7zip msys2 rustup.install visualstudio2022buildtools visualstudio2022-workload-vctools
+  choco install -y --no-progress ccache cmake git maven nodejs ninja temurin11 temurin17 python312 7zip msys2 rustup.install visualstudio2022buildtools visualstudio2022-workload-vctools
   $MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
   $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
