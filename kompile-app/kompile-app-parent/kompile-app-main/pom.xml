@@ -730,6 +730,9 @@
         <!-- GraalVM Native Image profile for kompile-app-main -->
         <profile>
             <id>native</id>
+            <properties>
+                <kompile.windows.aot.skip>false</kompile.windows.aot.skip>
+            </properties>
             <activation>
                 <property>
                     <name>kompile.dist</name>

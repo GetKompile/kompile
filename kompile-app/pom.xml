@@ -32,6 +32,11 @@
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
 
+  <!-- Native app modules opt into the Windows AOT workaround from their native profile. -->
+  <properties>
+    <kompile.windows.aot.skip>true</kompile.windows.aot.skip>
+  </properties>
+
   <modules>
     <module>kompile-data</module>
     <module>kompile-models</module>
@@ -909,4 +914,121 @@
       </plugins>
     </pluginManagement>
   </build>
+
+  <!--
+      Spring Boot's process-aot goal forks a JVM with one argument containing every
+      resolved dependency path. The app distributions exceed Windows' 32,767-character
+      CreateProcess limit. On Windows native builds, run the same processor in Maven's
+      already-running GraalVM JVM; Maven owns the dependency classloader, so no command
+      line classpath is created. The native profile in each runnable module sets
+      kompile.windows.aot.skip=false and supplies its start-class.
+  -->
+  <profiles>
+    <profile>
+      <id>windows-native-aot-in-process</id>
+      <activation>
+        <os>
+          <family>Windows</family>
+        </os>
+        <property>
+          <name>kompile.dist</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>process-aot</id>
+                <configuration>
+                  <!-- Keep Spring Boot's forked process-aot disabled on Windows. The
+                       in-process exec-maven-plugin invocation below supplies the same
+                       generated sources without CreateProcess classpath limits. -->
+                  <skip>true</skip>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.3.0</version>
+            <executions>
+              <execution>
+                <id>kompile-process-aot-in-process</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>java</goal>
+                </goals>
+                <configuration>
+                  <skip>${kompile.windows.aot.skip}</skip>
+                  <mainClass>org.springframework.boot.SpringApplicationAotProcessor</mainClass>
+                  <classpathScope>runtime</classpathScope>
+                  <includeProjectDependencies>true</includeProjectDependencies>
+                  <includePluginDependencies>false</includePluginDependencies>
+                  <arguments>
+                    <argument>${start-class}</argument>
+                    <argument>${project.build.directory}/spring-aot/main/sources</argument>
+                    <argument>${project.build.directory}/spring-aot/main/resources</argument>
+                    <argument>${project.build.directory}/spring-aot/main/classes</argument>
+                    <argument>${project.groupId}</argument>
+                    <argument>${project.artifactId}</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>kompile-compile-spring-aot-sources</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>compile</goal>
+                </goals>
+                <configuration>
+                  <skipMain>${kompile.windows.aot.skip}</skipMain>
+                  <compileSourceRoots>
+                    <compileSourceRoot>${project.build.directory}/spring-aot/main/sources</compileSourceRoot>
+                  </compileSourceRoots>
+                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>kompile-copy-spring-aot-assets</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>copy-resources</goal>
+                </goals>
+                <configuration>
+                  <skip>${kompile.windows.aot.skip}</skip>
+                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.build.directory}/spring-aot/main/resources</directory>
+                      <filtering>false</filtering>
+                    </resource>
+                    <resource>
+                      <directory>${project.build.directory}/spring-aot/main/classes</directory>
+                      <filtering>false</filtering>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

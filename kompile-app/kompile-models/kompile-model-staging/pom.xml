@@ -413,6 +413,10 @@
              -Pnative-only activation the dist step silently shipped jar-only. -->
         <profile>
             <id>native</id>
+            <properties>
+                <kompile.windows.aot.skip>false</kompile.windows.aot.skip>
+                <start-class>ai.kompile.staging.ModelStagingApplication</start-class>
+            </properties>
             <activation>
                 <property>
                     <name>kompile.dist</name>
