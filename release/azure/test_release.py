@@ -420,6 +420,26 @@ class MachineSelectionTest(unittest.TestCase):
     def setUp(self):
         self.plan = MODULE.load_plan(ROOT / "release-plan.json")
 
+    def test_explicit_machine_uses_lightweight_size_endpoint(self):
+        with patch.object(
+            MODULE,
+            "az",
+            return_value=[{
+                "name": "Standard_E8ds_v7",
+                "numberOfCores": 8,
+                "memoryInMB": 65536,
+            }],
+        ) as az:
+            inventory = MODULE.sku_inventory(
+                "eastus2", {"Standard_E8ds_v7"},
+            )
+        self.assertEqual(8, inventory["Standard_E8ds_v7"]["vcpus"])
+        self.assertEqual(64.0, inventory["Standard_E8ds_v7"]["memoryGiB"])
+        self.assertEqual(
+            ["vm", "list-sizes", "--location", "eastus2"],
+            az.call_args.args[0],
+        )
+
     def test_candidate_selection_and_aggregate_batches(self):
         selected = MODULE.selected_executions(
             self.plan, ["linux-x86_64-cpu", "linux-x86_64-cuda-12-6"]

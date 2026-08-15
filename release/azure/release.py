@@ -470,7 +470,31 @@ def storage_account_name(subscription: str, location: str, override: str | None)
     return name
 
 
-def sku_inventory(location: str) -> dict[str, dict[str, Any]]:
+def sku_inventory(
+    location: str, requested_names: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if requested_names:
+        # An explicit --machine-type/--lane-machine is already an operator choice.
+        # Use the lightweight size endpoint for that path; list-skus --all can hang
+        # on a transient Azure Compute RP response and is unnecessary here.
+        records = az(["vm", "list-sizes", "--location", location])
+        result: dict[str, dict[str, Any]] = {}
+        for record in records or []:
+            name = str(record.get("name", ""))
+            if name not in requested_names:
+                continue
+            result[name] = {
+                "name": name,
+                "vcpus": int(record.get("numberOfCores", 0)),
+                "memoryGiB": float(record.get("memoryInMB", 0)) / 1024,
+                "restricted": False,
+                "capabilities": {
+                    "vCPUs": str(record.get("numberOfCores", 0)),
+                    "MemoryGB": str(float(record.get("memoryInMB", 0)) / 1024),
+                },
+            }
+        return result
+
     records = az([
         "vm", "list-skus", "--location", location,
         "--resource-type", "virtualMachines", "--all",
@@ -1153,13 +1177,17 @@ def start(args: argparse.Namespace) -> None:
     location = azure_location(args.location)
     resource_group = args.resource_group or f"kompile-release-{location}"
     account = storage_account_name(subscription, location, args.storage_account)
-    inventory = sku_inventory(location)
+    lane_machines = parse_lane_machines(args.lane_machine)
+    requested_machines = set(lane_machines.values())
+    if args.machine_type:
+        requested_machines.add(args.machine_type)
+    inventory = sku_inventory(location, requested_machines or None)
     select_machines(
         plan,
         executions,
         inventory,
         machine_type=args.machine_type,
-        lane_machines=parse_lane_machines(args.lane_machine),
+        lane_machines=lane_machines,
         max_cores=args.max_cores,
     )
     batches = execution_batches(executions, args.max_total_cores)
@@ -1350,13 +1378,17 @@ def preflight(args: argparse.Namespace) -> None:
     executions = selected_executions(plan, args.shard, args.exclude_shard)
     subscription = subscription_id(args.subscription)
     location = azure_location(args.location)
-    inventory = sku_inventory(location)
+    lane_machines = parse_lane_machines(args.lane_machine)
+    requested_machines = set(lane_machines.values())
+    if args.machine_type:
+        requested_machines.add(args.machine_type)
+    inventory = sku_inventory(location, requested_machines or None)
     select_machines(
         plan,
         executions,
         inventory,
         machine_type=args.machine_type,
-        lane_machines=parse_lane_machines(args.lane_machine),
+        lane_machines=lane_machines,
         max_cores=args.max_cores,
     )
     batches = execution_batches(executions, args.max_total_cores)
