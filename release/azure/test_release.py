@@ -682,6 +682,7 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("subst $ShortWorkDrive $PhysicalWorkRoot", powershell)
         self.assertIn("Spring Boot's process-aot", powershell)
         self.assertIn("nodejs", powershell)
+        self.assertIn("Get-Command npm.cmd", powershell)
 
     def test_windows_worker_refreshes_native_tool_paths(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")

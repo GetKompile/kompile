@@ -97,6 +97,8 @@ try {
     }
   }
   if (-not $MavenCommand) { throw 'mvn.cmd unavailable after Chocolatey install' }
+  $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $NpmCommand) { throw 'npm.cmd unavailable after Node.js install' }
 
   $AzCopyZip = Join-Path $WorkRoot 'azcopy.zip'
   $AzCopyDir = Join-Path $WorkRoot 'azcopy'
