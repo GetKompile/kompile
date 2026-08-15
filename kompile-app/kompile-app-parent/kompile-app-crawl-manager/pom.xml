@@ -336,10 +336,6 @@
                             <buildArgs>
                                 <buildArg>-J-Xmx80g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
-                                <!-- Oracle GraalVM enterprise-only; loads its bundled ai.onnxruntime
-                                     inside the compiler and collides with initialize-at-run-time.
-                                     Keep in the pom, never in native-image.properties (CE breaks). -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                                 <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>

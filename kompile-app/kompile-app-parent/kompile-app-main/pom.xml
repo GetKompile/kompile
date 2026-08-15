@@ -783,13 +783,6 @@
                             <buildArgs>
                                 <buildArg>-J-Xmx80g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
-                                <!-- Oracle GraalVM's enterprise ML branch-profile inference loads its
-                                     BUNDLED ai.onnxruntime inside the compiler, colliding with
-                                     initialize-at-run-time=ai.onnxruntime (class-init violation at
-                                     image write; reproduced on spin builds, heuristic on this one).
-                                     Enterprise-only flag — keep in poms, NOT in the embedded
-                                     native-image.properties (breaks GraalVM CE consumer builds). -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1000,11 +993,6 @@
                             <imageName>kompile-ingest</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1115,11 +1103,6 @@
                             <imageName>kompile-vector</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1229,11 +1212,6 @@
                             <imageName>kompile-embedding</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1340,11 +1318,6 @@
                             <imageName>kompile-model-init</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1451,11 +1424,6 @@
                             <imageName>kompile-vlm-test</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -1566,11 +1534,6 @@
                             <imageName>kompile-training</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx18g</buildArg>
-                                <!-- Oracle GraalVM enterprise ML inference initializes its bundled
-                                     ai.onnxruntime inside the compiler, violating the shared
-                                     initialize-at-run-time contract. Keep this CLI-only flag in the
-                                     Maven profile so GraalVM CE consumers remain compatible. -->
-                                <buildArg>-H:-MLProfileInference</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
