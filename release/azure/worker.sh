@@ -5,8 +5,12 @@ export PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 CONFIG_B64='__KOMPILE_AZURE_WORKER_CONFIG_B64__'
 BUILD_DRIVER_B64='__KOMPILE_BUILD_DRIVER_B64__'
+CLOUD_IO_B64='__KOMPILE_DL4J_CLOUD_IO_B64__'
+DEPENDENCY_CACHE_B64='__KOMPILE_DL4J_DEPENDENCY_CACHE_B64__'
 CONFIG_FILE=/tmp/kompile-azure-worker.json
 BUILD_DRIVER=/tmp/kompile-build-platform.py
+CLOUD_IO=/tmp/kompile-dl4j-cloud-io.py
+DEPENDENCY_CACHE=/tmp/kompile-dl4j-dependency-cache.py
 WORK_ROOT=${KOMPILE_WORK_ROOT:-/opt/kompile-release}
 SOURCE_DIR=${WORK_ROOT}/source
 OUTPUT_DIR=${WORK_ROOT}/output
@@ -18,6 +22,9 @@ WATCHDOG_PID=""
 mkdir -p "${OUTPUT_DIR}" "${MAVEN_REPO}"
 printf '%s' "${CONFIG_B64}" | base64 --decode >"${CONFIG_FILE}"
 printf '%s' "${BUILD_DRIVER_B64}" | base64 --decode >"${BUILD_DRIVER}"
+printf '%s' "${CLOUD_IO_B64}" | base64 --decode >"${CLOUD_IO}"
+printf '%s' "${DEPENDENCY_CACHE_B64}" | base64 --decode >"${DEPENDENCY_CACHE}"
+export PYTHON=python3 DL4J_CLOUD_IO="${CLOUD_IO}" DL4J_DEPENDENCY_CACHE_HELPER="${DEPENDENCY_CACHE}"
 exec > >(tee -a "${BUILD_LOG}") 2>&1
 
 config() {
@@ -161,7 +168,7 @@ if [ -n "${CONTAINER_IMAGE}" ]; then
   else
     install_command="apt-get update && apt-get install -y --no-install-recommends autoconf automake build-essential ca-certificates cmake gfortran git libomp-dev libopenblas-dev libtool maven nasm ninja-build openjdk-11-jdk pkg-config python3 swig unzip xz-utils zip && export PATH=/opt/protobuf/bin:/opt/cmake/bin:\$PATH && python3 /kompile-build-platform.py --config /kompile-config.json --source /workspace --repository /kompile-m2 --maven-output /kompile-output/maven-repository --sdk-output /kompile-output/sdk-assets"
   fi
-  build=(docker run --rm --network host     -v "${SOURCE_DIR}:/workspace"     -v "${MAVEN_REPO}:/kompile-m2"     -v "${OUTPUT_DIR}:/kompile-output"     -v "${CONFIG_FILE}:/kompile-config.json:ro"     -v "${BUILD_DRIVER}:/kompile-build-platform.py:ro"     -v /opt/protobuf:/opt/protobuf:ro     -v /opt/cmake:/opt/cmake:ro     -w /workspace "${CONTAINER_IMAGE}" bash -lc "${install_command}")
+  build=(docker run --rm --network host     -e DL4J_CLOUD_IO=/dl4j-cloud-io.py     -e DL4J_DEPENDENCY_CACHE_HELPER=/dl4j-dependency-cache.py     -e PYTHON=python3     -v "${SOURCE_DIR}:/workspace"     -v "${MAVEN_REPO}:/kompile-m2"     -v "${OUTPUT_DIR}:/kompile-output"     -v "${CONFIG_FILE}:/kompile-config.json:ro"     -v "${BUILD_DRIVER}:/kompile-build-platform.py:ro"     -v "${CLOUD_IO}:/dl4j-cloud-io.py:ro"     -v "${DEPENDENCY_CACHE}:/dl4j-dependency-cache.py:ro"     -v /opt/protobuf:/opt/protobuf:ro     -v /opt/cmake:/opt/cmake:ro     -w /workspace "${CONTAINER_IMAGE}" bash -lc "${install_command}")
 fi
 
 setsid "${build[@]}" &

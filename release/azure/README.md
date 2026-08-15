@@ -69,17 +69,15 @@ Git remotes. Source mode delegates each selected lane/variant to the release
 driver at the verified DL4J branch commit; it does not silently fall back to
 another checkout or Maven repository.
 
-### Co-build DL4J Java modules with a Maven repository
+### Consume published DL4J Maven artifacts
 
 Pass any credential-free HTTPS Maven 2 URL, including the published Sonatype
-Maven snapshot repository or the repository produced by the DL4J Azure collector. Kompile still
-checks out the selected DL4J commit and runs DL4J's canonical cross-platform
-Java reactor, installing owned modules such as `samediff-llm`, `samediff-vlm`,
-and the SameDiff pipelines into the worker-local Maven repository. The remote
-repository supplies native snapshot/classifier inputs; it never replaces owned
-source modules. Runtime classifiers also need the matching per-lane SDK archive,
-because DL4J publishes runtime ZIP/AAR payloads beside Maven rather than inside
-Maven coordinates.
+Maven snapshot repository or the repository produced by the DL4J Azure collector.
+`--version` is the Kompile distribution version; `--snapshot-version` is the
+DL4J/ND4J snapshot version resolved from that repository and defaults to
+`1.0.0-SNAPSHOT`. In repository-only mode Kompile does not check out DL4J or
+rebuild owned Java modules such as `samediff-llm`; it consumes the published
+coordinates and, for runtime classifiers, the matching per-lane SDK archive.
 
 A Windows compile-classifier smoke run using Sonatype snapshots looks like:
 
@@ -88,8 +86,8 @@ KOMPILE_BRANCH=$(git branch --show-current)
 release/azure/run.sh start \
   --location eastus2 \
   --version 0.1.0-SNAPSHOT \
+  --snapshot-version 1.0.0-SNAPSHOT \
   --branch "$KOMPILE_BRANCH" \
-  --dl4j-branch ag_new_release_updates_2 \
   --shard windows-x86_64-compile \
   --dl4j-maven-repository-url \
     https://central.sonatype.com/repository/maven-snapshots/ \
@@ -98,6 +96,8 @@ release/azure/run.sh start \
     https://ACCOUNT.blob.core.windows.net/releases/deeplearning4j/releases/RUN_ID/{lane}--{variant}/sdk-assets.tar.gz
 ```
 
+Add `--dl4j-branch` or `--dl4j-commit` only when a source-backed DL4J
+co-build is explicitly wanted; that selects the `maven+source` input mode.
 Supported SDK URL placeholders are `{lane}`, `{variant}`, `{platform}`,
 `{version}`, and `{snapshotVersion}`. The SDK URL must be an HTTPS Azure
 Blob URL. The downloader accepts either an adjacent `.sha256` sidecar or the
@@ -108,10 +108,8 @@ For an Azure Blob Maven repository, the controller reads
 `MAVEN_URL/.dl4j/complete.json` before provisioning and binds the Maven and
 SDK inputs to the Azure run, immutable commit, and release version. Use
 `--dl4j-maven-marker-url` only when that Azure collector exposes the marker
-elsewhere. Sonatype has no DL4J Azure completion marker, so an explicit
-`--dl4j-branch` or `--dl4j-commit` is required. It is recorded as the generic
-`maven+source` input mode and the SDK archive is checksum-attested but not
-identity-bound to the mutable snapshot repository.
+elsewhere. Without a source ref the input mode is `azure-blob-maven`; a source
+ref makes it `azure-blob-maven+source`.
 
 Collected Kompile coordinates are published into the established public DL4J
 Maven tree at
@@ -169,20 +167,34 @@ az account set --subscription SUBSCRIPTION_ID
 
 The controller identity needs permission to create resource groups, VMs,
 networks, user-assigned identities, role assignments, and Storage accounts. It
-also needs Blob data access and permission to create a user-delegation key.
+also needs Blob data access and permission to read storage account keys for the
+existing DL4J cache account so it can mint the short-lived SAS values.
 
 The controller creates:
 
 - a retained base resource group and StorageV2 account;
 - private `kompile-artifacts` and `control` containers plus the public-read
   `releases` container that already holds the canonical DL4J Maven tree;
-- one reusable user-assigned worker identity with Blob Data Contributor on the private artifact container and Blob Data Reader on the control container;
+- one reusable user-assigned worker identity with Blob Data Contributor on the
+  private artifact container, Blob Data Reader on the control container, and
+  Blob Data Contributor on the existing DL4J `releases` cache container;
 - one compute resource group per run, containing its VNet and VMs.
 
-Worker bootstrap uses a short-lived Entra user-delegation SAS. Workers use only
+Worker bootstrap uses a short-lived account-key SAS. Workers use only
 their user-assigned managed identity and AzCopy for artifact, log, status, and
-kill-switch Blob access. Storage account keys are not embedded in workers.
-Role-assignment propagation is handled by bounded AzCopy retries.
+kill-switch Blob access. The controller creates a separate short-lived
+read/write/create SAS for DL4J's existing `deeplearning4j/releases/compiler-cache/v1`
+namespace; it is passed only through the temporary delegated DL4J lane config,
+never written to `run.json` or the worker source. DL4J's own `cloud-io.py` and
+`dependency-cache.py` helpers are embedded in both worker variants so sccache
+toolchain snapshots use the managed identity. Storage account keys are not
+embedded in workers. Role-assignment propagation is handled by bounded AzCopy
+retries.
+
+The cache account defaults to the canonical DL4J account derived from the Azure
+subscription and location (`dl4jrel…`). Override it with
+`--dl4j-cache-storage-account` or `DL4J_AZURE_STORAGE_ACCOUNT` when using an
+existing account with a different name.
 
 Windows administrator credentials are generated for the run unless
 `AZURE_WINDOWS_ADMIN_PASSWORD` or `--windows-admin-password` is supplied.

@@ -624,17 +624,7 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
     kompile_build = config["shard"]["build"]
     lane["build"]["buildThreads"] = int(kompile_build.get("buildThreads", 48))
     lane["build"]["mavenHeapGiB"] = int(kompile_build.get("mavenHeapGiB", 24))
-    lane_config = {
-        "runId": config["runId"],
-        # DL4J and Kompile have independent release coordinates. The native lane
-        # must install the version Kompile requests, never Kompile's own version.
-        "releaseVersion": config["snapshotVersion"],
-        "snapshotVersion": config["snapshotVersion"],
-        "commit": config["dl4jCommit"],
-        "sourceBranch": None,
-        "repository": config["dl4jRepository"],
-        "shard": lane,
-    }
+    lane_config = dl4j_lane_config(config, lane)
     with tempfile.NamedTemporaryFile("w", suffix=".json", prefix="kompile-dl4j-",
                                      delete=False, encoding="utf-8") as stream:
         json.dump(lane_config, stream)
@@ -652,6 +642,28 @@ def run_dl4j_release_lane(config: dict[str, Any], source: Path, repository: Path
         )
     finally:
         config_path.unlink(missing_ok=True)
+
+
+def dl4j_lane_config(config: dict[str, Any], lane: dict[str, Any]) -> dict[str, Any]:
+    """Build the temporary DL4J driver config without dropping cache transport."""
+    lane_config = {
+        "runId": config["runId"],
+        # DL4J and Kompile have independent release coordinates. The native lane
+        # must install the version Kompile requests, never Kompile's own version.
+        "releaseVersion": config["snapshotVersion"],
+        "snapshotVersion": config["snapshotVersion"],
+        "commit": config["dl4jCommit"],
+        "sourceBranch": None,
+        "repository": config["dl4jRepository"],
+        "shard": lane,
+    }
+    # These are deliberately copied into the short-lived worker config rather
+    # than the durable Kompile run manifest.  In particular, compilerCache may
+    # contain a SAS connection string and must not be persisted in run.json.
+    for key in ("compilerCache", "dependencyCache", "managedIdentityClientId"):
+        if key in config:
+            lane_config[key] = config[key]
+    return lane_config
 
 
 def run_dl4j_java_reactor(
@@ -900,7 +912,12 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
                         sdk_assets, f"DL4J source lane {lane_id}--{dl4j_variant}",
                     )
 
-            if not java_built:
+            source_owned_dl4j = (
+                not uses_prebuilt_dl4j(config)
+                or str(config.get("dl4jInputMode", "")).endswith("+source")
+                or bool(config.get("dl4jBranch"))
+            )
+            if source_owned_dl4j and not java_built:
                 ensure_source_dl4j_cpu_native_closure(
                     config, source, repository, maven_output,
                 )

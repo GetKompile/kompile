@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ConfigB64 = '__KOMPILE_AZURE_WORKER_CONFIG_B64__'
 $BuildDriverB64 = '__KOMPILE_BUILD_DRIVER_B64__'
+$CloudIoB64 = '__KOMPILE_DL4J_CLOUD_IO_B64__'
+$DependencyCacheB64 = '__KOMPILE_DL4J_DEPENDENCY_CACHE_B64__'
 # Spring Boot's process-aot launches a JVM with the complete runtime classpath. On
 # Windows that command line is capped at 32,767 characters, so keep the build root
 # physically short. A real directory is usable from the service account running the
@@ -13,11 +15,15 @@ $OutputDir = Join-Path $WorkRoot 'output'
 $MavenRepo = Join-Path $WorkRoot 'm2'
 $ConfigFile = Join-Path $WorkRoot 'worker.json'
 $BuildDriver = Join-Path $WorkRoot 'build-platform.py'
+$CloudIo = Join-Path $WorkRoot 'cloud-io.py'
+$DependencyCache = Join-Path $WorkRoot 'dependency-cache.py'
 $BootstrapLog = Join-Path $OutputDir 'bootstrap.log'
 $BuildLog = Join-Path $OutputDir 'build.log'
 New-Item -ItemType Directory -Force -Path $WorkRoot,$OutputDir,$MavenRepo | Out-Null
 [IO.File]::WriteAllBytes($ConfigFile, [Convert]::FromBase64String($ConfigB64))
 [IO.File]::WriteAllBytes($BuildDriver, [Convert]::FromBase64String($BuildDriverB64))
+[IO.File]::WriteAllBytes($CloudIo, [Convert]::FromBase64String($CloudIoB64))
+[IO.File]::WriteAllBytes($DependencyCache, [Convert]::FromBase64String($DependencyCacheB64))
 $Config = Get-Content -Raw $ConfigFile | ConvertFrom-Json
 $Shard = $Config.shard
 $BlobRoot = "https://$($Config.storageAccount).blob.core.windows.net/$($Config.artifactContainer)/$($Config.artifactPrefix)/$($Config.runId)/$($Shard.id)"
@@ -94,6 +100,9 @@ try {
     throw "Windows Python executable unavailable after Chocolatey install"
   }
   $PythonExe = $PythonCommand.Source
+  $env:PYTHON = $PythonExe
+  $env:DL4J_CLOUD_IO = $CloudIo
+  $env:DL4J_DEPENDENCY_CACHE_HELPER = $DependencyCache
   $MavenCommand = Get-Command mvn.cmd -ErrorAction SilentlyContinue
   if (-not $MavenCommand) {
     $MavenScript = Get-ChildItem "$env:ChocolateyInstall\lib\maven" -Filter mvn.cmd -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1

@@ -35,8 +35,12 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PLAN = ROOT / "release/azure/release-plan.json"
 BUILD_DRIVER = ROOT / "release/aws/build-platform.py"
+DL4J_CLOUD_IO = ROOT.parent / "deeplearning4j/release/azure/cloud-io.py"
+DL4J_DEPENDENCY_CACHE = ROOT.parent / "deeplearning4j/release/azure/dependency-cache.py"
 DEFAULT_REPOSITORY = "https://github.com/GetKompile/kompile.git"
 DEFAULT_DL4J_REPOSITORY = "https://github.com/deeplearning4j/deeplearning4j.git"
+DEFAULT_DL4J_CACHE_CONTAINER = "releases"
+DEFAULT_DL4J_CACHE_PREFIX = "deeplearning4j/releases"
 BLOB_DATA_CONTRIBUTOR = "Storage Blob Data Contributor"
 BLOB_DATA_READER = "Storage Blob Data Reader"
 NAME_PATTERN = re.compile(r"[^a-z0-9-]+")
@@ -366,7 +370,7 @@ def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) ->
         marker_commit = ""
         marker_version = ""
         marker_run_id = ""
-        input_mode = "maven+source"
+        input_mode = "maven+source" if source_commit else "maven"
         if azure_repository:
             marker_url = azure_blob_url(
                 args.dl4j_maven_marker_url
@@ -401,11 +405,9 @@ def source_inputs(args: argparse.Namespace, executions: list[dict[str, Any]]) ->
                     "repository completion marker"
                 )
             source_commit = source_commit or marker_commit
-            input_mode = "azure-blob-maven+source"
-        elif not source_commit:
-            raise ValueError(
-                "a non-Azure Maven repository requires --dl4j-branch or "
-                "--dl4j-commit so owned DL4J Java modules can be co-built"
+            input_mode = (
+                "azure-blob-maven+source" if source_branch or args.dl4j_commit
+                else "azure-blob-maven"
             )
         return {
             "dl4jRepository": args.dl4j_repository,
@@ -463,11 +465,110 @@ def storage_account_name(subscription: str, location: str, override: str | None)
     if override:
         name = override.lower()
     else:
-        digest = hashlib.sha1(f"{subscription}/{location}".encode()).hexdigest()[:15]
+        # Azure storage account names are limited to 24 characters.
+        digest = hashlib.sha1(f"{subscription}/{location}".encode()).hexdigest()[:14]
         name = "kompilerel" + digest
     if not re.fullmatch(r"[a-z0-9]{3,24}", name):
         raise ValueError("Azure storage account must be 3-24 lowercase letters/digits")
     return name
+
+
+def dl4j_cache_storage_account(
+    subscription: str, location: str, override: str | None,
+) -> str:
+    """Resolve the storage account used by DL4J's existing Azure cache contract."""
+    value = override or os.environ.get("DL4J_AZURE_STORAGE_ACCOUNT")
+    if value:
+        name = value.lower()
+    else:
+        digest = hashlib.sha1(f"{subscription}/{location}".encode()).hexdigest()[:15]
+        name = "dl4jrel" + digest
+    if not re.fullmatch(r"[a-z0-9]{3,24}", name):
+        raise ValueError("DL4J Azure cache storage account must be 3-24 lowercase letters/digits")
+    return name
+
+
+def storage_account_key(account: str, resource_group: str | None = None) -> str:
+    """Read an account key without placing it in a durable run manifest."""
+    if not resource_group:
+        storage = az(["storage", "account", "show", "--name", account])
+        resource_group = str(storage.get("resourceGroup", "")) if isinstance(storage, dict) else ""
+    if not resource_group:
+        raise RuntimeError(f"Azure storage resource group unavailable: {account}")
+    keys = az([
+        "storage", "account", "keys", "list",
+        "--resource-group", resource_group,
+        "--account-name", account,
+    ])
+    key = str(keys[0].get("value", "")).strip() if isinstance(keys, list) and keys else ""
+    if not key:
+        raise RuntimeError(f"Azure storage account key unavailable: {account}")
+    return key
+
+
+def grant_blob_role(identity: dict[str, str], account: str, container: str) -> None:
+    """Allow the worker identity to restore/publish DL4J toolchain snapshots."""
+    storage = az(["storage", "account", "show", "--name", account])
+    if not isinstance(storage, dict) or not storage.get("id"):
+        raise RuntimeError(f"Azure storage account metadata unavailable: {account}")
+    scope = f"{storage['id']}/blobServices/default/containers/{container}"
+    assignment = az([
+        "role", "assignment", "list",
+        "--assignee-object-id", identity["identityPrincipalId"],
+        "--scope", scope,
+        "--role", BLOB_DATA_CONTRIBUTOR,
+    ])
+    if not assignment:
+        az([
+            "role", "assignment", "create",
+            "--assignee-object-id", identity["identityPrincipalId"],
+            "--assignee-principal-type", "ServicePrincipal",
+            "--scope", scope,
+            "--role", BLOB_DATA_CONTRIBUTOR,
+        ])
+
+
+def compiler_cache_config(
+    account: str,
+    account_key: str,
+    container: str,
+    prefix: str,
+    timeout_hours: int,
+) -> dict[str, Any]:
+    """Create the DL4J release.py-compatible Azure compiler cache contract."""
+    expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        hours=min(timeout_hours + 2, 6 * 24)
+    )
+    token = str(az([
+        "storage", "container", "generate-sas",
+        "--account-name", account,
+        "--account-key", account_key,
+        "--name", container,
+        "--permissions", "rcw",
+        "--expiry", expiry.strftime("%Y-%m-%dT%H:%MZ"),
+        "--https-only",
+    ], json_output=False)).strip().strip('"').lstrip("?")
+    if not token:
+        raise RuntimeError(f"Azure compiler cache SAS unavailable: {account}/{container}")
+    normalized_prefix = prefix.strip("/")
+    return {
+        "backend": "azure",
+        "account": account,
+        "container": container,
+        "keyPrefix": f"{normalized_prefix}/compiler-cache/v1",
+        "toolchainCache": {
+            "schemaVersion": 1,
+            "keyPrefix": f"{normalized_prefix}/toolchain-cache/v1",
+        },
+        "localSnapshot": {
+            "schemaVersion": 1,
+            "name": "sccache-l0",
+        },
+        "connectionString": (
+            f"BlobEndpoint=https://{account}.blob.core.windows.net;"
+            f"SharedAccessSignature={token}"
+        ),
+    }
 
 
 def sku_inventory(
@@ -817,12 +918,21 @@ def bootstrap_blob_sas(
 
 def render_worker(path: Path, config: dict[str, Any]) -> bytes:
     content = path.read_text(encoding="utf-8")
+    for helper in (DL4J_CLOUD_IO, DL4J_DEPENDENCY_CACHE):
+        if not helper.is_file():
+            raise RuntimeError(f"DL4J Azure cache helper is missing: {helper}")
     replacements = {
         "__KOMPILE_AZURE_WORKER_CONFIG_B64__": base64.b64encode(
             json.dumps(config, sort_keys=True).encode("utf-8")
         ).decode("ascii"),
         "__KOMPILE_BUILD_DRIVER_B64__": base64.b64encode(
             BUILD_DRIVER.read_bytes()
+        ).decode("ascii"),
+        "__KOMPILE_DL4J_CLOUD_IO_B64__": base64.b64encode(
+            DL4J_CLOUD_IO.read_bytes()
+        ).decode("ascii"),
+        "__KOMPILE_DL4J_DEPENDENCY_CACHE_B64__": base64.b64encode(
+            DL4J_DEPENDENCY_CACHE.read_bytes()
         ).decode("ascii"),
     }
     for marker, value in replacements.items():
@@ -1020,10 +1130,12 @@ def run_execution(
     plan: dict[str, Any],
     base: dict[str, Any],
     identity: dict[str, str],
+    compiler_cache: dict[str, Any],
     execution: dict[str, Any],
 ) -> dict[str, Any]:
     config = {
         **base,
+        "compilerCache": compiler_cache,
         "shard": execution,
         "selectedMachine": execution["selectedMachine"],
     }
@@ -1197,6 +1309,8 @@ def start(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(json.dumps({
             "runId": run_id,
+            "releaseVersion": args.version,
+            "snapshotVersion": args.snapshot_version,
             "branch": args.branch or "",
             "commit": commit,
             **dl4j,
@@ -1220,6 +1334,16 @@ def start(args: argparse.Namespace) -> None:
 
     identity = configure_storage(
         subscription, location, resource_group, account, plan
+    )
+    cache_account = dl4j_cache_storage_account(
+        subscription, location, args.dl4j_cache_storage_account
+    )
+    cache_container = args.dl4j_cache_container
+    cache_prefix = args.dl4j_cache_prefix
+    cache_key = storage_account_key(cache_account)
+    grant_blob_role(identity, cache_account, cache_container)
+    compiler_cache = compiler_cache_config(
+        cache_account, cache_key, cache_container, cache_prefix, args.timeout_hours
     )
     run_blob = f"{plan['artifactPrefix'].strip('/')}/{run_id}/run.json"
     if blob_exists(account, plan["artifactContainer"], run_blob):
@@ -1260,6 +1384,9 @@ def start(args: argparse.Namespace) -> None:
         "commit": commit,
         "repository": args.repository,
         "managedIdentityClientId": identity["identityClientId"],
+        "compilerCacheAccount": cache_account,
+        "compilerCacheContainer": cache_container,
+        "compilerCachePrefix": cache_prefix,
         "killSwitchUrl": (
             f"https://{account}.blob.core.windows.net/{plan['controlContainer']}/"
             f"{kill_blob}"
@@ -1295,7 +1422,7 @@ def start(args: argparse.Namespace) -> None:
             ) as executor:
                 futures = {
                     executor.submit(
-                        run_execution, args, plan, base, identity, execution
+                        run_execution, args, plan, base, identity, compiler_cache, execution
                     ): execution
                     for execution in batch
                 }
@@ -1550,7 +1677,10 @@ def parser() -> argparse.ArgumentParser:
     add_cloud_options(launch)
     add_selection_options(launch)
     launch.add_argument("--version", required=True)
-    launch.add_argument("--snapshot-version", default="1.0.0-SNAPSHOT")
+    launch.add_argument(
+        "--snapshot-version", default="1.0.0-SNAPSHOT",
+        help="DL4J/ND4J snapshot version resolved from the configured Maven repository",
+    )
     source = launch.add_mutually_exclusive_group(required=True)
     source.add_argument("--commit")
     source.add_argument("--branch")
@@ -1563,6 +1693,12 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--dl4j-maven-repository-id", default="dl4j-release")
     launch.add_argument("--dl4j-maven-marker-url")
     launch.add_argument("--dl4j-sdk-assets-url")
+    launch.add_argument(
+        "--dl4j-cache-storage-account",
+        help="existing DL4J Azure cache account (defaults to the canonical dl4jrel account)",
+    )
+    launch.add_argument("--dl4j-cache-container", default=DEFAULT_DL4J_CACHE_CONTAINER)
+    launch.add_argument("--dl4j-cache-prefix", default=DEFAULT_DL4J_CACHE_PREFIX)
     launch.add_argument("--run-id")
     launch.add_argument("--root-volume-gib", type=int)
     launch.add_argument("--timeout-hours", type=int, default=48)

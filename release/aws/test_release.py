@@ -612,6 +612,51 @@ class BuildPlatformParityTest(unittest.TestCase):
                 platform_runs[0].args[2]["NATIVE_TARGETS"],
             )
 
+    def test_full_repository_only_platform_skips_dl4j_java_reactor(self):
+        config = {
+            "releaseVersion": "0.1.0-SNAPSHOT",
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jInputMode": "maven",
+            "dl4jMavenRepositoryUrl": "https://repo.example/snapshots/",
+            "dl4jMavenRepositoryId": "sonatype-snapshots",
+            "dl4jSdkAssetsUrl": "https://downloads.example/{lane}.tar.gz",
+            "shard": {
+                "os": "windows",
+                "architecture": "x86_64",
+                "build": {
+                    "kind": "platform",
+                    "backend": "cpu",
+                    "javacppPlatform": "windows-x86_64",
+                    "dl4jLane": "windows-x86_64-cpu",
+                    "buildThreads": 8,
+                    "mavenHeapGiB": 4,
+                    "variants": [{
+                        "name": "compile",
+                        "classifier": "windows-x86_64-compile",
+                    }],
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            with patch.object(BUILD_MODULE, "ensure_graalvm", return_value={}):
+                with patch.object(BUILD_MODULE, "download_dl4j_sdk_assets"):
+                    with patch.object(BUILD_MODULE, "hydrate_dl4j_sdk_jars"):
+                        with patch.object(BUILD_MODULE, "run_dl4j_java_reactor") as java:
+                            with patch.object(BUILD_MODULE, "stage_dl4j_release_artifacts"):
+                                with patch.object(BUILD_MODULE, "stage_kompile_maven_artifacts"):
+                                    with patch.object(BUILD_MODULE, "run") as run:
+                                        BUILD_MODULE.build_full_platform(
+                                            config, root, root / "m2",
+                                            root / "maven-output", root / "assets",
+                                        )
+            java.assert_not_called()
+            platform_runs = [
+                call for call in run.call_args_list
+                if call.args[0][1] == "./build-scripts/build-kompile-platform.sh"
+            ]
+            self.assertEqual(1, len(platform_runs))
+
     def test_repository_mode_skips_dl4j_source_lane_and_propagates_repository(self):
         config = {
             "releaseVersion": "1.2.3",

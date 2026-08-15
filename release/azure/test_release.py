@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -204,6 +205,50 @@ class AzurePlanTest(unittest.TestCase):
         self.assertFalse(any(value.startswith("macosx-") for value in self.classifiers))
 
 
+class CompilerCacheTest(unittest.TestCase):
+    def test_uses_the_canonical_dl4j_account_contract(self):
+        account = MODULE.dl4j_cache_storage_account("subscription", "eastus2", None)
+        self.assertTrue(account.startswith("dl4jrel"))
+        self.assertEqual(
+            "dl4jrel" + hashlib.sha1(b"subscription/eastus2").hexdigest()[:15],
+            account,
+        )
+
+    @patch.object(MODULE, "az", return_value="?sp=rcw&sig=test")
+    def test_emits_the_dl4j_compiler_cache_schema(self, az):
+        value = MODULE.compiler_cache_config(
+            "dl4jrel123", "account-key", "releases", "deeplearning4j/releases", 48
+        )
+        self.assertEqual("azure", value["backend"])
+        self.assertEqual("deeplearning4j/releases/compiler-cache/v1", value["keyPrefix"])
+        self.assertEqual(
+            "deeplearning4j/releases/toolchain-cache/v1",
+            value["toolchainCache"]["keyPrefix"],
+        )
+        self.assertEqual("sccache-l0", value["localSnapshot"]["name"])
+        self.assertIn("SharedAccessSignature=sp=rcw&sig=test", value["connectionString"])
+        az.assert_called_once()
+
+    def test_lane_config_forwards_cache_only_to_the_temporary_dl4j_config(self):
+        cache = {"backend": "azure", "connectionString": "secret"}
+        dependency = {"host": {"identity": "host"}}
+        config = {
+            "runId": "run",
+            "snapshotVersion": "1.0.0-SNAPSHOT",
+            "dl4jCommit": "a" * 40,
+            "dl4jRepository": "https://github.com/deeplearning4j/deeplearning4j.git",
+            "shard": {"build": {}},
+            "compilerCache": cache,
+            "dependencyCache": dependency,
+            "managedIdentityClientId": "client-id",
+        }
+        lane = {"id": "windows", "build": {}}
+        result = BUILD_MODULE.dl4j_lane_config(config, lane)
+        self.assertIs(cache, result["compilerCache"])
+        self.assertIs(dependency, result["dependencyCache"])
+        self.assertEqual("client-id", result["managedIdentityClientId"])
+
+
 class SelectionAndInputTest(unittest.TestCase):
     def setUp(self):
         self.plan = MODULE.load_plan(ROOT / "release-plan.json")
@@ -306,7 +351,7 @@ class SelectionAndInputTest(unittest.TestCase):
             MODULE, "fetch_json_url", return_value=self.dl4j_marker()
         ):
             values = MODULE.source_inputs(args, selected)
-        self.assertEqual("azure-blob-maven+source", values["dl4jInputMode"])
+        self.assertEqual("azure-blob-maven", values["dl4jInputMode"])
         self.assertTrue(values["dl4jMavenRepositoryUrl"].endswith("/"))
         self.assertIn("{lane}", values["dl4jSdkAssetsUrl"])
         self.assertEqual("b" * 40, values["dl4jCommit"])
@@ -363,10 +408,10 @@ class SelectionAndInputTest(unittest.TestCase):
         self.assertEqual("release/snapshot", values["dl4jBranch"])
         self.assertEqual("b" * 40, values["dl4jCommit"])
 
-    def test_sonatype_repository_requires_dl4j_source_ref(self):
+    def test_sonatype_repository_can_be_repository_only(self):
         args = MODULE.parser().parse_args([
             "start",
-            "--version", "1.2.3",
+            "--version", "0.1.0-SNAPSHOT",
             "--commit", "a" * 40,
             "--dl4j-maven-repository-url",
             "https://central.sonatype.com/repository/maven-snapshots/",
@@ -376,8 +421,11 @@ class SelectionAndInputTest(unittest.TestCase):
         selected = MODULE.selected_executions(
             self.plan, ["windows-x86_64-compile"]
         )
-        with self.assertRaisesRegex(ValueError, "owned DL4J Java modules"):
-            MODULE.source_inputs(args, selected)
+        values = MODULE.source_inputs(args, selected)
+        self.assertEqual("1.0.0-SNAPSHOT", args.snapshot_version)
+        self.assertEqual("maven", values["dl4jInputMode"])
+        self.assertEqual("", values["dl4jBranch"])
+        self.assertEqual("", values["dl4jCommit"])
 
     def test_repository_url_rejects_insecure_or_credentialed_urls(self):
         selected = MODULE.selected_executions(
@@ -836,6 +884,8 @@ class FullPlatformBuildTest(unittest.TestCase):
             "snapshotVersion": "1.0.0-SNAPSHOT",
             "dl4jRepository": "https://example.test/dl4j.git",
             "dl4jCommit": "b" * 40,
+            "dl4jBranch": "release/snapshot" if repository_mode else "",
+            "dl4jInputMode": "maven+source" if repository_mode else "source",
             "dl4jMavenRepositoryUrl": (
                 "https://builds.blob.core.windows.net/releases/maven/"
                 if repository_mode else ""
