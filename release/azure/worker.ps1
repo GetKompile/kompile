@@ -66,10 +66,24 @@ try {
   $TranscriptStarted = $true
   Set-ExecutionPolicy Bypass -Scope Process -Force
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+  # Install the uploader before toolchain preflight so a dependency failure is
+  # still durable in the controller's blob prefix.
+  $AzCopyZip = Join-Path $WorkRoot 'azcopy.zip'
+  $AzCopyDir = Join-Path $WorkRoot 'azcopy'
+  Invoke-WebRequest 'https://aka.ms/downloadazcopy-v10-windows' -OutFile $AzCopyZip -UseBasicParsing
+  Expand-Archive $AzCopyZip $AzCopyDir -Force
+  $DownloadedAzCopy = Get-ChildItem $AzCopyDir -Filter azcopy.exe -Recurse | Select-Object -First 1
+  if (-not $DownloadedAzCopy) { throw 'AzCopy executable was not found after extraction' }
+  Copy-Item $DownloadedAzCopy.FullName $AzCopy -Force
+  & $AzCopy login --identity --identity-client-id $Config.managedIdentityClientId
+  if ($LASTEXITCODE -ne 0) { throw 'AzCopy managed-identity login failed' }
+
   if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
   }
   choco install -y --no-progress ccache cmake git maven nodejs ninja temurin11 temurin17 python312 7zip msys2 rustup.install visualstudio2022buildtools visualstudio2022-workload-vctools
+  if ($LASTEXITCODE -ne 0) { throw 'Chocolatey bootstrap package installation failed' }
   $MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
   $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
@@ -90,16 +104,14 @@ try {
   }
   if (-not $MavenCommand) { throw 'mvn.cmd unavailable after Chocolatey install' }
   $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $NpmCommand) {
+    $NodeNpm = Get-ChildItem 'C:\Program Files\nodejs\npm.cmd' -File -ErrorAction SilentlyContinue
+    if ($NodeNpm) {
+      $env:PATH = "$($NodeNpm.DirectoryName);$env:PATH"
+      $NpmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    }
+  }
   if (-not $NpmCommand) { throw 'npm.cmd unavailable after Node.js install' }
-
-  $AzCopyZip = Join-Path $WorkRoot 'azcopy.zip'
-  $AzCopyDir = Join-Path $WorkRoot 'azcopy'
-  Invoke-WebRequest 'https://aka.ms/downloadazcopy-v10-windows' -OutFile $AzCopyZip -UseBasicParsing
-  Expand-Archive $AzCopyZip $AzCopyDir -Force
-  $DownloadedAzCopy = Get-ChildItem $AzCopyDir -Filter azcopy.exe -Recurse | Select-Object -First 1
-  Copy-Item $DownloadedAzCopy.FullName $AzCopy -Force
-  & $AzCopy login --identity --identity-client-id $Config.managedIdentityClientId
-  if ($LASTEXITCODE -ne 0) { throw 'AzCopy managed-identity login failed' }
 
   $JavaHome = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
   if (-not $JavaHome) {

@@ -702,6 +702,18 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("Spring Boot's process-aot", powershell)
         self.assertIn("nodejs", powershell)
         self.assertIn("Get-Command npm.cmd", powershell)
+        self.assertIn("C:\\Program Files\\nodejs\\npm.cmd", powershell)
+
+    def test_windows_bootstrap_durably_reports_toolchain_failures(self):
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        uploader = powershell.index(
+            "Invoke-WebRequest 'https://aka.ms/downloadazcopy-v10-windows'",
+        )
+        choco = powershell.index("choco install -y --no-progress")
+        self.assertLess(uploader, choco)
+        self.assertIn(
+            "Chocolatey bootstrap package installation failed", powershell,
+        )
 
     def test_windows_worker_refreshes_native_tool_paths(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
