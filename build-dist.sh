@@ -1364,7 +1364,13 @@ with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=T
             path = Path(current) / file_name
             archive.write(path, path.relative_to(root).as_posix())
 ' "${OUTPUT_DIR}" "${DIST_NAME}" "${ZIP_ARCHIVE}"
-tar -czf "${TAR_ARCHIVE}" -C "${OUTPUT_DIR}" "${DIST_NAME}/"
+(
+    # Keep tar operands relative to the output directory.  On Windows/MSYS,
+    # passing a C:\\... archive path directly makes tar treat the drive colon
+    # as a remote-host separator ("Cannot connect to C").
+    cd "${OUTPUT_DIR}"
+    tar -czf "$(basename "${TAR_ARCHIVE}")" "${DIST_NAME}/"
+)
 printf '%s  %s\n' "$(checksum_value "${ZIP_ARCHIVE}")" "$(basename "${ZIP_ARCHIVE}")" > "${ZIP_ARCHIVE}.sha256"
 printf '%s  %s\n' "$(checksum_value "${TAR_ARCHIVE}")" "$(basename "${TAR_ARCHIVE}")" > "${TAR_ARCHIVE}.sha256"
 
