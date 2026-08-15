@@ -980,26 +980,9 @@
               </execution>
             </executions>
           </plugin>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-compiler-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>kompile-compile-spring-aot-sources</id>
-                <phase>prepare-package</phase>
-                <goals>
-                  <goal>compile</goal>
-                </goals>
-                <configuration>
-                  <skipMain>${kompile.windows.aot.skip}</skipMain>
-                  <compileSourceRoots>
-                    <compileSourceRoot>${project.build.directory}/spring-aot/main/sources</compileSourceRoot>
-                  </compileSourceRoots>
-                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
+          <!-- Copy generated AOT classes before javac compiles the generated BeanDefinitions.
+               Spring emits CGLIB proxy classes into spring-aot/main/classes and the generated
+               sources reference them. -->
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-resources-plugin</artifactId>
@@ -1023,6 +1006,26 @@
                       <filtering>false</filtering>
                     </resource>
                   </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>kompile-compile-spring-aot-sources</id>
+                <phase>prepare-package</phase>
+                <goals>
+                  <goal>compile</goal>
+                </goals>
+                <configuration>
+                  <skipMain>${kompile.windows.aot.skip}</skipMain>
+                  <compileSourceRoots>
+                    <compileSourceRoot>${project.build.directory}/spring-aot/main/sources</compileSourceRoot>
+                  </compileSourceRoots>
+                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
                 </configuration>
               </execution>
             </executions>
