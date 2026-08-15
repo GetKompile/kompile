@@ -29,6 +29,11 @@
     <name>Kompile CLI</name>
     <description>Command Line Interface for Kompile Pipelines</description>
 
+    <properties>
+        <!-- Ant's exec task must use npm.cmd on Windows; Unix uses npm. -->
+        <npm.executable>npm</npm.executable>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -436,7 +441,7 @@
                                 <configuration>
                                     <target>
                                         <mkdir dir="${project.build.directory}/pi-mcp-adapter-build"/>
-                                        <exec executable="npm"
+                                        <exec executable="${npm.executable}"
                                               dir="${project.build.directory}/pi-mcp-adapter-build"
                                               failifexecutionfails="true"
                                               failonerror="true">
@@ -460,6 +465,17 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <profile>
+            <id>windows-npm</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                </os>
+            </activation>
+            <properties>
+                <npm.executable>npm.cmd</npm.executable>
+            </properties>
         </profile>
     </profiles>
 
