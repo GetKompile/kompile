@@ -2,20 +2,12 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ConfigB64 = '__KOMPILE_AZURE_WORKER_CONFIG_B64__'
 $BuildDriverB64 = '__KOMPILE_BUILD_DRIVER_B64__'
-$PhysicalWorkRoot = 'C:\kompile-release'
 # Spring Boot's process-aot launches a JVM with the complete runtime classpath. On
-# Windows that command line is capped at 32,767 characters, so use a short DOS
-# drive alias for the workspace and Maven cache. Keep the physical path stable for
-# diagnostics, but make every build-facing path use the alias.
-New-Item -ItemType Directory -Force -Path $PhysicalWorkRoot | Out-Null
-$ShortWorkDrive = 'K:'
-subst $ShortWorkDrive /d 2>$null | Out-Null
-subst $ShortWorkDrive $PhysicalWorkRoot | Out-Null
-if ($LASTEXITCODE -eq 0) {
-  $WorkRoot = "$ShortWorkDrive\"
-} else {
-  $WorkRoot = $PhysicalWorkRoot
-}
+# Windows that command line is capped at 32,767 characters, so keep the build root
+# physically short. A real directory is usable from the service account running the
+# CustomScriptExtension; drive-letter subst mappings are session-scoped and can fail
+# before the worker's diagnostic transcript starts.
+$WorkRoot = 'C:\k'
 $SourceDir = Join-Path $WorkRoot 'source'
 $OutputDir = Join-Path $WorkRoot 'output'
 $MavenRepo = Join-Path $WorkRoot 'm2'

@@ -677,9 +677,8 @@ class WorkerContractTest(unittest.TestCase):
 
     def test_windows_worker_uses_short_workspace_for_aot_classpaths(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
-        self.assertIn("$PhysicalWorkRoot =", powershell)
-        self.assertIn("$ShortWorkDrive = 'K:'", powershell)
-        self.assertIn("subst $ShortWorkDrive $PhysicalWorkRoot", powershell)
+        self.assertIn("$WorkRoot = 'C:\\k'", powershell)
+        self.assertNotIn("subst $ShortWorkDrive", powershell)
         self.assertIn("Spring Boot's process-aot", powershell)
         self.assertIn("nodejs", powershell)
         self.assertIn("Get-Command npm.cmd", powershell)
