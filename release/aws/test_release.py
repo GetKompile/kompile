@@ -542,7 +542,7 @@ class BuildPlatformParityTest(unittest.TestCase):
                 "samediff-llm",
                 captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
             )
-            self.assertIn(
+            self.assertNotIn(
                 "nd4j-sdx-model",
                 captured["shard"]["artifactRules"]["unclassifiedArtifactIds"],
             )

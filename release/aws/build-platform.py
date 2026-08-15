@@ -660,6 +660,10 @@ def run_dl4j_java_reactor(
     shard = config["shard"]
     build = shard["build"]
     artifact_ids = list(OWNED_DL4J_JAVA_ARTIFACTS)
+    cross_platform_artifact_ids = [
+        artifact_id for artifact_id in artifact_ids
+        if artifact_id not in DL4J_JAVA_MODULE_PROFILES
+    ]
     java_shard = {
         "id": f"kompile-{build['javacppPlatform']}-java",
         "os": shard["os"],
@@ -667,8 +671,8 @@ def run_dl4j_java_reactor(
         "workloads": ["maven"],
         "artifactRules": {
             "mode": "classifier",
-            "artifactIds": artifact_ids,
-            "unclassifiedArtifactIds": artifact_ids,
+            "artifactIds": cross_platform_artifact_ids,
+            "unclassifiedArtifactIds": cross_platform_artifact_ids,
             "includeMetadata": True,
         },
         "build": {
