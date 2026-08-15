@@ -162,13 +162,25 @@ KOMPILE_DEPLOY_REPOSITORY_URL="${KOMPILE_DEPLOY_REPOSITORY_URL:-}"
 KOMPILE_DEPLOY_REPOSITORY_ID="${KOMPILE_DEPLOY_REPOSITORY_ID:-}"
 
 # GraalVM — try several locations
+# The release driver passes a native Windows path when this script runs under
+# MSYS2/Git Bash. Normalize it before probing the POSIX-visible installation.
+if [ -n "${GRAALVM_HOME:-}" ] && command -v cygpath >/dev/null 2>&1; then
+  case "${GRAALVM_HOME}" in
+    [A-Za-z]:*) GRAALVM_HOME="$(cygpath -u "${GRAALVM_HOME}")" ;;
+  esac
+fi
+
+kompile_has_native_image() {
+  [ -x "$1/bin/native-image" ] || [ -x "$1/bin/native-image.cmd" ]
+}
+
 if [ -z "${GRAALVM_HOME:-}" ]; then
   for _candidate in \
     "${HOME}/.sdkman/candidates/java/21.0.10-graal" \
     "${HOME}/.sdkman/candidates/java/17.0.12-graal" \
     "${HOME}/.kompile/graalvm" \
     "${JAVA_HOME:-}"; do
-    if [ -n "${_candidate}" ] && [ -x "${_candidate}/bin/native-image" ]; then
+    if [ -n "${_candidate}" ] && kompile_has_native_image "${_candidate}"; then
       GRAALVM_HOME="${_candidate}"
       break
     fi
@@ -332,10 +344,15 @@ kompile_validate_platform() {
 
 # Check that GraalVM is available and has native-image
 kompile_check_graalvm() {
-  if [ -z "${GRAALVM_HOME}" ] || [ ! -x "${GRAALVM_HOME}/bin/native-image" ]; then
+  if [ -z "${GRAALVM_HOME}" ] || ! kompile_has_native_image "${GRAALVM_HOME}"; then
     log "ERROR: GraalVM not found or missing native-image"
     log "Set GRAALVM_HOME or install: sdk install java 21.0.10-graal"
     return 1
+  fi
+  if [ -x "${GRAALVM_HOME}/bin/native-image" ]; then
+    KOMPILE_NATIVE_IMAGE="${GRAALVM_HOME}/bin/native-image"
+  else
+    KOMPILE_NATIVE_IMAGE="${GRAALVM_HOME}/bin/native-image.cmd"
   fi
   log "GraalVM: ${GRAALVM_HOME}"
   return 0
@@ -814,7 +831,7 @@ kompile_native_fingerprint() {
     rm -rf "${probe_dir}"
     return 1
   fi
-  graal_version="$("${GRAALVM_HOME}/bin/native-image" --version 2>&1)"
+  graal_version="$("${KOMPILE_NATIVE_IMAGE}" --version 2>&1)"
 
   local aot_fingerprint runtime_fingerprint
   aot_fingerprint="$({
