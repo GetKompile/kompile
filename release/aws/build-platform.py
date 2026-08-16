@@ -776,6 +776,23 @@ def run_dl4j_java_reactor(
             stage_dl4j_java_artifacts(repository, maven_output)
 
 
+def native_image_distribution(config: dict[str, Any]) -> str:
+    """Select a Windows-safe native-image toolchain for distribution builds.
+
+    GraalVM Community 21.0.2's Windows PE/COFF writer can fail at image write
+    time with a null relocation predecessor on the large Spring application.
+    Oracle's current Java 21 distribution uses the maintained Windows writer;
+    keep Community as the default everywhere else and allow an explicit plan
+    override for future toolchain testing.
+    """
+    shard = config.get("shard", {})
+    build = shard.get("build", {})
+    configured = build.get("nativeImageDistribution")
+    if configured in {"graalvm-community", "graalvm"}:
+        return str(configured)
+    return "graalvm" if shard.get("os") == "windows" else "graalvm-community"
+
+
 def distribution_backend_lane(config: dict[str, Any], variant: str) -> tuple[str, list[str]] | None:
     platform_name = config["shard"]["build"]["javacppPlatform"]
     if variant in {"cli-only", "hosted"}:
@@ -798,7 +815,7 @@ def build_distribution(config: dict[str, Any], source: Path, repository: Path,
     shard = config["shard"]
     version = config["releaseVersion"]
     env = ensure_graalvm(
-        source / ".external-tools", shard["architecture"], "graalvm-community",
+        source / ".external-tools", shard["architecture"], native_image_distribution(config),
     )
     env["KOMPILE_MAVEN_REPO"] = str(repository)
     env["MAVEN_OPTS"] = f"-Xmx{shard['build'].get('mavenHeapGiB', 24)}g"
@@ -853,7 +870,7 @@ def build_full_platform(config: dict[str, Any], source: Path, repository: Path,
     shard = config["shard"]
     build = shard["build"]
     env = ensure_graalvm(
-        source / ".external-tools", shard["architecture"], "graalvm-community",
+        source / ".external-tools", shard["architecture"], native_image_distribution(config),
     )
     env["MAVEN_OPTS"] = f"-Xmx{build.get('mavenHeapGiB', 32)}g"
     env["MVN"] = maven()

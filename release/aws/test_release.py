@@ -337,6 +337,20 @@ class BuildPlatformParityTest(unittest.TestCase):
         self.assertEqual("/opt/graalvm", env["JAVA_HOME"])
         self.assertEqual("graalvm-community", env["KOMPILE_GRAALVM_DISTRIBUTION"])
 
+    def test_windows_distribution_uses_oracle_native_image_toolchain(self):
+        self.assertEqual(
+            "graalvm",
+            BUILD_MODULE.native_image_distribution({
+                "shard": {"os": "windows", "build": {}},
+            }),
+        )
+        self.assertEqual(
+            "graalvm-community",
+            BUILD_MODULE.native_image_distribution({
+                "shard": {"os": "linux", "build": {}},
+            }),
+        )
+
     def test_native_build_requires_and_collects_all_five_exact_binaries(self):
         binary_names = {
             "kompile-cli-main": "kompile-cli-main",

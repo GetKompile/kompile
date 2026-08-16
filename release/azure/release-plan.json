@@ -82,6 +82,7 @@
         "kind": "distribution",
         "backend": "none",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "variants": [
           {
             "name": "cli-only",
@@ -184,6 +185,7 @@
         "kind": "platform",
         "backend": "cpu",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "dl4jLane": "windows-x86_64-cpu",
         "variants": [
           {"name": "base", "classifier": "windows-x86_64"},
@@ -206,6 +208,7 @@
         "kind": "platform",
         "backend": "vulkan",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "dl4jLane": "windows-x86_64-vulkan",
         "requireSdk": false,
         "variants": [
@@ -224,6 +227,7 @@
         "backend": "cuda",
         "cudaVersion": "12.6",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "dl4jLane": "windows-x86_64-cuda-12-6",
         "variants": [
           {"name": "base", "classifier": "windows-x86_64-cuda-12.6"},
@@ -243,6 +247,7 @@
         "backend": "cuda",
         "cudaVersion": "12.9",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "dl4jLane": "windows-x86_64-cuda-12-9",
         "variants": [
           {"name": "base", "classifier": "windows-x86_64-cuda-12.9"},
@@ -429,6 +434,7 @@
         "backend": "cuda",
         "cudaVersion": "12.9",
         "javacppPlatform": "windows-x86_64",
+        "nativeImageDistribution": "graalvm",
         "dl4jLane": "windows-x86_64-zluda",
         "requireSdk": false,
         "variants": [
