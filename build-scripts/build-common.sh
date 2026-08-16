@@ -1367,6 +1367,12 @@ kompile_build_for_platform() {
   if [ "${backend_type}" = "cuda" ]; then
     extra_mvn_args+=("-Dkompile.cuda=true")
   fi
+  # GraalVM's Windows PE/COFF relocation layout can fail for large release
+  # images at -O2. This property must be attached here (the native images are
+  # built by this orchestration path, not by build-dist.sh's direct Maven calls).
+  case "${platform}" in
+    windows-*) extra_mvn_args+=("-Dkompile.windows.pe-safe=true") ;;
+  esac
 
   # Step 1: Build DL4J backend
   if [ "${skip_dl4j}" -eq 0 ]; then

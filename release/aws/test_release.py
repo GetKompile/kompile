@@ -1529,6 +1529,13 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn('<buildArg>-O1</buildArg>', (REPOSITORY / "pom.xml").read_text(encoding="utf-8"))
         self.assertNotIn('eval "${BUILD_CMD}"', source)
 
+    def test_windows_pe_safe_flag_reaches_native_orchestration_path(self):
+        source = (REPOSITORY / "build-scripts" / "build-common.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('windows-*) extra_mvn_args+=("-Dkompile.windows.pe-safe=true")', source)
+        self.assertIn('kompile_build_all_native "${extra_mvn_args[@]}"', source)
+
     def test_dl4j_backend_dry_run_preserves_repository_paths_with_spaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
