@@ -1084,22 +1084,22 @@ if [ "${DOCUMENT_MODEL_NATIVE}" = true ] \
     exit 1
 fi
 
-# Copy launchers at the payload boundary. Local execution needs only the staging
-# convenience launcher; product/server variants retain the complete launcher set.
-#
-# Copy the supported service launchers. Server/persona scripts retain their JVM
-# product fallback; kompile-model-staging.sh is a native-only MCP worker launcher.
-# Copying the directory rather than naming files keeps both dist paths aligned.
+# Copy launchers at the payload boundary. Product/server variants retain the
+# complete launcher set. A staging-only distribution keeps its native convenience
+# launcher; the local execution distribution has no staging launcher.
 SCRIPTS_SRC="kompile-dist/src/main/scripts"
 if [ -d "${SCRIPTS_SRC}" ]; then
     if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
         cp "${SCRIPTS_SRC}"/*.sh "${DIST_DIR}/bin/"
-    else
+        chmod +x "${DIST_DIR}/bin/"*.sh
+    elif [ "${STAGING_NATIVE}" = true ]; then
         cp "${SCRIPTS_SRC}/kompile-model-staging.sh" "${DIST_DIR}/bin/"
+        chmod +x "${DIST_DIR}/bin/kompile-model-staging.sh"
     fi
-    chmod +x "${DIST_DIR}/bin/"*.sh
-    LAUNCHER_COUNT=$(ls "${DIST_DIR}/bin/"*.sh 2>/dev/null | wc -l)
-    echo "  bin/ (${LAUNCHER_COUNT} launcher scripts)"
+    LAUNCHER_COUNT=$(ls "${DIST_DIR}/bin/"*.sh 2>/dev/null | wc -l || true)
+    if [ "${LAUNCHER_COUNT}" -gt 0 ]; then
+        echo "  bin/ (${LAUNCHER_COUNT} launcher scripts)"
+    fi
 fi
 
 # JBang belongs to the JVM fallback tier, not the native local runtime.
@@ -1407,7 +1407,11 @@ else
     echo "  ERROR: Python 3 is required to create the distribution ZIP" >&2
     exit 1
 fi
-"${PYTHON_BIN}" -c '
+# Python is a native process on the Windows worker. Pass native paths explicitly;
+# do not rely on MSYS argument conversion for the archive operation.
+PYTHON_OUTPUT_DIR="$(kompile_path_to_native "${OUTPUT_DIR}")"
+PYTHON_ZIP_ARCHIVE="$(kompile_path_to_native "${ZIP_ARCHIVE}")"
+"${PYTHON_BIN}" - "${PYTHON_OUTPUT_DIR}" "${DIST_NAME}" "${PYTHON_ZIP_ARCHIVE}" <<'PY'
 import os
 import sys
 import zipfile
@@ -1425,7 +1429,7 @@ with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=T
         for file_name in files:
             path = Path(current) / file_name
             archive.write(path, path.relative_to(root).as_posix())
-' "${OUTPUT_DIR}" "${DIST_NAME}" "${ZIP_ARCHIVE}"
+PY
 (
     # Keep tar operands relative to the output directory.  On Windows/MSYS,
     # passing a C:\\... archive path directly makes tar treat the drive colon
