@@ -150,6 +150,8 @@ class LocalModelPipelineRunnerTest {
 
         assertEquals("model runtime text", extracted);
         ObjectNode captured = (ObjectNode) new ObjectMapper().readTree(capturedArgs.toFile());
+        assertEquals(document.toAbsolutePath().normalize().toString(),
+                captured.path("filePath").asText());
         assertEquals("custom-vlm", captured.path("modelId").asText());
         assertEquals("LOCAL", captured.path("modelSourceType").asText());
         assertEquals(descriptor.toAbsolutePath().normalize().toString(),

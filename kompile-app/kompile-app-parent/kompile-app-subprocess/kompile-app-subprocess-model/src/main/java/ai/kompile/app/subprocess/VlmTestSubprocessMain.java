@@ -293,7 +293,11 @@ public class VlmTestSubprocessMain {
                     pageResult.put("success", doc.isSuccess());
                     pageResult.put("processingTimeMs", doc.getProcessingTimeMs());
                     if (!doc.isSuccess()) {
-                        pageResult.put("error", doc.getErrorMessage());
+                        String pageError = nonBlank(doc.getErrorMessage());
+                        pageResult.put("error", pageError != null
+                                ? pageError
+                                : "Page " + doc.getPageNumber()
+                                + " failed without an error message");
                     }
                     // Token info from metadata
                     if (doc.getMetadata() != null) {
@@ -344,10 +348,7 @@ public class VlmTestSubprocessMain {
 
                 if (allFailed) {
                     // All pages failed - report as failure
-                    String firstError = pageResults.stream()
-                            .filter(p -> p.containsKey("error"))
-                            .map(p -> (String) p.get("error"))
-                            .findFirst().orElse("All pages failed");
+                    String firstError = firstPageError(pageResults);
                     completionData.put("allPagesFailed", true);
                     String resultsJson = OBJECT_MAPPER.writeValueAsString(completionData);
                     reporter.reportProgressImmediate("FAILED", 100, "Failed",
@@ -493,14 +494,13 @@ public class VlmTestSubprocessMain {
             applyNd4jEnvironmentConfig(config);
         }
 
-        // Apply optimal LLM configuration (Triton, CUDA graph capture, cuBLAS TF32, batched GEMM, etc.)
-        // This is the single source of truth for ~90 tok/s inference performance.
-        // Must be called AFTER Nd4j.backend and nativeOps are initialized but BEFORE model loading.
+        // Keep the vision encoder on its model-owned AUTO execution path. GenerationPipeline
+        // applies BenchmarkConfig.optimal() after vision encoding and scopes MAX_AUTOTUNE to
+        // decoder + embed_tokens. Applying the LLM profile or forcing TRITON globally here
+        // recompiles the full vision graph before the first page and makes local VLM startup
+        // pathologically slow.
         if (NativeOpsHolder.getInstance().getDeviceNativeOps().isTritonAvailable()) {
-            logger.info("Triton available — applying optimal LLM config (graph capture, fusion, TF32)");
-            Nd4j.getEnvironment().applyOptimalLLMConfig();
-            // Set graph execution mode to TRITON so auto-compiled DSP plans use Triton kernels
-            setPropertyIfAbsent(ND4JSystemProperties.DSP_GRAPH_EXECUTION_MODE, "TRITON");
+            logger.info("Triton available — optimal compilation remains scoped to decoder and embed_tokens by GenerationPipeline");
         } else {
             logger.info("Triton not available — applying basic LLM config (cuBLAS TF32 + batched GEMM)");
             Nd4j.getEnvironment().applyBasicLLMConfig();
@@ -828,6 +828,17 @@ public class VlmTestSubprocessMain {
                     "Local VLM modelIdentifier does not exist: " + candidate);
         }
         return null;
+    }
+
+    static String firstPageError(List<Map<String, Object>> pageResults) {
+        return pageResults.stream()
+                .map(page -> page.get("error"))
+                .filter(Objects::nonNull)
+                .map(Object::toString)
+                .map(String::trim)
+                .filter(error -> !error.isEmpty())
+                .findFirst()
+                .orElse("All pages failed without a reported page error");
     }
 
     private static String nonBlank(String value) {

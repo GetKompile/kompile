@@ -1,0 +1,72 @@
+[
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelRegistry",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelRegistry$ArchiveInstallInfo",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelEntry",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelMetadata",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelMetadata$OptimizationStats",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelMetadata$OptimizationConfig",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelMetadata$BenchmarkResult",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.TokenizerConfig",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ImagePreprocessorConfig",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.AudioSynthesisConfig",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelType",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.modelmanager.registry.ModelStatus",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true
+  }
+]

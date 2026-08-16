@@ -103,6 +103,16 @@ public class NativeLibraryResolver {
     private static final List<String> BACKEND_PREFERENCE = List.of(
             "jnind4jcuda", "jnind4jzluda", "jnind4jvulkan",
             "jnind4jtpu", "jnind4jhexagon", "jnind4jcpu");
+    private static final List<String> CUDA_DRIVER_COMPANION_BASE_NAMES =
+            List.of("nvidia-ptxjitcompiler");
+    private static final List<Path> LINUX_DRIVER_LIBRARY_ROOTS = List.of(
+            Path.of("/usr/lib64"),
+            Path.of("/usr/lib/x86_64-linux-gnu"),
+            Path.of("/usr/lib/aarch64-linux-gnu"),
+            Path.of("/lib64"),
+            Path.of("/lib/x86_64-linux-gnu"),
+            Path.of("/run/opengl-driver/lib"),
+            Path.of("/usr/lib/wsl/lib"));
     private static final Set<Path> LOADED_SIDE_LOADED_JNI = new LinkedHashSet<>();
 
     private NativeLibraryResolver() {}
@@ -160,6 +170,7 @@ public class NativeLibraryResolver {
         if (nativeImage) {
             if (mode != BootstrapMode.CORE) {
                 configureNd4jBackendPriorities(libDirs);
+                loadCudaDriverCompanionLibraries(libDirs);
             }
             loadSideLoadedJniLibraries(libDirs, mode);
         }
@@ -369,6 +380,109 @@ public class NativeLibraryResolver {
             }
         }
         return null;
+    }
+
+    /**
+     * Loads Linux NVIDIA driver companions by absolute path before CUDA initializes.
+     *
+     * <p>These libraries belong to the host driver, not the Kompile distribution. Some
+     * driver packages install only a versioned file such as
+     * {@code libnvidia-ptxjitcompiler.so.570.144} while CUDA requests its SONAME
+     * {@code libnvidia-ptxjitcompiler.so.1}. Loading the versioned file first satisfies
+     * that request without mutating the process environment or relying on
+     * {@code LD_PRELOAD}. Distribution-provided copies take precedence when present.</p>
+     */
+    static void loadCudaDriverCompanionLibraries(List<Path> libDirs) {
+        if (!PLATFORM.startsWith("linux")) {
+            return;
+        }
+        for (Path library : cudaDriverCompanionLoadPlan(libDirs, linuxDriverLibraryRoots())) {
+            Path normalized = library.toAbsolutePath().normalize();
+            synchronized (LOADED_SIDE_LOADED_JNI) {
+                if (LOADED_SIDE_LOADED_JNI.contains(normalized)) {
+                    continue;
+                }
+                try {
+                    System.load(normalized.toString());
+                    LOADED_SIDE_LOADED_JNI.add(normalized);
+                    logger.info("Loaded CUDA driver companion: " + normalized);
+                } catch (UnsatisfiedLinkError | SecurityException e) {
+                    throw new IllegalStateException(
+                            "Cannot load CUDA driver companion " + normalized
+                                    + ". Repair or reinstall the host NVIDIA driver.", e);
+                }
+            }
+        }
+    }
+
+    static List<Path> cudaDriverCompanionLoadPlan(
+            List<Path> libDirs, List<Path> systemLibraryRoots) {
+        if (!"jnind4jcuda".equals(selectedSideLoadedBackend(libDirs))) {
+            return List.of();
+        }
+
+        LinkedHashSet<Path> searchRoots = new LinkedHashSet<>();
+        for (Path libDir : libDirs) {
+            if (libDir != null) {
+                searchRoots.add(libDir.toAbsolutePath().normalize());
+            }
+        }
+        for (Path root : systemLibraryRoots) {
+            if (root != null) {
+                searchRoots.add(root.toAbsolutePath().normalize());
+            }
+        }
+
+        List<Path> plan = new ArrayList<>();
+        for (String baseName : CUDA_DRIVER_COMPANION_BASE_NAMES) {
+            Path companion = findVersionedLinuxLibrary(baseName, searchRoots)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "CUDA backend requires host driver companion lib" + baseName
+                                    + ".so.1, but no versioned library was found under "
+                                    + searchRoots + ". Repair or reinstall the NVIDIA driver."));
+            plan.add(companion);
+        }
+        return List.copyOf(plan);
+    }
+
+    private static List<Path> linuxDriverLibraryRoots() {
+        LinkedHashSet<Path> roots = new LinkedHashSet<>();
+        String javaLibraryPath = System.getProperty("java.library.path", "");
+        for (String entry : javaLibraryPath.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+            if (!entry.isBlank()) {
+                roots.add(Path.of(entry));
+            }
+        }
+        roots.addAll(LINUX_DRIVER_LIBRARY_ROOTS);
+        return List.copyOf(roots);
+    }
+
+    private static Optional<Path> findVersionedLinuxLibrary(
+            String baseName, Collection<Path> searchRoots) {
+        String stem = "lib" + baseName + ".so";
+        for (Path root : searchRoots) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> files = Files.list(root)) {
+                Optional<Path> candidate = files
+                        .filter(Files::isRegularFile)
+                        .filter(path -> {
+                            String fileName = path.getFileName().toString();
+                            return fileName.equals(stem) || fileName.startsWith(stem + ".");
+                        })
+                        .sorted(Comparator.comparing(
+                                (Path path) -> path.getFileName().toString()).reversed())
+                        .findFirst();
+                if (candidate.isPresent()) {
+                    return candidate.map(path -> path.toAbsolutePath().normalize());
+                }
+            } catch (IOException e) {
+                throw new IllegalStateException(
+                        "Cannot inspect CUDA driver library directory " + root, e);
+            }
+        }
+        return Optional.empty();
     }
 
     /**

@@ -13,6 +13,8 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -36,6 +38,23 @@ class VlmTestSubprocessContextTest {
 
         assertEquals(modelDirectory.toAbsolutePath().normalize(),
                 VlmTestSubprocessMain.localModelDirectory(args));
+    }
+
+    @Test
+    void pageFailureSummaryIgnoresNullErrorsAndReportsAUsefulFallback() {
+        Map<String, Object> nullError = new java.util.HashMap<>();
+        nullError.put("success", false);
+        nullError.put("error", null);
+
+        assertEquals(
+                "All pages failed without a reported page error",
+                VlmTestSubprocessMain.firstPageError(List.of(
+                        Map.of("success", false), nullError)));
+        assertEquals(
+                "PTX JIT compiler unavailable",
+                VlmTestSubprocessMain.firstPageError(List.of(
+                        Map.of("success", false, "error", "  "),
+                        Map.of("success", false, "error", "PTX JIT compiler unavailable"))));
     }
 
     @Test

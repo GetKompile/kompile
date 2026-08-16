@@ -78,6 +78,8 @@ class NativeSubprocessDispatchInventoryTest {
             "META-INF/native-image/subprocess-args-shared/reflect-config.json";
     private static final String MAIN_ARGS_CONFIG =
             "META-INF/native-image/subprocess-args-main/reflect-config.json";
+    private static final String SERVING_MODULE_CONFIG =
+            "META-INF/native-image/ai.kompile/kompile-model-serving/reflect-config.json";
     private static final List<String> REFLECTION_CONFIGS = List.of(
             BASELINE_CONFIG,
             SHARED_ARGS_CONFIG,
@@ -177,6 +179,33 @@ class NativeSubprocessDispatchInventoryTest {
                         + staleBaselineArgs);
     }
 
+    @Test
+    void componentOwnedServingMetadataTracksTheCanonicalArgsConstructor() throws Exception {
+        JsonNode registration = registrations(SERVING_MODULE_CONFIG).stream()
+                .filter(entry -> ServingSubprocessArgs.class.getName()
+                        .equals(entry.path("name").asText()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        SERVING_MODULE_CONFIG + " must register " + ServingSubprocessArgs.class.getName()));
+
+        List<String> expectedConstructor = Arrays.stream(
+                        ServingSubprocessArgs.class.getRecordComponents())
+                .map(RecordComponent::getType)
+                .map(Class::getName)
+                .toList();
+        long matchingConstructors = StreamSupport.stream(
+                        registration.path("methods").spliterator(), false)
+                .filter(method -> "<init>".equals(method.path("name").asText()))
+                .map(method -> StreamSupport.stream(
+                                method.path("parameterTypes").spliterator(), false)
+                        .map(JsonNode::asText)
+                        .toList())
+                .filter(expectedConstructor::equals)
+                .count();
+        assertEquals(1L, matchingConstructors,
+                "the serving module's native metadata must track nullable record component types");
+    }
+
     private static Map<String, List<Class<?>>> fileArgsByMode() {
         Map<String, List<Class<?>>> modes = new LinkedHashMap<>();
         modes.put("ingest", List.of(SubprocessArgs.class));
@@ -206,16 +235,24 @@ class NativeSubprocessDispatchInventoryTest {
     }
 
     private Set<String> registrationNames(String resource) throws Exception {
+        Set<String> names = new TreeSet<>();
+        for (JsonNode entry : registrations(resource)) {
+            JsonNode name = entry.get("name");
+            if (name != null && name.isTextual()) {
+                names.add(name.asText());
+            }
+        }
+        return names;
+    }
+
+    private List<JsonNode> registrations(String resource) throws Exception {
         try (InputStream input = getClass().getClassLoader().getResourceAsStream(resource)) {
             assertNotNull(input, () -> resource + " must be on the app-main test classpath");
-            Set<String> names = new TreeSet<>();
+            List<JsonNode> entries = new ArrayList<>();
             for (JsonNode entry : new ObjectMapper().readTree(input)) {
-                JsonNode name = entry.get("name");
-                if (name != null && name.isTextual()) {
-                    names.add(name.asText());
-                }
+                entries.add(entry);
             }
-            return names;
+            return entries;
         }
     }
 

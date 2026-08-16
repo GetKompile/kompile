@@ -1429,6 +1429,8 @@
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                                 <!-- Keep relocatable image-heap metadata below the existing 1 MiB aligned-chunk ceiling. -->
                                 <buildArg>-H:LargeArrayThreshold=1048576</buildArg>
+                                <!-- PDFBox and document loaders require legacy encodings such as Windows-1252. -->
+                                <buildArg>-H:+AddAllCharsets</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
@@ -1479,8 +1481,8 @@
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
                                 <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
-                                <!-- Use ingest configs as baseline (VLM test has similar deps) -->
-                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared</buildArg>
+                                <!-- Use ingest configs as baseline (VLM test has similar deps) plus focused VLM runtime metadata. -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest,${project.basedir}/src/main/resources/META-INF/native-image/subprocess-args-shared,${project.basedir}/src/main/resources/META-INF/native-image/vlm-test-runtime</buildArg>
                                 <buildArg>-H:IncludeResources=application.*</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>

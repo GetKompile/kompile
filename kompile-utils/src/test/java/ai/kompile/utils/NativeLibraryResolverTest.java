@@ -164,6 +164,41 @@ class NativeLibraryResolverTest {
     }
 
     @Test
+    void resolvesVersionedHostPtxCompilerForCudaBackend() throws Exception {
+        writeNative("libjnind4jcuda.so");
+        Path driverDirectory = Files.createDirectory(temporaryDirectory.resolve("driver"));
+        Path ptxCompiler = driverDirectory.resolve(
+                "libnvidia-ptxjitcompiler.so.570.144");
+        Files.writeString(ptxCompiler, "test");
+
+        assertEquals(
+                List.of(ptxCompiler),
+                NativeLibraryResolver.cudaDriverCompanionLoadPlan(
+                        List.of(temporaryDirectory), List.of(driverDirectory)));
+    }
+
+    @Test
+    void failsLoudlyWhenCudaDriverCompanionIsMissing() throws Exception {
+        writeNative("libjnind4jcuda.so");
+        Path emptyDriverDirectory = Files.createDirectory(
+                temporaryDirectory.resolve("empty-driver"));
+
+        assertThrows(IllegalStateException.class, () ->
+                NativeLibraryResolver.cudaDriverCompanionLoadPlan(
+                        List.of(temporaryDirectory), List.of(emptyDriverDirectory)));
+    }
+
+    @Test
+    void nonCudaBackendDoesNotRequireNvidiaDriverCompanions() throws Exception {
+        writeNative("libjnind4jcpu.so");
+
+        assertEquals(
+                List.of(),
+                NativeLibraryResolver.cudaDriverCompanionLoadPlan(
+                        List.of(temporaryDirectory), List.of()));
+    }
+
+    @Test
     void coreBootstrapDoesNotLoadPackagedModelBackend() throws Exception {
         for (String name : List.of(
                 "libjvm.so", "libjnijavacpp.so", "libjnicudart.so",

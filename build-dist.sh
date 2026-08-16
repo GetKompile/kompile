@@ -911,6 +911,18 @@ if [ "${DOCUMENT_MODEL_NATIVE}" = true ]; then
         chmod +x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
         normalize_elf_portability "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
         echo "  bin/kompile-vlm-test ($(du -h "${VLM_WORKER_TARGET}" | cut -f1))"
+        # The VLM worker reaches PDFBox's AWT rasterizer after model bootstrap.
+        # Its GraalVM-emitted JDK shims must therefore be present even in the
+        # minimal CLI/local-runtime distribution where app-main is not shipped.
+        VLM_WORKER_SHIMS=0
+        for shim in "$(dirname "${VLM_WORKER_TARGET}")"/lib*.so; do
+            [ -f "${shim}" ] || continue
+            cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
+            VLM_WORKER_SHIMS=$((VLM_WORKER_SHIMS + 1))
+        done
+        if [ "${VLM_WORKER_SHIMS}" -gt 0 ]; then
+            echo "  lib/ (+${VLM_WORKER_SHIMS} GraalVM JDK shim libraries from kompile-vlm-test)"
+        fi
     else
         echo "  ERROR: native document-model worker is missing: ${VLM_WORKER_TARGET}" >&2
         exit 1
