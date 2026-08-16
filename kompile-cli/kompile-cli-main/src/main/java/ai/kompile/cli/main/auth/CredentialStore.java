@@ -342,10 +342,10 @@ public final class CredentialStore {
                 StandardOpenOption.WRITE);
              FileLock ignored = channel.lock()) {
             applyOwnerOnlyPermissions(lockPath, false);
-            LinkedHashMap<String, ManagedCredential> credentials = readUnlocked();
-            T result = operation.apply(credentials);
+            StoreState store = readUnlocked();
+            T result = operation.apply(store);
             if (writeBack) {
-                writeUnlocked(credentials);
+                writeUnlocked(store);
             }
             return result;
         } finally {
@@ -353,10 +353,10 @@ public final class CredentialStore {
         }
     }
 
-    private LinkedHashMap<String, ManagedCredential> readUnlocked() throws IOException {
-        LinkedHashMap<String, ManagedCredential> credentials = new LinkedHashMap<>();
+    private StoreState readUnlocked() throws IOException {
+        StoreState store = new StoreState();
         if (!Files.exists(authPath)) {
-            return credentials;
+            return store;
         }
 
         JsonNode root = MAPPER.readTree(authPath.toFile());
@@ -364,66 +364,119 @@ public final class CredentialStore {
             throw new IOException("Invalid auth.json: expected an object");
         }
 
+        if (root.has("version") || root.has("providers")) {
+            readVersioned(root, store);
+        } else {
+            readLegacy(root, store);
+        }
+        return store;
+    }
+
+    private void readVersioned(JsonNode root, StoreState store) throws IOException {
+        JsonNode versionNode = root.get("version");
+        if (versionNode == null || !versionNode.canConvertToInt()
+                || versionNode.intValue() != CURRENT_FORMAT_VERSION) {
+            throw new IOException("Unsupported auth.json version");
+        }
+        JsonNode providersNode = root.get("providers");
+        if (providersNode == null || !providersNode.isObject()) {
+            throw new IOException("Invalid auth.json: expected a providers object");
+        }
+
+        var providers = providersNode.fields();
+        while (providers.hasNext()) {
+            Map.Entry<String, JsonNode> providerEntry = providers.next();
+            String providerId = normalizeProviderId(providerEntry.getKey());
+            JsonNode providerNode = providerEntry.getValue();
+            if (providerNode == null || !providerNode.isObject()) {
+                throw new IOException("Invalid credentials for provider " + providerId + ": expected an object");
+            }
+            String activeName = normalizeCredentialName(requiredText(providerNode, "active", providerId));
+            JsonNode credentialsNode = providerNode.get("credentials");
+            if (credentialsNode == null || !credentialsNode.isObject() || credentialsNode.isEmpty()) {
+                throw new IOException("Invalid credentials for provider " + providerId
+                        + ": expected a non-empty credentials object");
+            }
+
+            ProviderCredentials provider = new ProviderCredentials();
+            var credentials = credentialsNode.fields();
+            while (credentials.hasNext()) {
+                Map.Entry<String, JsonNode> credentialEntry = credentials.next();
+                String credentialName = normalizeCredentialName(credentialEntry.getKey());
+                provider.credentials.put(
+                        credentialName,
+                        readCredential(credentialEntry.getValue(), providerId + "/" + credentialName));
+            }
+            if (!provider.credentials.containsKey(activeName)) {
+                throw new IOException("Active credential '" + activeName
+                        + "' does not exist for provider " + providerId);
+            }
+            provider.activeName = activeName;
+            store.providers.put(providerId, provider);
+        }
+    }
+
+    private void readLegacy(JsonNode root, StoreState store) throws IOException {
         var fields = root.fields();
         while (fields.hasNext()) {
             Map.Entry<String, JsonNode> entry = fields.next();
             String providerId = normalizeProviderId(entry.getKey());
-            JsonNode node = entry.getValue();
-            if (node == null || !node.isObject()) {
-                throw new IOException("Invalid credential for provider " + providerId + ": expected an object");
-            }
-            String type = requiredText(node, "type", providerId);
-            try {
-                if (ManagedCredential.API_KEY.equals(type)) {
-                    credentials.put(providerId, ManagedCredential.apiKey(requiredText(node, "key", providerId)));
-                } else if (ManagedCredential.OAUTH.equals(type)) {
-                    JsonNode expiresNode = node.get("expires");
-                    if (expiresNode == null || !expiresNode.canConvertToLong()) {
-                        throw new IOException("Invalid OAuth expiry for provider " + providerId);
-                    }
-                    Map<String, String> metadata = new LinkedHashMap<>();
-                    var metadataFields = node.fields();
-                    while (metadataFields.hasNext()) {
-                        Map.Entry<String, JsonNode> metadataEntry = metadataFields.next();
-                        if (!OAUTH_RESERVED_FIELDS.contains(metadataEntry.getKey())
-                                && metadataEntry.getValue() != null
-                                && metadataEntry.getValue().isValueNode()
-                                && !metadataEntry.getValue().isNull()) {
-                            metadata.put(metadataEntry.getKey(), metadataEntry.getValue().asText());
-                        }
-                    }
-                    credentials.put(providerId, ManagedCredential.oauth(
-                            requiredText(node, "access", providerId),
-                            requiredString(node, "refresh", providerId),
-                            expiresNode.longValue(),
-                            metadata));
-                } else {
-                    throw new IOException("Unsupported credential type for provider " + providerId + ": " + type);
-                }
-            } catch (IllegalArgumentException e) {
-                throw new IOException("Invalid credential for provider " + providerId + ": " + e.getMessage(), e);
-            }
+            ProviderCredentials provider = new ProviderCredentials();
+            provider.activeName = DEFAULT_CREDENTIAL_NAME;
+            provider.credentials.put(
+                    DEFAULT_CREDENTIAL_NAME,
+                    readCredential(entry.getValue(), providerId));
+            store.providers.put(providerId, provider);
         }
-        return credentials;
     }
 
-    private void writeUnlocked(LinkedHashMap<String, ManagedCredential> credentials) throws IOException {
-        ObjectNode root = MAPPER.createObjectNode();
-        credentials.forEach((providerId, credential) -> {
-            ObjectNode node = root.putObject(providerId);
-            node.put("type", credential.getType());
-            if (credential.isApiKey()) {
-                node.put("key", credential.getKey());
-            } else {
-                node.put("access", credential.getAccess());
-                node.put("refresh", credential.getRefresh());
-                node.put("expires", credential.getExpires());
-                credential.getMetadata().forEach((key, value) -> {
-                    if (!OAUTH_RESERVED_FIELDS.contains(key)) {
-                        node.put(key, value);
-                    }
-                });
+    private ManagedCredential readCredential(JsonNode node, String context) throws IOException {
+        if (node == null || !node.isObject()) {
+            throw new IOException("Invalid credential for provider " + context + ": expected an object");
+        }
+        String type = requiredText(node, "type", context);
+        try {
+            if (ManagedCredential.API_KEY.equals(type)) {
+                return ManagedCredential.apiKey(requiredText(node, "key", context));
             }
+            if (ManagedCredential.OAUTH.equals(type)) {
+                JsonNode expiresNode = node.get("expires");
+                if (expiresNode == null || !expiresNode.canConvertToLong()) {
+                    throw new IOException("Invalid OAuth expiry for provider " + context);
+                }
+                Map<String, String> metadata = new LinkedHashMap<>();
+                var metadataFields = node.fields();
+                while (metadataFields.hasNext()) {
+                    Map.Entry<String, JsonNode> metadataEntry = metadataFields.next();
+                    if (!OAUTH_RESERVED_FIELDS.contains(metadataEntry.getKey())
+                            && metadataEntry.getValue() != null
+                            && metadataEntry.getValue().isValueNode()
+                            && !metadataEntry.getValue().isNull()) {
+                        metadata.put(metadataEntry.getKey(), metadataEntry.getValue().asText());
+                    }
+                }
+                return ManagedCredential.oauth(
+                        requiredText(node, "access", context),
+                        requiredString(node, "refresh", context),
+                        expiresNode.longValue(),
+                        metadata);
+            }
+            throw new IOException("Unsupported credential type for provider " + context + ": " + type);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Invalid credential for provider " + context + ": " + e.getMessage(), e);
+        }
+    }
+
+    private void writeUnlocked(StoreState store) throws IOException {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("version", CURRENT_FORMAT_VERSION);
+        ObjectNode providersNode = root.putObject("providers");
+        store.providers.forEach((providerId, provider) -> {
+            ObjectNode providerNode = providersNode.putObject(providerId);
+            providerNode.put("active", provider.activeName);
+            ObjectNode credentialsNode = providerNode.putObject("credentials");
+            provider.credentials.forEach((credentialName, credential) ->
+                    writeCredential(credentialsNode.putObject(credentialName), credential));
         });
 
         byte[] serialized = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsBytes(root);
@@ -451,6 +504,22 @@ public final class CredentialStore {
         } finally {
             Files.deleteIfExists(tempPath);
         }
+    }
+
+    private static void writeCredential(ObjectNode node, ManagedCredential credential) {
+        node.put("type", credential.getType());
+        if (credential.isApiKey()) {
+            node.put("key", credential.getKey());
+            return;
+        }
+        node.put("access", credential.getAccess());
+        node.put("refresh", credential.getRefresh());
+        node.put("expires", credential.getExpires());
+        credential.getMetadata().forEach((key, value) -> {
+            if (!OAUTH_RESERVED_FIELDS.contains(key)) {
+                node.put(key, value);
+            }
+        });
     }
 
     private void ensurePrivateParentDirectory() throws IOException {
@@ -508,6 +577,20 @@ public final class CredentialStore {
         return normalized;
     }
 
+    private static String normalizeCredentialName(String credentialName) {
+        if (credentialName == null || credentialName.isBlank()) {
+            throw new IllegalArgumentException("credentialName must not be blank");
+        }
+        String normalized = credentialName.trim().toLowerCase(Locale.ROOT);
+        for (int i = 0; i < normalized.length(); i++) {
+            if (Character.isISOControl(normalized.charAt(i))) {
+                throw new IllegalArgumentException(
+                        "credentialName must not contain control characters");
+            }
+        }
+        return normalized;
+    }
+
     private static String referencedEnvironmentName(String value) {
         if (value == null) {
             return null;
@@ -524,7 +607,27 @@ public final class CredentialStore {
         return candidate;
     }
 
-    public record CredentialInfo(String providerId, String type) {
+    public record CredentialInfo(
+            String providerId,
+            String credentialName,
+            String type,
+            boolean active) {
+        public CredentialInfo(String providerId, String type) {
+            this(providerId, DEFAULT_CREDENTIAL_NAME, type, true);
+        }
+    }
+
+    private static final class StoreState {
+        private final LinkedHashMap<String, ProviderCredentials> providers = new LinkedHashMap<>();
+    }
+
+    private static final class ProviderCredentials {
+        private String activeName;
+        private final LinkedHashMap<String, ManagedCredential> credentials = new LinkedHashMap<>();
+
+        private ManagedCredential activeCredential() {
+            return activeName == null ? null : credentials.get(activeName);
+        }
     }
 
     @FunctionalInterface
@@ -539,6 +642,6 @@ public final class CredentialStore {
 
     @FunctionalInterface
     private interface StoreOperation<T> {
-        T apply(LinkedHashMap<String, ManagedCredential> credentials) throws IOException;
+        T apply(StoreState store) throws IOException;
     }
 }
