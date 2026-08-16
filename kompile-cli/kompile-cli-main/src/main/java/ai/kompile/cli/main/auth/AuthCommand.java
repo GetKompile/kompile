@@ -16,6 +16,7 @@ import picocli.CommandLine.Parameters;
 
 import java.io.BufferedReader;
 import java.io.Console;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +31,7 @@ import java.util.concurrent.Callable;
         subcommands = {
                 CommandLine.HelpCommand.class,
                 AuthCommand.LoginCommand.class,
+                AuthCommand.SwitchCommand.class,
                 AuthCommand.LogoutCommand.class,
                 AuthCommand.ListCommand.class
         })
@@ -43,9 +45,17 @@ public class AuthCommand implements Callable<Integer> {
     @Command(name = "login", mixinStandardHelpOptions = true,
             description = "Store an API key or complete a provider OAuth login.")
     static class LoginCommand implements Callable<Integer> {
-        @Parameters(index = "0", paramLabel = "PROVIDER",
+        @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER",
                 description = "Provider id, for example openai or anthropic.")
         String providerId;
+
+        @Option(names = {"--name", "--credential"}, paramLabel = "NAME",
+                description = "Name for this credential (for example personal or work).")
+        String credentialName;
+
+        @Option(names = "--no-switch",
+                description = "Store a named credential without making it active.")
+        boolean noSwitch;
 
         @Option(names = "--stdin",
                 description = "Read the API key from one line on standard input.")
@@ -77,37 +87,103 @@ public class AuthCommand implements Callable<Integer> {
 
         @Override
         public Integer call() throws Exception {
+            if (noSwitch && (credentialName == null || credentialName.isBlank())) {
+                System.err.println("--no-switch requires --name so an existing active credential is preserved.");
+                return 2;
+            }
+            CredentialStore store = CredentialStore.create();
             OAuthProviderRegistry registry = new OAuthProviderRegistry();
-            boolean useOAuth = oauth || registry.isOAuthOnly(providerId);
-            if (useOAuth) {
-                if (stdin || environmentName != null) {
-                    System.err.println("--stdin and --from-env apply only to API-key login.");
+            OAuthCredentialManager manager = new OAuthCredentialManager(store, registry);
+            AuthWizard wizard = null;
+            OAuthProviderFlow.Interaction interaction = new ConsoleOAuthInteraction();
+            String storedValue = null;
+            boolean activate = !noSwitch;
+            boolean useOAuth;
+
+            if (providerId == null) {
+                if (stdin || environmentName != null || oauth || oauthMethod != null
+                        || manual || enterpriseDomain != null || gateway != null
+                        || credentialName != null || noSwitch) {
+                    System.err.println("PROVIDER is required when login options are supplied.");
                     return 2;
                 }
                 try {
-                    OAuthCredentialManager manager = OAuthCredentialManager.create();
-                    OAuthProviderFlow.LoginOptions options = new OAuthProviderFlow.LoginOptions(
-                            oauthMethod,
-                            manual,
-                            enterpriseDomain,
-                            gateway);
-                    ManagedCredential credential = manager.login(
-                            providerId,
-                            options,
-                            new ConsoleOAuthInteraction());
-                    System.out.println("Saved " + credential.getType() + " credential for "
-                            + providerId + " to " + CredentialStore.create().getAuthPath());
-                    return 0;
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.err.println("OAuth login was interrupted.");
-                    return 130;
-                } catch (Exception e) {
-                    System.err.println("OAuth login failed: " + e.getMessage());
+                    wizard = AuthWizard.open();
+                    AuthWizard.LoginRequest request = wizard.promptForLogin(registry, store);
+                    if (request == null) {
+                        System.out.println("Login cancelled.");
+                        return 0;
+                    }
+                    providerId = request.providerId();
+                    credentialName = request.credentialName();
+                    useOAuth = request.kind() == AuthWizard.LoginKind.OAUTH;
+                    storedValue = request.storedValue();
+                    oauthMethod = request.oauthMethod();
+                    activate = request.activate();
+                    interaction = wizard.oauthInteraction();
+                } catch (IOException e) {
+                    System.err.println("Could not start login wizard: " + e.getMessage());
                     return 1;
                 }
+            } else {
+                useOAuth = oauth || registry.isOAuthOnly(providerId);
             }
 
+            try {
+                return useOAuth
+                        ? loginOAuth(manager, store, interaction, activate)
+                        : loginApiKey(store, storedValue, activate);
+            } finally {
+                if (wizard != null) {
+                    wizard.close();
+                }
+            }
+        }
+
+        private Integer loginOAuth(
+                OAuthCredentialManager manager,
+                CredentialStore store,
+                OAuthProviderFlow.Interaction interaction,
+                boolean activate) {
+            if (stdin || environmentName != null) {
+                System.err.println("--stdin and --from-env apply only to API-key login.");
+                return 2;
+            }
+            try {
+                OAuthProviderFlow.LoginOptions options = new OAuthProviderFlow.LoginOptions(
+                        oauthMethod,
+                        manual,
+                        enterpriseDomain,
+                        gateway);
+                ManagedCredential credential = manager.login(
+                        providerId,
+                        credentialName,
+                        activate,
+                        options,
+                        interaction);
+                String savedName = store.activeCredentialName(providerId);
+                if (credentialName != null && !credentialName.isBlank()) {
+                    savedName = credentialName.trim().toLowerCase(java.util.Locale.ROOT);
+                }
+                boolean active = savedName.equals(store.activeCredentialName(providerId));
+                System.out.println("Saved " + credential.getType() + " credential for "
+                        + providerId + " as '" + savedName + "'"
+                        + (active ? " (active)" : "") + " to " + store.getAuthPath());
+                return 0;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("OAuth login was interrupted.");
+                return 130;
+            } catch (Exception e) {
+                System.err.println("OAuth login failed: " + e.getMessage());
+                return 1;
+            }
+        }
+
+        private Integer loginApiKey(
+                CredentialStore store,
+                String wizardStoredValue,
+                boolean activate) throws Exception {
             if (oauthMethod != null || manual || enterpriseDomain != null || gateway != null) {
                 System.err.println("OAuth options require --oauth for provider " + providerId + ".");
                 return 2;
@@ -117,8 +193,18 @@ public class AuthCommand implements Callable<Integer> {
                 return 2;
             }
 
-            String storedValue;
-            if (environmentName != null) {
+            String storedValue = wizardStoredValue;
+            if (storedValue != null && storedValue.startsWith("$")
+                    && storedValue.length() > 1) {
+                String wizardEnvironmentName = storedValue.substring(1);
+                String current = System.getenv(wizardEnvironmentName);
+                if (current == null || current.isBlank()) {
+                    System.err.println("Environment variable is not set: " + wizardEnvironmentName);
+                    return 1;
+                }
+            } else if (storedValue != null) {
+                // The wizard already collected a masked API-key entry.
+            } else if (environmentName != null) {
                 if (!environmentName.matches("[A-Za-z_][A-Za-z0-9_]*")) {
                     System.err.println("Invalid environment variable name: " + environmentName);
                     return 2;
@@ -151,9 +237,17 @@ public class AuthCommand implements Callable<Integer> {
                 return 1;
             }
 
-            CredentialStore store = CredentialStore.create();
-            store.putApiKey(providerId, storedValue);
-            System.out.println("Saved API key for " + providerId + " to " + store.getAuthPath());
+            if (credentialName == null || credentialName.isBlank()) {
+                store.putApiKey(providerId, storedValue);
+            } else {
+                store.putApiKey(providerId, credentialName, storedValue, activate);
+            }
+            String savedName = credentialName == null || credentialName.isBlank()
+                    ? store.activeCredentialName(providerId)
+                    : credentialName.trim().toLowerCase(java.util.Locale.ROOT);
+            boolean active = savedName.equals(store.activeCredentialName(providerId));
+            System.out.println("Saved API key for " + providerId + " as '" + savedName + "'"
+                    + (active ? " (active)" : "") + " to " + store.getAuthPath());
             return 0;
         }
     }
@@ -191,21 +285,134 @@ public class AuthCommand implements Callable<Integer> {
         }
     }
 
-    @Command(name = "logout", mixinStandardHelpOptions = true,
-            description = "Revoke and remove a stored provider credential.")
-    static class LogoutCommand implements Callable<Integer> {
-        @Parameters(index = "0", paramLabel = "PROVIDER",
-                description = "Provider id to remove.")
+    @Command(name = "switch", aliases = "use", mixinStandardHelpOptions = true,
+            description = "Select the active named credential for a provider.")
+    static class SwitchCommand implements Callable<Integer> {
+        @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER")
         String providerId;
+
+        @Parameters(index = "1", arity = "0..1", paramLabel = "CREDENTIAL")
+        String credentialName;
 
         @Override
         public Integer call() throws Exception {
-            boolean removed = OAuthCredentialManager.create().logout(providerId);
-            if (removed) {
-                System.out.println("Removed stored credential for " + providerId + ".");
-            } else {
-                System.out.println("No stored credential for " + providerId + ".");
+            CredentialStore store = CredentialStore.create();
+            if ((providerId == null) != (credentialName == null)) {
+                System.err.println("Provide both PROVIDER and CREDENTIAL, or neither to use the wizard.");
+                return 2;
             }
+            if (providerId == null) {
+                try (AuthWizard wizard = AuthWizard.open()) {
+                    AuthWizard.SwitchRequest request = wizard.promptForSwitch(store);
+                    if (request == null) {
+                        return 0;
+                    }
+                    providerId = request.providerId();
+                    credentialName = request.credentialName();
+                } catch (IOException e) {
+                    System.err.println("Could not start credential switch wizard: " + e.getMessage());
+                    return 1;
+                }
+            }
+            if (!store.switchCredential(providerId, credentialName)) {
+                System.err.println("No credential named '" + credentialName
+                        + "' exists for provider " + providerId + ".");
+                return 1;
+            }
+            System.out.println("Using credential '" + credentialName + "' for " + providerId + ".");
+            return 0;
+        }
+    }
+
+    @Command(name = "logout", mixinStandardHelpOptions = true,
+            description = "Revoke and remove a named credential, provider, or all providers.")
+    static class LogoutCommand implements Callable<Integer> {
+        @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER",
+                description = "Provider id to remove.")
+        String providerId;
+
+        @Parameters(index = "1", arity = "0..1", paramLabel = "CREDENTIAL",
+                description = "Named credential to remove; omit to remove the provider.")
+        String positionalCredentialName;
+
+        @Option(names = {"--credential", "--name"}, paramLabel = "NAME",
+                description = "Named credential to remove.")
+        String credentialName;
+
+        @Option(names = "--all",
+                description = "Remove all providers, or all credentials for PROVIDER when supplied.")
+        boolean all;
+
+        @Override
+        public Integer call() throws Exception {
+            if (positionalCredentialName != null && credentialName != null) {
+                System.err.println("Specify the credential either positionally or with --credential, not both.");
+                return 2;
+            }
+            if (credentialName == null) {
+                credentialName = positionalCredentialName;
+            }
+            if (all && credentialName != null) {
+                System.err.println("--all cannot be combined with a named credential.");
+                return 2;
+            }
+            if (providerId == null && credentialName != null) {
+                System.err.println("PROVIDER is required for a named credential.");
+                return 2;
+            }
+
+            CredentialStore store = CredentialStore.create();
+            OAuthCredentialManager manager = new OAuthCredentialManager(
+                    store,
+                    new OAuthProviderRegistry());
+            AuthWizard.LogoutRequest request;
+            if (providerId == null && !all) {
+                try (AuthWizard wizard = AuthWizard.open()) {
+                    request = wizard.promptForLogout(store);
+                } catch (IOException e) {
+                    System.err.println("Could not start logout wizard: " + e.getMessage());
+                    return 1;
+                }
+                if (request == null) {
+                    return 0;
+                }
+            } else if (providerId == null) {
+                request = new AuthWizard.LogoutRequest(AuthWizard.LogoutScope.ALL, null, null);
+            } else if (credentialName != null) {
+                request = new AuthWizard.LogoutRequest(
+                        AuthWizard.LogoutScope.CREDENTIAL,
+                        providerId,
+                        credentialName);
+            } else {
+                request = new AuthWizard.LogoutRequest(
+                        AuthWizard.LogoutScope.PROVIDER,
+                        providerId,
+                        null);
+            }
+
+            if (request.scope() == AuthWizard.LogoutScope.ALL) {
+                int removed = manager.logoutAll();
+                System.out.println(removed == 0
+                        ? "No stored credentials."
+                        : "Removed " + removed + " credential(s) from all providers.");
+                return 0;
+            }
+            if (request.scope() == AuthWizard.LogoutScope.CREDENTIAL) {
+                boolean removed = manager.logout(request.providerId(), request.credentialName());
+                if (removed) {
+                    System.out.println("Removed credential '" + request.credentialName()
+                            + "' for " + request.providerId() + ".");
+                } else {
+                    System.out.println("No credential named '" + request.credentialName()
+                            + "' for " + request.providerId() + ".");
+                }
+                return 0;
+            }
+            int count = store.list(request.providerId()).size();
+            boolean removed = manager.logout(request.providerId());
+            System.out.println(removed
+                    ? "Removed " + count + " credential(s) for " + request.providerId() + "."
+                    : "No stored credentials for " + request.providerId() + ".");
             return 0;
         }
     }
@@ -213,6 +420,10 @@ public class AuthCommand implements Callable<Integer> {
     @Command(name = "list", aliases = "status", mixinStandardHelpOptions = true,
             description = "List stored credential metadata without exposing secrets.")
     static class ListCommand implements Callable<Integer> {
+        @Parameters(index = "0", arity = "0..1", paramLabel = "PROVIDER",
+                description = "Optional provider filter.")
+        String providerId;
+
         @Option(names = "--available",
                 description = "List built-in OAuth providers and their supported login methods.")
         boolean available;
@@ -232,13 +443,21 @@ public class AuthCommand implements Callable<Integer> {
                 return 0;
             }
             CredentialStore store = CredentialStore.create();
-            var credentials = store.list();
+            var credentials = providerId == null ? store.list() : store.list(providerId);
             if (credentials.isEmpty()) {
-                System.out.println("No stored credentials.");
+                System.out.println(providerId == null
+                        ? "No stored credentials."
+                        : "No stored credentials for " + providerId + ".");
                 return 0;
             }
+            System.out.printf("%-22s %-20s %-10s %s%n",
+                    "PROVIDER", "CREDENTIAL", "TYPE", "STATUS");
             for (CredentialStore.CredentialInfo credential : credentials) {
-                System.out.printf("%-24s %s%n", credential.providerId(), credential.type());
+                System.out.printf("%-22s %-20s %-10s %s%n",
+                        credential.providerId(),
+                        credential.credentialName(),
+                        credential.type(),
+                        credential.active() ? "active" : "");
             }
             return 0;
         }

@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.common.auth.ManagedCredential;
+import ai.kompile.cli.main.auth.CredentialStore;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
@@ -224,6 +226,11 @@ public class SetupWizard {
                 providerSelection = selectStandardProvider(reader);
                 if (providerSelection == null) return null;
                 provider = providerSelection.provider();
+
+                if (providerSelection.authMethod() != AuthMethod.NONE
+                        && !selectManagedCredential(reader, provider, providerSelection.authMethod())) {
+                    return null;
+                }
 
                 if (providerSelection.authMethod() == AuthMethod.OAUTH) {
                     OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
@@ -771,6 +778,58 @@ public class SetupWizard {
     }
 
     // ── API key prompt ──────────────────────────────────────────────────────
+
+    private static boolean selectManagedCredential(
+            LineReader reader,
+            String provider,
+            AuthMethod authMethod) {
+        try {
+            CredentialStore store = CredentialStore.create();
+            List<CredentialStore.CredentialInfo> credentials = compatibleCredentials(
+                    store.list(provider),
+                    authMethod);
+            if (credentials.isEmpty()) {
+                return true;
+            }
+            int selected = 0;
+            if (credentials.size() > 1) {
+                List<String> labels = credentials.stream()
+                        .map(info -> info.credentialName() + " — " + info.type()
+                                + (info.active() ? " (active)" : ""))
+                        .toList();
+                selected = selectNumbered(reader, "Select Stored Credential:", labels);
+                if (selected < 0) {
+                    return false;
+                }
+            }
+            CredentialStore.CredentialInfo selectedCredential = credentials.get(selected);
+            String credentialName = selectedCredential.credentialName();
+            if (selectedCredential.active()) {
+                return true;
+            }
+            if (!store.switchCredential(provider, credentialName)) {
+                System.err.println("  Could not switch to credential '" + credentialName + "'.");
+                return false;
+            }
+            System.out.println(GREEN + "  ✓ Using credential '" + credentialName
+                    + "' for " + provider + RESET);
+            return true;
+        } catch (IOException e) {
+            System.err.println("  Could not read managed credentials: " + e.getMessage());
+            return false;
+        }
+    }
+
+    static List<CredentialStore.CredentialInfo> compatibleCredentials(
+            List<CredentialStore.CredentialInfo> credentials,
+            AuthMethod authMethod) {
+        String requiredType = authMethod == AuthMethod.OAUTH
+                ? ManagedCredential.OAUTH
+                : ManagedCredential.API_KEY;
+        return credentials.stream()
+                .filter(info -> requiredType.equals(info.type()))
+                .toList();
+    }
 
     private static OAuthProviderFlow.RequestAuth resolveExistingCredential(String provider) {
         ChatConfig probe = new ChatConfig(provider, null, "credential-probe", null);

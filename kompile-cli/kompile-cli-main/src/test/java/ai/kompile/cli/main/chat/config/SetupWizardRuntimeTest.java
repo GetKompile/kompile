@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.CredentialStore;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -52,6 +53,22 @@ class SetupWizardRuntimeTest {
         assertEquals(List.of("OAuth / subscription sign-in"),
                 SetupWizard.authOptions("github-copilot"));
         assertEquals(List.of("API key"), SetupWizard.authOptions("gemini"));
+    }
+
+    @Test
+    void standardChatOnlyOffersCredentialsMatchingTheSelectedAuthMethod() {
+        List<CredentialStore.CredentialInfo> credentials = List.of(
+                new CredentialStore.CredentialInfo("anthropic", "personal", "api_key", true),
+                new CredentialStore.CredentialInfo("anthropic", "work", "oauth", false));
+
+        assertEquals(List.of("personal"), SetupWizard.compatibleCredentials(
+                        credentials, SetupWizard.AuthMethod.API_KEY).stream()
+                .map(CredentialStore.CredentialInfo::credentialName)
+                .toList());
+        assertEquals(List.of("work"), SetupWizard.compatibleCredentials(
+                        credentials, SetupWizard.AuthMethod.OAUTH).stream()
+                .map(CredentialStore.CredentialInfo::credentialName)
+                .toList());
     }
 
     @Test

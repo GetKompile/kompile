@@ -41,6 +41,16 @@ public final class OAuthCredentialManager {
             OAuthProviderFlow.LoginOptions options,
             OAuthProviderFlow.Interaction interaction)
             throws IOException, InterruptedException {
+        return login(providerId, null, true, options, interaction);
+    }
+
+    public ManagedCredential login(
+            String providerId,
+            String credentialName,
+            boolean activate,
+            OAuthProviderFlow.LoginOptions options,
+            OAuthProviderFlow.Interaction interaction)
+            throws IOException, InterruptedException {
         OAuthProviderFlow flow = registry.require(providerId);
         String method = options.methodOr(flow.defaultLoginMethod());
         boolean deviceAlias = "device-code".equals(method) || "device_code".equals(method);
@@ -52,7 +62,11 @@ public final class OAuthCredentialManager {
         if (credential == null || !credential.isOAuth()) {
             throw new IOException("OAuth provider returned an invalid credential: " + providerId);
         }
-        store.put(providerId, credential);
+        if (credentialName == null || credentialName.isBlank()) {
+            store.put(providerId, credential);
+        } else {
+            store.put(providerId, credentialName, credential, activate);
+        }
         return credential;
     }
 
@@ -91,10 +105,41 @@ public final class OAuthCredentialManager {
     }
 
     public boolean logout(String providerId) throws IOException {
-        ManagedCredential credential = store.read(providerId);
+        var credentials = store.list(providerId);
+        if (credentials.isEmpty()) {
+            return false;
+        }
+        for (CredentialStore.CredentialInfo info : credentials) {
+            revoke(providerId, store.read(providerId, info.credentialName()));
+        }
+        return store.delete(providerId);
+    }
+
+    public boolean logout(String providerId, String credentialName) throws IOException {
+        ManagedCredential credential = store.read(providerId, credentialName);
         if (credential == null) {
             return false;
         }
+        revoke(providerId, credential);
+        return store.deleteCredential(providerId, credentialName);
+    }
+
+    public int logoutAll() throws IOException {
+        var providers = store.list().stream()
+                .map(CredentialStore.CredentialInfo::providerId)
+                .distinct()
+                .toList();
+        int removed = 0;
+        for (String providerId : providers) {
+            int providerCredentialCount = store.list(providerId).size();
+            if (logout(providerId)) {
+                removed += providerCredentialCount;
+            }
+        }
+        return removed;
+    }
+
+    private void revoke(String providerId, ManagedCredential credential) throws IOException {
         if (credential.isOAuth()) {
             OAuthProviderFlow flow = registry.require(providerId);
             OAuthCredentialLifecycle.revoke(credential, (accessToken, refreshToken) -> {
@@ -108,7 +153,6 @@ public final class OAuthCredentialManager {
                 }
             });
         }
-        return store.delete(providerId);
     }
 
     public OAuthProviderRegistry registry() {

@@ -69,6 +69,43 @@ class OAuthCredentialManagerTest {
         assertEquals("login-access", store.read("test-oauth").getAccess());
     }
 
+    @Test
+    void namedOauthLoginCanBeStoredWithoutReplacingTheActiveCredential() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("named-login-auth.json"));
+        store.putApiKey("test-oauth", "personal", "personal-key", true);
+        TestFlow flow = new TestFlow();
+        OAuthCredentialManager manager = new OAuthCredentialManager(
+                store,
+                new OAuthProviderRegistry(List.of(flow)));
+
+        manager.login(
+                "test-oauth",
+                "work",
+                false,
+                new OAuthProviderFlow.LoginOptions("browser", true, null, null),
+                new NoopInteraction());
+
+        assertEquals("personal", store.activeCredentialName("test-oauth"));
+        assertEquals("personal-key", store.read("test-oauth").getKey());
+        assertEquals("login-access", store.read("test-oauth", "work").getAccess());
+    }
+
+    @Test
+    void providerAndGlobalLogoutRevokeEveryNamedOauthCredential() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("multi-logout-auth.json"));
+        long expires = System.currentTimeMillis() + 60_000L;
+        store.putOAuth("test-oauth", "personal", "access-one", "refresh-one", expires, true);
+        store.putOAuth("test-oauth", "work", "access-two", "refresh-two", expires, false);
+        TestFlow flow = new TestFlow();
+        OAuthCredentialManager manager = new OAuthCredentialManager(
+                store,
+                new OAuthProviderRegistry(List.of(flow)));
+
+        assertEquals(2, manager.logoutAll());
+        assertEquals(2, flow.revocations.get());
+        assertTrue(store.list().isEmpty());
+    }
+
     private static final class TestFlow implements OAuthProviderFlow {
         private final AtomicInteger refreshes = new AtomicInteger();
         private final AtomicInteger revocations = new AtomicInteger();

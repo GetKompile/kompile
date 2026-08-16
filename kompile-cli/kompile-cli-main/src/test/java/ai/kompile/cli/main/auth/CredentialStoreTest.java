@@ -135,6 +135,71 @@ class CredentialStoreTest {
     }
 
     @Test
+    void storesMultipleNamedCredentialsAndSwitchesTheActiveCredential() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("profiles").resolve("auth.json"));
+
+        store.putApiKey("OpenAI", "personal", "personal-secret", true);
+        store.putApiKey("openai", "work", "work-secret", false);
+
+        assertEquals("personal", store.activeCredentialName("OPENAI"));
+        assertEquals("personal-secret", store.read("openai").getKey());
+        assertEquals("work-secret", store.read("openai", "WORK").getKey());
+        assertEquals(2, store.list("openai").size());
+        assertTrue(store.list("openai").stream()
+                .filter(CredentialStore.CredentialInfo::active)
+                .allMatch(info -> "personal".equals(info.credentialName())));
+
+        assertTrue(store.switchCredential("openai", "work"));
+        assertEquals("work", store.activeCredentialName("openai"));
+        assertEquals("work-secret", store.resolveApiKey("openai", name -> null));
+
+        assertTrue(store.deleteCredential("openai", "work"));
+        assertEquals("personal", store.activeCredentialName("openai"));
+        assertEquals("personal-secret", store.read("openai").getKey());
+        assertFalse(store.switchCredential("openai", "missing"));
+    }
+
+    @Test
+    void legacyProviderCredentialsMigrateToVersionedNamedProfilesOnMutation() throws Exception {
+        Path authPath = tempDir.resolve("legacy").resolve("auth.json");
+        Files.createDirectories(authPath.getParent());
+        Files.writeString(authPath, """
+                {
+                  "openai": {"type": "api_key", "key": "legacy-secret"}
+                }
+                """);
+        CredentialStore store = new CredentialStore(authPath);
+
+        assertEquals("legacy-secret", store.read("openai").getKey());
+        assertEquals("default", store.activeCredentialName("openai"));
+
+        store.putApiKey("openai", "work", "work-secret", false);
+
+        String migrated = Files.readString(authPath);
+        assertTrue(migrated.contains("\"version\" : 2"));
+        assertTrue(migrated.contains("\"providers\""));
+        assertTrue(migrated.contains("\"credentials\""));
+        assertEquals("legacy-secret", store.read("openai", "default").getKey());
+        assertEquals("work-secret", store.read("openai", "work").getKey());
+        assertEquals("default", store.activeCredentialName("openai"));
+    }
+
+    @Test
+    void deletesOneProviderOrEveryProviderWithoutLeavingInvalidActivePointers() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("logout").resolve("auth.json"));
+        store.putApiKey("openai", "personal", "one", true);
+        store.putApiKey("openai", "work", "two", false);
+        store.putApiKey("anthropic", "default", "three", true);
+
+        assertTrue(store.delete("openai"));
+        assertNull(store.read("openai"));
+        assertEquals("three", store.read("anthropic").getKey());
+        assertEquals(1, store.deleteAll());
+        assertTrue(store.list().isEmpty());
+        assertEquals(0, store.deleteAll());
+    }
+
+    @Test
     void rejectsMalformedCredentialFiles() throws Exception {
         Path authPath = tempDir.resolve("broken").resolve("auth.json");
         Files.createDirectories(authPath.getParent());
