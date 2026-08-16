@@ -87,7 +87,8 @@ public interface StructuredChatLanguageModel {
             boolean addGenerationPrompt,
             ToolDefinitionFormat toolDefinitionFormat,
             ToolCallFormat toolCallFormat,
-            ToolChoice toolChoice) {
+            ToolChoice toolChoice,
+            Map<String, Object> templateArguments) {
         public Request {
             messages = messages == null ? List.of() : List.copyOf(messages);
             tools = tools == null ? List.of() : List.copyOf(tools);
@@ -98,6 +99,20 @@ public interface StructuredChatLanguageModel {
                     ? ToolCallFormat.MODEL
                     : toolCallFormat;
             toolChoice = toolChoice == null ? ToolChoice.AUTO : toolChoice;
+            templateArguments = templateArguments == null
+                    ? Map.of()
+                    : Map.copyOf(new LinkedHashMap<>(templateArguments));
+        }
+
+        public Request(
+                List<Message> messages,
+                List<Tool> tools,
+                boolean addGenerationPrompt,
+                ToolDefinitionFormat toolDefinitionFormat,
+                ToolCallFormat toolCallFormat,
+                ToolChoice toolChoice) {
+            this(messages, tools, addGenerationPrompt, toolDefinitionFormat,
+                    toolCallFormat, toolChoice, Map.of());
         }
 
         public Request(
@@ -107,25 +122,61 @@ public interface StructuredChatLanguageModel {
                 ToolDefinitionFormat toolDefinitionFormat,
                 ToolCallFormat toolCallFormat) {
             this(messages, tools, addGenerationPrompt, toolDefinitionFormat,
-                    toolCallFormat, ToolChoice.AUTO);
+                    toolCallFormat, ToolChoice.AUTO, Map.of());
         }
 
         public Request(List<Message> messages, List<Tool> tools) {
             this(messages, tools, true, ToolDefinitionFormat.FLAT,
-                    ToolCallFormat.MODEL, ToolChoice.AUTO);
+                    ToolCallFormat.MODEL, ToolChoice.AUTO, Map.of());
+        }
+    }
+
+    /** One model/template-declared assistant output block. */
+    record OutputBlock(String type, String content) {
+        public OutputBlock {
+            type = type == null ? "" : type.trim();
+            content = content == null ? "" : content;
+            if (type.isBlank()) {
+                throw new IllegalArgumentException("output block type must not be blank");
+            }
         }
     }
 
     record Response(
             String rawText,
             String content,
+            String reasoningContent,
+            List<OutputBlock> outputBlocks,
             List<ToolCall> toolCalls,
             List<String> parseErrors) {
         public Response {
             rawText = rawText == null ? "" : rawText;
             content = content == null ? "" : content;
+            reasoningContent = reasoningContent == null ? "" : reasoningContent;
+            outputBlocks = outputBlocks == null ? List.of() : List.copyOf(outputBlocks);
             toolCalls = toolCalls == null ? List.of() : List.copyOf(toolCalls);
             parseErrors = parseErrors == null ? List.of() : List.copyOf(parseErrors);
+        }
+
+        public Response(
+                String rawText,
+                String content,
+                String reasoningContent,
+                List<ToolCall> toolCalls,
+                List<String> parseErrors) {
+            this(rawText, content, reasoningContent,
+                    reasoningContent == null || reasoningContent.isBlank()
+                            ? List.of()
+                            : List.of(new OutputBlock("think", reasoningContent)),
+                    toolCalls, parseErrors);
+        }
+
+        public Response(
+                String rawText,
+                String content,
+                List<ToolCall> toolCalls,
+                List<String> parseErrors) {
+            this(rawText, content, "", List.of(), toolCalls, parseErrors);
         }
     }
 

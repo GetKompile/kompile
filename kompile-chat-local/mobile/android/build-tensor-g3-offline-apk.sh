@@ -33,6 +33,14 @@ APK_BUILDER="$SCRIPT_DIR/tools/build-offline-accelerators.sh"
 RESUME_PUBLISH=0
 PUBLISH_MODE_ARGS=(--ram-gradle-build)
 APK_PUBLISHER_ARGS=()
+# The active immutable generations reference every managed/object stage needed for
+# an identical-build cache hit. Keep those references, but do not retain obsolete
+# rollback generations or unreferenced multi-gigabyte fallback stages.
+CACHE_RETENTION_ARGS=(
+  --retain-generations 1
+  --retain-managed-stages 0
+  --retain-object-stages 0
+)
 
 while (( $# > 0 )); do
   case "$1" in
@@ -86,7 +94,7 @@ printf '  work root: %s\n' "$WORK_ROOT"
 printf '  Graal quick build: %s\n' "$KOMPILE_NATIVE_QUICK_BUILD"
 
 printf 'Running mandatory pre-build cleanup.\n'
-"$CLEANUP_BUILDER" --build-root "$WORK_ROOT"
+"$CLEANUP_BUILDER" --build-root "$WORK_ROOT" "${CACHE_RETENTION_ARGS[@]}"
 "$APK_BUILDER" --cleanup-only --work-root "$WORK_ROOT"
 
 if (( RESUME_PUBLISH == 0 )); then

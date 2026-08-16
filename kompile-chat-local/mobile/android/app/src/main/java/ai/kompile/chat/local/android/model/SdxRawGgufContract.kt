@@ -9,7 +9,7 @@ package ai.kompile.chat.local.android.model
 internal object SdxRawGgufContract {
     const val TARGET_PROFILE_FIELD = "targetProfile"
     const val PREPARED_SCHEMA_FIELD = "schema"
-    const val PREPARED_SCHEMA = "sdx-prepared-text-model-v3"
+    const val PREPARED_SCHEMA = "sdx-prepared-text-model-v5"
     const val CACHE_HIT_FIELD = "cacheHit"
     const val SOURCE_SHA256_FIELD = "sourceSha256"
     const val SOURCE_BYTES_FIELD = "sourceBytes"
@@ -24,24 +24,15 @@ internal object SdxRawGgufContract {
     const val CONTEXT_LENGTH_FIELD = "contextLength"
     const val MAX_PREFILL_LENGTH_FIELD = "maxPrefillLength"
     const val EXECUTION_PROVIDER_FIELD = "executionProvider"
+    const val CONVERSION_PROFILE_SHA256_FIELD = "conversionProfileSha256"
+    const val DIAGNOSTIC_MODE_FIELD = "diagnosticMode"
+    const val OPTIMIZED_SOURCE_PATH_FIELD = "optimizedSourcePath"
+    const val OPTIMIZED_SOURCE_BYTES_FIELD = "optimizedSourceBytes"
     const val IMPORT_RESOURCES_RELEASED_FIELD = "importResourcesReleased"
 
     fun preparationOptionsJson(
         verifiedSourceSha256: String?,
-        verifiedSourceBytes: Long?
-    ): String {
-        if (verifiedSourceSha256 == null && verifiedSourceBytes == null) return "{}"
-        require(verifiedSourceSha256 != null) {
-            "verifiedSourceSha256 is required when verifiedSourceBytes is supplied"
-        }
-        require(verifiedSourceSha256.matches(Regex("[0-9a-fA-F]{64}"))) {
-            "verifiedSourceSha256 must be 64 hexadecimal characters"
-        }
-        require(verifiedSourceBytes != null && verifiedSourceBytes > 0L) {
-            "verifiedSourceBytes must be positive when a verified SHA-256 is supplied"
-        }
-        val normalizedSha256 = verifiedSourceSha256.lowercase()
-        return "{\"verifiedSourceSha256\":\"$normalizedSha256\"," +
-            "\"verifiedSourceBytes\":$verifiedSourceBytes}"
-    }
+        verifiedSourceBytes: Long?,
+        options: ModelPreparationOptions,
+    ): String = options.optionsJson(verifiedSourceSha256, verifiedSourceBytes)
 }

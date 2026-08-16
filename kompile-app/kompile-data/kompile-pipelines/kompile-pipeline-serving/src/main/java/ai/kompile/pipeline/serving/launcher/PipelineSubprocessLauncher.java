@@ -116,6 +116,7 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         Process process = null;
         Thread reader = null;
         Thread errReader = null;
+        List<String> stderrLines = Collections.synchronizedList(new ArrayList<>());
         try {
             List<String> command = buildCommand(definition, argsFile);
             logger.info("Launching one-shot pipeline subprocess for '{}': {}", definition.getPipelineId(), taskId);
@@ -135,12 +136,27 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
             reader.start();
 
             // Also drain stderr
-            errReader = new Thread(() -> drainStderr(child, definition.getPipelineId()), "pipeline-oneshot-stderr-" + taskId);
+            errReader = new Thread(
+                    () -> drainStderr(child, definition.getPipelineId(), stderrLines),
+                    "pipeline-oneshot-stderr-" + taskId);
             errReader.setDaemon(true);
             errReader.start();
 
             // Wait for completion with timeout (5 minutes for one-shot)
-            Map<String, Object> result = resultFuture.get(5, TimeUnit.MINUTES);
+            Map<String, Object> result;
+            try {
+                result = resultFuture.get(5, TimeUnit.MINUTES);
+            } catch (ExecutionException | TimeoutException failure) {
+                if (process.isAlive()) {
+                    process.destroyForcibly();
+                }
+                process.waitFor(2, TimeUnit.SECONDS);
+                joinQuietly(errReader);
+                String stderr = stderrTail(stderrLines);
+                throw new IOException(
+                        "Pipeline subprocess '" + definition.getPipelineId() + "' failed"
+                                + (stderr.isBlank() ? "" : ":\n" + stderr), failure);
+            }
             process.waitFor(10, TimeUnit.SECONDS);
             return result;
         } finally {
@@ -601,13 +617,30 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
     }
 
     private void drainStderr(Process process, String pipelineId) {
+        drainStderr(process, pipelineId, null);
+    }
+
+    private void drainStderr(Process process, String pipelineId, List<String> captured) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (captured != null) {
+                    synchronized (captured) {
+                        captured.add(line);
+                        if (captured.size() > 100) captured.remove(0);
+                    }
+                }
                 logger.debug("[pipeline:{}] {}", pipelineId, line);
             }
         } catch (Exception e) {
             // Expected when process ends
+        }
+    }
+
+    private String stderrTail(List<String> lines) {
+        synchronized (lines) {
+            int start = Math.max(0, lines.size() - 40);
+            return String.join(System.lineSeparator(), lines.subList(start, lines.size()));
         }
     }
 

@@ -16,6 +16,8 @@ import ai.kompile.core.graphrag.passes.DecomposedExtractionPipeline.LlmCaller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.DecimalNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
@@ -25,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 
 /**
  * One model loop for graph extraction.
@@ -39,6 +42,7 @@ public final class ToolDrivenExtractionExecutor {
 
     public static final String PASS_ID = "tool_agent";
     private static final int MAX_TOOL_ROUNDS = 8;
+    private static final int MAX_IDENTICAL_REJECTED_ROUNDS = 2;
     private static final String EXPLICIT_TOOL_STATE_MARKER =
             "CURRENT EXPLICIT TOOL STATE (fresh request; not conversation history):";
     private static final String COMPACTED_TOOL_STATE_MARKER =
@@ -62,21 +66,46 @@ public final class ToolDrivenExtractionExecutor {
             """;
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper();
 
+    public enum FailureKind {
+        ACCEPTED,
+        TERMINAL,
+        TRANSIENT
+    }
+
     public record Result(
             String json,
             ExtractionResult extraction,
             int rounds,
             int toolCalls,
             List<String> toolsUsed,
-            List<String> notes) {
+            List<String> notes,
+            FailureKind failureKind) {
 
         public Result {
             toolsUsed = toolsUsed == null ? List.of() : List.copyOf(toolsUsed);
             notes = notes == null ? List.of() : List.copyOf(notes);
+            failureKind = failureKind == null
+                    ? (extraction != null && json != null && !json.isBlank()
+                    ? FailureKind.ACCEPTED : FailureKind.TERMINAL)
+                    : failureKind;
+        }
+
+        public Result(
+                String json,
+                ExtractionResult extraction,
+                int rounds,
+                int toolCalls,
+                List<String> toolsUsed,
+                List<String> notes) {
+            this(json, extraction, rounds, toolCalls, toolsUsed, notes, null);
         }
 
         public boolean usable() {
             return extraction != null && json != null && !json.isBlank();
+        }
+
+        public boolean retryableFailure() {
+            return !usable() && failureKind == FailureKind.TRANSIENT;
         }
 
         public String summary() {
@@ -287,7 +316,6 @@ public final class ToolDrivenExtractionExecutor {
                 String previousRepairSeed,
                 boolean previousSourceRecheckRequired) {
             String nextRepairSeed = observations == null ? "" : observations.stream()
-                    .map(StructuredToolObservation::result)
                     .map(ToolDrivenExtractionExecutor::validatorCleanRepairSeed)
                     .filter(seed -> !seed.isBlank())
                     .reduce((first, second) -> second)
@@ -358,6 +386,8 @@ public final class ToolDrivenExtractionExecutor {
         List<String> notes = new ArrayList<>();
         int calls = 0;
         int rounds = 0;
+        boolean transientFailureObserved = false;
+        String previousRejectedSignature = null;
 
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             rounds = round;
@@ -376,6 +406,7 @@ public final class ToolDrivenExtractionExecutor {
             try {
                 response = caller.call(PASS_ID, prompt);
             } catch (RuntimeException e) {
+                transientFailureObserved = true;
                 notes.add("model call failed at round " + round + ": " + message(e));
                 break;
             }
@@ -390,6 +421,14 @@ public final class ToolDrivenExtractionExecutor {
             }
             if (parsed.isEmpty()) {
                 String feedback = invalidToolCallFeedback(backend.extractionTarget());
+                String rejectedSignature = rejectedToolSignature(
+                        "__protocol__", response, feedback);
+                if (rejectedSignature.equals(previousRejectedSignature)) {
+                    notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                            + " identical rejected protocol rounds; unchanged output cannot repair itself");
+                    break;
+                }
+                previousRejectedSignature = rejectedSignature;
                 toolState = toolState == null
                         ? new ToolState("", "", feedback)
                         : toolState.withProtocolFeedback(feedback);
@@ -405,6 +444,7 @@ public final class ToolDrivenExtractionExecutor {
             try {
                 execution = backend.execute(toolCall.name(), toolCall.arguments(), chunkText);
             } catch (RuntimeException e) {
+                transientFailureObserved = true;
                 execution = ExtractionToolBackend.ToolExecution.continuing(
                         errorJson("tool_execution_failed", message(e)));
                 notes.add(toolCall.name() + " failed at round " + round + ": " + message(e));
@@ -426,10 +466,20 @@ public final class ToolDrivenExtractionExecutor {
                     break;
                 }
             }
+
+            String rejectedSignature = rejectedToolSignature(
+                    toolCall.name(), toolCall.arguments(), execution.json());
+            if (rejectedSignature.equals(previousRejectedSignature)) {
+                notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                        + " identical rejected tool rounds; unchanged output cannot repair itself");
+                break;
+            }
+            previousRejectedSignature = rejectedSignature;
         }
 
         return retainedResult(backend, rounds, calls, toolsUsed, notes,
-                "retry rounds ended after retaining validator-clean facts");
+                "retry rounds ended after retaining validator-clean facts",
+                transientFailureObserved ? FailureKind.TRANSIENT : FailureKind.TERMINAL);
     }
 
     /**
@@ -506,6 +556,8 @@ public final class ToolDrivenExtractionExecutor {
         List<String> toolsUsed = new ArrayList<>();
         int calls = 0;
         int rounds = 0;
+        boolean transientFailureObserved = false;
+        String previousRejectedSignature = null;
 
         for (int round = 1; round <= MAX_TOOL_ROUNDS; round++) {
             rounds = round;
@@ -564,6 +616,7 @@ public final class ToolDrivenExtractionExecutor {
                     throw new IllegalStateException("structured model call returned no response");
                 }
             } catch (RuntimeException e) {
+                transientFailureObserved = true;
                 notes.add("model call failed at round " + round + ": " + message(e));
                 break;
             }
@@ -584,6 +637,14 @@ public final class ToolDrivenExtractionExecutor {
                         ? invalidStructuredToolCallFeedback(
                                 assessment.parseErrors(), response.rawText(), submissionTool)
                         : parseFeedback;
+                String rejectedSignature = rejectedToolSignature(
+                        "__protocol__", response.rawText(), feedback);
+                if (rejectedSignature.equals(previousRejectedSignature)) {
+                    notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                            + " identical rejected native protocol rounds; unchanged output cannot repair itself");
+                    break;
+                }
+                previousRejectedSignature = rejectedSignature;
                 retryState = retryState == null
                         ? StructuredRetryState.protocol(feedback)
                         : retryState.withProtocolFeedback(feedback);
@@ -594,6 +655,14 @@ public final class ToolDrivenExtractionExecutor {
                         List.of(),
                         response.rawText(),
                         submissionTool);
+                String rejectedSignature = rejectedToolSignature(
+                        "__protocol__", response.rawText(), feedback);
+                if (rejectedSignature.equals(previousRejectedSignature)) {
+                    notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                            + " identical rejected native protocol rounds; unchanged output cannot repair itself");
+                    break;
+                }
+                previousRejectedSignature = rejectedSignature;
                 retryState = retryState == null
                         ? StructuredRetryState.protocol(feedback)
                         : retryState.withProtocolFeedback(feedback);
@@ -631,6 +700,14 @@ public final class ToolDrivenExtractionExecutor {
                 executable.add(exactCall);
             }
             if (executable.isEmpty()) {
+                String rejectedSignature = structuredObservationSignature(observations);
+                if (!rejectedSignature.isBlank()
+                        && rejectedSignature.equals(previousRejectedSignature)) {
+                    notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                            + " identical rejected native tool rounds; unchanged output cannot repair itself");
+                    break;
+                }
+                previousRejectedSignature = rejectedSignature;
                 retryState = observations.isEmpty()
                         ? (retryState == null
                                 ? StructuredRetryState.protocol(
@@ -652,6 +729,7 @@ public final class ToolDrivenExtractionExecutor {
                     execution = backend.execute(
                             toolCall.name(), MAPPER.valueToTree(toolCall.arguments()), chunkText);
                 } catch (RuntimeException e) {
+                    transientFailureObserved = true;
                     execution = ExtractionToolBackend.ToolExecution.continuing(
                             errorJson("tool_execution_failed", message(e)));
                     notes.add(toolCall.name() + " failed at round " + round + ": " + message(e));
@@ -674,6 +752,14 @@ public final class ToolDrivenExtractionExecutor {
                     }
                 }
             }
+            String rejectedSignature = structuredObservationSignature(observations);
+            if (!rejectedSignature.isBlank()
+                    && rejectedSignature.equals(previousRejectedSignature)) {
+                notes.add("stopped after " + MAX_IDENTICAL_REJECTED_ROUNDS
+                        + " identical rejected native tool rounds; unchanged output cannot repair itself");
+                break;
+            }
+            previousRejectedSignature = rejectedSignature;
             retryState = StructuredRetryState.tools(
                     observations,
                     retryState == null ? "" : retryState.repairSeed(),
@@ -681,7 +767,8 @@ public final class ToolDrivenExtractionExecutor {
         }
 
         return retainedResult(backend, rounds, calls, toolsUsed, notes,
-                "native retry rounds ended after retaining validator-clean facts");
+                "native retry rounds ended after retaining validator-clean facts",
+                transientFailureObserved ? FailureKind.TRANSIENT : FailureKind.TERMINAL);
     }
 
     private static StructuredContract structuredContract(
@@ -695,12 +782,6 @@ public final class ToolDrivenExtractionExecutor {
                 backend.extractionTarget(),
                 backend.ontologyUpdatesAllowed(),
                 tier);
-        if (!backend.ontologyUpdatesAllowed()
-                && tier == DecomposedPromptTier.COMPACT
-                && additionalInstructions != null
-                && !additionalInstructions.isBlank()) {
-            system = system + " Directive: " + additionalInstructions.strip();
-        }
         String user = structuredUserPrompt(
                 chunkText,
                 taskContext,
@@ -736,7 +817,45 @@ public final class ToolDrivenExtractionExecutor {
                                      ExtractionTarget extractionTarget,
                                      String additionalInstructions) {
         StringBuilder prompt = new StringBuilder();
-        if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
+        if (extractionTarget == ExtractionTarget.TYPED_ENTITIES_ONLY) {
+            prompt.append("""
+                    ENTITY PASS.
+                    An entity is one distinct named node explicitly mentioned in SOURCE. Its name is the exact
+                    identifying span in SOURCE; ontology labels, relation labels, instructions, and examples are
+                    not entity names.
+                    Use thinking for one left-to-right scan. Write exactly one concise internal checklist row per
+                    distinct name as NAME | local SOURCE type cue | chosen ontology label. Do not restate instructions
+                    or sentences, and do not repeat a name. A sentence that classifies a name still contains that
+                    entity; the common noun is its type cue. In a relation sentence, inspect both named endpoints.
+                    Deduplicate repeated mentions while preserving one exact source spelling. Never invent a spelling
+                    or pad the requested count with a label, placeholder, or duplicate.
+                    Classify each name independently. Re-read the input sentence containing that exact name,
+                    identify what the referent is in ordinary words, then compare that evidence with the allowed
+                    ontology node definitions and choose exactly one matching label. Enum order, requested row count,
+                    and covering every available label are never type evidence. Before calling the tool, verify that
+                    each row's type describes that same named referent and that no name was reused under another type.
+                    Then invoke submit_typed_entities exactly once with one {name,type} object per entity. No
+                    relations. Do not emit a second row format, prose, headings, or schema after thinking.
+                    TOOLS:
+                    """);
+        } else if (extractionTarget == ExtractionTarget.RELATIONS_ONLY) {
+            prompt.append("""
+                    RELATION PASS.
+                    A relation is one explicit directed predicate in SOURCE between two fixed entities.
+                    Use thinking for one sentence-by-sentence scan. Write one concise numbered checklist row per
+                    explicit predicate. A row contains only the exact source name and index, an arrow, the exact target
+                    name and index, and the chosen relation label. Copy both endpoint names from that same sentence and
+                    independently map them to the immutable entity index table. Choose the allowed relation label whose
+                    definition and directed endpoint pattern match the predicate. source is the entity in the pattern's
+                    source role; target is the entity in its target role. Verify both indices map back to the intended
+                    names and types.
+                    Use SOURCE only, never background knowledge or another sentence's convenient endpoint. Do not
+                    change entities or invent a self-edge. After the final checklist row, stop thinking and invoke
+                    submit_relations exactly once with integer source and target indices. Do not discuss prompt format
+                    or previous context, restate the task, repeat a row, announce the call, or emit prose or headings.
+                    TOOLS:
+                    """);
+        } else if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
             prompt.append("""
                     Copy every distinct entity name explicitly present in SOURCE.
                     Call submit_entities(names=["NAME 1", "NAME 2"]) directly. Copy each exact source
@@ -775,15 +894,31 @@ public final class ToolDrivenExtractionExecutor {
             ExtractionTarget extractionTarget,
             boolean ontologyUpdatesAllowed,
             DecomposedPromptTier tier) {
+        if (extractionTarget == ExtractionTarget.TYPED_ENTITIES_ONLY) {
+            return """
+                    Use Text to verify each listed candidate's exact name and ontology type.
+                    Invoke submit_typed_entities once.
+                    """;
+        }
+        if (extractionTarget == ExtractionTarget.RELATIONS_ONLY) {
+            return """
+                    Use Text to verify each listed candidate's predicate, direction, endpoints, and ontology label.
+                    Invoke submit_relations once.
+                    """;
+        }
         if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
             return "Call submit_entities with each distinct name copied exactly from the text.";
         }
         if (!ontologyUpdatesAllowed && tier == DecomposedPromptTier.COMPACT) {
             return "Extract Text with submit_graph_delta(format=\"indexed\"). "
-                    + "Copy distinct named entities once in Text order. Names come only from Text—not "
-                    + "instructions, tool names, or schema. Assign stated ontology types. For each "
-                    + "directed relation A to B, source is A's zero-based entity "
-                    + "index and target is B's. Close both arrays and the call. No prose.";
+                    + "An entity is a distinct named node explicitly mentioned in Text: copy its exact Text "
+                    + "name once and assign one allowed entity-type label. A relation is an explicit directed "
+                    + "fact connecting two extracted entities: assign one allowed relation-type label and use "
+                    + "the source and target entities' zero-based indices. Ontology type labels classify nodes "
+                    + "or edges; they are not entity names or source evidence. First collect names from Text, "
+                    + "then type them, then add only Text-supported relations. Never invent or rename a node, "
+                    + "repeat a name under another type, or copy instructions, tools, or schema. Close both "
+                    + "arrays and the call. No prose.";
         }
         if (!ontologyUpdatesAllowed) {
             return """
@@ -827,9 +962,19 @@ public final class ToolDrivenExtractionExecutor {
             ExtractionTarget extractionTarget,
             boolean ontologyUpdatesAllowed,
             DecomposedPromptTier tier) {
-        if (extractionTarget == ExtractionTarget.ENTITIES_ONLY
-                || (!ontologyUpdatesAllowed && tier == DecomposedPromptTier.COMPACT)) {
+        if (extractionTarget == ExtractionTarget.RELATIONS_ONLY) {
+            return structuredRelationUserPrompt(source, toolContext, additionalInstructions);
+        }
+        if (extractionTarget == ExtractionTarget.TYPED_ENTITIES_ONLY) {
+            return structuredEntityUserPrompt(source, toolContext, additionalInstructions);
+        }
+        if (extractionTarget == ExtractionTarget.ENTITIES_ONLY) {
             return "Text: " + source.strip();
+        }
+        if (!ontologyUpdatesAllowed && tier == DecomposedPromptTier.COMPACT) {
+            StringBuilder direct = new StringBuilder();
+            appendScopedExtractionRule(direct, additionalInstructions);
+            return direct.append("Text: ").append(source.strip()).toString();
         }
         StringBuilder prompt = new StringBuilder();
         prompt.append("CURRENT GRAPH AND CORPUS STATE (context, not evidence):\n")
@@ -839,6 +984,118 @@ public final class ToolDrivenExtractionExecutor {
         appendAdditionalInstructions(prompt, additionalInstructions);
         prompt.append("SOURCE SHARD:\n").append(source).append("\nEND SOURCE SHARD\n");
         return prompt.toString();
+    }
+
+    private static String structuredEntityUserPrompt(
+            String source, String toolContext, String additionalInstructions) {
+        StringBuilder prompt = new StringBuilder();
+        try {
+            JsonNode context = MAPPER.readTree(toolContext == null ? "{}" : toolContext);
+            JsonNode candidates = context.path("sourceEntityCandidates");
+            boolean hasCandidateTable = candidates.isArray() && !candidates.isEmpty();
+            if (hasCandidateTable) {
+                prompt.append("ENTITY CANDIDATES (").append(candidates.size()).append("):\n");
+                for (int index = 0; index < candidates.size(); index++) {
+                    JsonNode candidate = candidates.get(index);
+                    prompt.append(index + 1).append(". \"")
+                            .append(compactOneLine(candidate.path("name").asText(), 180))
+                            .append("\" => ")
+                            .append(compactOneLine(candidate.path("type").asText(), 100))
+                            .append('\n');
+                }
+
+            }
+            JsonNode entityTypes = context.path("allowedEntityTypes");
+            if (entityTypes.isArray() && !entityTypes.isEmpty()) {
+                prompt.append("ALLOWED ENTITY TYPE LABELS: ");
+                for (int index = 0; index < entityTypes.size(); index++) {
+                    if (index > 0) {
+                        prompt.append(", ");
+                    }
+                    prompt.append(entityTypes.get(index).asText());
+                }
+                prompt.append('\n');
+            }
+            String typeGuide = context.path("entityTypeGuide").asText("");
+            if (!typeGuide.isBlank()) {
+                prompt.append("ENTITY TYPE DEFINITIONS (LABEL = MEANING):\n")
+                        .append(typeGuide.strip()).append('\n');
+            }
+            if (!hasCandidateTable) {
+                prompt.append("""
+                        TYPE VERIFICATION (perform independently for every name before the native call):
+                        1. Re-read the Text sentence containing the exact name and identify what that referent is in ordinary words.
+                        2. Compare that Text evidence with the ontology meanings and choose exactly one matching node label.
+                        3. Ignore enum order, requested row count, and whether another allowed label has been used.
+                        4. Confirm the chosen label describes this same name, every distinct name appears once, and no name is reused under a second type.
+                        """);
+            }
+        } catch (Exception ignored) {
+            prompt.append(toolContext == null ? "{}" : toolContext).append('\n');
+        }
+        appendScopedExtractionRule(prompt, additionalInstructions);
+        prompt.append("TEXT:\n").append(source.strip()).append("\nEND TEXT");
+        return prompt.toString();
+    }
+
+    private static String structuredRelationUserPrompt(
+            String source, String toolContext, String additionalInstructions) {
+        StringBuilder prompt = new StringBuilder();
+        int expectedRows = -1;
+        try {
+            JsonNode context = MAPPER.readTree(toolContext == null ? "{}" : toolContext);
+            expectedRows = context.path("expectedRelationRows").asInt(-1);
+            if (expectedRows == 0) {
+                prompt.append("Invoke submit_relations with an empty relations array.\n");
+            }
+            JsonNode entities = context.path("entities");
+            if (entities.isArray() && !entities.isEmpty()) {
+                prompt.append("IMMUTABLE ENTITY INDEX TABLE (source and target must use these integers):\n");
+                for (int row = 0; row < entities.size(); row++) {
+                    JsonNode entity = entities.get(row);
+                    prompt.append("- ").append(entity.path("index").asInt(row)).append(": \"")
+                            .append(compactOneLine(entity.path("name").asText(), 180)).append("\" [")
+                            .append(compactOneLine(entity.path("type").asText(), 100)).append("]\n");
+                }
+            }
+            JsonNode candidates = context.path("sourceRelationCandidates");
+            if (candidates.isArray() && !candidates.isEmpty()) {
+                prompt.append("RELATION CANDIDATES (").append(candidates.size())
+                        .append("; fixed endpoints):\n");
+                for (int row = 0; row < candidates.size(); row++) {
+                    JsonNode candidate = candidates.get(row);
+                    prompt.append(row + 1).append(". \"")
+                            .append(compactOneLine(candidate.path("sourceName").asText(), 180))
+                            .append("\" [").append(candidate.path("sourceIndex").asInt())
+                            .append("] -> \"")
+                            .append(compactOneLine(candidate.path("targetName").asText(), 180))
+                            .append("\" [").append(candidate.path("targetIndex").asInt())
+                            .append("] | ")
+                            .append(compactOneLine(candidate.path("type").asText(), 100))
+                            .append('\n');
+                }
+
+            }
+            String typeGuide = context.path("relationTypeGuide").asText("");
+            if (!typeGuide.isBlank()) {
+                prompt.append("RELATION TYPE TABLE (LABEL = MEANING | DIRECTED ENDPOINTS):\n")
+                        .append(typeGuide.strip()).append('\n');
+            }
+        } catch (Exception ignored) {
+            prompt.append(toolContext == null ? "{}" : toolContext).append('\n');
+        }
+        appendScopedExtractionRule(prompt, additionalInstructions);
+        prompt.append("TEXT:\n").append(source.strip()).append("\nEND TEXT");
+        return prompt.toString();
+    }
+
+    private static void appendScopedExtractionRule(
+            StringBuilder prompt, String additionalInstructions) {
+        if (additionalInstructions == null || additionalInstructions.isBlank()) {
+            return;
+        }
+        prompt.append("SCOPED EXTRACTION RULE (instruction, not evidence): ")
+                .append(compactOneLine(additionalInstructions, 512)).append('\n');
     }
 
     private static void appendAdditionalInstructions(
@@ -882,8 +1139,9 @@ public final class ToolDrivenExtractionExecutor {
         if (state == null || availableChars < 128) {
             return new RenderedToolState("", false);
         }
-        String suffix = "\nUse only this explicit task state and the current request above. "
-                + "Call the appropriate function now; finish with " + submissionTool + ".";
+        String suffix = state.observations().isEmpty()
+                ? "\nNEXT: end thinking and invoke " + requiredNativeCallShape(submissionTool) + "."
+                : "\nNEXT: invoke the corrected native submission above.";
         if (state.protocolFeedback().isBlank() && state.observations().isEmpty()) {
             return new RenderedToolState("", false);
         }
@@ -895,12 +1153,13 @@ public final class ToolDrivenExtractionExecutor {
                 .append(protocolSection);
         boolean hasPersistentRepairSeed = !state.repairSeed().isBlank();
         if (hasPersistentRepairSeed) {
-            full.append(COMPLETE_REPLACEMENT_GUIDANCE).append('\n')
+            full.append(retainedSubsetGuidance(submissionTool)).append('\n')
                     .append(VALIDATOR_CLEAN_REPAIR_SEED_LABEL).append('\n')
                     .append(state.repairSeed()).append('\n');
         }
         for (StructuredToolObservation observation : state.observations()) {
             boolean includeRejectedDraft = rejectedSubmission(observation)
+                    && !phaseSubmissionTool(observation.request().name())
                     && !sourceGroundingRejected(observation)
                     && (!hasPersistentRepairSeed || state.sourceRecheckRequired());
             appendObservation(full, observation, includeRejectedDraft);
@@ -920,13 +1179,14 @@ public final class ToolDrivenExtractionExecutor {
         String repairSeed = state.repairSeed();
         boolean hasRepairSeed = !repairSeed.isBlank();
         boolean includeRejectedDraft = rejected
+                && !phaseSubmissionTool(latest.request().name())
                 && !sourceGroundingRejected(latest)
                 && (!hasRepairSeed || state.sourceRecheckRequired());
         String prefix = COMPACTED_TOOL_STATE_MARKER + "\n"
                 + protocolSection
                 + "Function: " + latest.request().name() + "\n"
-                + (rejected ? REJECTED_SUBMISSION_GUIDANCE + "\n" : "")
-                + (hasRepairSeed ? COMPLETE_REPLACEMENT_GUIDANCE + "\n" : "");
+                + (rejected ? rejectedSubmissionGuidance(latest) + "\n" : "")
+                + (hasRepairSeed ? retainedSubsetGuidance(submissionTool) + "\n" : "");
         StringBuilder argumentsContext = new StringBuilder();
         if (hasRepairSeed) {
             argumentsContext.append(VALIDATOR_CLEAN_REPAIR_SEED_LABEL).append('\n')
@@ -943,7 +1203,7 @@ public final class ToolDrivenExtractionExecutor {
         String arguments = includeRejectedDraft
                 ? rejectedCandidateDraft(latest)
                 : !rejected ? json(latest.request().arguments()) : "";
-        String result = compactToolResult(latest.result(), hasRepairSeed);
+        String result = compactObservationResult(latest, hasRepairSeed);
         int bodyBudget = availableChars - prefix.length() - suffix.length()
                 - argumentsLabel.length() - resultLabel.length();
         if (bodyBudget < 96) {
@@ -971,7 +1231,7 @@ public final class ToolDrivenExtractionExecutor {
         target.append("Function: ").append(observation.request().name()).append('\n');
         boolean rejected = rejectedSubmission(observation);
         if (rejected) {
-            target.append(REJECTED_SUBMISSION_GUIDANCE).append('\n');
+            target.append(rejectedSubmissionGuidance(observation)).append('\n');
         }
         if (!rejected || includeRejectedDraft) {
             target.append(rejected ? REJECTED_CANDIDATE_DRAFT_LABEL : "Previous arguments:")
@@ -979,13 +1239,48 @@ public final class ToolDrivenExtractionExecutor {
                     .append(json(observation.request().arguments())).append('\n');
         }
         target.append("Tool or validator result:\n")
-                .append(compactToolResult(observation.result())).append('\n');
+                .append(compactObservationResult(observation, false)).append('\n');
+    }
+
+    private static String retainedSubsetGuidance(String submissionTool) {
+        if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(submissionTool)) {
+            return "Validator-clean entity rows are already retained. Invoke submit_typed_entities with only "
+                    + "corrected or missing entity objects. Populate every name with the exact Text string and "
+                    + "every type with the chosen allowed ontology node label.";
+        }
+        if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(submissionTool)) {
+            return "Validator-clean relation rows are already retained. Invoke submit_relations with only "
+                    + "corrected or missing relation objects. Populate source and target with actual integer lookup "
+                    + "indices and type with the chosen allowed ontology relation label; obey its directed endpoint pattern.";
+        }
+        return COMPLETE_REPLACEMENT_GUIDANCE;
+    }
+
+    private static String rejectedSubmissionGuidance(
+            StructuredToolObservation observation) {
+        String tool = observation == null || observation.request() == null
+                ? "" : observation.request().name();
+        if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)) {
+            return "PREVIOUS ENTITY SUBMISSION WAS REJECTED. Follow the ENTITY REPAIR CARD below and submit "
+                    + "only corrected or missing rows. Do not repeat a rejected row unchanged.";
+        }
+        if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool)) {
+            return "PREVIOUS RELATION SUBMISSION WAS REJECTED. Follow the RELATION REPAIR CARD below and submit "
+                    + "only corrected or missing rows. Do not repeat a rejected row unchanged.";
+        }
+        Object format = observation == null || observation.request() == null
+                ? null : observation.request().arguments().get("format");
+        if ("indexed".equals(format)) {
+            return "PREVIOUS INDEXED SUBMISSION WAS REJECTED. Re-read SOURCE and resubmit a complete replacement. "
+                    + "Use each entity name once. Relation source and target are zero-based indices into this "
+                    + "submission's entities array only; never use graph ids or retained entity ids.";
+        }
+        return REJECTED_SUBMISSION_GUIDANCE;
     }
 
     private static boolean rejectedSubmission(StructuredToolObservation observation) {
         if (observation == null || observation.request() == null
-                || !CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA.equalsIgnoreCase(
-                        observation.request().name())
+                || !isSubmissionTool(observation.request().name())
                 || observation.result() == null || observation.result().isBlank()) {
             return false;
         }
@@ -998,6 +1293,16 @@ public final class ToolDrivenExtractionExecutor {
         }
     }
 
+    private static boolean isSubmissionTool(String tool) {
+        return CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA.equalsIgnoreCase(tool)
+                || phaseSubmissionTool(tool);
+    }
+
+    private static boolean phaseSubmissionTool(String tool) {
+        return CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)
+                || CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool);
+    }
+
     private static boolean requiresRejectedCandidateDraft(StructuredToolObservation observation) {
         if (!rejectedSubmission(observation)) {
             return false;
@@ -1008,11 +1313,18 @@ public final class ToolDrivenExtractionExecutor {
                 return false;
             }
             JsonNode correction = result.path("correction");
+            String tool = observation.request().name();
             JsonNode rejectedEntities = correction.path("rejectedEntities");
+            if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)) {
+                return !rejectedEntities.isArray() || !rejectedEntities.isEmpty();
+            }
+            JsonNode rejectedRelations = correction.path("rejectedRelations");
+            if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool)) {
+                return !rejectedRelations.isArray() || !rejectedRelations.isEmpty();
+            }
             if (rejectedEntities.isArray() && !rejectedEntities.isEmpty()) {
                 return true;
             }
-            JsonNode rejectedRelations = correction.path("rejectedRelations");
             return rejectedRelations.isArray() && rejectedRelations.size() > 1;
         } catch (Exception ignored) {
             return false;
@@ -1048,6 +1360,23 @@ public final class ToolDrivenExtractionExecutor {
             JsonNode submitted = MAPPER.valueToTree(observation.request().arguments());
             JsonNode correction = MAPPER.readTree(observation.result()).path("correction");
             ObjectNode draft = MAPPER.createObjectNode();
+            String tool = observation.request().name();
+            if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)) {
+                ArrayNode entities = draft.putArray("entities");
+                copyRejectedItems(
+                        entities, submitted.path("entities"), correction.path("rejectedEntities"));
+                return entities.isEmpty()
+                        ? json(observation.request().arguments())
+                        : MAPPER.writeValueAsString(draft);
+            }
+            if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool)) {
+                ArrayNode relations = draft.putArray("relations");
+                copyRejectedItems(
+                        relations, submitted.path("relations"), correction.path("rejectedRelations"));
+                return relations.isEmpty()
+                        ? json(observation.request().arguments())
+                        : MAPPER.writeValueAsString(draft);
+            }
             ArrayNode entities = draft.putArray("entities");
             ArrayNode relations = draft.putArray("relations");
             copyRejectedItems(entities, submitted.path("entities"), correction.path("rejectedEntities"));
@@ -1076,14 +1405,25 @@ public final class ToolDrivenExtractionExecutor {
 
     /**
      * Return the backend-retained validator-clean subset for compact retry rendering. It is not
-     * evidence, but its ids are accepted and may be referenced by corrected additions.
+     * evidence. Phase tools retain their own wire rows, while the full graph tool retains ids that
+     * corrected relations may reference.
      */
-    private static String validatorCleanRepairSeed(String toolResult) {
-        if (toolResult == null || toolResult.isBlank()) {
+    private static String validatorCleanRepairSeed(StructuredToolObservation observation) {
+        if (observation == null || observation.request() == null
+                || observation.result() == null || observation.result().isBlank()) {
             return "";
         }
         try {
-            JsonNode correction = MAPPER.readTree(toolResult).path("correction");
+            JsonNode correction = MAPPER.readTree(observation.result()).path("correction");
+            String tool = observation.request().name();
+            if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(tool)) {
+                return phaseRepairSeed(
+                        observation, correction, "entities", "retainedEntityIndexes");
+            }
+            if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool)) {
+                return phaseRepairSeed(
+                        observation, correction, "relations", "retainedRelationIndexes");
+            }
             JsonNode seed = correction.path("repairSeed");
             if (!correction.path("repairSeedValid").asBoolean(false)
                     || !seed.isObject()
@@ -1096,6 +1436,27 @@ public final class ToolDrivenExtractionExecutor {
         } catch (Exception ignored) {
             return "";
         }
+    }
+
+    private static String phaseRepairSeed(
+            StructuredToolObservation observation,
+            JsonNode correction,
+            String field,
+            String retainedIndexesField) throws Exception {
+        JsonNode submitted = MAPPER.valueToTree(observation.request().arguments()).path(field);
+        JsonNode retainedIndexes = correction.path(retainedIndexesField);
+        if (!submitted.isArray() || !retainedIndexes.isArray() || retainedIndexes.isEmpty()) {
+            return "";
+        }
+        ObjectNode seed = MAPPER.createObjectNode();
+        ArrayNode retained = seed.putArray(field);
+        for (JsonNode retainedIndex : retainedIndexes) {
+            int index = retainedIndex.asInt(-1);
+            if (index >= 0 && index < submitted.size()) {
+                retained.add(submitted.get(index));
+            }
+        }
+        return retained.isEmpty() ? "" : MAPPER.writeValueAsString(seed);
     }
 
     private static RenderedToolState fitState(
@@ -1130,6 +1491,131 @@ public final class ToolDrivenExtractionExecutor {
         } catch (Exception e) {
             return String.valueOf(value);
         }
+    }
+
+    private static String compactObservationResult(
+            StructuredToolObservation observation,
+            boolean omitRenderedRepairSeed) {
+        if (rejectedSubmission(observation)
+                && phaseSubmissionTool(observation.request().name())) {
+            return phaseRepairCard(observation);
+        }
+        return compactToolResult(observation == null ? null : observation.result(),
+                omitRenderedRepairSeed);
+    }
+
+    private static String phaseRepairCard(StructuredToolObservation observation) {
+        try {
+            String tool = observation.request().name();
+            boolean relations = CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(tool);
+            String field = relations ? "relations" : "entities";
+            String rejectedField = relations ? "rejectedRelations" : "rejectedEntities";
+            JsonNode result = MAPPER.readTree(observation.result());
+            JsonNode correction = result.path("correction");
+            JsonNode submitted = MAPPER.valueToTree(observation.request().arguments()).path(field);
+            JsonNode rejected = correction.path(rejectedField);
+            StringBuilder card = new StringBuilder(relations
+                    ? "RELATION REPAIR CARD (replace rejected rows only)\n"
+                    : "ENTITY REPAIR CARD (replace rejected rows only)\n");
+            appendRejectedRows(card, submitted, rejected);
+            if (relations) {
+                JsonNode table = correction.path("entities");
+                if (table.isArray() && !table.isEmpty()) {
+                    card.append("Immutable entity index: ");
+                    for (int index = 0; index < table.size(); index++) {
+                        JsonNode entity = table.get(index);
+                        if (index > 0) {
+                            card.append("; ");
+                        }
+                        card.append(entity.path("index").asInt(index)).append('=')
+                                .append(entity.path("name").asText())
+                                .append(" [").append(entity.path("type").asText()).append(']');
+                    }
+                    card.append('\n');
+                }
+                appendCompactField(card, "Allowed directed patterns",
+                        correction.path("allowedRelationPatterns"));
+                appendCompactField(card, "Allowed relation types",
+                        correction.path("allowedRelationTypes"));
+                appendCompactField(card, "Relation type definitions",
+                        correction.path("relationTypeGuide"));
+                card.append("HOW TO CORRECT EACH REJECTED RELATION: re-read Text sentence by sentence; copy "
+                        + "both endpoint names from the same explicit predicate; map each name independently to the "
+                        + "immutable index; choose the allowed relation label whose definition matches the predicate "
+                        + "and whose directed endpoint pattern matches source type to target type. Use no background "
+                        + "knowledge and do not substitute a convenient endpoint from another sentence. Resubmit only "
+                        + "corrected or missing native relation objects; do not emit a second row format or prose.\n");
+            } else {
+                appendCompactField(card, "Allowed entity types",
+                        correction.path("allowedEntityTypes"));
+                appendCompactField(card, "Entity type definitions",
+                        correction.path("entityTypeGuide"));
+                card.append("HOW TO CORRECT EACH REJECTED ENTITY: re-scan Text from left to right and copy the "
+                        + "exact named referent once. For that name alone, re-read its sentence, identify what the "
+                        + "referent is in ordinary words, and compare that evidence with the ontology definitions "
+                        + "before choosing exactly one label. Ignore enum order, row count, and unused labels; never "
+                        + "reuse one name under a second type. A type label, relation label, instruction, placeholder, "
+                        + "alternate casing, or duplicate cannot fill a missing entity row. Resubmit only corrected "
+                        + "or missing native entity objects; do not emit a second row format or prose.\n");
+            }
+            String requiredCall = correction.path("requiredCall").asText("");
+            card.append("NEXT: invoke this native call with corrected or missing rows only: ")
+                    .append(requiredCall.isBlank()
+                            ? requiredNativeCallShape(tool) : requiredCall);
+            return card.toString();
+        } catch (Exception ignored) {
+            return compactToolResult(observation == null ? null : observation.result());
+        }
+    }
+
+    private static void appendRejectedRows(
+            StringBuilder card,
+            JsonNode submitted,
+            JsonNode rejected) {
+        card.append("Rejected rows:\n");
+        if (rejected.isArray() && !rejected.isEmpty()) {
+            for (JsonNode item : rejected) {
+                int index = item.path("index").asInt(-1);
+                card.append("- row ").append(index).append(": ");
+                if (submitted.isArray() && index >= 0 && index < submitted.size()) {
+                    card.append(submitted.get(index));
+                } else {
+                    card.append("<row unavailable>");
+                }
+                JsonNode errors = item.path("errors");
+                if (errors.isArray() && !errors.isEmpty()) {
+                    card.append("; reason: ")
+                            .append(compactOneLine(errors.get(0).asText("rejected"), 240));
+                }
+                card.append('\n');
+            }
+            return;
+        }
+        if (submitted.isArray() && !submitted.isEmpty()) {
+            for (int index = 0; index < submitted.size(); index++) {
+                card.append("- row ").append(index).append(": ")
+                        .append(submitted.get(index)).append("; reason: see validation failure\n");
+            }
+        } else {
+            card.append("- submitted shape was invalid\n");
+        }
+    }
+
+    private static void appendCompactField(
+            StringBuilder card,
+            String label,
+            JsonNode value) {
+        if (value != null && !value.isMissingNode() && !value.isNull()
+                && (!value.isArray() || !value.isEmpty())) {
+            card.append(label).append(": ")
+                    .append(compactOneLine(value.toString(), 360)).append('\n');
+        }
+    }
+
+    private static String compactOneLine(String value, int maxChars) {
+        String compact = value == null ? "" : String.join(" ", value.strip().split("\\s+"));
+        return compact.length() <= maxChars
+                ? compact : compact.substring(0, Math.max(0, maxChars - 3)) + "...";
     }
 
     private static String compactToolResult(String content) {
@@ -1351,28 +1837,55 @@ public final class ToolDrivenExtractionExecutor {
             List<String> parserErrors,
             String rawText,
             String submissionTool) {
+        boolean unfinishedReasoning = parserErrors != null && parserErrors.stream()
+                .anyMatch(error -> error != null
+                        && error.toLowerCase(Locale.ROOT).contains("incomplete model output block"));
+        if (unfinishedReasoning) {
+            if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(submissionTool)) {
+                return "RELATION RETRY. Recheck each listed candidate against Text: predicate, direction, "
+                        + "endpoint types, and ontology label. Then invoke submit_relations once.";
+            }
+            if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(submissionTool)) {
+                return "ENTITY RETRY. Recheck each listed candidate against Text: exact name and ontology type. "
+                        + "Then invoke submit_typed_entities once.";
+            }
+            return "Reasoning reached the output limit. Recheck the evidence concisely, end thinking, "
+                    + "and make the native call; do not restate the task.";
+        }
         StringBuilder feedback = new StringBuilder(
-                "No executable function call was returned by the model-owned chat tool interface. "
-                        + "Invoke exactly one declared function through that interface. "
-                        + "Do not write a call as text or include prose, markdown, planning, or explanation.");
+                "No executable native function call was returned. Invoke one declared function now; "
+                        + "do not write the call as prose. Expected arguments: ")
+                .append(requiredNativeCallShape(submissionTool));
         if (parserErrors != null && !parserErrors.isEmpty()) {
-            feedback.append(" Feedback: ").append(String.join("; ", parserErrors));
+            feedback.append(". Diagnostic: ").append(String.join("; ", parserErrors));
         }
-        if (rawText != null && !rawText.isBlank()) {
-            String compact = rawText.length() > 800
-                    ? rawText.substring(0, 800) + " ..."
-                    : rawText;
-            feedback.append(" Raw output: ").append(compact);
-        }
-        feedback.append(" Finish with ").append(submissionTool).append('.');
         return feedback.toString();
+    }
+
+    private static String requiredNativeCallShape(String submissionTool) {
+        if (CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES.equalsIgnoreCase(submissionTool)) {
+            return "submit_typed_entities with an entities array of actual Text name and allowed node-label objects";
+        }
+        if (CrawlExtractionToolBackend.SUBMIT_RELATIONS.equalsIgnoreCase(submissionTool)) {
+            return "submit_relations with a relations array of actual integer source/target indices and allowed relation labels";
+        }
+        if (CrawlExtractionToolBackend.SUBMIT_ENTITIES.equalsIgnoreCase(submissionTool)) {
+            return "submit_entities({names: [STRING_FROM_TEXT, ...]})";
+        }
+        return "submit_graph_delta({entities: [...], relations: [...]})";
     }
 
     private static String preferredSubmissionTool(
             List<ExtractionToolBackend.ToolDefinition> tools) {
-        if (tools != null && tools.stream().anyMatch(
-                tool -> CrawlExtractionToolBackend.SUBMIT_ENTITIES.equals(tool.name()))) {
-            return CrawlExtractionToolBackend.SUBMIT_ENTITIES;
+        for (String candidate : List.of(
+                CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES,
+                CrawlExtractionToolBackend.SUBMIT_RELATIONS,
+                CrawlExtractionToolBackend.SUBMIT_ENTITIES,
+                CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA)) {
+            if (tools != null && tools.stream().anyMatch(
+                    tool -> candidate.equals(tool.name()))) {
+                return candidate;
+            }
         }
         return CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA;
     }
@@ -1422,15 +1935,81 @@ public final class ToolDrivenExtractionExecutor {
         }
     }
 
+    private static String rejectedToolSignature(
+            String toolName, Object arguments, String result) {
+        return (toolName == null ? "" : toolName)
+                + '\u001f' + canonicalSignatureValue(arguments)
+                + '\u001f' + canonicalSignatureValue(result);
+    }
+
+    private static String canonicalSignatureValue(Object value) {
+        JsonNode node;
+        if (value instanceof String text) {
+            try {
+                node = MAPPER.readTree(text);
+            } catch (Exception ignored) {
+                node = null;
+            }
+            if (node == null) {
+                node = MAPPER.valueToTree(text);
+            }
+        } else {
+            node = MAPPER.valueToTree(value);
+        }
+        return canonicalSignatureNode(node).toString();
+    }
+
+    private static JsonNode canonicalSignatureNode(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return NullNode.getInstance();
+        }
+        if (node.isObject()) {
+            ObjectNode canonical = MAPPER.createObjectNode();
+            TreeSet<String> names = new TreeSet<>();
+            node.fieldNames().forEachRemaining(names::add);
+            for (String name : names) {
+                canonical.set(name, canonicalSignatureNode(node.get(name)));
+            }
+            return canonical;
+        }
+        if (node.isArray()) {
+            ArrayNode canonical = MAPPER.createArrayNode();
+            node.forEach(value -> canonical.add(canonicalSignatureNode(value)));
+            return canonical;
+        }
+        if (node.isNumber()) {
+            return DecimalNode.valueOf(node.decimalValue().stripTrailingZeros());
+        }
+        return node;
+    }
+
+    private static String structuredObservationSignature(
+            List<StructuredToolObservation> observations) {
+        if (observations == null || observations.isEmpty()) {
+            return "";
+        }
+        StringBuilder signature = new StringBuilder();
+        for (StructuredToolObservation observation : observations) {
+            if (signature.length() > 0) {
+                signature.append('\u001e');
+            }
+            ToolRequest request = observation.request();
+            signature.append(rejectedToolSignature(
+                    request.name(), request.arguments(), observation.result()));
+        }
+        return signature.toString();
+    }
+
     private static Result retainedResult(ExtractionToolBackend backend,
                                          int rounds,
                                          int calls,
                                          List<String> toolsUsed,
                                          List<String> notes,
-                                         String note) {
+                                         String note,
+                                         FailureKind failureKind) {
         Optional<ExtractionResult> retained = backend.acceptedResult();
         if (retained.isEmpty()) {
-            return new Result(null, null, rounds, calls, toolsUsed, notes);
+            return new Result(null, null, rounds, calls, toolsUsed, notes, failureKind);
         }
         try {
             notes.add(note);

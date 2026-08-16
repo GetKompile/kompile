@@ -161,6 +161,8 @@ public class LlmGenerateController {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("rawText", response.rawText());
             body.put("content", response.content());
+            body.put("reasoningContent", response.reasoningContent());
+            body.put("outputBlocks", response.outputBlocks());
             body.put("toolCalls", response.toolCalls());
             body.put("parseErrors", response.parseErrors());
             body.put("finishReason", "completed");
@@ -224,6 +226,7 @@ public class LlmGenerateController {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("rawText", "");
         resp.put("content", "");
+        resp.put("reasoningContent", "");
         resp.put("toolCalls", List.of());
         resp.put("parseErrors", List.of(message == null ? "structured generation failed" : message));
         resp.put("finishReason", "error: " + message);

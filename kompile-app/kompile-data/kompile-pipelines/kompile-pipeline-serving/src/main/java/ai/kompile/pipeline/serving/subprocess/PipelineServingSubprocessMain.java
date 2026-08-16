@@ -32,6 +32,7 @@ import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -55,6 +56,13 @@ public class PipelineServingSubprocessMain {
 
     private static final Logger log = LoggerFactory.getLogger(PipelineServingSubprocessMain.class);
 
+    /*
+     * JNI_OnLoad in the side-loaded JavaCPP bridge resolves this class through
+     * FindClass. Keep an explicit class-literal edge so GraalVM retains it even
+     * when a particular pipeline definition has no statically visible model step.
+     */
+    private static final Class<?> JAVACPP_LOADER_CLASS = org.bytedeco.javacpp.Loader.class;
+
     // Capture the real stdout BEFORE redirecting
     private static final PrintStream ORIGINAL_STDOUT = System.out;
 
@@ -65,7 +73,10 @@ public class PipelineServingSubprocessMain {
     }
 
     public static void main(String[] args) {
-        NativeLibraryResolver.bootstrapOrThrow();
+        if (JAVACPP_LOADER_CLASS == null) {
+            throw new IllegalStateException("JavaCPP Loader is unavailable");
+        }
+        NativeLibraryResolver.bootstrapModelExecutionOrThrow();
         if (args.length < 1) {
             System.err.println("Usage: PipelineServingSubprocessMain <args-json-file>");
             System.exit(1);
@@ -115,7 +126,7 @@ public class PipelineServingSubprocessMain {
             // 5. Dispatch on execution mode
             String mode = subprocessArgs.executionMode();
             if (PipelineServingSubprocessArgs.MODE_ONE_SHOT.equals(mode)) {
-                executeOneShot(executor, subprocessArgs, reporter, mapper);
+                executeOneShot(executor, subprocessArgs, reporter, mapper, definition);
             } else if (PipelineServingSubprocessArgs.MODE_PERSISTENT_SERVING.equals(mode)) {
                 servePersistently(executor, subprocessArgs, reporter, mapper, definition);
             } else {
@@ -143,7 +154,8 @@ public class PipelineServingSubprocessMain {
     private static void executeOneShot(PipelineExecutor executor,
                                        PipelineServingSubprocessArgs args,
                                        PipelineServingProgressReporter reporter,
-                                       ObjectMapper mapper) throws Exception {
+                                       ObjectMapper mapper,
+                                       UnifiedPipelineDefinition definition) throws Exception {
         reporter.reportPhaseTransition("READY", "EXECUTING", 0);
         String requestId = UUID.randomUUID().toString();
 
@@ -154,9 +166,9 @@ public class PipelineServingSubprocessMain {
         if (args.requestDataJson() != null && !args.requestDataJson().isBlank()) {
             @SuppressWarnings("unchecked")
             Map<String, Object> inputMap = mapper.readValue(args.requestDataJson(), Map.class);
-            inputData = Data.fromMap(inputMap);
+            inputData = Data.fromMap(withDefinitionContext(inputMap, definition));
         } else {
-            inputData = Data.empty();
+            inputData = Data.fromMap(withDefinitionContext(Map.of(), definition));
         }
 
         // Execute
@@ -203,9 +215,9 @@ public class PipelineServingSubprocessMain {
                 if (body.length > 0) {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> inputMap = mapper.readValue(body, Map.class);
-                    inputData = Data.fromMap(inputMap);
+                    inputData = Data.fromMap(withDefinitionContext(inputMap, definition));
                 } else {
-                    inputData = Data.empty();
+                    inputData = Data.fromMap(withDefinitionContext(Map.of(), definition));
                 }
 
                 Data output = executorRef.get().exec(inputData);
@@ -284,5 +296,27 @@ public class PipelineServingSubprocessMain {
 
         // Block until shutdown
         shutdownLatch.await();
+    }
+
+    static Map<String, Object> withDefinitionContext(
+            Map<String, Object> request,
+            UnifiedPipelineDefinition definition) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        if (request != null) {
+            input.putAll(request);
+        }
+        if (definition == null) {
+            return input;
+        }
+        if (definition.getModelSetId() != null && !definition.getModelSetId().isBlank()) {
+            input.put("modelSetId", definition.getModelSetId());
+        }
+        if (definition.getModelBindings() != null && !definition.getModelBindings().isEmpty()) {
+            input.put("modelBindings", definition.getModelBindings());
+        }
+        if (definition.getResolvedModels() != null && !definition.getResolvedModels().isEmpty()) {
+            input.put("resolvedModels", definition.getResolvedModels());
+        }
+        return input;
     }
 }

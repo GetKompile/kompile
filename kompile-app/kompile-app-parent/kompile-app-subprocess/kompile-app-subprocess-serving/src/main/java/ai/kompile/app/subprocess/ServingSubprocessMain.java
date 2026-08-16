@@ -76,7 +76,7 @@ public class ServingSubprocessMain {
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
     public static void main(String[] args) {
-        NativeLibraryResolver.bootstrapOrThrow();
+        NativeLibraryResolver.bootstrapModelExecutionOrThrow();
         final ServingSubprocessArgs servingArgs;
         try {
             servingArgs = requireArgs(args);
@@ -211,7 +211,12 @@ public class ServingSubprocessMain {
 
             Map<String, Object> opts = new HashMap<>();
             opts.put("maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256);
-            opts.put("temperature", args.temperature() > 0 ? args.temperature() : 0.7);
+            if (args.temperature() != null) {
+                opts.put("temperature", args.temperature());
+            }
+            if (args.topK() != null) {
+                opts.put("topK", args.topK());
+            }
             if (args.dspEnabled() != null) {
                 opts.put("dspEnabled", args.dspEnabled());
                 // Recovery mode is a complete Kompile-side Java decode loop. Merely disabling

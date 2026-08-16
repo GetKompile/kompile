@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ServingSubprocessArgsRoundTripTest {
@@ -51,7 +52,12 @@ class ServingSubprocessArgsRoundTripTest {
 
     @Test
     void defaultsBindOnlyToLoopback() {
-        assertEquals("127.0.0.1", ServingSubprocessArgs.defaults().host());
+        ServingSubprocessArgs defaults = ServingSubprocessArgs.defaults();
+        assertEquals("127.0.0.1", defaults.host());
+        assertNull(defaults.temperature(),
+                "an absent caller override must let the loaded model family choose temperature");
+        assertNull(defaults.topK(),
+                "an absent caller override must let the loaded model family choose top-k");
     }
 
     @Test

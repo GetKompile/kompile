@@ -126,6 +126,18 @@ internal object SdxAndroidLlmAbi {
         )
     }
 
+    fun sdxLlmLastResultJson(
+        runtime: SdxNativeHandle,
+        model: SdxNativeHandle,
+        outJson: SdxPointerByReference
+    ): Int = withOutput(outJson) { output ->
+        SdxAndroidLlmNative.nativeLastResultJson(
+            runtime.address,
+            model.address,
+            output
+        )
+    }
+
     fun sdxLlmGenerateStreaming(
         runtime: SdxNativeHandle,
         model: SdxNativeHandle,

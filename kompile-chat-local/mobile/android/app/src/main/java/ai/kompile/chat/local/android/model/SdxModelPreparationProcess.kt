@@ -44,6 +44,11 @@ private const val KEY_MODEL_PATH = "model_path"
 private const val KEY_VERIFIED_SHA256 = "verified_sha256"
 private const val KEY_VERIFIED_BYTES = "verified_bytes"
 private const val KEY_HAS_VERIFIED_BYTES = "has_verified_bytes"
+private const val KEY_WEIGHT_OPTIMIZATION = "weight_optimization"
+private const val KEY_KV_CACHE_OPTIMIZATION = "kv_cache_optimization"
+private const val KEY_TENSOR_BATCH_SIZE = "tensor_batch_size"
+private const val KEY_USE_MEMORY_MAPPING = "use_memory_mapping"
+private const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
 private const val KEY_OPERATION_ATTEMPT_ID = "operation_attempt_id"
 private const val KEY_OPERATION_TERMINAL = "operation_terminal"
 private const val KEY_SUCCESS = "success"
@@ -64,6 +69,9 @@ private const val KEY_TARGET_PROFILE = "target_profile"
 private const val KEY_TARGET_SOC = "target_soc"
 private const val KEY_CONTEXT_LENGTH = "context_length"
 private const val KEY_MAX_PREFILL_LENGTH = "max_prefill_length"
+private const val KEY_CONVERSION_PROFILE_SHA256 = "conversion_profile_sha256"
+private const val KEY_OPTIMIZED_SOURCE_PATH = "optimized_source_path"
+private const val KEY_OPTIMIZED_SOURCE_BYTES = "optimized_source_bytes"
 private const val IMPORTER_BIND_TIMEOUT_MILLIS = 30_000L
 private const val IMPORTER_EXIT_WAIT_MILLIS = 10_000L
 private const val IMPORTER_CALL_TIMEOUT_MILLIS = 60L * 60L * 1_000L
@@ -96,6 +104,7 @@ internal fun buildSdxModelPreparationRequest(
     modelPath: String,
     verifiedSourceSha256: String?,
     verifiedSourceBytes: Long?,
+    options: ModelPreparationOptions,
     operationAttemptId: String
 ): Bundle = requireFrameworkOnlySdxWireBundle(
     Bundle().apply {
@@ -103,6 +112,11 @@ internal fun buildSdxModelPreparationRequest(
         putString(KEY_VERIFIED_SHA256, verifiedSourceSha256)
         putBoolean(KEY_HAS_VERIFIED_BYTES, verifiedSourceBytes != null)
         if (verifiedSourceBytes != null) putLong(KEY_VERIFIED_BYTES, verifiedSourceBytes)
+        putString(KEY_WEIGHT_OPTIMIZATION, options.weightOptimization.name)
+        putString(KEY_KV_CACHE_OPTIMIZATION, options.kvCacheOptimization.name)
+        putInt(KEY_TENSOR_BATCH_SIZE, options.tensorBatchSize)
+        putBoolean(KEY_USE_MEMORY_MAPPING, options.useMemoryMapping)
+        putString(KEY_DIAGNOSTIC_MODE, options.diagnosticMode.name)
         putString(KEY_OPERATION_ATTEMPT_ID, operationAttemptId)
     },
     "SDX model preparation request"
@@ -125,7 +139,11 @@ internal data class PreparedModelPayload(
     val targetProfile: String,
     val targetSoc: String,
     val contextLength: Int,
-    val maxPrefillLength: Int
+    val maxPrefillLength: Int,
+    val conversionProfileSha256: String,
+    val diagnosticMode: String,
+    val optimizedSourcePath: String,
+    val optimizedSourceBytes: Long,
 ) {
     fun toPreparedModelInfo(): PreparedModelInfo = PreparedModelInfo(
         cacheHit = cacheHit,
@@ -141,7 +159,11 @@ internal data class PreparedModelPayload(
         targetProfile = targetProfile,
         targetSoc = targetSoc,
         contextLength = contextLength,
-        maxPrefillLength = maxPrefillLength
+        maxPrefillLength = maxPrefillLength,
+        conversionProfileSha256 = conversionProfileSha256,
+        diagnosticMode = diagnosticMode,
+        optimizedSourcePath = optimizedSourcePath,
+        optimizedSourceBytes = optimizedSourceBytes,
     )
 
     companion object {
@@ -159,7 +181,11 @@ internal data class PreparedModelPayload(
             targetProfile = info.targetProfile,
             targetSoc = info.targetSoc,
             contextLength = info.contextLength,
-            maxPrefillLength = info.maxPrefillLength
+            maxPrefillLength = info.maxPrefillLength,
+            conversionProfileSha256 = info.conversionProfileSha256,
+            diagnosticMode = info.diagnosticMode,
+            optimizedSourcePath = info.optimizedSourcePath,
+            optimizedSourceBytes = info.optimizedSourceBytes,
         )
     }
 }
@@ -181,6 +207,7 @@ internal object SdxModelPreparationClient {
         model: File,
         verifiedSourceSha256: String?,
         verifiedSourceBytes: Long?,
+        options: ModelPreparationOptions,
         onPreparationStage: (PreparationStage) -> Unit
     ): PreparedModelInfo {
         val applicationContext = context.applicationContext
@@ -211,6 +238,7 @@ internal object SdxModelPreparationClient {
                     modelPath = model.absolutePath,
                     verifiedSourceSha256 = verifiedSourceSha256,
                     verifiedSourceBytes = verifiedSourceBytes,
+                    options = options,
                     operationAttemptId = operation.snapshot().attemptId
                 )
                 val response = try {
@@ -402,7 +430,11 @@ internal object SdxModelPreparationClient {
         targetProfile = response.requireString(KEY_TARGET_PROFILE),
         targetSoc = response.requireString(KEY_TARGET_SOC),
         contextLength = response.getInt(KEY_CONTEXT_LENGTH),
-        maxPrefillLength = response.getInt(KEY_MAX_PREFILL_LENGTH)
+        maxPrefillLength = response.getInt(KEY_MAX_PREFILL_LENGTH),
+        conversionProfileSha256 = response.requireString(KEY_CONVERSION_PROFILE_SHA256),
+        diagnosticMode = response.requireString(KEY_DIAGNOSTIC_MODE),
+        optimizedSourcePath = response.requireString(KEY_OPTIMIZED_SOURCE_PATH),
+        optimizedSourceBytes = response.getLong(KEY_OPTIMIZED_SOURCE_BYTES),
     ).toPreparedModelInfo()
 
     private fun Bundle.requireString(key: String): String =
@@ -775,6 +807,13 @@ class SdxModelPreparationService : Service() {
                 "SDX importer request omitted the native-operation attempt id."
             )
         val operation = NativeOperationJournal(serviceContext).resume(operationId)
+        val options = ModelPreparationOptions.fromWire(
+            weightOptimization = extras.getString(KEY_WEIGHT_OPTIMIZATION),
+            kvCacheOptimization = extras.getString(KEY_KV_CACHE_OPTIMIZATION),
+            tensorBatchSize = extras.getInt(KEY_TENSOR_BATCH_SIZE, 4),
+            useMemoryMapping = extras.getBoolean(KEY_USE_MEMORY_MAPPING, true),
+            diagnosticMode = extras.getString(KEY_DIAGNOSTIC_MODE),
+        )
         check(operation.snapshot().processName == Application.getProcessName()) {
             "SDX importer journal targets ${operation.snapshot().processName}, not " +
                 Application.getProcessName()
@@ -789,6 +828,7 @@ class SdxModelPreparationService : Service() {
                 modelPath,
                 extras.getString(KEY_VERIFIED_SHA256),
                 verifiedBytes,
+                options,
                 operation
             ) { stage ->
                 sendProgress(replyTo, requestId, stage)
@@ -841,6 +881,10 @@ class SdxModelPreparationService : Service() {
             putString(KEY_TARGET_SOC, payload.targetSoc)
             putInt(KEY_CONTEXT_LENGTH, payload.contextLength)
             putInt(KEY_MAX_PREFILL_LENGTH, payload.maxPrefillLength)
+            putString(KEY_CONVERSION_PROFILE_SHA256, payload.conversionProfileSha256)
+            putString(KEY_DIAGNOSTIC_MODE, payload.diagnosticMode)
+            putString(KEY_OPTIMIZED_SOURCE_PATH, payload.optimizedSourcePath)
+            putLong(KEY_OPTIMIZED_SOURCE_BYTES, payload.optimizedSourceBytes)
         }
     }
 

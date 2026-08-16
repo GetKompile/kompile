@@ -150,6 +150,12 @@ public class ServingSubprocessBackend implements LocalServingBackend {
                     call.path("name").asText(""),
                     arguments));
         }
+        List<StructuredChatLanguageModel.OutputBlock> outputBlocks = new ArrayList<>();
+        for (JsonNode block : response.path("outputBlocks")) {
+            outputBlocks.add(new StructuredChatLanguageModel.OutputBlock(
+                    block.path("type").asText(""),
+                    block.path("content").asText("")));
+        }
         List<String> parseErrors = response.path("parseErrors").isArray()
                 ? MAPPER.convertValue(response.path("parseErrors"),
                         new TypeReference<List<String>>() { })
@@ -157,6 +163,8 @@ public class ServingSubprocessBackend implements LocalServingBackend {
         return new StructuredChatLanguageModel.Response(
                 response.path("rawText").asText(""),
                 response.path("content").asText(""),
+                response.path("reasoningContent").asText(""),
+                outputBlocks,
                 calls,
                 parseErrors);
     }

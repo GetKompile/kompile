@@ -63,7 +63,22 @@ public class GraphExtractionConfig {
      */
     public enum ExtractionTarget {
         FULL_GRAPH,
-        ENTITIES_ONLY
+        ENTITIES_ONLY,
+        TYPED_ENTITIES_ONLY,
+        RELATIONS_ONLY
+    }
+
+    /**
+     * Model-call decomposition for a full graph window.
+     *
+     * <p>{@link #SINGLE_PASS} asks one model turn for entities and relations together.
+     * {@link #ENTITIES_THEN_RELATIONS} first accepts typed entities, then injects that immutable
+     * entity table into a fresh relation-only model turn. The engine combines both accepted phases;
+     * the second model turn cannot add, remove, rename, or retype entities.</p>
+     */
+    public enum DecomposedPassStrategy {
+        SINGLE_PASS,
+        ENTITIES_THEN_RELATIONS
     }
 
     /**
@@ -121,6 +136,10 @@ public class GraphExtractionConfig {
     @Builder.Default
     private ExtractionTarget extractionTarget = ExtractionTarget.FULL_GRAPH;
 
+    /** How a full graph is divided across model calls. */
+    @Builder.Default
+    private DecomposedPassStrategy decomposedPassStrategy = DecomposedPassStrategy.SINGLE_PASS;
+
     /** LLM provider for extraction (e.g., "openai", "anthropic", "ollama", "default") */
     @Builder.Default
     private String llmProvider = "default";
@@ -136,8 +155,17 @@ public class GraphExtractionConfig {
     @Builder.Default
     private int maxTokens = 4096;
 
-    /** Custom extraction prompt (null = use default prompt from GraphExtractionValidator) */
+    /**
+     * Custom extraction prompt for the legacy single-pass strategy. Two-pass extraction deliberately
+     * does not replay this combined prompt into both phases; use the phase-specific fields below.
+     */
     private String customPrompt;
+
+    /** Optional project rules applied only while extracting typed entities in phase one. */
+    private String typedEntityPrompt;
+
+    /** Optional project rules applied only while extracting relations from phase-one entities. */
+    private String relationPrompt;
 
     /**
      * Per-project validation and prompt policy. Null is treated as

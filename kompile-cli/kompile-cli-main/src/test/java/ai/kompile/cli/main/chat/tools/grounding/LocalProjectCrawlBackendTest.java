@@ -406,6 +406,7 @@ class LocalProjectCrawlBackendTest {
         assertTrue(result.getOutput().contains("\"pdf\""));
         assertTrue(result.getOutput().contains("subprocess"));
         assertTrue(result.getOutput().contains("memory"));
+        assertTrue(result.getOutput().contains("pipelineModelReadiness"));
         assertTrue(result.getOutput().contains("distributed"));
     }
 

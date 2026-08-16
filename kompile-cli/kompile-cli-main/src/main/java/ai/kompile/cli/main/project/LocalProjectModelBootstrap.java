@@ -71,15 +71,14 @@ public final class LocalProjectModelBootstrap {
         KompileProjectStore store = new KompileProjectStore();
         ensureProject(store, root);
         KompileProjectManifest manifest = store.load(root);
-        KompileProjectModel model = selectModel(manifest, selection);
         Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
-        boolean explicitProvisioning = firstNonBlank(
-                stringOption(options, "localPath", null),
-                stringOption(options, "source", null),
-                stringOption(options, "repository", null)) != null
-                || booleanOption(options, "forceBootstrap", false);
+        KompileProjectModel model = selectModel(manifest, selection, options);
+        boolean explicitProvisioning = booleanOption(options, "forceBootstrap", false)
+                || modelDefinitionChanged(model, options);
         Path existing = resolveManifestArtifact(root, model);
         if (existing != null && !explicitProvisioning) {
+            applyModelDefinition(model, options);
+            registerResolvedModel(store, root, model, existing, Map.of());
             return new ResolvedProjectModel(
                     modelId(model), existing, tokenizerBeside(existing), null, false, "existing");
         }
@@ -94,6 +93,7 @@ public final class LocalProjectModelBootstrap {
         Path tokenizerPath = optionalProjectArtifact(root, stringValue(result.get("tokenizerPath")));
         Path runtimePath = Path.of(stringValue(result.get("runtimePath")));
 
+        applyModelDefinition(model, options);
         registerResolvedModel(store, root, model, modelPath, result);
         return new ResolvedProjectModel(
                 modelId(model),
@@ -102,6 +102,33 @@ public final class LocalProjectModelBootstrap {
                 runtimePath,
                 true,
                 stringValue(result.getOrDefault("disposition", "staged")));
+    }
+
+    private static boolean modelDefinitionChanged(
+            KompileProjectModel model, Map<String, Object> options) {
+        return differs(stringOption(options, "source", null), model.getSource(), true)
+                || differs(stringOption(options, "repository", null), model.getSourceRepository(), false)
+                || differs(stringOption(options, "revision", null), model.getSourceRevision(), false)
+                || differs(stringOption(options, "type", null),
+                model.getMetadata().get("registry.type"), true);
+    }
+
+    private static boolean differs(String requested, String existing, boolean ignoreCase) {
+        if (requested == null || requested.isBlank()) return false;
+        if (existing == null) return true;
+        return ignoreCase ? !requested.equalsIgnoreCase(existing) : !requested.equals(existing);
+    }
+
+    private static void applyModelDefinition(
+            KompileProjectModel model, Map<String, Object> options) {
+        String source = stringOption(options, "source", null);
+        String repository = stringOption(options, "repository", null);
+        String revision = stringOption(options, "revision", null);
+        String type = stringOption(options, "type", null);
+        if (source != null && !source.isBlank()) model.setSource(source);
+        if (repository != null && !repository.isBlank()) model.setSourceRepository(repository);
+        if (revision != null && !revision.isBlank()) model.setSourceRevision(revision);
+        if (type != null && !type.isBlank()) model.getMetadata().put("registry.type", type);
     }
 
     public static List<Map<String, Object>> inventory(Path projectRoot) {
@@ -141,7 +168,8 @@ public final class LocalProjectModelBootstrap {
 
     private static KompileProjectModel selectModel(
             KompileProjectManifest manifest,
-            String selection) {
+            String selection,
+            Map<String, Object> options) {
         String requested = blankToNull(selection);
         for (KompileProjectModel candidate : manifest.getModels()) {
             if (requested != null && matches(candidate, requested)) {
@@ -164,12 +192,17 @@ public final class LocalProjectModelBootstrap {
         created.setId(id);
         created.setModelId(id);
         created.setRegistryModelId(id);
-        created.setRole("LLM");
-        created.setSource("CATALOG");
+        String registryType = firstNonBlank(
+                stringOption(options, "type", null), "llm_ggml");
+        created.setRole(roleForRegistryType(registryType));
+        created.setSource(firstNonBlank(
+                stringOption(options, "source", null), "CATALOG"));
+        created.setSourceRepository(stringOption(options, "repository", null));
+        created.setSourceRevision(stringOption(options, "revision", null));
         created.setRequired(true);
         created.setCreatedAt(Instant.now());
         created.setUpdatedAt(Instant.now());
-        created.getMetadata().put("registry.type", "llm_ggml");
+        created.getMetadata().put("registry.type", registryType);
         manifest.getModels().add(created);
         return created;
     }
@@ -178,6 +211,19 @@ public final class LocalProjectModelBootstrap {
         return requested.equals(model.getId())
                 || requested.equals(model.getModelId())
                 || requested.equals(model.getRegistryModelId());
+    }
+
+    private static String roleForRegistryType(String type) {
+        String normalized = type == null ? "" : type.trim().toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("vlm")) return "VLM";
+        if (normalized.startsWith("ocr")) return "OCR";
+        if (normalized.contains("reranker") || normalized.contains("cross_encoder")) {
+            return "RERANKER";
+        }
+        if (normalized.contains("encoder") || normalized.equals("embedding")) {
+            return "ENCODER";
+        }
+        return "LLM";
     }
 
     private static Path resolveManifestArtifact(Path root, KompileProjectModel model) {
@@ -224,7 +270,8 @@ public final class LocalProjectModelBootstrap {
     private static boolean supportedArtifact(Path path) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".gguf") || name.endsWith(".ggml")
-                || name.endsWith(".sdz") || name.endsWith(".fb");
+                || name.endsWith(".sdz") || name.endsWith(".fb")
+                || name.endsWith(".onnx") || name.equals("pipeline.json");
     }
 
     private static Map<String, Object> runStaging(

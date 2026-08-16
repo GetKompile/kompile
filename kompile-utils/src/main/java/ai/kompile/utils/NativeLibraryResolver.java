@@ -107,6 +107,16 @@ public class NativeLibraryResolver {
 
     private NativeLibraryResolver() {}
 
+    /** Defines which distribution-owned JNI closure an executable owns. */
+    public enum BootstrapMode {
+        /** CLI/orchestrator dependencies declared by the generated JNI entrypoint manifest. */
+        CORE,
+        /** JavaCPP plus the selected ND4J backend, without application-level direct JNI. */
+        MODEL_EXECUTION,
+        /** Backward-compatible application scope: model execution plus direct JNI dependencies. */
+        FULL
+    }
+
     // ======================== Public API ========================
 
     /**
@@ -116,6 +126,15 @@ public class NativeLibraryResolver {
      * @return true if native libraries are available (found or not needed)
      */
     public static boolean bootstrap() {
+        return bootstrap(BootstrapMode.FULL);
+    }
+
+    /**
+     * Bootstraps only the native closure owned by the calling executable.
+     * Core orchestrators must not initialize model backends that belong to worker
+     * subprocesses; model executors retain the complete JavaCPP/ND4J bootstrap.
+     */
+    public static boolean bootstrap(BootstrapMode mode) {
         if (!NativeImageInfo.isRunningInNativeImage() && hasClassifierJarsOnClasspath()) {
             // JVM mode with classifier JARs present — JavaCPP Loader handles
             // extraction internally.  But we still extract to cache so the
@@ -134,13 +153,15 @@ public class NativeLibraryResolver {
             return false;
         }
         boolean nativeImage = NativeImageInfo.isRunningInNativeImage();
-        if (nativeImage) {
+        if (nativeImage && mode != BootstrapMode.CORE) {
             validateSideLoadedRuntime(libDirs);
         }
         configureJavaCpp(libDirs);
         if (nativeImage) {
-            configureNd4jBackendPriorities(libDirs);
-            loadSideLoadedJniLibraries(libDirs);
+            if (mode != BootstrapMode.CORE) {
+                configureNd4jBackendPriorities(libDirs);
+            }
+            loadSideLoadedJniLibraries(libDirs, mode);
         }
         return true;
     }
@@ -151,7 +172,22 @@ public class NativeLibraryResolver {
      * the existing classpath/cache behavior.
      */
     public static void bootstrapOrThrow() {
-        if (!bootstrap() && NativeImageInfo.isRunningInNativeImage()) {
+        bootstrapOrThrow(BootstrapMode.FULL);
+    }
+
+    /** Bootstraps the direct JNI closure used by the CLI and other orchestrators. */
+    public static void bootstrapCoreOrThrow() {
+        bootstrapOrThrow(BootstrapMode.CORE);
+    }
+
+    /** Bootstraps only JavaCPP and the selected ND4J backend for model workers. */
+    public static void bootstrapModelExecutionOrThrow() {
+        bootstrapOrThrow(BootstrapMode.MODEL_EXECUTION);
+    }
+
+    /** Bootstraps the requested native closure and fails loudly for incomplete installs. */
+    public static void bootstrapOrThrow(BootstrapMode mode) {
+        if (!bootstrap(mode) && NativeImageInfo.isRunningInNativeImage()) {
             throw new IllegalStateException("Native Kompile executable has no side-loaded native libraries. "
                     + "Install the matching distribution lib/ directory or set KOMPILE_NATIVE_LIB_DIR.");
         }
@@ -347,7 +383,11 @@ public class NativeLibraryResolver {
      * {@code $ORIGIN} runpath. No process environment mutation is involved.</p>
      */
     static void loadSideLoadedJniLibraries(List<Path> libDirs) {
-        for (Path library : sideLoadedJniLoadPlan(libDirs)) {
+        loadSideLoadedJniLibraries(libDirs, BootstrapMode.FULL);
+    }
+
+    static void loadSideLoadedJniLibraries(List<Path> libDirs, BootstrapMode mode) {
+        for (Path library : sideLoadedJniLoadPlan(libDirs, mode)) {
             Path normalized = library.toAbsolutePath().normalize();
             synchronized (LOADED_SIDE_LOADED_JNI) {
                 if (LOADED_SIDE_LOADED_JNI.contains(normalized)) {
@@ -368,6 +408,15 @@ public class NativeLibraryResolver {
 
     /** Returns the deterministic, backend-specific JNI load plan without loading it. */
     static List<Path> sideLoadedJniLoadPlan(List<Path> libDirs) {
+        return sideLoadedJniLoadPlan(libDirs, BootstrapMode.FULL);
+    }
+
+    /** Returns the deterministic JNI load plan owned by the requested executable scope. */
+    static List<Path> sideLoadedJniLoadPlan(List<Path> libDirs, BootstrapMode mode) {
+        if (mode == BootstrapMode.CORE) {
+            return new ArrayList<>(directJniEntrypoints(libDirs));
+        }
+
         Map<String, Path> libraries = new LinkedHashMap<>();
         for (Path libDir : libDirs) {
             if (libDir == null || !Files.isDirectory(libDir)) {
@@ -433,9 +482,11 @@ public class NativeLibraryResolver {
         // loading every .so is unsafe and also mistakes support runtimes for JNI
         // libraries. The manifest is generic (sqlite-jdbc, JNA, JLine, Snappy,
         // Zstd, and future dependencies) without any artifact-specific rules.
-        for (Path library : directJniEntrypoints(libDirs)) {
-            if (!plan.contains(library)) {
-                plan.add(library);
+        if (mode == BootstrapMode.FULL) {
+            for (Path library : directJniEntrypoints(libDirs)) {
+                if (!plan.contains(library)) {
+                    plan.add(library);
+                }
             }
         }
         return plan;

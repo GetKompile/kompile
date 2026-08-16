@@ -149,7 +149,46 @@ class KompileLocalServingBootstrapTest {
             assertEquals(tokenizer.toAbsolutePath().toString(),
                     json.path("tokenizerPath").asText());
             assertEquals(1024, json.path("maxNewTokens").asInt());
+            assertTrue(json.path("temperature").isNull(),
+                    "absent temperature must preserve model-family sampling");
+            assertTrue(json.path("topK").isNull(),
+                    "absent topK must preserve model-family sampling");
             assertTrue(json.has("dspEnabled"));
+        } finally {
+            Files.deleteIfExists(args);
+        }
+    }
+
+    @Test
+    void writesExplicitLocalServingRuntimeTuningWithoutInventingDefaults() throws Exception {
+        Path model = tempDir.resolve("model.gguf");
+        Path tokenizer = tempDir.resolve("tokenizer.json");
+        Files.writeString(model, "model");
+        Files.writeString(tokenizer, "{}");
+        KompileLocalServingBootstrap.ResolvedModel resolvedModel =
+                new KompileLocalServingBootstrap.ResolvedModel(
+                        "qwen3.5-2b-instruct", model, tokenizer);
+
+        Path args = KompileLocalServingBootstrap.writeServingArgs(
+                resolvedModel,
+                43123,
+                Map.of(
+                        "maxNewTokens", 768,
+                        "temperature", 1.0,
+                        "topK", 20,
+                        "dspEnabled", true,
+                        "optimizerEnabled", false,
+                        "optimizerFp16", true,
+                        "memoryThresholdPercent", 81));
+        try {
+            JsonNode json = JsonUtils.standardMapper().readTree(args.toFile());
+            assertEquals(768, json.path("maxNewTokens").asInt());
+            assertEquals(1.0, json.path("temperature").asDouble());
+            assertEquals(20, json.path("topK").asInt());
+            assertTrue(json.path("dspEnabled").asBoolean());
+            assertFalse(json.path("optimizerEnabled").asBoolean());
+            assertTrue(json.path("optimizerFp16").asBoolean());
+            assertEquals(81, json.path("memoryThresholdPercent").asInt());
         } finally {
             Files.deleteIfExists(args);
         }

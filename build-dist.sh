@@ -1176,7 +1176,14 @@ APP_NATIVE_LIBS="kompile-app/kompile-app-parent/kompile-app-main/target/native-l
 CLI_NATIVE_LIBS="kompile-cli/kompile-cli-main/target/native-libs"
 
 NATIVE_STAGER="${SCRIPT_DIR}/kompile-dist/src/main/build/stage-native-libs.sh"
-NATIVE_PLATFORM_EXTENSION="${SDK_CLASSIFIER#${PLATFORM}}"
+# CUDA/ZLUDA are backend artifact lanes, not JavaCPP platform flavors: the
+# artifactId selects the backend and its producer-owned manifest remains under
+# the base platform classifier. Preserve suffix handling only for true flavors
+# such as CPU ISA variants.
+case "${ND4J_BACKEND:-}" in
+    nd4j-cuda-*|nd4j-zluda*) NATIVE_PLATFORM_EXTENSION="" ;;
+    *) NATIVE_PLATFORM_EXTENSION="${SDK_CLASSIFIER#${PLATFORM}}" ;;
+esac
 
 echo ""
 # Never assemble from ~/.javacpp/cache: it is mutable user state and can contain

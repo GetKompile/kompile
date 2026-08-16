@@ -19,6 +19,7 @@ package ai.kompile.utils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -40,6 +41,35 @@ class NativeLibraryResolverTest {
             assertEquals(true, NativeImageInfo.detectNativeImage());
         } finally {
             restoreProperty(NativeImageInfo.IMAGE_CODE_PROPERTY, previous);
+        }
+    }
+
+    @Test
+    void runtimeImageCodeOverridesHostedProcessCaches() throws Exception {
+        String previousProperty = System.getProperty(NativeImageInfo.IMAGE_CODE_PROPERTY);
+        Field nativeImage = NativeImageInfo.class.getDeclaredField("isNativeImage");
+        Field executablePath = NativeImageInfo.class.getDeclaredField("executablePath");
+        Field executablePathResolved = NativeImageInfo.class.getDeclaredField("executablePathResolved");
+        nativeImage.setAccessible(true);
+        executablePath.setAccessible(true);
+        executablePathResolved.setAccessible(true);
+        Object previousNativeImage = nativeImage.get(null);
+        Object previousExecutablePath = executablePath.get(null);
+        boolean previousExecutablePathResolved = executablePathResolved.getBoolean(null);
+        try {
+            nativeImage.set(null, Boolean.FALSE);
+            executablePath.set(null, "/hosted/builder/java");
+            executablePathResolved.setBoolean(null, true);
+            System.setProperty(NativeImageInfo.IMAGE_CODE_PROPERTY, "runtime");
+
+            assertEquals(true, NativeImageInfo.isRunningInNativeImage());
+            assertEquals(false, "/hosted/builder/java".equals(
+                    NativeImageInfo.getExecutablePath()));
+        } finally {
+            nativeImage.set(null, previousNativeImage);
+            executablePath.set(null, previousExecutablePath);
+            executablePathResolved.setBoolean(null, previousExecutablePathResolved);
+            restoreProperty(NativeImageInfo.IMAGE_CODE_PROPERTY, previousProperty);
         }
     }
 
@@ -131,6 +161,42 @@ class NativeLibraryResolverTest {
                         temporaryDirectory.resolve("libjnicublas.so"),
                         temporaryDirectory.resolve("libjnind4jcuda.so")),
                 NativeLibraryResolver.sideLoadedJniLoadPlan(List.of(temporaryDirectory)));
+    }
+
+    @Test
+    void coreBootstrapDoesNotLoadPackagedModelBackend() throws Exception {
+        for (String name : List.of(
+                "libjvm.so", "libjnijavacpp.so", "libjnicudart.so",
+                "libjnicublas.so", "libjnind4jcuda.so", "libsqlitejdbc.so")) {
+            writeNative(name);
+        }
+        writeJniEntrypointManifest("libsqlitejdbc.so");
+
+        assertEquals(
+                List.of(temporaryDirectory.resolve("libsqlitejdbc.so")),
+                NativeLibraryResolver.sideLoadedJniLoadPlan(
+                        List.of(temporaryDirectory), NativeLibraryResolver.BootstrapMode.CORE));
+    }
+
+    @Test
+    void modelBootstrapDoesNotLoadApplicationDirectJni() throws Exception {
+        for (String name : List.of(
+                "libjvm.so", "libjnijavacpp.so", "libjnicudart.so",
+                "libjnicublas.so", "libjnind4jcuda.so", "libsqlitejdbc.so")) {
+            writeNative(name);
+        }
+        writeJniEntrypointManifest("libsqlitejdbc.so");
+
+        assertEquals(
+                List.of(
+                        temporaryDirectory.resolve("libjvm.so"),
+                        temporaryDirectory.resolve("libjnijavacpp.so"),
+                        temporaryDirectory.resolve("libjnicudart.so"),
+                        temporaryDirectory.resolve("libjnicublas.so"),
+                        temporaryDirectory.resolve("libjnind4jcuda.so")),
+                NativeLibraryResolver.sideLoadedJniLoadPlan(
+                        List.of(temporaryDirectory),
+                        NativeLibraryResolver.BootstrapMode.MODEL_EXECUTION));
     }
 
     @Test

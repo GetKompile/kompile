@@ -3,6 +3,7 @@ package ai.kompile.chat.local.android.prefs
 import android.content.Context
 import android.content.SharedPreferences
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.model.ModelPreparationOptions
 import org.nd4j.dsp.model.HuggingFaceGgmlResolver
 
 /** Return a safe canonical reference for persistence, or null for malformed/credential-bearing input. */
@@ -181,6 +182,26 @@ class AppPreferences(context: Context) {
         get() = prefs.getInt(KEY_MAX_TOKENS, 1024)
         set(value) = prefs.edit().putInt(KEY_MAX_TOKENS, value).apply()
 
+    // ── Model preparation ─────────────────────────────────────────────────────
+
+    var modelPreparationOptions: ModelPreparationOptions
+        get() = ModelPreparationOptions.fromWire(
+            weightOptimization = prefs.getString(KEY_MODEL_WEIGHT_OPTIMIZATION, null),
+            kvCacheOptimization = prefs.getString(KEY_MODEL_KV_CACHE_OPTIMIZATION, null),
+            tensorBatchSize = prefs.getInt(KEY_MODEL_TENSOR_BATCH_SIZE, 4),
+            useMemoryMapping = prefs.getBoolean(KEY_MODEL_USE_MEMORY_MAPPING, true),
+            diagnosticMode = prefs.getString(KEY_MODEL_DIAGNOSTIC_MODE, null),
+        )
+        set(value) {
+            prefs.edit()
+                .putString(KEY_MODEL_WEIGHT_OPTIMIZATION, value.weightOptimization.name)
+                .putString(KEY_MODEL_KV_CACHE_OPTIMIZATION, value.kvCacheOptimization.name)
+                .putInt(KEY_MODEL_TENSOR_BATCH_SIZE, value.tensorBatchSize)
+                .putBoolean(KEY_MODEL_USE_MEMORY_MAPPING, value.useMemoryMapping)
+                .putString(KEY_MODEL_DIAGNOSTIC_MODE, value.diagnosticMode.name)
+                .apply()
+        }
+
     // ── Misc ──────────────────────────────────────────────────────────────────
 
     /** URL opened in an external browser to prepare a target-specific .sdz or .kproject. */
@@ -351,6 +372,11 @@ class AppPreferences(context: Context) {
         private const val KEY_PENDING_PROJECT_REVISION = "pending_project_revision"
         private const val KEY_PENDING_PROJECT_TARGET_PROFILE = "pending_project_target_profile"
         private const val KEY_MODEL_STAGING_URL = "model_staging_url"
+        private const val KEY_MODEL_WEIGHT_OPTIMIZATION = "model_weight_optimization"
+        private const val KEY_MODEL_KV_CACHE_OPTIMIZATION = "model_kv_cache_optimization"
+        private const val KEY_MODEL_TENSOR_BATCH_SIZE = "model_tensor_batch_size"
+        private const val KEY_MODEL_USE_MEMORY_MAPPING = "model_use_memory_mapping"
+        private const val KEY_MODEL_DIAGNOSTIC_MODE = "model_diagnostic_mode"
         private const val KEY_HUGGING_FACE_REFERENCE = "hugging_face_reference"
         private const val KEY_HF_IMPORT_VERSION = "hf_import_version"
         private const val KEY_HF_IMPORT_RAW_REFERENCE = "hf_import_raw_reference"

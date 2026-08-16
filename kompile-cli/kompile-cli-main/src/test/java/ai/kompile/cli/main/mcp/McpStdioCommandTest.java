@@ -98,6 +98,32 @@ class McpStdioCommandTest {
     }
 
     @Test
+    void startupNotificationNeverReportsAZeroCountDuringAsyncInitialization() {
+        assertEquals(
+                "Kompile MCP server initialized; tools are loading asynchronously",
+                McpStdioCommand.startupToolMessage(false, 0));
+        assertEquals(
+                "Kompile MCP server started with 82 tools",
+                McpStdioCommand.startupToolMessage(true, 82));
+    }
+
+    @Test
+    void initializationHintsOnlyPublishAnAuthoritativeToolCount() {
+        ObjectNode loading = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        McpStdioCommand.populateInitializationHints(loading, false, 0, "full");
+        assertTrue(loading.get("eagerLoadTools").asBoolean());
+        assertFalse(loading.get("toolsReady").asBoolean());
+        assertFalse(loading.has("toolCount"));
+        assertEquals("full", loading.get("profile").asText());
+
+        ObjectNode ready = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+        McpStdioCommand.populateInitializationHints(ready, true, 82, "core");
+        assertTrue(ready.get("toolsReady").asBoolean());
+        assertEquals(82, ready.get("toolCount").asInt());
+        assertEquals("core", ready.get("profile").asText());
+    }
+
+    @Test
     void architectRoleKeepsCodexDefaultsWithFullAccess() {
         assertEquals("gpt-5.6-sol", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").getModel());
         assertEquals("xhigh", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").resolveThinking("gpt-5.6-sol"));

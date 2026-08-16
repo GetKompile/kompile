@@ -98,6 +98,26 @@ public class UnifiedPipelineDefinition {
     /** LLM/VLM: the model set ID to use */
     private String modelSetId;
 
+    /**
+     * Named model roles used by this pipeline. Keys are pipeline-local roles such as
+     * {@code generator}, {@code vision}, {@code embedding}, or {@code reranker}; values
+     * reference entries in {@link #modelDefinitions} or a project model id.
+     */
+    private Map<String, String> modelBindings;
+
+    /**
+     * Optional pipeline-local model definitions keyed by registry id. Request-scoped
+     * callers may merge a shared model registry into this map before launch.
+     */
+    private Map<String, Map<String, Object>> modelDefinitions;
+
+    /**
+     * Parent-resolved local model artifacts keyed by pipeline role. This is populated
+     * immediately before subprocess launch so native and JVM children receive the same
+     * model contract without performing their own staging.
+     */
+    private Map<String, Map<String, Object>> resolvedModels;
+
     /** VLM only: extraction types (document-understanding, table-extraction, etc.) */
     private List<String> extractionTypes;
 

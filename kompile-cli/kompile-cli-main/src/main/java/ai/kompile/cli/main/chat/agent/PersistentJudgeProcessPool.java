@@ -16,15 +16,11 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.coordination.ReusableResourcePool;
+
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -108,87 +104,42 @@ public final class PersistentJudgeProcessPool {
 
     /** A refcounted handle on a pooled process. Closing releases; it never destroys directly. */
     public static final class Lease implements AutoCloseable {
-        private final Entry entry;
-        private boolean closed;
+        private final ReusableResourcePool.Lease<PooledProcess> delegate;
 
-        private Lease(Entry entry) {
-            this.entry = entry;
+        private Lease(ReusableResourcePool.Lease<PooledProcess> delegate) {
+            this.delegate = delegate;
         }
 
         public String sendMessage(String message, int timeoutSeconds) throws IOException, InterruptedException {
-            PooledProcess p;
-            synchronized (entry.lock) {
-                p = entry.process;
-            }
-            if (p == null) {
+            if (!delegate.isHealthy()) {
                 throw new IOException("Pooled judge process is not running");
             }
-            return p.sendMessage(message, timeoutSeconds);
+            return delegate.resource().sendMessage(message, timeoutSeconds);
         }
 
         public boolean isAlive() {
-            synchronized (entry.lock) {
-                return entry.process != null && entry.process.isAlive();
-            }
+            return delegate.isHealthy();
         }
 
         @Override
         public void close() {
-            synchronized (entry.lock) {
-                if (closed) {
-                    return;
-                }
-                closed = true;
-                entry.leases--;
-                if (entry.leases <= 0 && entry.process != null && !entry.removed) {
-                    entry.scheduleReap();
-                }
-            }
+            delegate.close();
         }
     }
-
-    private static final class Entry {
-        final Object lock = new Object();
-        final String key;
-        PooledProcess process;
-        int leases;
-        boolean removed;
-        ScheduledFuture<?> pendingReap;
-
-        Entry(String key) {
-            this.key = key;
-        }
-
-        // Called with lock held.
-        void scheduleReap() {
-            cancelReap();
-            pendingReap = REAPER.schedule(() -> reap(this), idleMillis(), TimeUnit.MILLISECONDS);
-        }
-
-        // Called with lock held.
-        void cancelReap() {
-            if (pendingReap != null) {
-                pendingReap.cancel(false);
-                pendingReap = null;
-            }
-        }
-    }
-
-    private static final Object POOL_LOCK = new Object();
-    private static final Map<String, Entry> ENTRIES = new HashMap<>();
-
-    private static final ScheduledExecutorService REAPER =
-            Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "judge-pool-reaper");
-                t.setDaemon(true);
-                return t;
-            });
 
     /** Idle keep-warm window; override for tests via {@link #setIdleMillisForTests}. */
     private static volatile long idleMillisOverride = -1;
 
     /** Test seam; production always uses {@link #DEFAULT_FACTORY}. */
     static volatile ProcessFactory factory;
+
+    private static final ReusableResourcePool<String, PooledProcess> POOL =
+            new ReusableResourcePool<>(
+                    "judge-pool",
+                    PersistentJudgeProcessPool::idleMillis,
+                    () -> 0,
+                    PooledProcess::isAlive,
+                    PooledProcess::close);
 
     private static final ProcessFactory DEFAULT_FACTORY = spec -> {
         PersistentAgentProcess.Builder builder = PersistentAgentProcess.builder(spec.binary)
@@ -234,63 +185,21 @@ public final class PersistentJudgeProcessPool {
      * flight — concurrent acquirers share the one spawn instead of racing their own.
      */
     public static Lease acquire(Spec spec) throws IOException, InterruptedException {
-        while (true) {
-            Entry entry;
-            synchronized (POOL_LOCK) {
-                entry = ENTRIES.computeIfAbsent(spec.key(), Entry::new);
-            }
-            synchronized (entry.lock) {
-                if (entry.removed) {
-                    continue; // reaped between map lookup and lock — retry with a fresh entry
-                }
-                entry.cancelReap();
-                if (entry.process == null || !entry.process.isAlive()) {
-                    if (entry.process != null) {
-                        entry.process.close();
-                        entry.process = null;
-                    }
-                    entry.process = factory.create(spec);
-                }
-                entry.leases++;
-                return new Lease(entry);
-            }
-        }
-    }
-
-    private static void reap(Entry entry) {
-        synchronized (entry.lock) {
-            if (entry.leases > 0 || entry.removed) {
-                return; // re-acquired (or already gone) while the reap was queued
-            }
-            if (entry.process != null) {
-                entry.process.close();
-                entry.process = null;
-            }
-            entry.removed = true;
-            entry.pendingReap = null;
-        }
-        synchronized (POOL_LOCK) {
-            ENTRIES.remove(entry.key, entry);
+        try {
+            return new Lease(POOL.acquire(
+                    spec.key(),
+                    () -> factory.create(spec),
+                    TimeUnit.SECONDS.toMillis(Math.max(1, spec.startTimeoutSeconds))));
+        } catch (IOException | InterruptedException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IOException("Could not acquire pooled judge process", failure);
         }
     }
 
     /** Destroy every pooled process. Used by the shutdown hook and tests. */
     static void closeAll() {
-        List<Entry> snapshot;
-        synchronized (POOL_LOCK) {
-            snapshot = new ArrayList<>(ENTRIES.values());
-            ENTRIES.clear();
-        }
-        for (Entry entry : snapshot) {
-            synchronized (entry.lock) {
-                entry.cancelReap();
-                if (entry.process != null) {
-                    entry.process.close();
-                    entry.process = null;
-                }
-                entry.removed = true;
-            }
-        }
+        POOL.clear();
     }
 
     private static long idleMillis() {
@@ -315,8 +224,6 @@ public final class PersistentJudgeProcessPool {
 
     /** Live pooled-process count (for tests/diagnostics). */
     static int pooledCount() {
-        synchronized (POOL_LOCK) {
-            return ENTRIES.size();
-        }
+        return POOL.pooledCount();
     }
 }

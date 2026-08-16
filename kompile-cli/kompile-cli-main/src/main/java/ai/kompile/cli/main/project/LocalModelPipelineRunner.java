@@ -20,9 +20,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -215,6 +218,12 @@ public final class LocalModelPipelineRunner {
                             + " has no executable pipelineSpec.");
         }
 
+        ResolvedModelContext modelContext = resolveBoundModels(projectRoot, pipeline, definition);
+        if (!modelContext.bindings().isEmpty()) {
+            definition.setModelBindings(modelContext.bindings());
+            definition.setResolvedModels(modelContext.resolvedModels());
+        }
+
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("filePath", file.toAbsolutePath().normalize().toString());
         input.put("path", file.toAbsolutePath().normalize().toString());
@@ -222,6 +231,10 @@ public final class LocalModelPipelineRunner {
         input.put("pipelineType", pipeline.pipelineType());
         input.put("text", loadedText == null ? "" : loadedText);
         input.put("optionsJson", MAPPER.writeValueAsString(pipeline.chunkerOptions()));
+        if (!modelContext.bindings().isEmpty()) {
+            input.put("modelBindings", modelContext.bindings());
+            input.put("resolvedModels", modelContext.resolvedModels());
+        }
         pipeline.chunkerOptions().forEach((key, value) -> {
             if (value instanceof String || value instanceof Number || value instanceof Boolean) {
                 input.put("option." + key, value);
@@ -262,6 +275,7 @@ public final class LocalModelPipelineRunner {
 
         Map<String, Object> workerOptions = new LinkedHashMap<>(pipeline.chunkerOptions());
         workerOptions.putAll(processor);
+        Object modelRuntime = workerOptions.remove("modelRuntime");
         WorkerLocation worker = resolveWorker(projectRoot, workerOptions);
         if (!worker.available()) {
             throw new IllegalStateException(
@@ -277,6 +291,17 @@ public final class LocalModelPipelineRunner {
                 options.get("modelId"),
                 options.get("modelSetId"),
                 stringValue(pipeline.chunkerOptions().get("vlmModel")));
+        ResolvedModelContext modelContext = resolveBoundModels(projectRoot, pipeline, null);
+        Map<String, Object> resolvedModel = preferredResolvedModel(modelContext.resolvedModels());
+        if (resolvedModel != null) {
+            modelId = first(stringValue(resolvedModel.get("modelId")), modelId);
+            options.put("modelSourceType", "LOCAL");
+            options.put("modelIdentifier", stringValue(resolvedModel.get("modelPath")));
+        } else if (modelRuntime != null) {
+            throw new IllegalArgumentException(
+                    "A VLM pipeline with modelRuntime requires options.modelId, options.vlmModel, "
+                            + "or modelBindings.");
+        }
 
         VlmTestSubprocessArgs.Builder args = VlmTestSubprocessArgs.builder()
                 .taskId("local-crawl-" + pipeline.pipelineId() + "-"
@@ -298,6 +323,7 @@ public final class LocalModelPipelineRunner {
                 .kvCacheStrategy(first(options.get("kvCacheStrategy"), "STATIC"))
                 .maxKvLen(integer(options, "maxKvLen", 0))
                 .maxPages(integer(options, "maxPages", 0))
+                .pageRange(options.get("pageRange"))
                 .modelSourceType(options.get("modelSourceType"))
                 .modelIdentifier(options.get("modelIdentifier"))
                 .stagingUrl(options.get("stagingUrl"))
@@ -343,10 +369,8 @@ public final class LocalModelPipelineRunner {
             }
 
             if (process.exitValue() != 0 || output.failure() != null) {
-                throw new IOException(first(
-                        output.failure(),
-                        tail(logFile),
-                        "Document model subprocess exited with " + process.exitValue()));
+                throw new IOException(documentModelFailure(
+                        process.exitValue(), output.failure(), tail(logFile)));
             }
             String text = pagesText(output.completion());
             if (text.isBlank()) {
@@ -807,6 +831,217 @@ public final class LocalModelPipelineRunner {
         return null;
     }
 
+    static ResolvedModelContext resolveBoundModels(
+            Path projectRoot,
+            LocalCrawlCapabilities.ResolvedPipeline pipeline,
+            UnifiedPipelineDefinition definition) throws IOException, InterruptedException {
+        Map<String, String> bindings = new LinkedHashMap<>();
+        if (definition != null) {
+            mergeBindings(bindings, definition.getModelBindings());
+        }
+        mergeBindings(bindings, pipeline.chunkerOptions().get("modelBindings"));
+        mergeBindings(bindings, pipeline.processor().get("modelBindings"));
+        addProjectModelRefs(projectRoot, bindings,
+                pipeline.chunkerOptions().get("modelRefs"),
+                pipeline.processor().get("modelRefs"));
+
+        Map<String, Map<String, Object>> definitions = new LinkedHashMap<>();
+        mergeModelDefinitions(definitions, pipeline.processor().get("registeredModelDefinitions"));
+        mergeModelDefinitions(definitions, pipeline.chunkerOptions().get("modelDefinitions"));
+        mergeModelDefinitions(definitions, pipeline.processor().get("modelDefinitions"));
+        if (definition != null) {
+            mergeModelDefinitions(definitions, definition.getModelDefinitions());
+        }
+
+        Object defaultRuntime = firstObject(
+                pipeline.processor().get("modelRuntime"),
+                pipeline.chunkerOptions().get("modelRuntime"));
+        String modelSetId = first(
+                stringValue(pipeline.chunkerOptions().get("modelSetId")),
+                definition == null ? null : definition.getModelSetId());
+        String legacyModelId = first(
+                stringValue(pipeline.chunkerOptions().get("modelId")),
+                stringValue(pipeline.chunkerOptions().get("vlmModel")),
+                modelSetId);
+        if (bindings.isEmpty() && legacyModelId != null
+                && (modelSetId != null || defaultRuntime != null)) {
+            bindings.put("default", legacyModelId);
+        }
+        if (bindings.isEmpty()) {
+            if (defaultRuntime != null) {
+                throw new IllegalArgumentException(
+                        "modelRuntime requires a model binding, modelSetId, modelId, or vlmModel.");
+            }
+            return ResolvedModelContext.empty();
+        }
+
+        Map<String, Map<String, Object>> resolvedModels = new LinkedHashMap<>();
+        Map<String, LocalProjectModelBootstrap.ResolvedProjectModel> resolvedByReference =
+                new LinkedHashMap<>();
+        for (Map.Entry<String, String> binding : bindings.entrySet()) {
+            String role = binding.getKey();
+            String reference = binding.getValue();
+            Map<String, Object> modelDefinition = definitions.get(reference);
+            String selection = first(
+                    modelDefinition == null ? null : stringValue(modelDefinition.get("modelId")),
+                    modelDefinition == null ? null : stringValue(modelDefinition.get("id")),
+                    reference);
+            Map<String, Object> runtimeOptions = modelRuntimeOptions(defaultRuntime, modelDefinition);
+            LocalProjectModelBootstrap.ResolvedProjectModel resolved = resolvedByReference.get(reference);
+            if (resolved == null) {
+                resolved = LocalProjectModelBootstrap.ensure(projectRoot, selection, runtimeOptions);
+                resolvedByReference.put(reference, resolved);
+            }
+
+            Map<String, Object> descriptor = new LinkedHashMap<>();
+            descriptor.put("binding", role);
+            descriptor.put("reference", reference);
+            descriptor.put("modelId", resolved.modelId());
+            descriptor.put("modelPath", resolved.modelPath().toString());
+            putIfNonNull(descriptor, "tokenizerPath", resolved.tokenizerPath());
+            putIfNonNull(descriptor, "stagingRuntime", resolved.stagingRuntime());
+            descriptor.put("bootstrapped", resolved.bootstrapped());
+            descriptor.put("disposition", resolved.disposition());
+            descriptor.put("role", first(
+                    modelDefinition == null ? null : stringValue(modelDefinition.get("role")), role));
+            resolvedModels.put(role, Map.copyOf(descriptor));
+        }
+        return new ResolvedModelContext(Map.copyOf(bindings), Map.copyOf(resolvedModels));
+    }
+
+    private static void mergeBindings(Map<String, String> target, Object configured) {
+        if (!(configured instanceof Map<?, ?> values)) return;
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            String role = entry.getKey() == null ? null : String.valueOf(entry.getKey()).trim();
+            String model = entry.getValue() == null ? null : String.valueOf(entry.getValue()).trim();
+            if (role == null || role.isBlank() || model == null || model.isBlank()) {
+                throw new IllegalArgumentException(
+                        "modelBindings must map non-empty roles to non-empty model ids.");
+            }
+            target.put(role, model);
+        }
+    }
+
+    private static void mergeModelDefinitions(
+            Map<String, Map<String, Object>> target, Object configured) {
+        if (!(configured instanceof Map<?, ?> values)) return;
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            if (entry.getKey() == null || !(entry.getValue() instanceof Map<?, ?> definition)) {
+                continue;
+            }
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            definition.forEach((key, value) -> {
+                if (key != null && value != null) normalized.put(String.valueOf(key), value);
+            });
+            target.put(String.valueOf(entry.getKey()), Map.copyOf(normalized));
+        }
+    }
+
+    private static void addProjectModelRefs(
+            Path projectRoot,
+            Map<String, String> bindings,
+            Object firstRefs,
+            Object secondRefs) {
+        List<String> refs = new ArrayList<>(stringList(firstRefs));
+        for (String ref : stringList(secondRefs)) {
+            if (!refs.contains(ref)) refs.add(ref);
+        }
+        if (refs.isEmpty()) return;
+        List<Map<String, Object>> inventory = LocalProjectModelBootstrap.inventory(projectRoot);
+        for (String ref : refs) {
+            if (bindings.containsValue(ref)) continue;
+            Map<String, Object> model = inventory.stream()
+                    .filter(item -> matchesModelReference(item, ref))
+                    .findFirst().orElse(null);
+            String role = model == null ? null : normalizeRole(stringValue(model.get("role")));
+            if (role == null && refs.size() == 1) role = "default";
+            if (role == null) {
+                throw new IllegalArgumentException(
+                        "Project pipeline modelRefs contains '" + ref
+                                + "' without a resolvable role; use explicit modelBindings.");
+            }
+            String previous = bindings.putIfAbsent(role, ref);
+            if (previous != null && !previous.equals(ref)) {
+                throw new IllegalArgumentException(
+                        "Project pipeline modelRefs assigns multiple models to role '" + role
+                                + "'; use explicit modelBindings.");
+            }
+        }
+    }
+
+    private static boolean matchesModelReference(Map<String, Object> model, String reference) {
+        return reference.equals(stringValue(model.get("id")))
+                || reference.equals(stringValue(model.get("modelId")))
+                || reference.equals(stringValue(model.get("registryModelId")));
+    }
+
+    private static String normalizeRole(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9._-]+", "-");
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private static Map<String, Object> modelRuntimeOptions(
+            Object defaults, Map<String, Object> definition) {
+        Map<String, Object> options = new LinkedHashMap<>();
+        mergeObject(options, defaults);
+        if (definition != null) {
+            definition.forEach((key, value) -> {
+                if (value != null && !Set.of("id", "modelId", "role", "runtime").contains(key)) {
+                    options.put(key, value);
+                }
+            });
+            mergeObject(options, definition.get("runtime"));
+            copyAlias(options, "sourceRepository", "repository");
+            copyAlias(options, "sourceRevision", "revision");
+            copyAlias(options, "path", "localPath");
+            copyAlias(options, "registryType", "type");
+        }
+        return options;
+    }
+
+    private static void mergeObject(Map<String, Object> target, Object configured) {
+        if (!(configured instanceof Map<?, ?> values)) return;
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                target.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+    }
+
+    private static void copyAlias(Map<String, Object> values, String source, String target) {
+        if (!values.containsKey(target) && values.containsKey(source)) {
+            values.put(target, values.get(source));
+        }
+    }
+
+    private static void putIfNonNull(Map<String, Object> target, String key, Path value) {
+        if (value != null) target.put(key, value.toString());
+    }
+
+    private static Map<String, Object> preferredResolvedModel(
+            Map<String, Map<String, Object>> resolvedModels) {
+        for (String role : List.of("vision", "vlm", "default")) {
+            Map<String, Object> model = resolvedModels.get(role);
+            if (model != null) return model;
+        }
+        return resolvedModels.values().stream().findFirst().orElse(null);
+    }
+
+    private static Map<String, Object> modelRuntimeOptions(Object configured) {
+        if (!(configured instanceof Map<?, ?> values)) {
+            throw new IllegalArgumentException("modelRuntime must be an object.");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return result;
+    }
+
     private static Map<String, String> stringOptions(Map<String, Object> values) {
         Map<String, String> result = new LinkedHashMap<>();
         values.forEach((key, value) -> {
@@ -917,9 +1152,37 @@ public final class LocalModelPipelineRunner {
         return null;
     }
 
+    private static String documentModelFailure(
+            int exitCode, String protocolFailure, String stderrTail) {
+        List<String> details = new ArrayList<>();
+        if (protocolFailure != null && !protocolFailure.isBlank()) {
+            details.add(protocolFailure.strip());
+        }
+        if (stderrTail != null && !stderrTail.isBlank()
+                && (protocolFailure == null || !stderrTail.strip().equals(protocolFailure.strip()))) {
+            details.add("Document model subprocess stderr:\n" + stderrTail.strip());
+        }
+        if (details.isEmpty()) {
+            details.add("Document model subprocess exited with " + exitCode);
+        } else if (exitCode != 0) {
+            details.add("Document model subprocess exit code: " + exitCode);
+        }
+        return String.join("\n", details);
+    }
+
     private static String tail(Path logFile) {
-        try {
-            String value = Files.readString(logFile, StandardCharsets.UTF_8).strip();
+        final int maxBytes = 16 * 1024;
+        try (SeekableByteChannel channel = Files.newByteChannel(
+                logFile, StandardOpenOption.READ)) {
+            long size = channel.size();
+            int length = (int) Math.min(size, maxBytes);
+            channel.position(Math.max(0, size - length));
+            ByteBuffer buffer = ByteBuffer.allocate(length);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) {
+                // Read only the bounded tail. The worker may emit a large diagnostic log.
+            }
+            String value = new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8)
+                    .strip();
             return value.length() > 4_000
                     ? value.substring(value.length() - 4_000) : value;
         } catch (Exception ignored) {
@@ -948,5 +1211,13 @@ public final class LocalModelPipelineRunner {
     }
 
     private record WorkerOutput(JsonNode completion, String failure) {
+    }
+
+    record ResolvedModelContext(
+            Map<String, String> bindings,
+            Map<String, Map<String, Object>> resolvedModels) {
+        static ResolvedModelContext empty() {
+            return new ResolvedModelContext(Map.of(), Map.of());
+        }
     }
 }

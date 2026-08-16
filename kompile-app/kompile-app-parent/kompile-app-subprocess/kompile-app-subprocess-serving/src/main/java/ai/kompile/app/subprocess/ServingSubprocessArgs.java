@@ -61,8 +61,8 @@ public record ServingSubprocessArgs(
 
         // LLM defaults
         int maxNewTokens,                   // Default max tokens for generation
-        double temperature,                 // Default temperature
-        int topK,                           // Default top-k sampling
+        Double temperature,                 // Explicit temperature; null = model-family default
+        Integer topK,                       // Explicit top-k; null = model-family default
 
         // DSP / optimizer flags
         Boolean dspEnabled,
@@ -90,7 +90,7 @@ public record ServingSubprocessArgs(
                 85, 90, 95,
                 80,
                 85, 90, 95,
-                256, 0.7, 0,
+                256, null, null,
                 null, null, null
         );
     }

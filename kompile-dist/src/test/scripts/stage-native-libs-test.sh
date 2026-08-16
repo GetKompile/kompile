@@ -8,6 +8,17 @@ STAGER="${DIST_MODULE_DIR}/src/main/build/stage-native-libs.sh"
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "${TEST_TMP}"' EXIT
 
+# Most legacy fixtures below are content markers rather than real shared
+# objects. Preserve their existing behavior while delegating valid ELF symbol
+# inspection to the host tool for the direct-JNI ownership regression.
+REAL_NM="$(command -v llvm-nm || command -v nm)"
+MOCK_NM_DIR="${TEST_TMP}/mock-nm"
+MOCK_NM_NAME="$(basename "${REAL_NM}")"
+mkdir -p "${MOCK_NM_DIR}"
+printf '#!/usr/bin/env bash\n"%s" "$@" || exit 0\n' "${REAL_NM}" > "${MOCK_NM_DIR}/${MOCK_NM_NAME}"
+chmod +x "${MOCK_NM_DIR}/${MOCK_NM_NAME}"
+export PATH="${MOCK_NM_DIR}:${PATH}"
+
 write_manifest() {
     local directory="$1"
     local count="$2"
@@ -157,5 +168,35 @@ bash "${STAGER}" "${ACCELERATOR_SOURCE}" "${TEST_TMP}/accelerator-dest" linux-x8
 cmp -s "${ACCELERATOR_BACKEND}/libnd4jcuda.so" "${TEST_TMP}/accelerator-dest/libnd4jcuda.so"
 cmp -s "${ACCELERATOR_BACKEND}/libjnind4jcuda.so" "${TEST_TMP}/accelerator-dest/libjnind4jcuda.so"
 cmp -s "${ACCELERATOR_BACKEND}/shared-runtime-manifest.txt" "${TEST_TMP}/accelerator-dest/shared-runtime-manifest.txt"
+
+# A distribution destination can contain GraalVM JDK shims before dependency
+# natives are staged. Both may export JNI_OnLoad, but only the newly staged
+# producer artifact belongs in the direct-JNI bootstrap manifest.
+OWNERSHIP_SOURCE="${TEST_TMP}/ownership-source"
+OWNERSHIP_DEST="${TEST_TMP}/ownership-dest"
+mkdir -p "${OWNERSHIP_SOURCE}/example/linux-x86_64" "${OWNERSHIP_DEST}"
+printf 'int JNI_OnLoad(void *vm, void *reserved) { return 0x00010008; }\n' > "${TEST_TMP}/jni-entrypoint.c"
+cc -shared -fPIC "${TEST_TMP}/jni-entrypoint.c" -o "${OWNERSHIP_DEST}/libgraal-jdk-shim.so"
+cc -shared -fPIC "${TEST_TMP}/jni-entrypoint.c" -o "${OWNERSHIP_SOURCE}/example/linux-x86_64/libowned-jni.so"
+bash "${STAGER}" "${OWNERSHIP_SOURCE}" "${OWNERSHIP_DEST}" linux-x86_64 '' none
+
+grep -qx 'libowned-jni.so' "${OWNERSHIP_DEST}/jni-entrypoint-manifest.txt"
+if grep -qx 'libgraal-jdk-shim.so' "${OWNERSHIP_DEST}/jni-entrypoint-manifest.txt"; then
+    echo "ERROR: pre-existing GraalVM shim was claimed as a direct JNI entrypoint" >&2
+    exit 1
+fi
+
+# A later backend/native pass must retain entrypoints owned by the first pass.
+SECOND_SOURCE="${TEST_TMP}/ownership-source-second"
+mkdir -p "${SECOND_SOURCE}/example/linux-x86_64"
+printf 'int ordinary_native_symbol(void) { return 1; }\n' > "${TEST_TMP}/ordinary-native.c"
+cc -shared -fPIC "${TEST_TMP}/ordinary-native.c" -o "${SECOND_SOURCE}/example/linux-x86_64/libordinary.so"
+bash "${STAGER}" "${SECOND_SOURCE}" "${OWNERSHIP_DEST}" linux-x86_64 '' none
+
+grep -qx 'libowned-jni.so' "${OWNERSHIP_DEST}/jni-entrypoint-manifest.txt"
+if grep -qx 'libgraal-jdk-shim.so' "${OWNERSHIP_DEST}/jni-entrypoint-manifest.txt"; then
+    echo "ERROR: later staging pass claimed a pre-existing GraalVM shim" >&2
+    exit 1
+fi
 
 echo "stage-native-libs: all checks passed"

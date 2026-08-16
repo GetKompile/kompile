@@ -203,11 +203,16 @@ public class HuggingFaceDownloader implements DownloadService {
                     if (remainingTotal <= 0L) {
                         throw new IOException("Hugging Face bundle exceeds the total-byte limit");
                     }
+                    // Repository-defined component keys (for example a VLM vision encoder)
+                    // are not limited to the text-model key vocabulary. Classify the
+                    // actual source file so every weight-bearing ONNX/safetensors asset
+                    // receives the model limit while tokenizer/config sidecars retain
+                    // their narrower limits.
                     fileBytes = downloadFile(
                             uri,
                             targetPath,
                             componentSource ? null : request.getAuthToken(),
-                            Math.min(limits.maxBytesFor(fileKey), remainingTotal),
+                            Math.min(limits.maxBytesForFileName(filePath), remainingTotal),
                             signal,
                             progressCallback);
                 } catch (IOException e) {

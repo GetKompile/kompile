@@ -92,7 +92,10 @@ class ServingSubprocessBackendTest {
         when(launcher.generateChatForModel(
                 "lfm2.5-1.2b-instruct", request, 256))
                 .thenReturn("{\"finishReason\":\"completed\",\"rawText\":\"<native>\","
-                        + "\"content\":\"\",\"toolCalls\":[{\"id\":\"call-1\","
+                        + "\"content\":\"\",\"reasoningContent\":\"inspect source\","
+                        + "\"outputBlocks\":[{\"type\":\"think\","
+                        + "\"content\":\"inspect source\"},{\"type\":\"analysis\","
+                        + "\"content\":\"cite source\"}],\"toolCalls\":[{\"id\":\"call-1\","
                         + "\"name\":\"submit_graph_delta\",\"arguments\":{\"entities\":[],"
                         + "\"relations\":[]}}],\"parseErrors\":[]}");
 
@@ -104,6 +107,11 @@ class ServingSubprocessBackendTest {
 
         assertTrue(backend.supportsStructuredChat());
         assertEquals("<native>", response.rawText());
+        assertEquals("", response.content());
+        assertEquals("inspect source", response.reasoningContent());
+        assertEquals(2, response.outputBlocks().size());
+        assertEquals("think", response.outputBlocks().get(0).type());
+        assertEquals("analysis", response.outputBlocks().get(1).type());
         assertEquals("submit_graph_delta", response.toolCalls().get(0).name());
         verify(launcher).generateChatForModel(
                 "lfm2.5-1.2b-instruct", request, 256);

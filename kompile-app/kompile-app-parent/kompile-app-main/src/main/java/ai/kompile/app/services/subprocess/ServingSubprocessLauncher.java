@@ -440,8 +440,8 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
                 85, 90, 95,
                 80,             // gpuSoftLimitPercent — 5 below the 85 GPU stop threshold
                 85, 90, 95,
-                // LLM defaults
-                256, 0.7, 0,
+                // Output budget is generic; sampling is resolved from the model family in the child.
+                256, null, null,
                 // DSP / optimizer flags — inherit from the persisted project ND4J config.
                 // The existing "Native Decode Inputs" recovery toggle is the managed master
                 // switch for decoder DSP compilation in the isolated serving process.

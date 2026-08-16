@@ -21,8 +21,11 @@ import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.OcrPipelineConfig;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
 import ai.kompile.ocr.VlmOutputFormat;
 import ai.kompile.ocr.integration.OcrPipelineService;
+import ai.kompile.ocr.models.pipeline.VlmDocumentPipeline;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
@@ -136,7 +139,7 @@ public class VlmTestSubprocessMain {
             logger.info("Creating Spring context...");
 
             long modelLoadStart = System.currentTimeMillis();
-            try (AnnotationConfigApplicationContext context = createContext(vlmArgs)) {
+            try (AnnotationConfigApplicationContext context = createContext()) {
                 OcrPipelineService ocrService = context.getBean(OcrPipelineService.class);
 
                 Map<String, String> processingOptions = vlmArgs.options() != null
@@ -147,11 +150,24 @@ public class VlmTestSubprocessMain {
                         || booleanOption(processingOptions, "useVlm",
                         "TABLE_AWARE".equals(requestedPipelineType)
                                 && booleanOption(processingOptions, "modelBacked", false));
+                String modelId = nonBlank(vlmArgs.modelId());
+                if (modelId == null) {
+                    modelId = ModelConstants.getDefaultVlmModelId();
+                }
 
                 reporter.reportProgress("INIT", 15, "Models",
                         useVlm ? "Loading VLM models" : "Loading OCR models");
-                if (useVlm) ocrService.initializeVlmOnly();
-                else ocrService.initialize();
+                if (useVlm) {
+                    VlmDocumentPipeline vlmPipeline = context.getBean(VlmDocumentPipeline.class);
+                    Path modelDirectory = localModelDirectory(vlmArgs);
+                    if (modelDirectory != null) {
+                        vlmPipeline.loadModelsFromDirectory(modelId, modelDirectory.toFile());
+                    } else {
+                        vlmPipeline.loadModels(modelId);
+                    }
+                } else {
+                    ocrService.initialize();
+                }
                 long modelLoadTime = System.currentTimeMillis() - modelLoadStart;
 
                 // Trim GPU memory pools after VLM model loading to release
@@ -172,7 +188,6 @@ public class VlmTestSubprocessMain {
                     System.exit(1);
                 }
 
-                String modelId = vlmArgs.modelId();
                 VlmOutputFormat format;
                 try {
                     format = VlmOutputFormat.valueOf(vlmArgs.outputFormat());
@@ -209,6 +224,7 @@ public class VlmTestSubprocessMain {
                         .kvCacheStrategy(vlmArgs.kvCacheStrategy())
                         .maxKvLen(vlmArgs.maxKvLen())
                         .maxPages(vlmArgs.maxPages())
+                        .pageRange(vlmArgs.pageRange())
                         .detectionModelId(processingOptions.get("detectionModelId"))
                         .recognitionModelId(processingOptions.get("recognitionModelId"))
                         .tableModelId(processingOptions.get("tableModelId"))
@@ -778,16 +794,59 @@ public class VlmTestSubprocessMain {
         }
     }
 
-    private static AnnotationConfigApplicationContext createContext(VlmTestSubprocessArgs args) {
+    static Path localModelDirectory(VlmTestSubprocessArgs args) {
+        String sourceType = nonBlank(args.modelSourceType());
+        boolean localSource = sourceType != null && Set.of(
+                "LOCAL", "FILE", "DIRECTORY", "PROJECT").contains(
+                sourceType.toUpperCase(Locale.ROOT));
+        String identifier = nonBlank(args.modelIdentifier());
+        if (identifier == null) {
+            if (localSource) {
+                throw new IllegalArgumentException(
+                        "Local VLM model source requires modelIdentifier.");
+            }
+            return null;
+        }
+
+        Path candidate;
+        try {
+            candidate = Path.of(identifier).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            if (localSource) {
+                throw new IllegalArgumentException("Invalid local VLM modelIdentifier: " + identifier, e);
+            }
+            return null;
+        }
+        if (Files.isDirectory(candidate)) {
+            return candidate;
+        }
+        if (Files.isRegularFile(candidate)) {
+            return candidate.getParent();
+        }
+        if (localSource) {
+            throw new IllegalArgumentException(
+                    "Local VLM modelIdentifier does not exist: " + candidate);
+        }
+        return null;
+    }
+
+    private static String nonBlank(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    static AnnotationConfigApplicationContext createContext() {
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
 
         // Enable subprocess mode so SubprocessVlmTestConfiguration is activated
         context.getEnvironment().getSystemProperties().put("kompile.subprocess.vlmtest.mode", "true");
 
-        // Register the dedicated VLM subprocess configuration
-        // This uses a whitelist approach with exclude filters to avoid loading
-        // REST controllers, document processors, and other unrelated beans
-        context.register(SubprocessVlmTestConfiguration.class);
+        // Register the dedicated VLM subprocess configuration with an explicit supplier.
+        // This uses the same whitelist/exclude configuration while avoiding reflective
+        // constructor lookup when the manually-created context runs in a native image.
+        context.registerBean(
+                SubprocessVlmTestConfiguration.class,
+                SubprocessVlmTestConfiguration::new);
+        context.registerBean(KompileModelManager.class, () -> new KompileModelManager());
 
         // Set active profile
         context.getEnvironment().setActiveProfiles("subprocess");

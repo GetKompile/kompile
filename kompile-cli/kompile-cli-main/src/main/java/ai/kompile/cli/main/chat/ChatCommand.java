@@ -474,8 +474,8 @@ public class ChatCommand implements Callable<Integer> {
      */
     private int runKompileLocalServingMode(
             ChatConfig config, boolean isResume, String assignedRole) {
-        try (KompileLocalServingBootstrap.StartupResult runtime =
-                     KompileLocalServingBootstrap.ensureReady(
+        try (LocalServingRuntimePool.Lease runtime =
+                     LocalServingRuntimePool.acquire(
                              config, startupTimeoutSeconds)) {
             runtime.applyTo(config);
             return runLocalLlmMode(config, isResume, assignedRole);

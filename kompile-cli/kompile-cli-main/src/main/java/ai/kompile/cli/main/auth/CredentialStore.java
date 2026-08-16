@@ -45,8 +45,10 @@ import java.util.function.Function;
  */
 public final class CredentialStore {
     public static final String AUTH_FILE = "auth.json";
+    public static final String DEFAULT_CREDENTIAL_NAME = "default";
 
     private static final ObjectMapper MAPPER = JsonUtils.newStandardMapper();
+    private static final int CURRENT_FORMAT_VERSION = 2;
     private static final Set<PosixFilePermission> OWNER_DIRECTORY_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ,
             PosixFilePermission.OWNER_WRITE,
@@ -79,24 +81,78 @@ public final class CredentialStore {
 
     public ManagedCredential read(String providerId) throws IOException {
         String normalized = normalizeProviderId(providerId);
-        return withLock(credentials -> credentials.get(normalized));
+        return withLock(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            return provider == null ? null : provider.activeCredential();
+        });
+    }
+
+    public ManagedCredential read(String providerId, String credentialName) throws IOException {
+        String normalizedProvider = normalizeProviderId(providerId);
+        String normalizedName = normalizeCredentialName(credentialName);
+        return withLock(store -> {
+            ProviderCredentials provider = store.providers.get(normalizedProvider);
+            return provider == null ? null : provider.credentials.get(normalizedName);
+        });
+    }
+
+    public String activeCredentialName(String providerId) throws IOException {
+        String normalized = normalizeProviderId(providerId);
+        return withLock(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            return provider == null ? null : provider.activeName;
+        });
     }
 
     public List<CredentialInfo> list() throws IOException {
-        return withLock(credentials -> {
-            List<CredentialInfo> result = new ArrayList<>(credentials.size());
-            credentials.forEach((providerId, credential) ->
-                    result.add(new CredentialInfo(providerId, credential.getType())));
-            return List.copyOf(result);
+        return withLock(store -> listCredentials(store, null));
+    }
+
+    public List<CredentialInfo> list(String providerId) throws IOException {
+        String normalized = normalizeProviderId(providerId);
+        return withLock(store -> listCredentials(store, normalized));
+    }
+
+    private static List<CredentialInfo> listCredentials(StoreState store, String providerFilter) {
+        List<CredentialInfo> result = new ArrayList<>();
+        store.providers.forEach((providerId, provider) -> {
+            if (providerFilter != null && !providerFilter.equals(providerId)) {
+                return;
+            }
+            provider.credentials.forEach((credentialName, credential) ->
+                    result.add(new CredentialInfo(
+                            providerId,
+                            credentialName,
+                            credential.getType(),
+                            credentialName.equals(provider.activeName))));
         });
+        return List.copyOf(result);
     }
 
     public ManagedCredential putApiKey(String providerId, String key) throws IOException {
         return put(providerId, ManagedCredential.apiKey(key));
     }
 
+    public ManagedCredential putApiKey(
+            String providerId,
+            String credentialName,
+            String key,
+            boolean activate) throws IOException {
+        return put(providerId, credentialName, ManagedCredential.apiKey(key), activate);
+    }
+
     public ManagedCredential putOAuth(String providerId, String access, String refresh, long expires) throws IOException {
         return put(providerId, ManagedCredential.oauth(access, refresh, expires));
+    }
+
+    public ManagedCredential putOAuth(
+            String providerId,
+            String credentialName,
+            String access,
+            String refresh,
+            long expires,
+            boolean activate) throws IOException {
+        return put(providerId, credentialName, ManagedCredential.oauth(access, refresh, expires), activate);
     }
 
     public ManagedCredential put(String providerId, ManagedCredential credential) throws IOException {
@@ -104,8 +160,35 @@ public final class CredentialStore {
         if (credential == null) {
             throw new IllegalArgumentException("credential must not be null");
         }
-        return withMutation(credentials -> {
-            credentials.put(normalized, credential);
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.computeIfAbsent(
+                    normalized, ignored -> new ProviderCredentials());
+            String targetName = provider.activeName == null
+                    ? DEFAULT_CREDENTIAL_NAME
+                    : provider.activeName;
+            provider.credentials.put(targetName, credential);
+            provider.activeName = targetName;
+            return credential;
+        });
+    }
+
+    public ManagedCredential put(
+            String providerId,
+            String credentialName,
+            ManagedCredential credential,
+            boolean activate) throws IOException {
+        String normalizedProvider = normalizeProviderId(providerId);
+        String normalizedName = normalizeCredentialName(credentialName);
+        if (credential == null) {
+            throw new IllegalArgumentException("credential must not be null");
+        }
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.computeIfAbsent(
+                    normalizedProvider, ignored -> new ProviderCredentials());
+            provider.credentials.put(normalizedName, credential);
+            if (provider.activeName == null || activate) {
+                provider.activeName = normalizedName;
+            }
             return credential;
         });
     }
@@ -121,11 +204,17 @@ public final class CredentialStore {
         if (updater == null) {
             throw new IllegalArgumentException("updater must not be null");
         }
-        return withMutation(credentials -> {
-            ManagedCredential current = credentials.get(normalized);
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            ManagedCredential current = provider == null ? null : provider.activeCredential();
             ManagedCredential next = updater.update(current);
             if (next != null) {
-                credentials.put(normalized, next);
+                if (provider == null) {
+                    provider = new ProviderCredentials();
+                    provider.activeName = DEFAULT_CREDENTIAL_NAME;
+                    store.providers.put(normalized, provider);
+                }
+                provider.credentials.put(provider.activeName, next);
                 return next;
             }
             return current;
@@ -144,8 +233,9 @@ public final class CredentialStore {
         if (refresher == null) {
             throw new IllegalArgumentException("refresher must not be null");
         }
-        return withMutation(credentials -> {
-            ManagedCredential current = credentials.get(normalized);
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.get(normalized);
+            ManagedCredential current = provider == null ? null : provider.activeCredential();
             if (current == null || !current.isOAuth()) {
                 return current;
             }
@@ -155,7 +245,7 @@ public final class CredentialStore {
                     System.currentTimeMillis(),
                     refresher::refresh);
             if (resolved != current) {
-                credentials.put(normalized, resolved);
+                provider.credentials.put(provider.activeName, resolved);
             }
             return resolved;
         });
@@ -163,7 +253,47 @@ public final class CredentialStore {
 
     public boolean delete(String providerId) throws IOException {
         String normalized = normalizeProviderId(providerId);
-        return withMutation(credentials -> credentials.remove(normalized) != null);
+        return withMutation(store -> store.providers.remove(normalized) != null);
+    }
+
+    public boolean deleteCredential(String providerId, String credentialName) throws IOException {
+        String normalizedProvider = normalizeProviderId(providerId);
+        String normalizedName = normalizeCredentialName(credentialName);
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.get(normalizedProvider);
+            if (provider == null || provider.credentials.remove(normalizedName) == null) {
+                return false;
+            }
+            if (provider.credentials.isEmpty()) {
+                store.providers.remove(normalizedProvider);
+            } else if (normalizedName.equals(provider.activeName)) {
+                provider.activeName = provider.credentials.keySet().iterator().next();
+            }
+            return true;
+        });
+    }
+
+    public boolean switchCredential(String providerId, String credentialName) throws IOException {
+        String normalizedProvider = normalizeProviderId(providerId);
+        String normalizedName = normalizeCredentialName(credentialName);
+        return withMutation(store -> {
+            ProviderCredentials provider = store.providers.get(normalizedProvider);
+            if (provider == null || !provider.credentials.containsKey(normalizedName)) {
+                return false;
+            }
+            provider.activeName = normalizedName;
+            return true;
+        });
+    }
+
+    public int deleteAll() throws IOException {
+        return withMutation(store -> {
+            int removed = store.providers.values().stream()
+                    .mapToInt(provider -> provider.credentials.size())
+                    .sum();
+            store.providers.clear();
+            return removed;
+        });
     }
 
     /**

@@ -72,6 +72,11 @@ public final class SdxAndroidLlmNative {
             byte[] rawText,
             long[] outJson);
 
+    public static native int nativeLastResultJson(
+            long runtime,
+            long model,
+            long[] outJson);
+
     public static native int nativeGenerateStreaming(
             long runtime,
             long model,

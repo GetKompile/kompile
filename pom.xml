@@ -119,6 +119,12 @@
     <maven-deploy-plugin.version>3.1.4</maven-deploy-plugin.version>
     <hibernate.version>6.4.4.Final</hibernate.version>
     <jline.version>3.26.1</jline.version>
+    <!-- Native distributions flatten one JNA dispatcher into lib/. Keep every
+         executable's Java closure on the same native ABI. -->
+    <jna.version>5.16.0</jna.version>
+    <!-- Spring Boot 3.2.3 manages 3.43.2.0 for app-side workers. Native
+         distributions flatten one SQLite JNI library, so CLI and workers must agree. -->
+    <sqlite.jdbc.version>3.43.2.0</sqlite.jdbc.version>
 
     <!-- Platform-specific native resource configurations -->
     <javacpp.platform.extension></javacpp.platform.extension>
@@ -193,6 +199,11 @@
         <groupId>org.jline</groupId>
         <artifactId>jline</artifactId>
         <version>${jline.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>net.java.dev.jna</groupId>
+        <artifactId>jna</artifactId>
+        <version>${jna.version}</version>
       </dependency>
 
       <!-- A single Bouncy Castle release is required because document loaders pull

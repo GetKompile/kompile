@@ -25,6 +25,13 @@ class UnifiedPipelineDefinitionTest {
                 .kind(UnifiedPipelineDefinition.PipelineKind.LLM)
                 .topology(UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE)
                 .modelSetId("mistral-7b-instruct")
+                .modelBindings(Map.of("generator", "mistral-config"))
+                .modelDefinitions(Map.of("mistral-config", Map.of(
+                        "modelId", "mistral-7b-instruct",
+                        "role", "generator")))
+                .resolvedModels(Map.of("generator", Map.of(
+                        "modelId", "mistral-7b-instruct",
+                        "modelPath", "/models/mistral/model.gguf")))
                 .llmConfig(Map.of("maxNewTokens", 512, "temperature", 0.7))
                 .pipelineSpec(Map.of(
                         "@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
@@ -58,6 +65,11 @@ class UnifiedPipelineDefinitionTest {
         assertEquals(UnifiedPipelineDefinition.PipelineKind.LLM, deserialized.getKind());
         assertEquals(UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE, deserialized.getTopology());
         assertEquals("mistral-7b-instruct", deserialized.getModelSetId());
+        assertEquals("mistral-config", deserialized.getModelBindings().get("generator"));
+        assertEquals("mistral-7b-instruct",
+                deserialized.getModelDefinitions().get("mistral-config").get("modelId"));
+        assertEquals("/models/mistral/model.gguf",
+                deserialized.getResolvedModels().get("generator").get("modelPath"));
         assertEquals("16g", deserialized.getServing().getHeapSize());
         assertEquals(9091, deserialized.getServing().getPort());
         assertEquals(80, deserialized.getServing().getMemoryStopPercent());

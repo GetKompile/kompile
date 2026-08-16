@@ -81,6 +81,65 @@ native_source_files() {
     esac
 }
 
+contains_name() {
+    local needle="$1"
+    shift
+    local candidate
+    for candidate in "$@"; do
+        if [ "${candidate}" = "${needle}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The destination may already contain GraalVM-emitted JDK shims owned by a
+# native executable. They can export JNI_OnLoad, but attaching them manually to
+# another Graal isolate is invalid. Preserve only entrypoints declared by an
+# earlier stager invocation; newly copied producer artifacts are classified
+# below. This keeps ownership provenance without hard-coding JDK library names.
+PREEXISTING_NATIVE_NAMES=()
+for existing_native in "${DEST_DIR}"/*; do
+    [ -f "${existing_native}" ] || continue
+    existing_name="$(basename "${existing_native}")"
+    if is_native_name "${existing_name}"; then
+        PREEXISTING_NATIVE_NAMES+=("${existing_name}")
+    fi
+done
+
+PRIOR_JNI_ENTRYPOINTS=()
+EXISTING_JNI_MANIFEST="${DEST_DIR}/${JNI_ENTRYPOINT_MANIFEST}"
+if [ -f "${EXISTING_JNI_MANIFEST}" ]; then
+    exec 3< "${EXISTING_JNI_MANIFEST}"
+    IFS= read -r existing_format <&3 || existing_format=""
+    IFS= read -r existing_count_line <&3 || existing_count_line=""
+    if [ "${existing_format}" != "${JNI_ENTRYPOINT_FORMAT}" ]; then
+        echo "ERROR: unsupported JNI entrypoint manifest format in ${EXISTING_JNI_MANIFEST}." >&2
+        exit 1
+    fi
+    existing_count="${existing_count_line#\# entry-count=}"
+    case "${existing_count}" in
+        ''|*[!0-9]*)
+            echo "ERROR: malformed JNI entrypoint count in ${EXISTING_JNI_MANIFEST}." >&2
+            exit 1
+            ;;
+    esac
+    while IFS= read -r existing_entry <&3; do
+        [ -n "${existing_entry}" ] || continue
+        case "${existing_entry}" in \#*) continue ;; esac
+        if [ ! -f "${DEST_DIR}/${existing_entry}" ]; then
+            echo "ERROR: JNI entrypoint manifest references missing ${existing_entry}." >&2
+            exit 1
+        fi
+        PRIOR_JNI_ENTRYPOINTS+=("${existing_entry}")
+    done
+    exec 3<&-
+    if [ "${#PRIOR_JNI_ENTRYPOINTS[@]}" -ne "${existing_count}" ]; then
+        echo "ERROR: JNI entrypoint manifest count mismatch in ${EXISTING_JNI_MANIFEST}." >&2
+        exit 1
+    fi
+fi
+
 is_selected_backend_manifest() {
     local manifest="$1"
     local relative_path="${manifest#${SOURCE_DIR}/}"
@@ -478,15 +537,20 @@ generate_jni_entrypoint_manifest() {
     local manifest="${DEST_DIR}/${JNI_ENTRYPOINT_MANIFEST}"
     local temporary_manifest="${manifest}.tmp.$$"
     local native_file
+    local native_name
     local symbols
-    local -a entrypoints=()
+    local -a entrypoints=("${PRIOR_JNI_ENTRYPOINTS[@]}")
 
     while IFS= read -r native_file; do
+        native_name="$(basename "${native_file}")"
+        if contains_name "${native_name}" "${PREEXISTING_NATIVE_NAMES[@]}"; then
+            continue
+        fi
         if ! symbols="$(dump_exported_symbols "${native_file}")"; then
             echo "ERROR: cannot inspect exported symbols in ${native_file}." >&2
             exit 1
         fi
-        case "$(basename "${native_file}")" in
+        case "${native_name}" in
             libjnijavacpp.*|jnijavacpp.dll) continue ;;
         esac
         # JavaCPP preset bridges export this forwarding entrypoint and must stay
@@ -496,7 +560,9 @@ generate_jni_entrypoint_manifest() {
             continue
         fi
         if printf '%s\n' "${symbols}" | grep -Eq '(^|[[:space:]])(JNI_OnLoad|Java_[^[:space:]]+)($|[[:space:]])'; then
-            entrypoints+=("$(basename "${native_file}")")
+            if ! contains_name "${native_name}" "${entrypoints[@]}"; then
+                entrypoints+=("${native_name}")
+            fi
         fi
     done < <(find "${DEST_DIR}" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print | LC_ALL=C sort)
 

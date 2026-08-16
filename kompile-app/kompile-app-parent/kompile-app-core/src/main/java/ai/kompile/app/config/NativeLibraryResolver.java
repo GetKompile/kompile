@@ -39,6 +39,10 @@ public final class NativeLibraryResolver {
         ai.kompile.utils.NativeLibraryResolver.bootstrapOrThrow();
     }
 
+    public static void bootstrapModelExecutionOrThrow() {
+        ai.kompile.utils.NativeLibraryResolver.bootstrapModelExecutionOrThrow();
+    }
+
     public static List<Path> resolve() {
         return ai.kompile.utils.NativeLibraryResolver.resolve();
     }

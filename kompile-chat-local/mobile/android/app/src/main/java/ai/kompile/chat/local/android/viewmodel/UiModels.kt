@@ -56,6 +56,7 @@ sealed interface ModelSmokeUiState {
 enum class ImportOperationKind {
     NONE,
     HUGGING_FACE,
+    LOCAL_MODEL_OPTIMIZATION,
     MODEL_ARCHIVE,
     PROJECT_ARCHIVE,
     GRAPH
@@ -63,6 +64,13 @@ enum class ImportOperationKind {
 
 internal val ImportOperationKind.isBusy: Boolean
     get() = this != ImportOperationKind.NONE
+
+/** App-owned raw model retained for repeatable local optimization experiments. */
+data class LocalModelSource(
+    val path: String,
+    val displayName: String,
+    val bytes: Long,
+)
 
 /** Ordered, observable stages for end-to-end Hugging Face acquisition and activation. */
 enum class HuggingFaceImportStep(val label: String) {

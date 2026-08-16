@@ -193,7 +193,7 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
     }
 
     private static StructuredHarness structuredHarness(
-            StructuredChatLanguageModel.Response response) {
+            StructuredChatLanguageModel.Response... responses) {
         GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.pipelineStepTracker = new PipelineStepTracker();
         orchestrator.documentTracker = new CrawlDocumentTracker();
@@ -201,6 +201,7 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
 
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         List<StructuredChatLanguageModel.Request> requests = new CopyOnWriteArrayList<>();
+        AtomicInteger cursor = new AtomicInteger();
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
@@ -209,7 +210,8 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
                 .thenAnswer(invocation -> {
                     requests.add(invocation.getArgument(0));
-                    return response;
+                    int index = cursor.getAndIncrement();
+                    return index < responses.length ? responses[index] : null;
                 });
         orchestrator.llmDispatcher = dispatcher;
         return new StructuredHarness(orchestrator, requests);
@@ -387,6 +389,112 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
         assertEquals(15, ((Map<String, Object>) entityProperties.get("name")).get("maxLength"));
         assertEquals(List.of("PERSON", "COMPANY"),
                 ((Map<String, Object>) entityProperties.get("type")).get("enum"));
+    }
+
+    @Test
+    void productionSeamRunsTypedEntitiesThenInjectsThemIntoRelationOnlyPass() throws Exception {
+        String source = "Alex Rivera is a person. Acme Robotics is a company. "
+                + "Alex Rivera works at Acme Robotics.";
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A named person.", null),
+                        new NodeType("COMPANY", "A named company.", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company.", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        GraphExtractionConfig config = GraphExtractionConfig.builder()
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .decomposedPromptTier(GraphExtractionConfig.DecomposedPromptTier.COMPACT)
+                .decomposedPassStrategy(
+                        GraphExtractionConfig.DecomposedPassStrategy.ENTITIES_THEN_RELATIONS)
+                .decomposedBoundNativeProposalArrays(true)
+                .standardizedSchema(schema)
+                .schemaMode(SchemaEnforcementMode.STRICT)
+                .customPrompt("LEGACY COMBINED PROMPT: extract entities and WORKS_AT relations together.")
+                .typedEntityPrompt("Preserve exact source spelling in the entity pass.")
+                .relationPrompt("Preserve explicit direction in the relation pass.")
+                .build();
+        StructuredHarness harness = structuredHarness(
+                new StructuredChatLanguageModel.Response(
+                        "<entities>", "",
+                        List.of(new StructuredChatLanguageModel.ToolCall(
+                                "entities-1", "submit_typed_entities", Map.of(
+                                        "entities", List.of(
+                                                Map.of("name", "Alex Rivera", "type", "PERSON"),
+                                                Map.of("name", "Acme Robotics", "type", "COMPANY"))))),
+                        List.of()),
+                new StructuredChatLanguageModel.Response(
+                        "<relations>", "",
+                        List.of(new StructuredChatLanguageModel.ToolCall(
+                                "relations-1", "submit_relations", Map.of(
+                                        "relations", List.of(Map.of(
+                                                "source", 0,
+                                                "target", 1,
+                                                "type", "WORKS_AT"))))),
+                        List.of()));
+        Graph target = new Graph();
+        target.setId("graph-phased");
+        target.setEntities(new ArrayList<>());
+        target.setRelationships(new ArrayList<>());
+
+        String json = harness.orchestrator().extractViaDecomposedPasses(
+                source,
+                chunk("phased-1", source, "phased.md"),
+                config,
+                schema,
+                target,
+                job(),
+                null);
+
+        assertNotNull(json);
+        ExtractionResult result = GraphExtractionValidator.fromJson(json);
+        assertEquals(List.of("Alex Rivera", "Acme Robotics"),
+                result.entities().stream().map(entity -> entity.name()).toList());
+        assertEquals(1, result.relations().size());
+        assertEquals("WORKS_AT", result.relations().get(0).type());
+        assertEquals(2, harness.requests().size());
+        assertEquals(List.of("submit_typed_entities"),
+                harness.requests().get(0).tools().stream()
+                        .map(StructuredChatLanguageModel.Tool::name).toList());
+        assertEquals(List.of("submit_relations"),
+                harness.requests().get(1).tools().stream()
+                        .map(StructuredChatLanguageModel.Tool::name).toList());
+        String entitySystem = harness.requests().get(0).messages().get(0).content();
+        String entityPrompt = harness.requests().get(0).messages().get(1).content();
+        String relationSystem = harness.requests().get(1).messages().get(0).content();
+        assertTrue(entitySystem.contains(
+                "Use Text to verify each listed candidate's exact name and ontology type"));
+        assertTrue(entitySystem.contains("Invoke submit_typed_entities once"));
+        assertFalse(entitySystem.contains("checklist"));
+        assertFalse(entitySystem.contains("Preserve exact source spelling in the entity pass."));
+        assertFalse(entitySystem.contains("LEGACY COMBINED PROMPT"));
+        assertTrue(entityPrompt.contains(
+                "SCOPED EXTRACTION RULE (instruction, not evidence): "
+                        + "Preserve exact source spelling in the entity pass."));
+        assertTrue(entityPrompt.contains("ENTITY CANDIDATES (2):"));
+        assertFalse(entityPrompt.contains("EXPECTED ENTITIES"));
+        assertTrue(entityPrompt.contains("ENTITY TYPE DEFINITIONS (LABEL = MEANING):"));
+        assertTrue(relationSystem.contains(
+                "Use Text to verify each listed candidate's predicate, direction, endpoints, and ontology label"));
+        assertTrue(relationSystem.contains("Invoke submit_relations once"));
+        assertFalse(relationSystem.contains("checklist"));
+        assertFalse(relationSystem.contains("Preserve explicit direction in the relation pass."));
+        assertFalse(relationSystem.contains("previous context"));
+        assertFalse(relationSystem.contains("LEGACY COMBINED PROMPT"));
+        String relationPrompt = harness.requests().get(1).messages().get(1).content();
+        assertTrue(relationPrompt.contains(
+                "SCOPED EXTRACTION RULE (instruction, not evidence): "
+                        + "Preserve explicit direction in the relation pass."));
+        assertTrue(relationPrompt.contains("RELATION CANDIDATES (1; fixed endpoints):"));
+        assertFalse(relationPrompt.contains("EXPECTED RELATIONS"));
+        assertTrue(relationPrompt.contains(
+                "IMMUTABLE ENTITY INDEX TABLE (source and target must use these integers):\n"
+                        + "- 0: \"Alex Rivera\" [PERSON]\n"
+                        + "- 1: \"Acme Robotics\" [COMPANY]"));
+        assertTrue(relationPrompt.contains(
+                "RELATION TYPE TABLE (LABEL = MEANING | DIRECTED ENDPOINTS):"));
+        assertFalse(relationPrompt.contains("ALLOWED DIRECTED ENDPOINT PATTERNS:"));
+        assertFalse(relationPrompt.contains("conversation"));
     }
 
     @Test

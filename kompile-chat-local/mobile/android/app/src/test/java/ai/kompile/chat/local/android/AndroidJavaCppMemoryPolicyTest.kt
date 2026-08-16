@@ -80,7 +80,8 @@ class AndroidJavaCppMemoryPolicyTest {
         assertTrue(configureLibrary >= 0)
         assertTrue(loadTransport > configureLibrary)
         assertTrue(createRuntime > loadTransport)
-        assertTrue(runtime.contains("import org.bytedeco.javacpp.Pointer"))
+        assertFalse(runtime.contains("import org.bytedeco.javacpp.Pointer"))
+        assertTrue(runtime.contains("SdxPointerByReference()"))
         assertFalse(runtime.contains("Pointer.maxBytes()"))
         assertFalse(runtime.contains("Pointer.maxPhysicalBytes()"))
     }

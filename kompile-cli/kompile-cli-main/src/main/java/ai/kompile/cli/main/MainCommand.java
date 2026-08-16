@@ -146,10 +146,10 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
-        // Native payloads are deliberately excluded from every Graal image. Load the
-        // complete distribution-owned JNI set before plugins, commands, or SQLite can
-        // initialize a native class. JVM execution keeps its normal classpath behavior.
-        NativeLibraryResolver.bootstrapOrThrow();
+        // Native payloads are deliberately excluded from every Graal image. The CLI
+        // owns only its manifest-declared direct JNI closure; CUDA/ND4J initialization
+        // belongs to the model-serving subprocesses spawned on demand.
+        NativeLibraryResolver.bootstrapCoreOrThrow();
 
         if (args != null && args.length == 2
                 && "--subprocess=local-crawl".equalsIgnoreCase(args[0])) {

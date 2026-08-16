@@ -1046,12 +1046,11 @@ kompile_build_native_image() {
   case "${target}" in
     # ── Standalone CLIs ────────────────────────────────────────────────
     cli)
-      module_dir="${KOMPILE_ROOT}/kompile-cli"
+      # Build from the leaf module against installed dependencies. Native retries
+      # must not expand the reactor or rebuild unrelated CLI modules.
+      module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-cli-main"
       profile="native"
       image_name="kompile-cli-main"
-      # Select the actual CLI module instead of activating every sibling
-      # native profile in the kompile-cli aggregator.
-      extra_args+=("-pl" "kompile-cli-main" "-am")
       ;;
     component-cli)
       module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-component-cli"
@@ -1152,10 +1151,7 @@ kompile_build_native_image() {
       extra_args+=("-Dkompile.native.side-load=true")
       ;;
   esac
-  case "${target}" in
-    cli) image_path="${module_dir}/kompile-cli-main/target/${image_name}" ;;
-    *) image_path="${module_dir}/target/${image_name}" ;;
-  esac
+  image_path="${module_dir}/target/${image_name}"
   mkdir -p "${KOMPILE_OUTPUT_DIR}"
   log_file="${KOMPILE_OUTPUT_DIR}/native-${target}.log"
 

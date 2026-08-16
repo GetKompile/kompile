@@ -20,6 +20,7 @@ internal class AcceleratedChatModelAndroid(
     maxTokens: Int,
     verifiedSourceSha256: String? = null,
     verifiedSourceBytes: Long? = null,
+    preparationOptions: ModelPreparationOptions = ModelPreparationOptions(),
     onPreparationStage: (PreparationStage) -> Unit = {},
     preparedModelInfo: PreparedModelInfo? = null
 ) : ChatModel, AutoCloseable {
@@ -31,6 +32,7 @@ internal class AcceleratedChatModelAndroid(
                 modelPath,
                 verifiedSourceSha256,
                 verifiedSourceBytes,
+                preparationOptions,
                 onPreparationStage
             )
         } else {
@@ -46,7 +48,8 @@ internal class AcceleratedChatModelAndroid(
             resolvedModelPath,
             temperature,
             maxTokens,
-            diagnosticModelPath = modelPath
+            diagnosticModelPath = modelPath,
+            diagnosticMode = preparationOptions.diagnosticMode,
         )
     }
 

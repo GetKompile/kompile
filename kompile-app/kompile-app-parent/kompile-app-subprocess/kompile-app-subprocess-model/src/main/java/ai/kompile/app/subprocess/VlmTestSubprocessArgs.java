@@ -72,8 +72,9 @@ public record VlmTestSubprocessArgs(
         // Debug flags
         Boolean debugDiagnostics,       // nd4j.dsp.diagnostics=ALL (default false)
         Boolean opTiming,               // nd4j.opTiming=true (default false)
-        // Page limit
+        // Page selection
         int maxPages,                   // 0 = all pages (default)
+        String pageRange,               // e.g. "1-5" or "2,4"; null = all pages
         // Model source configuration
         String modelSourceType,
         String modelIdentifier,
@@ -143,6 +144,7 @@ public record VlmTestSubprocessArgs(
         if (debugDiagnostics == null) debugDiagnostics = false;
         if (opTiming == null) opTiming = false;
         if (maxPages < 0) maxPages = 0;
+        if (pageRange != null && pageRange.isBlank()) pageRange = null;
         // Memory watchdog defaults
         if (memoryThresholdPercent <= 0) memoryThresholdPercent = DEFAULT_MEMORY_THRESHOLD_PERCENT;
         if (memoryCriticalPercent <= 0) memoryCriticalPercent = DEFAULT_MEMORY_CRITICAL_PERCENT;
@@ -214,6 +216,7 @@ public record VlmTestSubprocessArgs(
         private Boolean debugDiagnostics = false;
         private Boolean opTiming = false;
         private int maxPages = 0;
+        private String pageRange;
         private String modelSourceType;
         private String modelIdentifier;
         private String stagingUrl;
@@ -272,6 +275,7 @@ public record VlmTestSubprocessArgs(
         public Builder debugDiagnostics(Boolean debugDiagnostics) { this.debugDiagnostics = debugDiagnostics; return this; }
         public Builder opTiming(Boolean opTiming) { this.opTiming = opTiming; return this; }
         public Builder maxPages(int maxPages) { this.maxPages = maxPages; return this; }
+        public Builder pageRange(String pageRange) { this.pageRange = pageRange; return this; }
         public Builder modelSourceType(String modelSourceType) { this.modelSourceType = modelSourceType; return this; }
         public Builder modelIdentifier(String modelIdentifier) { this.modelIdentifier = modelIdentifier; return this; }
         public Builder stagingUrl(String stagingUrl) { this.stagingUrl = stagingUrl; return this; }
@@ -311,7 +315,7 @@ public record VlmTestSubprocessArgs(
                     dspProactiveEvictBeforeCapture, dspLruEviction, dspCaptureWorkspaceMb,
                     speculativeTokens,
                     debugDiagnostics, opTiming,
-                    maxPages,
+                    maxPages, pageRange,
                     modelSourceType, modelIdentifier, stagingUrl, stagingApiKey, archivePath,
                     memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent, memoryCheckIntervalMs,
                     gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent,

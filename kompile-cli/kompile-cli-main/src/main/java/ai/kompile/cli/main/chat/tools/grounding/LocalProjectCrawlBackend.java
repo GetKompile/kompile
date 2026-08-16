@@ -68,15 +68,36 @@ public final class LocalProjectCrawlBackend {
     private final ObjectMapper mapper;
     private final KompileProjectStore store;
     private final LocalProjectGraphBackend graphBackend;
+    private final ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor;
 
     public LocalProjectCrawlBackend(ObjectMapper mapper) {
-        this(mapper, new LocalProjectGraphBackend(mapper));
+        this(mapper, new LocalProjectGraphBackend(mapper), null);
+    }
+
+    /**
+     * Create a project-local backend with an in-process model-pipeline boundary.
+     *
+     * <p>This is used by JVM embedders and integration harnesses. Normal MCP construction omits the
+     * override and retains the request-scoped standalone subprocess path.</p>
+     */
+    public LocalProjectCrawlBackend(
+            ObjectMapper mapper,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) {
+        this(mapper, new LocalProjectGraphBackend(mapper), modelPipelineExecutor);
     }
 
     LocalProjectCrawlBackend(ObjectMapper mapper, LocalProjectGraphBackend graphBackend) {
+        this(mapper, graphBackend, null);
+    }
+
+    LocalProjectCrawlBackend(
+            ObjectMapper mapper,
+            LocalProjectGraphBackend graphBackend,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) {
         this.mapper = mapper;
         this.store = new KompileProjectStore();
         this.graphBackend = graphBackend;
+        this.modelPipelineExecutor = modelPipelineExecutor;
     }
 
     public ToolResult crawlDocuments(JsonNode params, ToolContext context) {
@@ -252,7 +273,7 @@ public final class LocalProjectCrawlBackend {
                 LocalCrawlSubprocessRunner.ExecutionResult lifecycle =
                         LocalCrawlSubprocessRunner.execute(
                                 profile, project.root(), dryRun, executionRequest,
-                                graphContext, mapper);
+                                graphContext, mapper, modelPipelineExecutor);
                 ProjectCrawlCommand.LocalCrawlExecution execution = lifecycle.crawlExecution();
                 LocalProjectGraphBackend.GraphUpdate graphUpdate = lifecycle.graphUpdate();
                 if (!dryRun) {
@@ -573,8 +594,11 @@ public final class LocalProjectCrawlBackend {
                         .put("memory", ".kompile/memory via memory and semantic_memory MCP tools");
             }
             if (matches(section, "models")) {
-                catalog.set("models", mapper.valueToTree(
-                        LocalProjectModelBootstrap.inventory(project.root())));
+                List<Map<String, Object>> modelInventory =
+                        LocalProjectModelBootstrap.inventory(project.root());
+                catalog.set("models", mapper.valueToTree(modelInventory));
+                catalog.set("pipelineModelReadiness",
+                        projectPipelineModelReadiness(project, modelInventory));
                 boolean nativeChildren = CliProcessLauncher.requiresNativeChildren();
                 catalog.putObject("modelRuntime")
                         .put("tool", "model_runtime")
@@ -1563,6 +1587,55 @@ public final class LocalProjectCrawlBackend {
         return result;
     }
 
+    private ArrayNode projectPipelineModelReadiness(
+            ProjectState project, List<Map<String, Object>> models) {
+        ArrayNode result = mapper.createArrayNode();
+        if (project == null || project.manifest() == null
+                || project.manifest().getPipelines() == null) {
+            return result;
+        }
+        for (KompileProjectPipeline pipeline : project.manifest().getPipelines()) {
+            if (pipeline == null || !pipeline.isActive()) continue;
+            ObjectNode item = result.addObject();
+            String pipelineId = firstNonBlank(pipeline.getPipelineId(), pipeline.getId());
+            item.put("pipelineId", pipelineId == null ? "unknown" : pipelineId);
+            ArrayNode bindings = item.putArray("models");
+            ArrayNode errors = item.putArray("errors");
+            List<String> refs = pipeline.getModelRefs() == null
+                    ? List.of() : pipeline.getModelRefs();
+            for (String ref : refs) {
+                Map<String, Object> model = models.stream()
+                        .filter(candidate -> modelReferenceMatches(candidate, ref))
+                        .findFirst().orElse(null);
+                ObjectNode binding = bindings.addObject().put("reference", ref);
+                if (model == null) {
+                    binding.put("ready", false);
+                    errors.add("Unknown project model: " + ref);
+                    continue;
+                }
+                binding.put("modelId", firstNonBlank(
+                        stringValue(model.get("modelId")), stringValue(model.get("id")), ref));
+                binding.put("role", firstNonBlank(stringValue(model.get("role")), "default"));
+                boolean ready = Boolean.TRUE.equals(model.get("ready"));
+                binding.put("ready", ready);
+                if (model.get("resolvedArtifact") != null) {
+                    binding.put("resolvedArtifact", String.valueOf(model.get("resolvedArtifact")));
+                }
+                if (!ready) errors.add("Model artifact is not ready: " + ref);
+            }
+            item.put("modelCount", refs.size());
+            item.put("ready", errors.isEmpty());
+            item.put("status", refs.isEmpty() ? "UNBOUND" : errors.isEmpty() ? "READY" : "NOT_READY");
+        }
+        return result;
+    }
+
+    private boolean modelReferenceMatches(Map<String, Object> model, String reference) {
+        return reference != null && (reference.equals(stringValue(model.get("id")))
+                || reference.equals(stringValue(model.get("modelId")))
+                || reference.equals(stringValue(model.get("registryModelId"))));
+    }
+
     private void copyMetadataField(KompileProjectPipeline pipeline, ObjectNode target, String field) {
         String value = pipeline.getMetadata().get(field);
         if (value != null && !value.isBlank()) target.put(field, value);
@@ -1573,7 +1646,7 @@ public final class LocalProjectCrawlBackend {
         shape.put("startTool", "crawl_documents");
         shape.put("documents", "documents=[{path|url, pipelineId?, loaderName?, chunkerName?, chunkSize?, chunkOverlap?, chunkerOptions?, includePatterns?, excludePatterns?}]");
         shape.put("pipelines", "pipelines=[{pipelineId,pipelineType:any-portable-id,registeredPipelineId?,executorId?,processor?,loaderName?,chunkerName?,options?}]");
-        shape.put("pipelineRegistry", "pipelineRegistry={defaults:[ingest pipeline defaults], definitions:[UnifiedPipelineDefinition], executors:[{executorId,type:UNIFIED_PIPELINE|KOMPILE_SUBPROCESS|EXECUTABLE,...}]} ; active kompile.project.json pipelines are registered automatically");
+        shape.put("pipelineRegistry", "pipelineRegistry={models:[{id,modelId?,role?,source?,repository?,revision?,runtime?}], defaults:[ingest pipeline defaults with modelBindings?], definitions:[UnifiedPipelineDefinition], executors:[{executorId,type:UNIFIED_PIPELINE|KOMPILE_SUBPROCESS|EXECUTABLE,...}]} ; active kompile.project.json pipelines and modelRefs are registered automatically");
         shape.put("pipelineExecution", "processor definitions select request-scoped one-shot unified pipeline serving, a Kompile --subprocess mode, or another executable; VLM/OCR are compatibility presets, not privileged executor types");
         shape.put("runtimeConfig", "generic crawl/runtime tuning; legacy documentModelExecutable aliases remain accepted for the registered vlm-test preset");
         shape.put("modelRuntime", "modelRuntime={autoBootstrap?,localPath?,source?,repository?,revision?,format?,type?,stagingExecutable?,stagingJar?,servingExecutable?,servingJar?,javaExecutable?,heapSize?,timeoutMinutes?,environment?}; native parents require native staging/serving children; executable JARs are JVM-development-only");
@@ -1748,6 +1821,10 @@ public final class LocalProjectCrawlBackend {
         }
         String value = node.path(field).asText("").trim();
         return value.isBlank() ? null : value;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private String firstNonBlank(String... values) {

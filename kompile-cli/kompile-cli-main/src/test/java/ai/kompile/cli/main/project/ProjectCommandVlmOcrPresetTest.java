@@ -89,6 +89,40 @@ class ProjectCommandVlmOcrPresetTest {
     }
 
     @Test
+    void modelRuntimeInventoryRecognizesVlmPipelineArtifacts() throws Exception {
+        Path projectRoot = tempDir.resolve("vlm-runtime-project");
+        assertEquals(0, execute("project", "create",
+                "--root", projectRoot.toString(),
+                "--name", "vlm-runtime-project",
+                "--preset", "vlm-ocr",
+                "--vlm-model", "smoldocling-256m"));
+
+        Path descriptor = projectRoot.resolve(
+                "data/models/vlm-pipelines/smoldocling-256m/pipeline.json");
+        Files.createDirectories(descriptor.getParent());
+        Files.writeString(descriptor, "{}", StandardCharsets.UTF_8);
+
+        Map<String, Object> descriptorInventory = LocalProjectModelBootstrap.inventory(projectRoot).stream()
+                .filter(model -> "smoldocling-256m".equals(model.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(true, descriptorInventory.get("ready"));
+        assertEquals(descriptor.toAbsolutePath().normalize().toString(),
+                descriptorInventory.get("resolvedArtifact"));
+
+        Files.delete(descriptor);
+        Path promotedComponent = descriptor.getParent().resolve("decoder_model_merged.onnx");
+        Files.write(promotedComponent, new byte[]{1, 2, 3});
+        Map<String, Object> promotedInventory = LocalProjectModelBootstrap.inventory(projectRoot).stream()
+                .filter(model -> "smoldocling-256m".equals(model.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(true, promotedInventory.get("ready"));
+        assertEquals(promotedComponent.toAbsolutePath().normalize().toString(),
+                promotedInventory.get("resolvedArtifact"));
+    }
+
+    @Test
     void registryEntryUsesSharedArtifactCompletenessAndLifecycleRules() throws Exception {
         Path projectRoot = tempDir.resolve("registry-project");
         Path modelDirectory = projectRoot.resolve("data/models/encoders/test-model");

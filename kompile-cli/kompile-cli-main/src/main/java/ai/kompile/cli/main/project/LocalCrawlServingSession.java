@@ -7,6 +7,7 @@ package ai.kompile.cli.main.project;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.KompileLocalServingBootstrap;
+import ai.kompile.cli.main.chat.LocalServingRuntimePool;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.core.crawl.graph.LocalServingBackend;
 import ai.kompile.core.llm.StructuredChatLanguageModel;
@@ -27,22 +28,22 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Request-scoped bridge from a local crawl to Kompile's real serving subprocess.
+ * Request-scoped bridge from a local crawl to Kompile's pooled serving subprocess.
  *
  * <p>The project model is resolved or bootstrapped through the standalone model-staging
  * component, then the standalone model-serving executable/native image or executable JAR is
- * launched directly. Closing this session terminates the serving child, so model memory is
- * owned only for the duration of the MCP crawl command.</p>
+ * launched directly. Closing this session releases its lease; a compatible serving child remains
+ * warm for bounded reuse and is terminated by idle eviction or pool shutdown.</p>
  */
 public final class LocalCrawlServingSession implements LocalServingBackend, AutoCloseable {
     private static final ObjectMapper MAPPER = JsonUtils.standardMapper();
 
-    private final KompileLocalServingBootstrap.StartupResult runtime;
+    private final LocalServingRuntimePool.Lease runtime;
     private final HttpClient client;
     private final Duration requestTimeout;
 
     private LocalCrawlServingSession(
-            KompileLocalServingBootstrap.StartupResult runtime,
+            LocalServingRuntimePool.Lease runtime,
             int requestTimeoutSeconds) {
         this.runtime = runtime;
         this.requestTimeout = Duration.ofSeconds(Math.max(30, requestTimeoutSeconds));
@@ -54,8 +55,8 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
     public static LocalCrawlServingSession start(String modelId, int timeoutSeconds)
             throws KompileLocalServingBootstrap.BootstrapException {
         ChatConfig config = new ChatConfig("kompile-local", null, modelId, null);
-        KompileLocalServingBootstrap.StartupResult runtime =
-                KompileLocalServingBootstrap.ensureReady(config, timeoutSeconds);
+        LocalServingRuntimePool.Lease runtime =
+                LocalServingRuntimePool.acquire(config, timeoutSeconds);
         return new LocalCrawlServingSession(runtime, timeoutSeconds);
     }
 
@@ -66,15 +67,13 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
             int timeoutSeconds) throws Exception {
         LocalProjectModelBootstrap.ResolvedProjectModel model =
                 LocalProjectModelBootstrap.ensure(projectRoot, modelId, runtimeOptions);
-        ChatConfig config = new ChatConfig("kompile-local", null, model.modelId(), null);
-        KompileLocalServingBootstrap.StartupResult runtime =
-                KompileLocalServingBootstrap.ensureReady(
-                        config,
-                        timeoutSeconds,
+        LocalServingRuntimePool.Lease runtime =
+                LocalServingRuntimePool.acquire(
                         model.modelId(),
                         model.modelPath(),
                         model.tokenizerPath(),
-                        runtimeOptions);
+                        runtimeOptions,
+                        timeoutSeconds);
         return new LocalCrawlServingSession(runtime, timeoutSeconds);
     }
 
@@ -88,7 +87,7 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
 
     @Override
     public boolean isAvailable() {
-        return runtime.process() != null && runtime.process().isAlive();
+        return runtime.isAlive();
     }
 
     @Override
@@ -144,24 +143,26 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         return generateChat(request, maxNewTokens);
     }
 
-    private synchronized JsonNode post(String path, Object body)
+    private JsonNode post(String path, Object body)
             throws IOException, InterruptedException {
         if (!isAvailable()) {
             throw new IOException("Kompile serving subprocess is not running");
         }
-        URI endpoint = runtime.baseUrl().resolve(path);
-        HttpRequest request = HttpRequest.newBuilder(endpoint)
-                .timeout(requestTimeout)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
-                .build();
-        HttpResponse<String> response = client.send(
-                request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("Serving subprocess " + path + " returned HTTP "
-                    + response.statusCode() + ": " + response.body());
+        synchronized (runtime.coordinationLock()) {
+            URI endpoint = runtime.baseUrl().resolve(path);
+            HttpRequest request = HttpRequest.newBuilder(endpoint)
+                    .timeout(requestTimeout)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
+                    .build();
+            HttpResponse<String> response = client.send(
+                    request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IOException("Serving subprocess " + path + " returned HTTP "
+                        + response.statusCode() + ": " + response.body());
+            }
+            return MAPPER.readTree(response.body());
         }
-        return MAPPER.readTree(response.body());
     }
 
     private String generatedText(JsonNode response) throws IOException {
@@ -172,7 +173,7 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         return response.path("generatedText").asText("");
     }
 
-    private StructuredChatLanguageModel.Response structuredResponse(JsonNode response)
+    static StructuredChatLanguageModel.Response structuredResponse(JsonNode response)
             throws IOException {
         String finishReason = response.path("finishReason").asText("");
         if (finishReason.toLowerCase(Locale.ROOT).startsWith("error")) {
@@ -188,6 +189,12 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
                     call.path("name").asText(""),
                     arguments));
         }
+        List<StructuredChatLanguageModel.OutputBlock> outputBlocks = new ArrayList<>();
+        for (JsonNode block : response.path("outputBlocks")) {
+            outputBlocks.add(new StructuredChatLanguageModel.OutputBlock(
+                    block.path("type").asText(""),
+                    block.path("content").asText("")));
+        }
         List<String> parseErrors = response.path("parseErrors").isArray()
                 ? MAPPER.convertValue(response.path("parseErrors"),
                         new TypeReference<List<String>>() { })
@@ -195,6 +202,8 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         return new StructuredChatLanguageModel.Response(
                 response.path("rawText").asText(""),
                 response.path("content").asText(""),
+                response.path("reasoningContent").asText(""),
+                outputBlocks,
                 calls,
                 parseErrors);
     }

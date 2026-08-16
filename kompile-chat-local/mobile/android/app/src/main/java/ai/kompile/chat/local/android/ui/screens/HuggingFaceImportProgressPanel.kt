@@ -65,6 +65,12 @@ internal fun HuggingFaceImportProgressPanel(
     onOpenAppStorageSettings: () -> Unit,
     onCopySmokeDecodeTrace: () -> Unit,
     diagnostics: List<ImportDiagnostic> = emptyList(),
+    pipelineTitle: String = "Model import pipeline",
+    pipelineDescription: String = "All stages are shown below. Tap a stage for its checkpoint and resume contract.",
+    diagnosticOperationPrefix: String = "hugging face",
+    visibleSteps: Set<HuggingFaceImportStep> = HuggingFaceImportStep.entries.toSet(),
+    testTagPrefix: String = "hugging_face_import",
+    failureCopyTitle: String = "Hugging Face model import failure",
     modifier: Modifier = Modifier
 ) {
     if (state is HuggingFaceImportUiState.Idle) return
@@ -78,7 +84,14 @@ internal fun HuggingFaceImportProgressPanel(
         HuggingFaceFailurePanel(
             state = state,
             onCopy = {
-                clipboard.setText(AnnotatedString(huggingFaceFailureCopyText(state)))
+                clipboard.setText(
+                    AnnotatedString(
+                        huggingFaceFailureCopyText(state).replaceFirst(
+                            "Hugging Face model import failure",
+                            failureCopyTitle,
+                        )
+                    )
+                )
             },
             onCopySmokeDecodeTrace = onCopySmokeDecodeTrace,
             onRetry = { onRetryStep(state.step) },
@@ -102,16 +115,21 @@ internal fun HuggingFaceImportProgressPanel(
             bringIntoView.bringIntoView()
         }
     }
-    val dashboard = huggingFacePipelineDashboard(state, inspectedStep)
+    val dashboard = huggingFacePipelineDashboard(state, inspectedStep).let { full ->
+        full.copy(
+            rows = full.rows.filter { it.step in visibleSteps },
+            focused = full.focused?.takeIf { it.step in visibleSteps },
+        )
+    }
     val observable = state as? HuggingFaceImportUiState.Observable
     val importLog = diagnostics
-        .filter { it.operation.startsWith("hugging face", ignoreCase = true) }
+        .filter { it.operation.startsWith(diagnosticOperationPrefix, ignoreCase = true) }
         .take(16)
 
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .testTag("hugging_face_import_pipeline"),
+            .testTag("${testTagPrefix}_pipeline"),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
         )
@@ -121,14 +139,14 @@ internal fun HuggingFaceImportProgressPanel(
             verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Text(
-                "Model import pipeline",
+                pipelineTitle,
                 modifier = Modifier
                     .bringIntoViewRequester(bringIntoView)
-                    .testTag("hugging_face_import_pipeline_header"),
+                    .testTag("${testTagPrefix}_pipeline_header"),
                 style = MaterialTheme.typography.titleSmall
             )
             Text(
-                "All ${HuggingFaceImportStep.entries.size} stages are shown below. Tap a stage for its checkpoint and resume contract.",
+                pipelineDescription,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -144,7 +162,7 @@ internal fun HuggingFaceImportProgressPanel(
             dashboard.focused?.let { focused ->
                 HorizontalDivider(modifier = Modifier.padding(top = 3.dp))
                 Text(
-                    "Step ${focused.step.ordinal + 1}: ${focused.step.label} — ${focused.status.label}",
+                    "Step ${dashboard.rows.indexOfFirst { it.step == focused.step } + 1}: ${focused.step.label} — ${focused.status.label}",
                     style = MaterialTheme.typography.labelLarge,
                     color = statusColor(focused)
                 )
@@ -239,7 +257,7 @@ internal fun HuggingFaceImportProgressPanel(
 
             HorizontalDivider()
             Text(
-                "Hugging Face import log",
+                "$pipelineTitle log",
                 style = MaterialTheme.typography.labelLarge
             )
             Text(

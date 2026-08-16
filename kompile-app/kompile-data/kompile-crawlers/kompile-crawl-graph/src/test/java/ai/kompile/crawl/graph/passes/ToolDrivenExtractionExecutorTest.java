@@ -267,22 +267,37 @@ class ToolDrivenExtractionExecutorTest {
     @Test
     void malformedNativeResponseParseErrorsRetryWithProtocolFeedback() {
         CrawlExtractionToolBackend backend = retryBackend("invalid-structured-response");
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
 
         ToolDrivenExtractionExecutor.Result result = new ToolDrivenExtractionExecutor().extractStructured(
                 "Mira reviewed Project Orchid.",
                 null,
                 backend,
-                (passId, request) -> new ToolDrivenExtractionExecutor.StructuredResponse(
-                        "", "", List.of(), List.of("missing call envelope")),
+                (passId, request) -> {
+                    requests.add(request);
+                    return new ToolDrivenExtractionExecutor.StructuredResponse(
+                            "REPEATED PHASE ANALYSIS THAT MUST NOT BE REINJECTED",
+                            "",
+                            List.of(),
+                            List.of("incomplete model output block: think"));
+                },
                 testProfile());
 
         assertFalse(result.usable());
         assertTrue(result.notes().stream().anyMatch(
                 note -> note.contains("parser returned malformed tool-call diagnostics")));
         assertTrue(result.notes().stream().anyMatch(
-                note -> note.contains("missing call envelope")));
+                note -> note.contains("incomplete model output block: think")));
         assertTrue(result.notes().stream().anyMatch(
                 note -> note.contains("round 1 parser returned malformed tool-call diagnostics")));
+        assertEquals(2, requests.size());
+        String retry = requests.get(1).messages().get(1).content();
+        assertTrue(retry.contains("Reasoning reached the output limit"));
+        assertTrue(retry.contains("Recheck the evidence concisely, end thinking"));
+        assertTrue(retry.contains(
+                "NEXT: end thinking and invoke submit_graph_delta({entities: [...], relations: [...]})"));
+        assertFalse(retry.contains("Protocol diagnostic"));
+        assertFalse(retry.contains("REPEATED PHASE ANALYSIS THAT MUST NOT BE REINJECTED"));
     }
 
     @Test
@@ -525,7 +540,7 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(requests.get(1).messages().get(1).content()
                 .contains("CURRENT EXPLICIT TOOL STATE"));
         assertTrue(requests.get(1).messages().get(1).content()
-                .contains("No executable function call"));
+                .contains("No executable native function call"));
         assertFalse(requests.get(1).messages().get(1).content()
                 .contains("top-level JSON tool envelope"));
         assertTrue(requests.stream().allMatch(request -> request.messages().get(1).content()
@@ -539,6 +554,359 @@ class ToolDrivenExtractionExecutorTest {
                 .anyMatch(message -> "assistant".equals(message.role())
                         || "tool".equals(message.role()))),
                 "audit transcript roles must never become extraction prompt memory");
+    }
+
+    @Test
+    void typedEntityPassFeedsImmutableEntityTableIntoRelationPass() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A named person", null),
+                        new NodeType("COMPANY", "A named company", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "phase-chunk",
+                "phase-document",
+                "qwen",
+                "phase-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                new CrawlCorpusSnapshot("phase-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                null,
+                false);
+        backend.configureCompactProposalCardinality(2, 1);
+        backend.configureCompactEntityCandidates(
+                List.of("Alex Rivera", "Acme Robotics"),
+                List.of("PERSON", "COMPANY"));
+        backend.configureCompactRelationCandidates(
+                List.of(0), List.of(1), List.of("WORKS_AT"));
+        backend.beginTypedEntityPhase();
+
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        ToolDrivenExtractionExecutor.Result entities =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<entities>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "entities-1", "submit_typed_entities", Map.of(
+                                                            "entities", List.of(
+                                                                    Map.of("name", "Alex Rivera",
+                                                                            "type", "PERSON"),
+                                                                    Map.of("name", "Acme Robotics",
+                                                                            "type", "COMPANY"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT,
+                                4_096,
+                                8_192,
+                                512,
+                                3.5,
+                                "TEST"),
+                        null);
+
+        assertTrue(entities.usable(), () -> entities.notes().toString());
+        assertEquals(2, entities.extraction().entities().size());
+        assertEquals(List.of("submit_typed_entities"),
+                requests.get(0).tools().stream()
+                        .map(ExtractionToolBackend.ToolDefinition::name).toList());
+        assertEquals(List.of("entities"), new ArrayList<>(
+                ((Map<?, ?>) requests.get(0).tools().get(0).parameters()
+                        .get("properties")).keySet()));
+        String entitySystem = requests.get(0).messages().get(0).content().strip();
+        assertEquals(
+                "Use Text to verify each listed candidate's exact name and ontology type.\n"
+                        + "Invoke submit_typed_entities once.",
+                entitySystem);
+        assertFalse(entitySystem.contains("prompt"));
+        assertFalse(entitySystem.contains("format"));
+        String entityUser = requests.get(0).messages().get(1).content();
+        assertFalse(entityUser.contains("EXPECTED ENTITIES"));
+        assertTrue(entityUser.contains("ALLOWED ENTITY TYPE LABELS: COMPANY, PERSON"));
+        assertTrue(entityUser.contains("ENTITY TYPE DEFINITIONS (LABEL = MEANING):"));
+        assertTrue(entityUser.contains("COMPANY = A named company"));
+        assertTrue(entityUser.contains("PERSON = A named person"));
+        assertTrue(entityUser.contains(
+                "ENTITY CANDIDATES (2):\n"
+                        + "1. \"Alex Rivera\" => PERSON\n"
+                        + "2. \"Acme Robotics\" => COMPANY"));
+        assertFalse(entityUser.contains("checklist"));
+        assertFalse(entityUser.contains("TASK MODE"));
+        assertFalse(entityUser.contains("Do not"));
+        assertFalse(entityUser.contains(
+                "TYPE VERIFICATION (perform independently for every name before the native call)"));
+        assertTrue(entityUser.contains(
+                "TEXT:\nAlex Rivera works at Acme Robotics.\nEND TEXT"));
+        Map<?, ?> entityArraySchema = (Map<?, ?>) ((Map<?, ?>)
+                requests.get(0).tools().get(0).parameters().get("properties")).get("entities");
+        List<?> positionalEntities = (List<?>) entityArraySchema.get("prefixItems");
+        assertEquals(2, positionalEntities.size());
+        assertEquals(false, entityArraySchema.get("items"));
+        Map<?, ?> firstEntityProperties = (Map<?, ?>) ((Map<?, ?>)
+                positionalEntities.get(0)).get("properties");
+        Map<?, ?> secondEntityProperties = (Map<?, ?>) ((Map<?, ?>)
+                positionalEntities.get(1)).get("properties");
+        assertEquals("Alex Rivera",
+                ((Map<?, ?>) firstEntityProperties.get("name")).get("const"));
+        assertEquals("Acme Robotics",
+                ((Map<?, ?>) secondEntityProperties.get("name")).get("const"));
+        assertFalse(((Map<?, ?>) firstEntityProperties.get("type")).containsKey("const"));
+        assertFalse(((Map<?, ?>) secondEntityProperties.get("type")).containsKey("const"));
+        String entityTypeDescription =
+                ((Map<?, ?>) firstEntityProperties.get("type")).get("description").toString();
+        assertTrue(entityTypeDescription.contains("PERSON = A named person"));
+        assertTrue(entityTypeDescription.contains("COMPANY = A named company"));
+        assertTrue(entityTypeDescription.contains(
+                "Classify this exact name independently from its Text evidence"));
+        assertTrue(entityTypeDescription.contains(
+                "Enum order, row count, and covering every label are not evidence"));
+        assertTrue(requests.get(0).tools().get(0).description().contains(
+                "Classify each name independently from its Text referent"));
+
+        backend.beginRelationPhase(entities.extraction().entities());
+        AtomicInteger relationRound = new AtomicInteger();
+        ToolDrivenExtractionExecutor.Result relations =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            if (relationRound.getAndIncrement() == 0) {
+                                return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                        "REPEATED RELATION PLAN", "", List.of(),
+                                        List.of("incomplete model output block: think"));
+                            }
+                            String retry = request.messages().get(1).content();
+                            assertTrue(retry.contains(
+                                    "RELATION RETRY. Recheck each listed candidate against Text: predicate, direction, "
+                                            + "endpoint types, and ontology label. Then invoke submit_relations once."));
+                            assertTrue(retry.contains("RELATION CANDIDATES (1; fixed endpoints):"));
+                            assertFalse(retry.contains("REPEATED RELATION PLAN"));
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<relations>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "relations-1", "submit_relations", Map.of(
+                                                            "relations", List.of(Map.of(
+                                                                    "source", 0,
+                                                                    "target", 1,
+                                                                    "type", "WORKS_AT"))))),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT,
+                                4_096,
+                                8_192,
+                                512,
+                                3.5,
+                                "TEST"),
+                        null);
+
+        assertTrue(relations.usable(), () -> relations.notes().toString());
+        assertEquals(2, relations.extraction().entities().size());
+        assertEquals(1, relations.extraction().relations().size());
+        assertEquals(List.of("submit_relations"),
+                requests.get(1).tools().stream()
+                        .map(ExtractionToolBackend.ToolDefinition::name).toList());
+        assertEquals(List.of("relations"), new ArrayList<>(
+                ((Map<?, ?>) requests.get(1).tools().get(0).parameters()
+                        .get("properties")).keySet()));
+        String relationSystem = requests.get(1).messages().get(0).content().strip();
+        assertEquals(
+                "Use Text to verify each listed candidate's predicate, direction, endpoints, and ontology label.\n"
+                        + "Invoke submit_relations once.",
+                relationSystem);
+        assertFalse(relationSystem.contains("prompt"));
+        assertFalse(relationSystem.contains("format"));
+        String relationUser = requests.get(1).messages().get(1).content();
+        assertFalse(relationUser.contains("EXPECTED RELATIONS"));
+        assertTrue(relationUser.contains(
+                "IMMUTABLE ENTITY INDEX TABLE (source and target must use these integers):\n"
+                        + "- 0: \"Alex Rivera\" [PERSON]\n"
+                        + "- 1: \"Acme Robotics\" [COMPANY]"));
+        assertTrue(relationUser.contains(
+                "RELATION CANDIDATES (1; fixed endpoints):\n"
+                        + "1. \"Alex Rivera\" [0] -> \"Acme Robotics\" [1] | WORKS_AT"));
+        assertFalse(relationUser.contains("checklist"));
+        assertTrue(relationUser.contains(
+                "RELATION TYPE TABLE (LABEL = MEANING | DIRECTED ENDPOINTS):"));
+        assertTrue(relationUser.contains("WORKS_AT = A person works at a company"));
+        assertTrue(relationUser.contains("(PERSON)-[:WORKS_AT]->(COMPANY)"), relationUser);
+        assertFalse(relationUser.contains("TASK MODE"));
+        assertFalse(relationUser.contains("THINKING LIMIT"));
+        assertFalse(relationUser.contains("Do not"));
+        Map<?, ?> relationArraySchema = (Map<?, ?>) ((Map<?, ?>)
+                requests.get(1).tools().get(0).parameters().get("properties")).get("relations");
+        List<?> positionalRelations = (List<?>) relationArraySchema.get("prefixItems");
+        assertEquals(1, positionalRelations.size());
+        assertEquals(false, relationArraySchema.get("items"));
+        Map<?, ?> relationProperties = (Map<?, ?>) ((Map<?, ?>)
+                positionalRelations.get(0)).get("properties");
+        assertEquals(0, ((Map<?, ?>) relationProperties.get("source")).get("const"));
+        assertEquals(1, ((Map<?, ?>) relationProperties.get("target")).get("const"));
+        assertFalse(((Map<?, ?>) relationProperties.get("type")).containsKey("const"));
+        assertTrue(((Map<?, ?>) relationProperties.get("source")).get("description").toString()
+                .contains("independently"));
+        assertTrue(((Map<?, ?>) relationProperties.get("target")).get("description").toString()
+                .contains("independently"));
+        String relationTypeDescription =
+                ((Map<?, ?>) relationProperties.get("type")).get("description").toString();
+        assertTrue(relationTypeDescription.contains("WORKS_AT = A person works at a company"));
+        assertTrue(relationTypeDescription.contains(
+                "directed endpoints (PERSON)-[:WORKS_AT]->(COMPANY)"));
+        String relationPrompt = requests.get(1).messages().get(1).content();
+        assertTrue(relationPrompt.contains(
+                "IMMUTABLE ENTITY INDEX TABLE (source and target must use these integers):"));
+        assertFalse(relationPrompt.contains("ALLOWED DIRECTED ENDPOINT PATTERNS:"));
+        assertTrue(relationPrompt.contains("TEXT:\nAlex Rivera works at Acme Robotics.\nEND TEXT"));
+        assertFalse(relationPrompt.contains("conversation"));
+        assertFalse(relationPrompt.contains("previous context"));
+    }
+
+    @Test
+    void relationValidationRetryNamesRejectedRowSchemaAndExactRepairShape() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A named person", null),
+                        new NodeType("COMPANY", "A named company", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "repair-phase-chunk",
+                "repair-phase-document",
+                "qwen",
+                "repair-phase-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                new CrawlCorpusSnapshot("repair-phase-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                null,
+                false);
+        backend.configureCompactProposalCardinality(2, 1);
+        DecomposedExtractionExecutor.PromptProfile profile =
+                new DecomposedExtractionExecutor.PromptProfile(
+                        DecomposedPromptTier.COMPACT,
+                        4_096,
+                        8_192,
+                        512,
+                        3.5,
+                        "TEST");
+
+        backend.beginTypedEntityPhase();
+        ToolDrivenExtractionExecutor.Result entities =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> new ToolDrivenExtractionExecutor.StructuredResponse(
+                                "<entities>", "", List.of(
+                                        new ToolDrivenExtractionExecutor.ToolRequest(
+                                                "entities-1", "submit_typed_entities", Map.of(
+                                                        "entities", List.of(
+                                                                Map.of("name", "Alex Rivera",
+                                                                        "type", "PERSON"),
+                                                                Map.of("name", "Acme Robotics",
+                                                                        "type", "COMPANY"))))),
+                                List.of()),
+                        profile,
+                        null);
+        assertTrue(entities.usable(), () -> entities.notes().toString());
+
+        backend.beginRelationPhase(entities.extraction().entities());
+        AtomicInteger round = new AtomicInteger();
+        List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        ToolDrivenExtractionExecutor.Result relations =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            requests.add(request);
+                            if (round.getAndIncrement() == 0) {
+                                return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                        "<reversed>", "", List.of(
+                                                new ToolDrivenExtractionExecutor.ToolRequest(
+                                                        "relations-bad", "submit_relations", Map.of(
+                                                                "relations", List.of(Map.of(
+                                                                        "source", 1,
+                                                                        "target", 0,
+                                                                        "type", "WORKS_AT"))))),
+                                        List.of());
+                            }
+                            String retry = request.messages().get(1).content();
+                            assertTrue(retry.contains("PREVIOUS RELATION SUBMISSION WAS REJECTED"));
+                            assertTrue(retry.contains(
+                                    "RELATION REPAIR CARD (replace rejected rows only)"));
+                            assertTrue(retry.contains("Rejected rows:"));
+                            assertTrue(retry.contains("row 0"));
+                            assertTrue(retry.contains("\"source\":1"));
+                            assertTrue(retry.contains("\"target\":0"));
+                            assertTrue(retry.contains(
+                                    "Immutable entity index: 0=Alex Rivera [PERSON]; 1=Acme Robotics [COMPANY]"));
+                            assertTrue(retry.contains("Allowed directed patterns"));
+                            assertTrue(retry.contains(
+                                    "(PERSON)-[:WORKS_AT]->(COMPANY)"));
+                            assertTrue(retry.contains(
+                                    "NEXT: invoke this native call with corrected or missing rows only: "
+                                            + "submit_relations with a relations array populated only with actual "
+                                            + "integer lookup indices and allowed ontology relation labels"));
+                            assertTrue(retry.contains(
+                                    "copy both endpoint names from the same explicit predicate"));
+                            assertTrue(retry.contains(
+                                    "map each name independently to the immutable index"));
+                            assertTrue(retry.contains("Relation type definitions"));
+                            assertTrue(retry.contains("WORKS_AT = A person works at a company"));
+                            assertTrue(retry.contains("HOW TO CORRECT EACH REJECTED RELATION"));
+                            assertTrue(retry.contains(
+                                    "Use no background knowledge and do not substitute a convenient endpoint "
+                                            + "from another sentence"));
+                            assertTrue(retry.contains(
+                                    "do not emit a second row format or prose"));
+                            assertTrue(retry.contains("definition matches the predicate"));
+                            assertTrue(retry.contains(
+                                    "directed endpoint pattern matches source type to target type"));
+                            assertFalse(retry.contains("SOURCE_NAME [SOURCE_INDEX]"));
+                            assertFalse(retry.contains("SOURCE_INDEX_INTEGER"));
+                            assertFalse(retry.contains("ALLOWED_RELATION_TYPE"));
+                            assertFalse(retry.contains("Do not explain, restate this card"));
+                            assertFalse(retry.contains("Rejected candidate draft"));
+                            assertFalse(retry.contains("\"correction\""));
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<corrected>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "relations-good", "submit_relations", Map.of(
+                                                            "relations", List.of(Map.of(
+                                                                    "source", 0,
+                                                                    "target", 1,
+                                                                    "type", "WORKS_AT"))))),
+                                    List.of());
+                        },
+                        profile,
+                        null);
+
+        assertTrue(relations.usable(), () -> relations.notes().toString());
+        assertEquals(1, relations.extraction().relations().size());
+        assertEquals("Alex Rivera",
+                relations.extraction().entities().get(0).name());
+        assertEquals(2, requests.size());
     }
 
     @Test
@@ -618,20 +986,40 @@ class ToolDrivenExtractionExecutorTest {
         ToolDrivenExtractionExecutor.StructuredRequest initial = requests.get(0);
         assertEquals(List.of("submit_graph_delta"),
                 initial.tools().stream().map(ExtractionToolBackend.ToolDefinition::name).toList());
+        String toolContract = initial.tools().get(0).parameters().toString();
+        assertTrue(toolContract.contains(
+                "Classify this exact name independently from its Text evidence."));
+        assertTrue(toolContract.contains(
+                "Enum order, row count, and covering every label are not evidence"));
+        assertTrue(toolContract.contains(
+                "Classify the directed predicate stated by Text. Use one ontology relation label and its endpoint pattern."));
+        assertTrue(toolContract.contains("PERSON = A person"));
+        assertTrue(toolContract.contains("COMPANY = A company"));
+        assertTrue(toolContract.contains("WORKS_AT = A person works at a company"));
+        assertTrue(toolContract.contains(
+                "Each explicit Text-supported directed fact between extracted entities once."));
         String system = initial.messages().get(0).content();
-        assertEquals("Extract Text with submit_graph_delta(format=\"indexed\"). "
-                + "Copy distinct named entities once in Text order. Names come only from Text—not "
-                + "instructions, tool names, or schema. Assign stated ontology types. For each "
-                + "directed relation A to B, source is A's zero-based entity "
-                + "index and target is B's. Close both arrays and the call. No prose. Directive: "
-                + "Extract PERSON, COMPANY, and WORKS_AT facts.", system);
+        assertTrue(system.startsWith(
+                "Extract Text with submit_graph_delta(format=\"indexed\")."));
+        assertTrue(system.contains(
+                "An entity is a distinct named node explicitly mentioned in Text"));
+        assertTrue(system.contains(
+                "A relation is an explicit directed fact connecting two extracted entities"));
+        assertTrue(system.contains(
+                "Ontology type labels classify nodes or edges; they are not entity names or source evidence."));
+        assertTrue(system.contains(
+                "First collect names from Text, then type them, then add only Text-supported relations."));
+        assertFalse(system.contains("Extract PERSON, COMPANY, and WORKS_AT facts."));
         assertFalse(system.contains("schema prepass"));
         assertFalse(system.contains("update_ontology"));
         assertFalse(system.contains("unified_corpus"));
-        assertTrue(system.length() < 400, () -> "strict direct prompt is too large: " + system.length());
+        assertTrue(system.length() < 900, () -> "strict direct prompt is too large: " + system.length());
 
         String initialUser = initial.messages().get(1).content();
-        assertEquals("Text: Alex Rivera works at Acme Robotics.", initialUser);
+        assertTrue(initialUser.startsWith(
+                "SCOPED EXTRACTION RULE (instruction, not evidence): "
+                        + "Extract PERSON, COMPANY, and WORKS_AT facts.\n"));
+        assertTrue(initialUser.endsWith("Text: Alex Rivera works at Acme Robotics."));
         assertFalse(initialUser.contains("FINAL:"));
         assertFalse(initialUser.contains("CURRENT GRAPH"));
         assertFalse(initialUser.contains("SOURCE SHARD"));
@@ -641,9 +1029,89 @@ class ToolDrivenExtractionExecutorTest {
 
         String retry = requests.get(1).messages().get(1).content();
         assertTrue(retry.contains("[SOURCE_GROUNDING]"));
+        assertTrue(retry.contains("zero-based indices into this submission's entities array only"));
+        assertTrue(retry.contains("never use graph ids or retained entity ids"));
         assertFalse(retry.contains("Rejected candidate draft"));
         assertFalse(retry.contains("submit_graph_delta instruction text"),
                 "ungrounded model text must not be replayed into the next prompt");
+    }
+
+    @Test
+    void identicalRejectedNativeSubmissionStopsAfterTwoRounds() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "repeated-rejection-chunk",
+                "repeated-rejection-document",
+                "lfm",
+                "repeated-rejection-graph",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                new CrawlCorpusSnapshot("repeated-rejection-corpus", List.of()),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                null,
+                false);
+        AtomicInteger modelCalls = new AtomicInteger();
+        Map<String, Object> firstArguments = Map.of(
+                "format", "indexed",
+                "entities", List.of(
+                        Map.of("name", "Alex Rivera", "type", "PERSON"),
+                        Map.of("name", "submit_graphd", "type", "PERSON")),
+                "relations", List.of(Map.of(
+                        "source", 0,
+                        "target", 0.0,
+                        "type", "WORKS_AT")));
+        Map<String, Object> repeatedArguments = Map.of(
+                "format", "indexed",
+                "entities", List.of(
+                        Map.of("name", "Alex Rivera", "type", "PERSON"),
+                        Map.of("name", "submit_graphd", "type", "PERSON")),
+                "relations", List.of(Map.of(
+                        "source", 0,
+                        "target", 0,
+                        "type", "WORKS_AT")));
+
+        ToolDrivenExtractionExecutor.Result result =
+                new ToolDrivenExtractionExecutor().extractStructured(
+                        "Alex Rivera works at Acme Robotics.",
+                        null,
+                        backend,
+                        (passId, request) -> {
+                            int call = modelCalls.getAndIncrement();
+                            return new ToolDrivenExtractionExecutor.StructuredResponse(
+                                    "<repeated-submit>", "", List.of(
+                                            new ToolDrivenExtractionExecutor.ToolRequest(
+                                                    "same-call", "submit_graph_delta",
+                                                    call == 0
+                                                            ? firstArguments : repeatedArguments)),
+                                    List.of());
+                        },
+                        new DecomposedExtractionExecutor.PromptProfile(
+                                DecomposedPromptTier.COMPACT,
+                                4_096,
+                                8_192,
+                                1_024,
+                                3.5,
+                                "TEST"));
+
+        assertFalse(result.usable(), () -> result.notes().toString());
+        assertEquals(2, modelCalls.get(),
+                "numeric serialization drift must not disguise an unchanged rejected call");
+        assertEquals(ToolDrivenExtractionExecutor.FailureKind.TERMINAL,
+                result.failureKind());
+        assertFalse(result.retryableFailure());
+        assertTrue(result.notes().stream().anyMatch(note -> note.contains(
+                "identical rejected native tool rounds")));
     }
 
     @Test
@@ -1371,7 +1839,7 @@ class ToolDrivenExtractionExecutorTest {
         assertTrue(validationState.contains("description"));
         String protocolRetry = requests.get(2).messages().get(1).content();
         assertTrue(protocolRetry.contains(
-                "No executable function call was returned by the model-owned chat tool interface"));
+                "No executable native function call was returned"));
         assertTrue(protocolRetry.contains("Tool or validator result"),
                 "a malformed repair response must not erase the prior validator state");
         assertTrue(protocolRetry.contains(
@@ -1402,6 +1870,8 @@ class ToolDrivenExtractionExecutorTest {
                 testProfile());
 
         assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(3, round.get(),
+                "two identical protocol rejections must stop the repair loop");
         assertEquals(1, result.extraction().entities().size());
         assertEquals(0, result.extraction().relations().size());
         assertTrue(result.notes().stream().anyMatch(note -> note.contains(
@@ -1429,6 +1899,8 @@ class ToolDrivenExtractionExecutorTest {
                 testProfile());
 
         assertTrue(result.usable(), () -> result.notes().toString());
+        assertEquals(3, round.get(),
+                "two identical native protocol rejections must stop the repair loop");
         assertEquals(1, result.extraction().entities().size());
         assertEquals(0, result.extraction().relations().size());
         assertTrue(result.notes().stream().anyMatch(note -> note.contains(

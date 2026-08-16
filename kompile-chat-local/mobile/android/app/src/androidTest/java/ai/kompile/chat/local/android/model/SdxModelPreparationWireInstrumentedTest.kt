@@ -17,6 +17,7 @@ class SdxModelPreparationWireInstrumentedTest {
             modelPath = "/data/user/0/example/files/model.gguf",
             verifiedSourceSha256 = "a".repeat(64),
             verifiedSourceBytes = 1_516_744_736L,
+            options = ModelPreparationOptions(),
             operationAttemptId = "attempt-id"
         )
 

@@ -1336,42 +1336,37 @@ public class VlmDocumentPipeline implements OcrPipeline {
     }
 
     /**
-     * Loads VLM model from a specific directory (bypasses KompileModelManager).
-     * The directory should contain SDZ model files (vision_encoder.sdz, decoder.sdz, etc.)
+     * Loads a folder-local VLM bundle from a specific directory without consulting the
+     * process-global {@link KompileModelManager}. Both promoted ONNX components and cached
+     * SDZ components use the same auto-detection/import path as registry-backed models.
      *
-     * @param vlmModelId Model ID (for identification purposes)
-     * @param modelDirectory Directory containing SDZ model files
+     * @param vlmModelId Model ID (for identification and model-specific graph patches)
+     * @param modelDirectory Directory containing the promoted VLM components
      */
     public void loadModelsFromDirectory(String vlmModelId, File modelDirectory) throws Exception {
         this.modelId = vlmModelId;
 
-        logger.info("Loading VLM model: {} from directory: {}", vlmModelId, modelDirectory);
+        logger.info("Loading folder-local VLM model: {} from directory: {}",
+                vlmModelId, modelDirectory);
 
-        if (modelDirectory == null || !modelDirectory.exists()) {
+        if (modelDirectory == null || !modelDirectory.isDirectory()) {
             throw new IllegalStateException("Model directory not found: " + modelDirectory);
         }
 
-        // Resolve vision encoder IO config from registry (user-overridable)
-        VisionEncoderIOConfig ioConfig = resolveVisionEncoderIOConfigFromRegistry(vlmModelId);
+        // A folder-local request is authoritative and must not read an unrelated global
+        // registry under ~/.kompile. Graph IO is inferred from the promoted components;
+        // the regular registry-backed loadModels path still honors registry overrides.
+        loadFromAutoDetect(vlmModelId, modelDirectory, null);
 
-        // Load VisionLanguageModel from directory containing SDZ files
-        String normalizedId = vlmModelId.toLowerCase().replace("_", "-");
-        if (normalizedId.contains("smoldocling")) {
-            this.vlm = VisionLanguageModel.loadSmolDocling(modelDirectory, ioConfig);
-        } else {
-            this.vlm = VisionLanguageModel.fromDirectory(modelDirectory, ioConfig);
-        }
-
-        // Load image preprocessor with fallback chain
+        // Keep the document pipeline's page preprocessor aligned with the component bundle.
         this.imagePreprocessor = resolveImagePreprocessor(modelDirectory);
-
         this.loaded = vlm != null && vlm.isValid();
 
         if (!loaded) {
             throw new IllegalStateException("Failed to load VLM model: " + vlmModelId);
         }
 
-        logger.info("VLM model loaded from directory: {}", modelDirectory);
+        logger.info("Folder-local VLM model loaded from directory: {}", modelDirectory);
     }
 
 

@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
+import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticSeverity
 import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
@@ -112,6 +113,9 @@ fun SettingsScreen(
     val huggingFaceUrl by vm.huggingFaceReference.collectAsState()
     val huggingFaceDiscovery by vm.huggingFaceDiscovery.collectAsState()
     val huggingFaceSelection by vm.huggingFaceSelection.collectAsState()
+    val modelPreparationOptions by vm.modelPreparationOptions.collectAsState()
+    val localModelOptimizationState by vm.localModelOptimizationState.collectAsState()
+    val localModelSources by vm.localModelSources.collectAsState()
     val huggingFaceBusy = huggingFaceImportState is HuggingFaceImportUiState.Working ||
         huggingFaceImportState is HuggingFaceImportUiState.Retrying
     var importError by remember { mutableStateOf<String?>(null) }
@@ -160,9 +164,12 @@ fun SettingsScreen(
         projectSourceCount = prefs.activeProjectSourceCount
     }
 
-    LaunchedEffect(huggingFaceImportState) {
-        if (huggingFaceImportState is HuggingFaceImportUiState.Active) {
+    LaunchedEffect(huggingFaceImportState, localModelOptimizationState) {
+        if (huggingFaceImportState is HuggingFaceImportUiState.Active ||
+            localModelOptimizationState is HuggingFaceImportUiState.Active
+        ) {
             refreshSelectionFromPrefs()
+            vm.refreshLocalModelSources()
         }
     }
 
@@ -229,6 +236,23 @@ fun SettingsScreen(
                 } else {
                     importNotice =
                         "Model activated after tokenizer, chat template, target, and decode verification."
+                }
+            }
+        }
+    }
+
+    val localModelPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                clearImportError()
+                importNotice = null
+                val result = vm.optimizeLocalModel(it)
+                refreshSelectionFromPrefs()
+                result.exceptionOrNull()?.let { failure ->
+                    importError = failure.message ?: "Local model optimization failed."
+                    importErrorStackTrace = failure.stackTraceToString()
                 }
             }
         }
@@ -356,6 +380,12 @@ fun SettingsScreen(
                         Text("Import full project (.kproject)")
                     }
                     Spacer(Modifier.height(12.dp))
+                    ModelOptimizationOptionsPane(
+                        options = modelPreparationOptions,
+                        onOptionsChanged = vm::updateModelPreparationOptions,
+                        enabled = !importBlocked && !huggingFaceBusy,
+                    )
+                    Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Hugging Face source",
                         style = MaterialTheme.typography.labelLarge
@@ -458,6 +488,94 @@ fun SettingsScreen(
                             "runs a real bounded decode, and only then makes it the active chat model.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "Optimize local model",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        text = "Re-run the selected preparation profile against an app-retained GGUF/GGML source. " +
+                            "The original stays in place; optimized GGUF and canonical SDZ outputs are content-addressed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = { localModelPicker.launch("*/*") },
+                        enabled = !importBlocked && !huggingFaceBusy,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("optimize_local_model_picker")
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Choose local GGUF/GGML to retain and optimize")
+                    }
+                    if (localModelSources.isEmpty()) {
+                        Text(
+                            text = "No retained raw model sources yet. A completed Hugging Face download appears here automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "Retained sources",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        localModelSources.forEach { source ->
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        clearImportError()
+                                        importNotice = null
+                                        val result = vm.optimizeLocalModel(source.path)
+                                        refreshSelectionFromPrefs()
+                                        result.exceptionOrNull()?.let { failure ->
+                                            importError = failure.message ?: "Local model optimization failed."
+                                            importErrorStackTrace = failure.stackTraceToString()
+                                        }
+                                    }
+                                },
+                                enabled = !importBlocked && !huggingFaceBusy,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = source.displayName + " · " +
+                                        "%.2f GiB".format(source.bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                    HuggingFaceImportProgressPanel(
+                        state = localModelOptimizationState,
+                        onCancelStep = { false },
+                        onRetryStep = vm::retryLocalModelOptimizationStep,
+                        onOpenAppStorageSettings = { vm.openAppStorageSettings() },
+                        onCopySmokeDecodeTrace = {
+                            clipboard.setText(
+                                AnnotatedString(SmokeDecodeTraceLog(context).readContents())
+                            )
+                        },
+                        diagnostics = importDiagnostics,
+                        pipelineTitle = "Local optimization pipeline",
+                        pipelineDescription =
+                            "Verification, conversion, accelerator preparation, decode, and activation remain observable.",
+                        diagnosticOperationPrefix = "local model optimization",
+                        visibleSteps = setOf(
+                            HuggingFaceImportStep.PREFLIGHT,
+                            HuggingFaceImportStep.VERIFY,
+                            HuggingFaceImportStep.CONVERT_SDZ,
+                            HuggingFaceImportStep.TARGET_CACHE,
+                            HuggingFaceImportStep.SDX_LOAD,
+                            HuggingFaceImportStep.SMOKE_DECODE,
+                            HuggingFaceImportStep.ACTIVATE,
+                            HuggingFaceImportStep.ACTIVE,
+                        ),
+                        testTagPrefix = "local_model_optimization",
+                        failureCopyTitle = "Local model optimization failure",
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
@@ -686,8 +804,20 @@ fun SettingsScreen(
                     ) {
                         Text("Copy smoke-decode trace")
                     }
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(
+                                AnnotatedString(DspDiagnosticsTraceLog(context).readContents())
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("copy_dsp_diagnostics_trace")
+                    ) {
+                        Text("Copy DSP diagnostics")
+                    }
                     Text(
-                        text = "The trace is retained in app-private storage and includes the active log plus rotating backups.",
+                        text = "Both traces are retained in app-private storage with three rotating backups. Select DSP diagnostics in Model optimization before preparing or decoding to populate the deep report.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

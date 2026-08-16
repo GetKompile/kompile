@@ -184,8 +184,10 @@ class LlmGenerateControllerTest {
         when(languageModel.generateChat(
                 any(ai.kompile.core.llm.StructuredChatLanguageModel.Request.class), eq(128)))
                 .thenReturn(new ai.kompile.core.llm.StructuredChatLanguageModel.Response(
-                        "<|tool_call_start|>[submit_graph_delta(entities=[], relations=[])]<|tool_call_end|>",
+                        "<think>inspect source</think><|tool_call_start|>"
+                                + "[submit_graph_delta(entities=[], relations=[])]<|tool_call_end|>",
                         "",
+                        "inspect source",
                         List.of(new ai.kompile.core.llm.StructuredChatLanguageModel.ToolCall(
                                 "call-1", "submit_graph_delta",
                                 Map.of("entities", List.of(), "relations", List.of()))),
@@ -209,6 +211,7 @@ class LlmGenerateControllerTest {
 
         assertEquals("completed", response.getBody().get("finishReason"));
         assertEquals("", response.getBody().get("content"));
+        assertEquals("inspect source", response.getBody().get("reasoningContent"));
         assertEquals(1, ((List<?>) response.getBody().get("toolCalls")).size());
         var captor = org.mockito.ArgumentCaptor.forClass(
                 ai.kompile.core.llm.StructuredChatLanguageModel.Request.class);

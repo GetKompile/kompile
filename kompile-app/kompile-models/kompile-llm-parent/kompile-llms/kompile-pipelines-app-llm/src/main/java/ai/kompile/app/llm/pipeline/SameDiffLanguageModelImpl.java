@@ -33,7 +33,10 @@ import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipelineConfig;
 import org.eclipse.deeplearning4j.llm.generation.GenerationResult;
 import org.eclipse.deeplearning4j.llm.generation.kvcache.KvCacheStrategy;
+import org.eclipse.deeplearning4j.llm.generation.sampling.ModelSamplingDefaults;
+import org.eclipse.deeplearning4j.llm.generation.sampling.ModelSamplingDefaults.GenerationMode;
 import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
+import org.eclipse.deeplearning4j.llm.data.LLMModelDownloader.ModelFamily;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
@@ -52,14 +55,18 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
 import org.nd4j.ggml.format.GGUFReader;
+import org.nd4j.linalg.api.device.DeviceMemoryManager;
+import org.nd4j.linalg.factory.Nd4j;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,6 +75,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -98,6 +108,11 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     private static final int CONTINUATION_CHUNK_TOKENS_DEFAULT = 384;
 
     private final Object loadLock = new Object();
+    private final ExecutorService modelExecutionLane;
+    private final ModelDeviceContext modelDeviceContext;
+    private volatile Thread modelExecutionThread;
+    private volatile Integer modelExecutionDevice;
+    private volatile long modelDeviceRestorations;
     private volatile LoadedModel loaded; // null until first successful load
     private volatile boolean loading;
     private volatile String loadingModelId;
@@ -114,8 +129,22 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     public SameDiffLanguageModelImpl(
             Optional<Metrics> metricsOpt,
             Optional<Profiler> profilerOpt) {
+        this(metricsOpt, profilerOpt, new Nd4jModelDeviceContext());
+    }
+
+    SameDiffLanguageModelImpl(
+            Optional<Metrics> metricsOpt,
+            Optional<Profiler> profilerOpt,
+            ModelDeviceContext modelDeviceContext) {
         this.metrics = metricsOpt.orElse(null);
         this.profiler = profilerOpt.orElse(NoOpProfiler.INSTANCE);
+        this.modelDeviceContext = Objects.requireNonNull(modelDeviceContext, "modelDeviceContext");
+        this.modelExecutionLane = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "samediff-model-execution");
+            thread.setDaemon(true);
+            this.modelExecutionThread = thread;
+            return thread;
+        });
         logger.info("SameDiffLanguageModelImpl initialized (direct mode). " +
                 "Use POST /api/llm/load to load a model.");
     }
@@ -124,13 +153,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
 
     @Override
     public ChatResponse call(Prompt prompt) {
-        LoadedModel current = this.loaded;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load first.");
-        }
         String composedPrompt = extractPromptText(prompt);
-        return execDirect(current, composedPrompt);
+        return executeModelOperation(() ->
+                execDirect(requireLoadedModel(), composedPrompt));
     }
 
     @Override
@@ -152,13 +177,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         if (maxNewTokens <= 0) {
             throw new IllegalArgumentException("maxNewTokens must be positive");
         }
-        LoadedModel current = this.loaded;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load first.");
-        }
         String prompt = composePrompt(userQuery, context);
-        return textualResponse(execDirect(current, prompt, maxNewTokens));
+        return textualResponse(executeModelOperation(() ->
+                execDirect(requireLoadedModel(), prompt, maxNewTokens)));
     }
 
     private static String textualResponse(ChatResponse response) {
@@ -174,13 +195,9 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
 
     @Override
     public ChatResponse generateResponseWithPotentialToolCalls(String userQuery, List<String> context) {
-        LoadedModel current = this.loaded;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load first.");
-        }
         String prompt = composePrompt(userQuery, context);
-        return execDirect(current, prompt);
+        return executeModelOperation(() ->
+                execDirect(requireLoadedModel(), prompt));
     }
 
     /**
@@ -188,24 +205,16 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
      * history and native structured tool-call parsing.
      */
     public ChatGenerationResult generateChat(ChatTemplate.Request request) {
-        LoadedModel current = this.loaded;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load first.");
-        }
-        return generateChat(current, request, null);
+        return executeModelOperation(() ->
+                generateChat(requireLoadedModel(), request, null));
     }
 
     public ChatGenerationResult generateChat(ChatTemplate.Request request, int maxNewTokens) {
         if (maxNewTokens <= 0) {
             throw new IllegalArgumentException("maxNewTokens must be positive");
         }
-        LoadedModel current = this.loaded;
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model loaded. POST /api/llm/load first.");
-        }
-        return generateChat(current, request, maxNewTokens);
+        return executeModelOperation(() ->
+                generateChat(requireLoadedModel(), request, maxNewTokens));
     }
 
     /**
@@ -244,6 +253,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         : request.toolChoice() == StructuredChatLanguageModel.ToolChoice.NONE
                         ? ChatTemplate.ToolChoice.NONE
                         : ChatTemplate.ToolChoice.AUTO)
+                .templateArguments(request.templateArguments())
                 .build();
         ChatGenerationResult result = generateChat(nativeRequest, maxNewTokens);
         List<StructuredChatLanguageModel.ToolCall> calls = new ArrayList<>();
@@ -251,8 +261,18 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             calls.add(new StructuredChatLanguageModel.ToolCall(
                     call.getId(), call.getName(), call.getArguments()));
         }
+        List<StructuredChatLanguageModel.OutputBlock> outputBlocks = new ArrayList<>();
+        for (ChatTemplate.OutputBlock block : result.getOutputBlocks()) {
+            outputBlocks.add(new StructuredChatLanguageModel.OutputBlock(
+                    block.getType(), block.getContent()));
+        }
         return new StructuredChatLanguageModel.Response(
-                result.getRawText(), result.getContent(), calls, result.getParseErrors());
+                result.getRawText(),
+                result.getContent(),
+                result.getReasoningContent(),
+                outputBlocks,
+                calls,
+                result.getParseErrors());
     }
 
     private ChatGenerationResult generateChat(LoadedModel current,
@@ -316,26 +336,21 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             );
         }
 
-        LoadedModel current = this.loaded;
-
-        if (current == null) {
-            throw new IllegalStateException(
-                    "No SameDiff language model is loaded"
-            );
-        }
-
-        try {
-            return current.backend.countPromptTokens(prompt);
-        } catch (RuntimeException failure) {
-            throw failure;
-        } catch (Exception failure) {
-            throw new IllegalStateException(
-                    "Failed to count prompt tokens for model '"
-                            + current.modelId
-                            + "'",
-                    failure
-            );
-        }
+        return executeModelOperation(() -> {
+            LoadedModel current = requireLoadedModel();
+            try {
+                return current.backend.countPromptTokens(prompt);
+            } catch (RuntimeException failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new IllegalStateException(
+                        "Failed to count prompt tokens for model '"
+                                + current.modelId
+                                + "'",
+                        failure
+                );
+            }
+        });
     }
 
     /**
@@ -354,11 +369,25 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             throw new IOException("Tokenizer file/directory does not exist: " + tokenizerFile);
         }
 
-        Map<String, Object> opts = configOpts != null ? configOpts : new HashMap<>();
+        Map<String, Object> opts = configOpts != null
+                ? new HashMap<>(configOpts)
+                : new HashMap<>();
+        executeOnModelLane(() -> {
+            loadModelOnExecutionLane(modelId, modelFile, tokenizerFile, opts);
+            return null;
+        });
+    }
+
+    private void loadModelOnExecutionLane(String modelId, Path modelFile, Path tokenizerFile,
+                                          Map<String, Object> opts) throws Exception {
+        Integer existingExecutionDevice = this.modelExecutionDevice;
+        int executionDevice = existingExecutionDevice != null
+                ? existingExecutionDevice
+                : modelDeviceContext.selectDeviceForModel();
+        modelDeviceContext.switchTo(executionDevice, "model-load-start");
+
         String tokenizerType = stringOpt(opts, "tokenizerType", "huggingface");
         int maxNewTokens = intOpt(opts, "maxNewTokens", 256);
-        double temperature = doubleOpt(opts, "temperature", 0.7d);
-        int topK = intOpt(opts, "topK", 0);
         int maxPrefillLength = intOpt(opts, "maxPrefillLength", 0);
         String chatTemplate = stringOpt(opts, "chatTemplate", null);
         String inputIdsName = stringOpt(opts, "inputIdsPlaceholderName", "input_ids");
@@ -386,8 +415,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             this.loadingPhase = "Loading tokenizer and lifecycle-managed SameDiff generation pipeline";
             backend = createInferenceBackend(
                     modelId, modelFile, tokenizerFile, opts, tokenizerType,
-                    maxNewTokens, temperature, topK, maxPrefillLength, chatTemplate,
-                    inputIdsName, attentionMaskName, logitsName);
+                    maxNewTokens, maxPrefillLength, chatTemplate,
+                    inputIdsName, attentionMaskName, logitsName, executionDevice);
             this.loadingPhase = "Model and generation pipeline loaded";
         } catch (Exception e) {
             this.loading = false;
@@ -398,15 +427,22 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             this.dspFrozenCount = -1;
             this.dspPlanReport = null;
             this.dspCompilationStats = null;
+            try {
+                modelDeviceContext.switchTo(executionDevice, "failed-model-load-cleanup");
+            } catch (RuntimeException deviceFailure) {
+                e.addSuppressed(deviceFailure);
+            }
             closeBackendQuietly(backend, "partially loaded model '" + modelId + "'");
             throw e;
         } finally {
             dspPoller.shutdownNow();
         }
 
+        modelDeviceContext.switchTo(executionDevice, "model-load-complete");
         long durationMs = System.currentTimeMillis() - start;
         synchronized (loadLock) {
             LoadedModel previous = this.loaded;
+            this.modelExecutionDevice = executionDevice;
             this.loaded = new LoadedModel(modelId, backend, durationMs);
             this.loading = false;
             this.loadingModelId = null;
@@ -427,13 +463,115 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     }
 
     public void unloadModel() {
-        synchronized (loadLock) {
-            LoadedModel current = this.loaded;
-            this.loaded = null;
-            if (current != null) {
-                closeBackendQuietly(current.backend, "model '" + current.modelId + "'");
-                logger.info("Unloaded model '{}'", current.modelId);
+        executeModelOperation(() -> {
+            synchronized (loadLock) {
+                LoadedModel current = this.loaded;
+                this.loaded = null;
+                if (current != null) {
+                    closeBackendQuietly(current.backend, "model '" + current.modelId + "'");
+                    logger.info("Unloaded model '{}'", current.modelId);
+                }
+                this.modelExecutionDevice = null;
             }
+            return null;
+        });
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        if (modelExecutionLane.isShutdown()) {
+            return;
+        }
+        try {
+            unloadModel();
+        } finally {
+            modelExecutionLane.shutdownNow();
+        }
+    }
+
+    private LoadedModel requireLoadedModel() {
+        LoadedModel current = this.loaded;
+        if (current == null) {
+            throw new IllegalStateException(
+                    "No SameDiff language model loaded. POST /api/llm/load first.");
+        }
+        return current;
+    }
+
+    private <T> T executeModelOperation(Callable<T> operation) {
+        try {
+            return executeOnModelLane(operation);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("SameDiff model execution failed", failure);
+        }
+    }
+
+    private <T> T executeOnModelLane(Callable<T> operation) throws Exception {
+        Callable<T> deviceBoundOperation = () -> executeOnBoundModelDevice(operation);
+        if (Thread.currentThread() == modelExecutionThread) {
+            return deviceBoundOperation.call();
+        }
+        try {
+            return modelExecutionLane.submit(deviceBoundOperation).get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "Interrupted while waiting for SameDiff model execution", interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof Exception exception) {
+                throw exception;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new IllegalStateException("SameDiff model execution failed", cause);
+        }
+    }
+
+    private <T> T executeOnBoundModelDevice(Callable<T> operation) throws Exception {
+        restoreModelExecutionDevice("operation-start", true);
+        Throwable operationFailure = null;
+        try {
+            return operation.call();
+        } catch (Exception | Error failure) {
+            operationFailure = failure;
+            throw failure;
+        } finally {
+            try {
+                restoreModelExecutionDevice("operation-complete", false);
+            } catch (RuntimeException restoreFailure) {
+                if (operationFailure != null) {
+                    operationFailure.addSuppressed(restoreFailure);
+                } else {
+                    throw restoreFailure;
+                }
+            }
+        }
+    }
+
+    private void restoreModelExecutionDevice(String reason, boolean unexpectedAtBoundary) {
+        Integer expectedDevice = this.modelExecutionDevice;
+        if (expectedDevice == null) {
+            return;
+        }
+        int currentDevice = modelDeviceContext.currentDevice();
+        if (currentDevice == expectedDevice) {
+            return;
+        }
+
+        modelDeviceContext.switchTo(expectedDevice, reason);
+        this.modelDeviceRestorations++;
+        if (unexpectedAtBoundary) {
+            logger.warn(
+                    "Restored pooled model execution device from {} to {} at {}",
+                    currentDevice, expectedDevice, reason);
+        } else {
+            logger.debug(
+                    "Restored pooled model execution device from {} to {} after internal execution",
+                    currentDevice, expectedDevice);
         }
     }
 
@@ -460,6 +598,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     }
 
     public String getLoadingPhase() { return this.loadingPhase; }
+    public Integer getModelExecutionDevice() { return this.modelExecutionDevice; }
+    public long getModelDeviceRestorations() { return this.modelDeviceRestorations; }
     public String getDspPlanPhase() { return this.dspPlanPhase; }
     public int getDspFrozenCount() { return this.dspFrozenCount; }
     public String getDspPlanReport() { return this.dspPlanReport; }
@@ -738,7 +878,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 .endsWith(".gguf");
     }
 
-    private static GenerationPipeline.ModelLoader directGgufModelLoader(Path modelFile) {
+    private static GenerationPipeline.ModelLoader directGgufModelLoader(
+            Path modelFile, int executionDevice) {
         if (!isDirectGgufDecoder(modelFile)) {
             return null;
         }
@@ -751,7 +892,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                     GGMLModelImport.ImportedModel imported =
                             GGMLModelImport.importModelWithMetadata(
                                     Path.of(path).toFile(),
-                                    ConversionOptions.forInference());
+                                    ConversionOptions.forInference(),
+                                    Nd4j.getAffinityManager().getDeviceDescriptor(executionDevice));
                     metadataByPath.put(path, generationMetadata(
                             imported.getMetadata().getTokenizerInfo()));
                     return imported.getModel();
@@ -800,13 +942,18 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             Map<String, Object> opts,
             String tokenizerType,
             int maxNewTokens,
-            double temperature,
-            int topK,
             int maxPrefillLength,
             String chatTemplate,
             String inputIdsName,
             String attentionMaskName,
-            String logitsName) throws Exception {
+            String logitsName,
+            int executionDevice) throws Exception {
+        SamplingConfig resolvedSampling = configuredSampling(
+                opts, maxNewTokens,
+                modelSamplingDefaults(modelId, modelFile, GenerationMode.NON_THINKING_TEXT));
+        SamplingConfig thinkingSampling = configuredSampling(
+                opts, maxNewTokens,
+                modelSamplingDefaults(modelId, modelFile, GenerationMode.THINKING_TEXT));
         if (usesGenerationPipeline(tokenizerType, opts)) {
             Tokenizer tokenizer = Files.isDirectory(tokenizerFile)
                     ? HuggingFaceTokenizer.fromDirectory(tokenizerFile.toFile())
@@ -814,9 +961,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             try {
                 String effectiveChatTemplate = resolveChatTemplate(tokenizer, chatTemplate, modelFile);
                 SamplingConfig.SamplingConfigBuilder samplingBuilder =
-                        configuredSampling(
-                                opts, maxNewTokens, temperature, topK)
-                                .toBuilder();
+                        resolvedSampling.toBuilder();
                 int eosTokenId = resolveEosTokenId(tokenizer, opts);
                 if (eosTokenId >= 0) {
                     samplingBuilder.eosTokenId(eosTokenId);
@@ -843,7 +988,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         .graphOptimizerEnabled(booleanOpt(opts, "graphOptimizerEnabled", true))
                         .dspEnabled(booleanOpt(opts, "dspEnabled", true))
                         .prefillLastPositionLogitsEnabled(prefillLastPositionLogitsEnabled(opts))
-                        .modelLoader(directGgufModelLoader(modelFile))
+                        .modelLoader(directGgufModelLoader(modelFile, executionDevice))
                         .chatTemplate(effectiveChatTemplate)
                         .toolDefinitionFormat(toolDefinitionFormatOpt(opts))
                         .toolCallFormat(toolCallFormatOpt(opts))
@@ -853,19 +998,34 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                         "Loaded model '{}' with GenerationPipeline "
                                 + "(KV={}, DSP={}, maxNewTokens={}, chatTemplate={}, "
                                 + "toolDefinitionFormat={}, toolCallFormat={}, "
+                                + "doSample={}, temperature={}, topK={}, topP={}, "
                                 + "repetitionPenalty={}, seed={}, eosTokenId={}, "
+                                + "maxOutputBlockTokens={}, structuredOutputTokenReserve={}, "
                                 + "continuation={}, continuationChunkTokens={})",
                         modelId, pipelineConfig.getKvCacheStrategy(),
                         pipelineConfig.isDspEnabled(), maxNewTokens,
                         effectiveChatTemplate == null ? "none" : "configured",
                         pipelineConfig.getToolDefinitionFormat(),
                         pipelineConfig.getToolCallFormat(),
+                        pipelineConfig.getSamplingConfig().isDoSample(),
+                        pipelineConfig.getSamplingConfig().getTemperature(),
+                        pipelineConfig.getSamplingConfig().getTopK(),
+                        pipelineConfig.getSamplingConfig().getTopP(),
                         pipelineConfig.getSamplingConfig().getRepetitionPenalty(),
                         pipelineConfig.getSamplingConfig().getSeed(),
-                        eosTokenId, continuationEnabled, continuationChunkTokens);
+                        eosTokenId,
+                        pipelineConfig.getSamplingConfig().getMaxOutputBlockTokens(),
+                        pipelineConfig.getSamplingConfig().getStructuredOutputTokenReserve(),
+                        continuationEnabled, continuationChunkTokens);
+                logger.info(
+                        "Thinking-mode sampling for '{}': doSample={}, temperature={}, topK={}, topP={}, "
+                                + "presencePenalty={}, repetitionPenalty={}",
+                        modelId, thinkingSampling.isDoSample(), thinkingSampling.getTemperature(),
+                        thinkingSampling.getTopK(), thinkingSampling.getTopP(),
+                        thinkingSampling.getPresencePenalty(), thinkingSampling.getRepetitionPenalty());
                 return new GenerationPipelineBackend(
                         pipeline, tokenizer, effectiveChatTemplate, maxNewTokens,
-                        continuationEnabled, continuationChunkTokens);
+                        continuationEnabled, continuationChunkTokens, thinkingSampling);
             } catch (Exception e) {
                 try {
                     tokenizer.close();
@@ -892,13 +1052,20 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 .conversationContextName("llm_conversation_context")
                 .toolChoice(LLMStepConfig.ToolChoiceMode.NONE)
                 .generationParameterEntry("maxNewTokens", maxNewTokens)
-                .generationParameterEntry("temperature", (float) temperature)
-                .generationParameterEntry("topK", topK)
+                .generationParameterEntry("temperature", (float) resolvedSampling.getTemperature())
+                .generationParameterEntry("topK", resolvedSampling.getTopK())
+                .generationParameterEntry("topP", (float) resolvedSampling.getTopP())
+                .generationParameterEntry("doSample", resolvedSampling.isDoSample())
+                .generationParameterEntry(
+                        "repetitionPenalty", (float) resolvedSampling.getRepetitionPenalty())
                 .generationParameterEntry("maxPrefillLength", maxPrefillLength)
                 .generationParameterEntry("dspEnabled", booleanOpt(opts, "dspEnabled", true))
                 .generationParameterEntry("inputIdsPlaceholderName", inputIdsName)
                 .generationParameterEntry("attentionMaskPlaceholderName", attentionMaskName)
                 .generationParameterEntry("logitsOutputName", logitsName);
+        if (resolvedSampling.getSeed() != null) {
+            builder.generationParameterEntry("seed", resolvedSampling.getSeed());
+        }
         if (chatTemplate != null) {
             builder.generationParameterEntry("chatTemplate", chatTemplate);
         }
@@ -1060,23 +1227,104 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     static SamplingConfig configuredSampling(
             Map<String, Object> opts,
             int maxNewTokens,
-            double temperature,
-            int topK) {
-        boolean doSample = booleanOpt(
-                opts, "doSample", temperature > 0.0d && topK != 1);
-        double topP = doubleOpt(opts, "topP", 1.0d);
+            SamplingConfig defaults) {
+        double temperature = doubleOpt(opts, "temperature", defaults.getTemperature());
+        int topK = intOpt(opts, "topK", defaults.getTopK());
+        double topP = doubleOpt(opts, "topP", defaults.getTopP());
+        boolean doSample;
+        if (opts.containsKey("doSample")) {
+            doSample = booleanOpt(opts, "doSample", defaults.isDoSample());
+        } else if (opts.containsKey("temperature") || opts.containsKey("topK")) {
+            doSample = temperature > 0.0d && topK != 1;
+        } else {
+            doSample = defaults.isDoSample();
+        }
         SamplingConfig base = doSample
                 ? SamplingConfig.sample(temperature, topK, topP)
                 : SamplingConfig.greedy();
         SamplingConfig.SamplingConfigBuilder builder = base.toBuilder()
+                .temperature(temperature)
+                .topK(topK)
+                .topP(topP)
+                .minP(doubleOpt(opts, "minP", defaults.getMinP()))
+                .doSample(doSample)
                 .maxNewTokens(maxNewTokens)
+                .maxOutputBlockTokens(intOpt(
+                        opts, "maxOutputBlockTokens", defaults.getMaxOutputBlockTokens()))
+                .structuredOutputTokenReserve(intOpt(
+                        opts, "structuredOutputTokenReserve",
+                        defaults.getStructuredOutputTokenReserve()))
                 .repetitionPenalty(doubleOpt(
-                        opts, "repetitionPenalty", 1.0d));
+                        opts, "repetitionPenalty", defaults.getRepetitionPenalty()))
+                .frequencyPenalty(doubleOpt(
+                        opts, "frequencyPenalty", defaults.getFrequencyPenalty()))
+                .presencePenalty(doubleOpt(
+                        opts, "presencePenalty", defaults.getPresencePenalty()));
         Long seed = nullableLongOpt(opts, "seed");
         if (seed != null) {
             builder.seed(seed);
         }
         return builder.build();
+    }
+
+    static SamplingConfig modelSamplingDefaults(String modelId, Path modelFile) {
+        return modelSamplingDefaults(modelId, modelFile, GenerationMode.NON_THINKING_TEXT);
+    }
+
+    static SamplingConfig modelSamplingDefaults(
+            String modelId,
+            Path modelFile,
+            GenerationMode mode) {
+        String architecture = null;
+        String artifactName = null;
+        Path gguf = modelFile == null ? null : ggufBeside(modelFile);
+        if (gguf != null) {
+            artifactName = gguf.getFileName().toString();
+            try (GGUFReader reader = new GGUFReader(gguf.toFile())) {
+                architecture = reader.getHeader().getArchitecture();
+                String declaredName = reader.getHeader().getModelName();
+                if (declaredName != null && !declaredName.isBlank()) {
+                    artifactName = artifactName + " " + declaredName;
+                }
+            } catch (Exception e) {
+                logger.debug("Could not read model-family metadata from '{}': {}", gguf, e.getMessage());
+            }
+        }
+        return modelSamplingDefaults(modelId, architecture, artifactName, mode);
+    }
+
+    static SamplingConfig modelSamplingDefaults(
+            String modelId,
+            String architecture,
+            String artifactName) {
+        return modelSamplingDefaults(
+                modelId, architecture, artifactName, GenerationMode.NON_THINKING_TEXT);
+    }
+
+    static SamplingConfig modelSamplingDefaults(
+            String modelId,
+            String architecture,
+            String artifactName,
+            GenerationMode mode) {
+        String identity = String.join(" ",
+                modelId == null ? "" : modelId,
+                artifactName == null ? "" : artifactName);
+        String normalizedArchitecture = architecture == null ? "" : architecture.trim();
+        Optional<ModelFamily> family = Arrays.stream(ModelFamily.values())
+                .filter(candidate -> candidate.getFamilyId().equalsIgnoreCase(normalizedArchitecture))
+                .findFirst();
+        if (family.isEmpty() && !identity.isBlank()) {
+            String normalizedIdentity = identity.toLowerCase(java.util.Locale.ROOT)
+                    .replaceAll("[^a-z0-9]", "");
+            family = Arrays.stream(ModelFamily.values())
+                    .filter(candidate -> normalizedIdentity.contains(
+                            candidate.getFamilyId().toLowerCase(java.util.Locale.ROOT)
+                                    .replaceAll("[^a-z0-9]", "")))
+                    .findFirst();
+        }
+        return family
+                .flatMap(candidate -> ModelSamplingDefaults.forModel(candidate, identity, mode))
+                .orElseGet(() -> SamplingConfig.sample(0.7d, 0, 1.0d));
     }
 
     static Set<Integer> additionalStopTokenIdsOpt(Map<String, Object> opts) {
@@ -1155,6 +1403,11 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         return booleanOpt(opts, "prefillLastPositionLogitsEnabled", true);
     }
 
+    static boolean thinkingEnabled(ChatTemplate.Request request) {
+        return request != null
+                && booleanOpt(request.getTemplateArguments(), "enable_thinking", false);
+    }
+
     private static boolean booleanOpt(Map<String, Object> opts, String key, boolean defaultValue) {
         Object value = opts.get(key);
         if (value instanceof Boolean booleanValue) return booleanValue;
@@ -1171,6 +1424,34 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             backend.close();
         } catch (Exception e) {
             logger.warn("Failed to close {}: {}", description, e.getMessage());
+        }
+    }
+
+    interface ModelDeviceContext {
+        int selectDeviceForModel();
+
+        int currentDevice();
+
+        void switchTo(int deviceId, String reason);
+    }
+
+    private static final class Nd4jModelDeviceContext implements ModelDeviceContext {
+        @Override
+        public int selectDeviceForModel() {
+            // On CUDA, first access dynamically selects the available device with the most
+            // free memory and performs the authoritative native context switch.
+            return Nd4j.getAffinityManager().getDeviceForCurrentThread();
+        }
+
+        @Override
+        public int currentDevice() {
+            return DeviceMemoryManager.getInstance().getCurrentDeviceId();
+        }
+
+        @Override
+        public void switchTo(int deviceId, String reason) {
+            DeviceMemoryManager.getInstance().switchDevice(
+                    deviceId, SameDiffLanguageModelImpl.class.getName(), reason);
         }
     }
 
@@ -1207,6 +1488,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         private final int maxNewTokens;
         private final boolean continuationEnabled;
         private final int continuationChunkTokens;
+        private final SamplingConfig thinkingSampling;
         private boolean closed;
 
         private GenerationPipelineBackend(
@@ -1215,7 +1497,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 String chatTemplate,
                 int maxNewTokens,
                 boolean continuationEnabled,
-                int continuationChunkTokens) {
+                int continuationChunkTokens,
+                SamplingConfig thinkingSampling) {
             this.pipeline = pipeline;
             this.tokenizer = tokenizer;
             this.chatTemplate = chatTemplate;
@@ -1223,6 +1506,8 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
             this.continuationEnabled = continuationEnabled;
             this.continuationChunkTokens =
                     validateContinuationChunkTokens(continuationChunkTokens);
+            this.thinkingSampling = Objects.requireNonNull(
+                    thinkingSampling, "thinkingSampling");
         }
 
         @Override
@@ -1283,8 +1568,10 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
                 throw new IllegalArgumentException(
                         "requestedMaxNewTokens must be positive: " + requestedMaxNewTokens);
             }
+            SamplingConfig requestSampling = thinkingEnabled(request)
+                    ? thinkingSampling : pipeline.getSamplingConfig();
             return pipeline.generateChat(
-                    request, requestedMaxNewTokens, pipeline.getSamplingConfig());
+                    request, requestedMaxNewTokens, requestSampling);
         }
 
         private String generateWithContinuation(

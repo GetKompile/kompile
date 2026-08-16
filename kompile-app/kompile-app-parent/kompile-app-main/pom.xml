@@ -697,7 +697,7 @@
         <dependency>
             <groupId>net.java.dev.jna</groupId>
             <artifactId>jna</artifactId>
-            <version>5.16.0</version>
+            <version>${jna.version}</version>
         </dependency>
 
     </dependencies>
@@ -1427,6 +1427,8 @@
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <!-- Keep relocatable image-heap metadata below the existing 1 MiB aligned-chunk ceiling. -->
+                                <buildArg>-H:LargeArrayThreshold=1048576</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>

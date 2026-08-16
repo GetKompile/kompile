@@ -1500,6 +1500,21 @@ public class ProjectCrawlCommand implements Callable<Integer> {
     }
 
     /**
+     * Executes the model-backed processor selected for one resolved document pipeline.
+     *
+     * <p>The default implementation is {@link LocalModelPipelineRunner#extract(Path, Path,
+     * LocalCrawlCapabilities.ResolvedPipeline, String)}. Embedders may supply the same boundary
+     * when exercising the complete crawl lifecycle in one JVM; normal CLI and MCP execution keeps
+     * the request-scoped subprocess implementation.</p>
+     */
+    @FunctionalInterface
+    public interface ModelPipelineExecutor {
+        String extract(Path projectRoot, Path file,
+                       LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                       String loadedText) throws Exception;
+    }
+
+    /**
      * Execute the project-local crawl engine without CLI output or remote registration.
      *
      * <p>This is the local backend behind the crawl MCP tools. Keeping it separate from
@@ -1517,6 +1532,25 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                         Path projectRoot,
                                                         boolean dryRun,
                                                         JsonNode request) throws IOException {
+        return executeLocalCrawl(
+                profile, projectRoot, dryRun, request, LocalModelPipelineRunner::extract);
+    }
+
+    /**
+     * Execute a local crawl with an explicit model-pipeline boundary.
+     *
+     * <p>This overload exists for JVM embedding and integration harnesses. Production callers use
+     * the four-argument overload and therefore retain the standalone subprocess contract.</p>
+     */
+    public static LocalCrawlExecution executeLocalCrawl(
+            KompileProjectCrawlProfile profile,
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            ModelPipelineExecutor modelPipelineExecutor) throws IOException {
+        if (modelPipelineExecutor == null) {
+            throw new IllegalArgumentException("modelPipelineExecutor is required");
+        }
         Path normalizedRoot = projectRoot.toAbsolutePath().normalize();
         String crawlId = localArtifactId(profile);
         Path outputDir = normalizedRoot.resolve("data/crawls").resolve(crawlId).normalize();
@@ -1545,7 +1579,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             // A plain code directory is a valid implicit local project.
         }
         LocalCrawlResult result = collectLocalCrawl(
-                profile, normalizedRoot, outputDir, markdownDir, projectName, request);
+                profile, normalizedRoot, outputDir, markdownDir, projectName, request,
+                modelPipelineExecutor);
         writeLocalCrawlArtifacts(profile, normalizedRoot, outputDir, markdownDir, result);
         try {
             store.syncMarkdownCatalog(normalizedRoot);
@@ -1601,7 +1636,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                       Path projectRoot,
                                                       Path outputDir,
                                                       Path markdownDir) throws IOException {
-        return collectLocalCrawl(profile, projectRoot, outputDir, markdownDir, null, null);
+        return collectLocalCrawl(profile, projectRoot, outputDir, markdownDir, null, null,
+                LocalModelPipelineRunner::extract);
     }
 
     private static LocalCrawlResult collectLocalCrawl(KompileProjectCrawlProfile profile,
@@ -1609,7 +1645,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                       Path outputDir,
                                                       Path markdownDir,
                                                       String projectName,
-                                                      JsonNode request) throws IOException {
+                                                      JsonNode request,
+                                                      ModelPipelineExecutor modelPipelineExecutor)
+            throws IOException {
         List<LocalCrawlDocument> documents = new ArrayList<>();
         LocalCrawlStatistics statistics = new LocalCrawlStatistics();
         int maxDocuments = profile.getMaxDocuments();
@@ -1630,7 +1668,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     LocalCrawlCapabilities.ResolvedPipeline pipeline =
                             LocalCrawlCapabilities.resolve(request, profile, sourcePath, file);
                     LocalMarkdownArtifact markdown = writeLocalCrawlMarkdown(projectRoot, markdownDir,
-                            document, file, profile, projectName, pipeline);
+                            document, file, profile, projectName, pipeline, modelPipelineExecutor);
                     document = document.withMarkdown(markdown);
                     if (markdown.markdownPath() != null) {
                         Path markdownPath = projectRoot.resolve(markdown.markdownPath()).normalize();
@@ -1749,14 +1787,17 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                                                  LocalCrawlDocument document, Path file) throws IOException {
         LocalCrawlCapabilities.ResolvedPipeline pipeline = LocalCrawlCapabilities.resolve(
                 null, null, file, file);
-        return writeLocalCrawlMarkdown(projectRoot, markdownDir, document, file, null, null, pipeline);
+        return writeLocalCrawlMarkdown(projectRoot, markdownDir, document, file, null, null, pipeline,
+                LocalModelPipelineRunner::extract);
     }
 
     private static LocalMarkdownArtifact writeLocalCrawlMarkdown(Path projectRoot, Path markdownDir,
                                                                  LocalCrawlDocument document, Path file,
                                                                  KompileProjectCrawlProfile profile,
                                                                  String projectName,
-                                                                 LocalCrawlCapabilities.ResolvedPipeline pipeline) throws IOException {
+                                                                 LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                                                 ModelPipelineExecutor modelPipelineExecutor)
+            throws IOException {
         String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
         if (!LocalCrawlCapabilities.loaderSupports(pipeline.loaderName(), file)) {
             return LocalMarkdownArtifact.failed("Loader '" + pipeline.loaderName()
@@ -1771,7 +1812,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     StandardOpenOption.TRUNCATE_EXISTING);
                  NormalizedTextWriter bodyWriter = new NormalizedTextWriter(fileWriter)) {
                 if (LocalCrawlCapabilities.usesProcessingSubprocess(pipeline)) {
-                    String extracted = LocalModelPipelineRunner.extract(projectRoot, file, pipeline, "");
+                    String extracted = modelPipelineExecutor.extract(projectRoot, file, pipeline, "");
                     bodyWriter.write(extracted);
                     title = file.getFileName().toString();
                 } else {

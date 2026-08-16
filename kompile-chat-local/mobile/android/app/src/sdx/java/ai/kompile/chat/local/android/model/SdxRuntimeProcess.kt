@@ -57,6 +57,7 @@ private const val KEY_FAILURE_MESSAGE = "failure_message"
 private const val KEY_FAILURE_STACK = "failure_stack"
 private const val KEY_MODEL_PATH = "model_path"
 private const val KEY_DIAGNOSTIC_MODEL_PATH = "diagnostic_model_path"
+private const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
 private const val KEY_ROUTE_NAME = "route_name"
 private const val KEY_MODEL_ID_PREFIX = "model_id_prefix"
 private const val KEY_SESSION_ID = "session_id"
@@ -104,7 +105,8 @@ internal object SdxPlatformChatSession {
         modelPath: String,
         diagnosticModelPath: String = modelPath,
         routeName: String,
-        modelIdPrefix: String
+        modelIdPrefix: String,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD
     ): PlatformLocalChatSession {
         val applicationContext = context.applicationContext
         check(Application.getProcessName() != sdxRuntimeProcessName(applicationContext.packageName)) {
@@ -127,6 +129,7 @@ internal object SdxPlatformChatSession {
             val request = Bundle().apply {
                 putString(KEY_MODEL_PATH, modelPath)
                 putString(KEY_DIAGNOSTIC_MODEL_PATH, diagnosticModelPath)
+                putString(KEY_DIAGNOSTIC_MODE, diagnosticMode.name)
                 putString(KEY_ROUTE_NAME, routeName)
                 putString(KEY_MODEL_ID_PREFIX, modelIdPrefix)
                 putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
@@ -865,7 +868,11 @@ class SdxRuntimeService : Service() {
         trace.record(
             "runtime_open_request",
             attemptId,
-            mapOf("pid" to Process.myPid(), "active_session" to (activeSession != null))
+            mapOf(
+                "pid" to Process.myPid(),
+                "active_session" to (activeSession != null),
+                "diagnostic_mode" to extras.requireString(KEY_DIAGNOSTIC_MODE)
+            )
         )
         check(activeSession == null) { "The SDX runtime process already owns a model session." }
         val operation = try {
@@ -891,7 +898,8 @@ class SdxRuntimeService : Service() {
                 diagnosticModelPath = extras.requireString(KEY_DIAGNOSTIC_MODEL_PATH),
                 routeName = extras.requireString(KEY_ROUTE_NAME),
                 modelIdPrefix = extras.requireString(KEY_MODEL_ID_PREFIX),
-                loadTransaction = operation
+                loadTransaction = operation,
+                diagnosticMode = ModelDiagnosticMode.valueOf(extras.requireString(KEY_DIAGNOSTIC_MODE))
             )
             val id = UUID.randomUUID().toString()
             activeSession = created
@@ -902,7 +910,8 @@ class SdxRuntimeService : Service() {
                 mapOf(
                     "pid" to Process.myPid(),
                     "checkpoint" to operation.snapshot().checkpoint.name,
-                    "route" to created.routeName
+                    "route" to created.routeName,
+                    "diagnostic_mode" to extras.requireString(KEY_DIAGNOSTIC_MODE)
                 )
             )
             Bundle().apply {

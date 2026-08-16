@@ -4,6 +4,7 @@ import android.content.Context
 import android.system.Os
 import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
 import org.json.JSONObject
@@ -22,7 +23,10 @@ private const val SDX_LLM_JNI_LIBRARY_FILE_NAME = "libjnisdx_llm.so"
 /** One Android loader for both GGUF ingestion and canonical SDZ execution workers. */
 internal object SdxAndroidLlmLibrary {
 
-    fun configure(context: Context): File {
+    fun configure(
+        context: Context,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+    ): File {
         val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
         val library = File(nativeDirectory, SDX_LLM_LIBRARY_FILE_NAME)
         val bridge = File(nativeDirectory, SDX_LLM_JNI_LIBRARY_FILE_NAME)
@@ -35,6 +39,18 @@ internal object SdxAndroidLlmLibrary {
 
         // Graal snapshots this process-local environment when it creates the isolate.
         Os.setenv("SDX_NATIVE_LIB_DIR", nativeDirectory.absolutePath, true)
+        diagnosticMode.dspCategories?.let {
+            Os.setenv("ND4J_DSP_DIAGNOSTICS", it, true)
+        } ?: Os.unsetenv("ND4J_DSP_DIAGNOSTICS")
+        diagnosticMode.dspLevel?.let {
+            Os.setenv("ND4J_DSP_DIAGNOSTICS_LEVEL", it, true)
+        } ?: Os.unsetenv("ND4J_DSP_DIAGNOSTICS_LEVEL")
+        if (diagnosticMode == ModelDiagnosticMode.DSP_DIAGNOSTICS) {
+            val diagnosticFile = DspDiagnosticsTraceLog(context).prepareCapture()
+            Os.setenv("ND4J_DSP_DIAGNOSTICS_FILE", diagnosticFile.absolutePath, true)
+        } else {
+            Os.unsetenv("ND4J_DSP_DIAGNOSTICS_FILE")
+        }
         check(library.isFile) { "SDX Android runtime is missing: ${library.absolutePath}" }
         return library
     }
@@ -66,7 +82,11 @@ internal data class PreparedModelInfo(
     val targetProfile: String,
     val targetSoc: String,
     val contextLength: Int,
-    val maxPrefillLength: Int
+    val maxPrefillLength: Int,
+    val conversionProfileSha256: String,
+    val diagnosticMode: String,
+    val optimizedSourcePath: String,
+    val optimizedSourceBytes: Long,
 )
 
 internal fun readCompleteSdxLastError(readInto: (ByteArray) -> Int): String {
@@ -114,6 +134,7 @@ internal object SdxGgufModelImporter {
         modelPath: String,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        options: ModelPreparationOptions = ModelPreparationOptions(),
         onPreparationStage: (PreparationStage) -> Unit = {}
     ): PreparedModelInfo {
         val model = File(modelPath).canonicalFile
@@ -123,6 +144,7 @@ internal object SdxGgufModelImporter {
             model,
             verifiedSourceSha256,
             verifiedSourceBytes,
+            options,
             onPreparationStage
         )
         onPreparationStage(PreparationStage.TARGET_CACHE_READY)
@@ -135,6 +157,7 @@ internal object SdxGgufModelImporter {
             modelPath: String,
             verifiedSourceSha256: String?,
             verifiedSourceBytes: Long?,
+            options: ModelPreparationOptions,
             operation: NativeOperationTransaction,
             onPreparationStage: (PreparationStage) -> Unit
         ): PreparedModelInfo {
@@ -146,7 +169,7 @@ internal object SdxGgufModelImporter {
             }
             val model = File(modelPath).canonicalFile
             validateModelFile(model)
-            val library = SdxAndroidLlmLibrary.configure(context)
+            val library = SdxAndroidLlmLibrary.configure(context, options.diagnosticMode)
 
             // This is the same cache root used by MobileModelArtifactResolver. The generated
             // SDZ is moved into its immutable source store; target compilation references that
@@ -161,6 +184,7 @@ internal object SdxGgufModelImporter {
                 modelCache,
                 verifiedSourceSha256,
                 verifiedSourceBytes,
+                options,
                 operation,
                 onPreparationStage
             )
@@ -172,6 +196,7 @@ internal object SdxGgufModelImporter {
             modelCache: File,
             verifiedSourceSha256: String?,
             verifiedSourceBytes: Long?,
+            options: ModelPreparationOptions,
             operation: NativeOperationTransaction,
             onPreparationStage: (PreparationStage) -> Unit
         ): PreparedModelInfo {
@@ -201,7 +226,8 @@ internal object SdxGgufModelImporter {
                     modelCache.absolutePath,
                     SdxRawGgufContract.preparationOptionsJson(
                         verifiedSourceSha256,
-                        verifiedSourceBytes
+                        verifiedSourceBytes,
+                        options,
                     ),
                     preparationRef
                 )
@@ -225,7 +251,8 @@ internal object SdxGgufModelImporter {
                     ),
                     modelCache,
                     verifiedSourceSha256,
-                    verifiedSourceBytes
+                    verifiedSourceBytes,
+                    options,
                 )
             } catch (failure: Throwable) {
                 primaryFailure = failure
@@ -260,7 +287,8 @@ internal object SdxGgufModelImporter {
             json: JSONObject,
             modelCache: File,
             expectedSourceSha256: String?,
-            expectedSourceBytes: Long?
+            expectedSourceBytes: Long?,
+            options: ModelPreparationOptions,
         ): PreparedModelInfo {
             val schema = json.optString(SdxRawGgufContract.PREPARED_SCHEMA_FIELD, "")
             val target = json.optString(SdxRawGgufContract.TARGET_PROFILE_FIELD, "")
@@ -290,6 +318,15 @@ internal object SdxGgufModelImporter {
 
             val sourceSha256 = json.getString(SdxRawGgufContract.SOURCE_SHA256_FIELD)
             val sourceBytes = json.getLong(SdxRawGgufContract.SOURCE_BYTES_FIELD)
+            val conversionProfileSha256 = json.getString(
+                SdxRawGgufContract.CONVERSION_PROFILE_SHA256_FIELD
+            )
+            if (conversionProfileSha256 != options.profileSha256()) {
+                throw ChatException(
+                    "SDX prepared conversion profile does not match the selected options: " +
+                        "expected=${options.profileSha256()} actual=$conversionProfileSha256"
+                )
+            }
             if (!sourceSha256.matches(Regex("[0-9a-f]{64}")) || sourceBytes <= 0L) {
                 throw ChatException(
                     "SDX prepared raw-source identity is invalid: " +
@@ -359,6 +396,18 @@ internal object SdxGgufModelImporter {
                         "$declaredCanonicalBytes actual=${canonicalSdz.length()}"
                 )
             }
+            val optimizedSource = File(
+                json.getString(SdxRawGgufContract.OPTIMIZED_SOURCE_PATH_FIELD)
+            ).canonicalFile
+            val optimizedSourceBytes = json.getLong(
+                SdxRawGgufContract.OPTIMIZED_SOURCE_BYTES_FIELD
+            )
+            if (!optimizedSource.isFile || optimizedSource.length() != optimizedSourceBytes) {
+                throw ChatException(
+                    "SDX optimized source evidence is invalid: path=${optimizedSource.absolutePath} " +
+                        "declared=$optimizedSourceBytes actual=${optimizedSource.length()}"
+                )
+            }
             return PreparedModelInfo(
                 cacheHit = json.getBoolean(SdxRawGgufContract.CACHE_HIT_FIELD),
                 sourceSha256 = sourceSha256,
@@ -373,7 +422,11 @@ internal object SdxGgufModelImporter {
                 targetProfile = target,
                 targetSoc = json.getString(SdxRawGgufContract.TARGET_SOC_FIELD),
                 contextLength = json.getInt(SdxRawGgufContract.CONTEXT_LENGTH_FIELD),
-                maxPrefillLength = json.getInt(SdxRawGgufContract.MAX_PREFILL_LENGTH_FIELD)
+                maxPrefillLength = json.getInt(SdxRawGgufContract.MAX_PREFILL_LENGTH_FIELD),
+                conversionProfileSha256 = conversionProfileSha256,
+                diagnosticMode = json.getString(SdxRawGgufContract.DIAGNOSTIC_MODE_FIELD),
+                optimizedSourcePath = optimizedSource.absolutePath,
+                optimizedSourceBytes = optimizedSourceBytes,
             )
         }
 

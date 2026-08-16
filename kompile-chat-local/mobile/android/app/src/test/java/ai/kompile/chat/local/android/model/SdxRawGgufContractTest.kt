@@ -1,14 +1,15 @@
 package ai.kompile.chat.local.android.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class SdxRawGgufContractTest {
 
     @Test
-    fun preparedProofSchemaSeparatesRawAndCanonicalIdentity() {
-        assertEquals("sdx-prepared-text-model-v3", SdxRawGgufContract.PREPARED_SCHEMA)
+    fun preparedProofSchemaSeparatesRawCanonicalAndOptimizationIdentity() {
+        assertEquals("sdx-prepared-text-model-v5", SdxRawGgufContract.PREPARED_SCHEMA)
         assertEquals("sourceSha256", SdxRawGgufContract.SOURCE_SHA256_FIELD)
         assertEquals("sourceBytes", SdxRawGgufContract.SOURCE_BYTES_FIELD)
         assertEquals(
@@ -20,32 +21,81 @@ class SdxRawGgufContractTest {
             SdxRawGgufContract.CANONICAL_SDZ_LOGICAL_BYTES_FIELD
         )
         assertEquals("canonicalSdzBytes", SdxRawGgufContract.CANONICAL_SDZ_BYTES_FIELD)
+        assertEquals("conversionProfileSha256", SdxRawGgufContract.CONVERSION_PROFILE_SHA256_FIELD)
+        assertEquals("diagnosticMode", SdxRawGgufContract.DIAGNOSTIC_MODE_FIELD)
+        assertEquals("optimizedSourcePath", SdxRawGgufContract.OPTIMIZED_SOURCE_PATH_FIELD)
+        assertEquals("optimizedSourceBytes", SdxRawGgufContract.OPTIMIZED_SOURCE_BYTES_FIELD)
     }
 
     @Test
-    fun verifiedPreparationOptionsCarryExactDownloaderAttestation() {
+    fun verifiedPreparationOptionsCarryProfileAndExactDownloaderAttestation() {
         val sha256 = "a".repeat(64)
+        val options = ModelPreparationOptions(
+            weightOptimization = WeightOptimization.Q8_0,
+            kvCacheOptimization = KvCacheOptimization.INT4,
+            tensorBatchSize = 12,
+            useMemoryMapping = false,
+            diagnosticMode = ModelDiagnosticMode.DSP_DIAGNOSTICS,
+        )
 
         assertEquals(
-            "{\"verifiedSourceSha256\":\"$sha256\",\"verifiedSourceBytes\":987654321}",
-            SdxRawGgufContract.preparationOptionsJson(sha256.uppercase(), 987_654_321L)
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v3\"," +
+                "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
+                "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
+                "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
+                "\"diagnosticMode\":\"dsp\",\"verifiedSourceSha256\":\"$sha256\"," +
+                "\"verifiedSourceBytes\":987654321}",
+            SdxRawGgufContract.preparationOptionsJson(
+                sha256.uppercase(),
+                987_654_321L,
+                options,
+            )
         )
-        assertEquals("{}", SdxRawGgufContract.preparationOptionsJson(null, null))
+        assertEquals(
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v3\"," +
+                "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
+                "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
+                "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
+                "\"diagnosticMode\":\"dsp\"}",
+            SdxRawGgufContract.preparationOptionsJson(null, null, options)
+        )
+    }
+
+    @Test
+    fun conversionProfileHashChangesWithExecutionOptionsButNotLogging() {
+        val baseline = ModelPreparationOptions()
+        assertEquals(
+            "0da744280170abaa2a0462ee698eb61099d6a9a210049e6fcbe22644d3289934",
+            baseline.profileSha256(),
+        )
+        assertEquals(
+            baseline.profileSha256(),
+            baseline.copy(diagnosticMode = ModelDiagnosticMode.DSP_DIAGNOSTICS).profileSha256(),
+        )
+        assertNotEquals(
+            baseline.profileSha256(),
+            baseline.copy(weightOptimization = WeightOptimization.Q8_0).profileSha256(),
+        )
+        assertNotEquals(
+            baseline.profileSha256(),
+            baseline.copy(kvCacheOptimization = KvCacheOptimization.OFF).profileSha256(),
+        )
     }
 
     @Test
     fun preparationOptionsRejectPartialOrInvalidAttestation() {
+        val options = ModelPreparationOptions()
         assertThrows(IllegalArgumentException::class.java) {
-            SdxRawGgufContract.preparationOptionsJson("bad-sha", 1L)
+            SdxRawGgufContract.preparationOptionsJson("bad-sha", 1L, options)
         }
         assertThrows(IllegalArgumentException::class.java) {
-            SdxRawGgufContract.preparationOptionsJson("a".repeat(64), null)
+            SdxRawGgufContract.preparationOptionsJson("a".repeat(64), null, options)
         }
         assertThrows(IllegalArgumentException::class.java) {
-            SdxRawGgufContract.preparationOptionsJson(null, 1L)
+            SdxRawGgufContract.preparationOptionsJson(null, 1L, options)
         }
         assertThrows(IllegalArgumentException::class.java) {
-            SdxRawGgufContract.preparationOptionsJson("a".repeat(64), 0L)
+            SdxRawGgufContract.preparationOptionsJson("a".repeat(64), 0L, options)
         }
     }
 }

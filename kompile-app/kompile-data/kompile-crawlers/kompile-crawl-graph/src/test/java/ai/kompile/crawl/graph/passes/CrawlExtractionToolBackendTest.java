@@ -13,6 +13,7 @@ import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.graphrag.GraphConstructor.ConceptHint;
 import ai.kompile.core.graphrag.GraphConstructor.ExtractionTaskContext;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
@@ -863,9 +864,11 @@ class CrawlExtractionToolBackendTest {
                 backend.toolDefinitions(DecomposedPromptTier.COMPACT);
         assertEquals(List.of(CrawlExtractionToolBackend.SUBMIT_GRAPH_DELTA),
                 compactTools.stream().map(ExtractionToolBackend.ToolDefinition::name).toList());
-        assertEquals("Submit typed entities and indexed relations; the engine creates ids.",
+        assertEquals(
+                "Submit named Text entities and explicit directed relations separately; entity names are exact "
+                        + "Text spans, relation types are predicate labels, and the engine creates ids.",
                 compactTools.get(0).description());
-        assertTrue(compactTools.get(0).description().length() < 80);
+        assertTrue(compactTools.get(0).description().length() < 200);
         JsonNode compactParameters = MAPPER.valueToTree(compactTools.get(0).parameters());
         List<String> compactFields = new ArrayList<>();
         compactParameters.path("properties").fieldNames().forEachRemaining(compactFields::add);
@@ -1035,15 +1038,159 @@ class CrawlExtractionToolBackendTest {
         assertEquals(1, relations.path("minItems").asInt());
         assertFalse(relations.has("prefixItems"));
         assertFalse(entities.path("items").path("properties").path("name").has("const"));
+        assertEquals(1, entities.path("items").path("properties")
+                .path("name").path("minLength").asInt());
         assertFalse(entities.path("items").path("properties").path("type").has("const"));
         assertFalse(relations.path("items").path("properties").path("source").has("const"));
         assertFalse(relations.path("items").path("properties").path("target").has("const"));
+        assertEquals(1, relations.path("items").path("properties")
+                .path("source").path("maximum").asInt());
+        assertEquals(1, relations.path("items").path("properties")
+                .path("target").path("maximum").asInt());
+        assertTrue(relations.path("items").path("properties")
+                .path("target").path("description").asText().contains("0 through 1"));
         assertFalse(relations.path("items").path("properties").path("type").has("const"));
         assertEquals(15, entities.path("items").path("properties")
                 .path("name").path("maxLength").asInt());
         assertEquals(List.of("PERSON", "COMPANY"), MAPPER.convertValue(
                 entities.path("items").path("properties").path("type").path("enum"),
                 new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {}));
+    }
+
+    @Test
+    void typedEntityCandidatesBindNamesPositionallyWhileTypesRemainModelSelected() {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "FOUNDED", "A person founded a company", null)),
+                List.of("(PERSON)-[:FOUNDED]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = new CrawlExtractionToolBackend(
+                "chunk-1",
+                "document-1",
+                "qwen",
+                "graph-1",
+                null,
+                GraphExtractionValidationPolicy.defaults(),
+                schema,
+                corpus(),
+                null,
+                null,
+                UnifiedGraph::new,
+                new GraphReasoningQueryService(null),
+                ExtractionTarget.FULL_GRAPH,
+                new CrawlOntology(schema),
+                false);
+        backend.configureCompactProposalCardinality(2, 1);
+        backend.configureCompactEntityCandidates(
+                List.of("Alex Rivera", "Acme Robotics"),
+                List.of("PERSON", "COMPANY"));
+        backend.beginTypedEntityPhase();
+
+        ExtractionToolBackend.ToolDefinition submit =
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).stream()
+                        .filter(tool -> CrawlExtractionToolBackend.SUBMIT_TYPED_ENTITIES
+                                .equals(tool.name()))
+                        .findFirst()
+                        .orElseThrow();
+        JsonNode entities = MAPPER.valueToTree(submit.parameters())
+                .path("properties").path("entities");
+        JsonNode prefixItems = entities.path("prefixItems");
+
+        assertEquals(2, prefixItems.size());
+        assertEquals(2, entities.path("minItems").asInt());
+        assertEquals(2, entities.path("maxItems").asInt());
+        assertTrue(entities.has("items"));
+        assertFalse(entities.path("items").asBoolean(true));
+        assertEquals("Alex Rivera", prefixItems.path(0).path("properties")
+                .path("name").path("const").asText());
+        assertEquals("Acme Robotics", prefixItems.path(1).path("properties")
+                .path("name").path("const").asText());
+        for (JsonNode row : prefixItems) {
+            JsonNode type = row.path("properties").path("type");
+            assertFalse(type.has("const"));
+            List<String> allowedTypes = MAPPER.convertValue(
+                    type.path("enum"),
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+            assertEquals(2, allowedTypes.size());
+            assertTrue(allowedTypes.containsAll(List.of("PERSON", "COMPANY")));
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> backend.configureCompactProposalCardinality(1, 1));
+    }
+
+    @Test
+    void relationCandidatesBindEndpointPairsPositionallyWhileTypesRemainModelSelected()
+            throws Exception {
+        GraphSchema schema = new GraphSchema(
+                List.of(
+                        new NodeType("PERSON", "A person", null),
+                        new NodeType("COMPANY", "A company", null)),
+                List.of(new RelationshipType(
+                        "WORKS_AT", "A person works at a company", null)),
+                List.of("(PERSON)-[:WORKS_AT]->(COMPANY)"));
+        CrawlExtractionToolBackend backend = backend(corpus(), null, new UnifiedGraph(), schema);
+        backend.configureCompactProposalCardinality(4, 2);
+        backend.configureCompactEntityCandidates(
+                List.of("Alex Rivera", "Morgan Chen", "Acme Robotics", "Nova Labs"),
+                List.of("PERSON", "PERSON", "COMPANY", "COMPANY"));
+        backend.configureCompactRelationCandidates(
+                List.of(0, 1), List.of(2, 3), List.of("WORKS_AT", "WORKS_AT"));
+        backend.beginRelationPhase(List.of(
+                new ExtractedEntity("e0", "Alex Rivera", "PERSON", List.of(), null, 1.0, Map.of()),
+                new ExtractedEntity("e1", "Morgan Chen", "PERSON", List.of(), null, 1.0, Map.of()),
+                new ExtractedEntity("e2", "Acme Robotics", "COMPANY", List.of(), null, 1.0, Map.of()),
+                new ExtractedEntity("e3", "Nova Labs", "COMPANY", List.of(), null, 1.0, Map.of())));
+
+        ExtractionToolBackend.ToolDefinition submit =
+                backend.toolDefinitions(DecomposedPromptTier.COMPACT).stream()
+                        .filter(tool -> CrawlExtractionToolBackend.SUBMIT_RELATIONS
+                                .equals(tool.name()))
+                        .findFirst()
+                        .orElseThrow();
+        JsonNode context = MAPPER.readTree(
+                backend.toolContextJson(DecomposedPromptTier.COMPACT));
+        JsonNode candidates = context.path("sourceRelationCandidates");
+        assertEquals(2, candidates.size());
+        assertEquals(0, candidates.path(0).path("sourceIndex").asInt());
+        assertEquals("Alex Rivera", candidates.path(0).path("sourceName").asText());
+        assertEquals(2, candidates.path(0).path("targetIndex").asInt());
+        assertEquals("Acme Robotics", candidates.path(0).path("targetName").asText());
+        assertEquals("WORKS_AT", candidates.path(0).path("type").asText());
+        assertEquals(1, candidates.path(1).path("sourceIndex").asInt());
+        assertEquals("Morgan Chen", candidates.path(1).path("sourceName").asText());
+        assertEquals(3, candidates.path(1).path("targetIndex").asInt());
+        assertEquals("Nova Labs", candidates.path(1).path("targetName").asText());
+
+        JsonNode relations = MAPPER.valueToTree(submit.parameters())
+                .path("properties").path("relations");
+        JsonNode prefixItems = relations.path("prefixItems");
+
+        assertEquals(2, prefixItems.size());
+        assertEquals(2, relations.path("minItems").asInt());
+        assertEquals(2, relations.path("maxItems").asInt());
+        assertTrue(relations.has("items"));
+        assertFalse(relations.path("items").asBoolean(true));
+        assertEquals(0, prefixItems.path(0).path("properties")
+                .path("source").path("const").asInt());
+        assertEquals(2, prefixItems.path(0).path("properties")
+                .path("target").path("const").asInt());
+        assertEquals(1, prefixItems.path(1).path("properties")
+                .path("source").path("const").asInt());
+        assertEquals(3, prefixItems.path(1).path("properties")
+                .path("target").path("const").asInt());
+        for (JsonNode row : prefixItems) {
+            JsonNode type = row.path("properties").path("type");
+            assertFalse(type.has("const"));
+            assertEquals(List.of("WORKS_AT"), MAPPER.convertValue(
+                    type.path("enum"),
+                    new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {}));
+        }
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> backend.configureCompactProposalCardinality(4, 1));
     }
 
     @Test

@@ -34,6 +34,7 @@ import ai.kompile.chat.local.android.graph.KgraphArtifactValidator
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.model.AcceleratedChatModelAndroid
 import ai.kompile.chat.local.android.model.MobileModelArtifactResolver
+import ai.kompile.chat.local.android.model.ModelPreparationOptions
 import ai.kompile.chat.local.android.model.PreparedModelInfo
 import ai.kompile.chat.local.android.model.PreparationStage
 import ai.kompile.chat.local.android.model.SdxGgufModelImporter
@@ -303,6 +304,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val huggingFaceImportState: StateFlow<HuggingFaceImportUiState> =
         _huggingFaceImportState.asStateFlow()
 
+    private val _modelPreparationOptions = MutableStateFlow(prefs.modelPreparationOptions)
+    val modelPreparationOptions: StateFlow<ModelPreparationOptions> =
+        _modelPreparationOptions.asStateFlow()
+
+    private val _localModelOptimizationState =
+        MutableStateFlow<HuggingFaceImportUiState>(HuggingFaceImportUiState.Idle)
+    val localModelOptimizationState: StateFlow<HuggingFaceImportUiState> =
+        _localModelOptimizationState.asStateFlow()
+
+    private val _localModelSources = MutableStateFlow<List<LocalModelSource>>(emptyList())
+    val localModelSources: StateFlow<List<LocalModelSource>> = _localModelSources.asStateFlow()
+
     private val _huggingFaceReference = MutableStateFlow(
         huggingFaceCheckpoint?.rawReference ?: prefs.huggingFaceReference
     )
@@ -342,6 +355,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var huggingFaceDownloadCancellation: ResumableModelDownloader.CancellationHandle? = null
     private var huggingFacePreparedImport: HuggingFacePreparedImport? = null
     private var lastHuggingFaceProgressDiagnosticKey: String? = null
+    private var lastLocalOptimizationPath: String? = null
 
     // --- Engine state (rebuilt on settings change) ---
 
@@ -397,6 +411,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             Log.e(TAG, "Local model startup failed", failure)
         }
+        refreshLocalModelSources()
         viewModelScope.launch(startupFailureHandler) {
             bootstrapAssets()
             if (recoveredRuntimeTargetsActiveModel()) {
@@ -414,6 +429,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearImportDiagnostics() {
         importDiagnosticStore.clear()
         _importDiagnostics.value = emptyList()
+    }
+
+    fun updateModelPreparationOptions(options: ModelPreparationOptions) {
+        check(!_importOperation.value.isBusy) {
+            "Model preparation options cannot change while an import or optimization is running."
+        }
+        prefs.modelPreparationOptions = options
+        _modelPreparationOptions.value = options
+    }
+
+    fun refreshLocalModelSources() {
+        val roots = listOf(
+            File(context.filesDir, "models/hugging-face"),
+            File(context.filesDir, "models/local-sources"),
+        )
+        _localModelSources.value = roots
+            .flatMap { root -> root.listFiles()?.asList().orEmpty() }
+            .filter { file ->
+                Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS) &&
+                    file.extension.lowercase() in setOf("gguf", "ggml")
+            }
+            .distinctBy { it.absolutePath }
+            .sortedByDescending(File::lastModified)
+            .map { LocalModelSource(it.absolutePath, it.name, it.length()) }
     }
 
     private fun recordImportDiagnostic(
@@ -2027,6 +2066,299 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+
+    suspend fun optimizeLocalModel(uri: Uri): Result<String> = runExclusiveImport(
+        operation = ImportOperationKind.LOCAL_MODEL_OPTIMIZATION,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) }
+    ) {
+        withContext(Dispatchers.IO) {
+            val options = _modelPreparationOptions.value
+            val rawName = File(resolveFileName(uri) ?: "local-model.gguf").name
+            var progress = localOptimizationProgress(
+                HuggingFaceImportStep.PREFLIGHT,
+                "Checking the selected local model and ${options.weightOptimization.label} profile"
+            )
+            _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+            try {
+                require(rawName.substringAfterLast('.', "").lowercase() in setOf("gguf", "ggml")) {
+                    "Local optimization requires a .gguf or .ggml source model."
+                }
+                val sourceDirectory = File(context.filesDir, "models/local-sources").apply { mkdirs() }
+                require(sourceDirectory.isDirectory) {
+                    "Android could not create retained local model storage."
+                }
+                val retainedName = rawName.substringBeforeLast('.', rawName) +
+                    "-" + System.currentTimeMillis() + "." + rawName.substringAfterLast('.').lowercase()
+                progress = localOptimizationProgress(
+                    HuggingFaceImportStep.VERIFY,
+                    "Copying and verifying $rawName into app-private retained model storage"
+                )
+                _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+                val retained = copyForActivation(uri, sourceDirectory, retainedName)
+                refreshLocalModelSources()
+                optimizeLocalModelExclusively(retained, options)
+            } catch (failure: Throwable) {
+                failLocalModelOptimization(
+                    failure = failure,
+                    progress = progress,
+                    fields = mapOf(
+                        "source_name" to rawName,
+                        "profile_sha256" to options.profileSha256(),
+                        "weight_optimization" to options.weightOptimization.name,
+                        "diagnostic_mode" to options.diagnosticMode.name,
+                    ),
+                )
+            }
+        }
+    }
+
+    suspend fun optimizeLocalModel(sourcePath: String): Result<String> = runExclusiveImport(
+        operation = ImportOperationKind.LOCAL_MODEL_OPTIMIZATION,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) }
+    ) {
+        withContext(Dispatchers.IO) {
+            val source = File(sourcePath)
+            val options = _modelPreparationOptions.value
+            val progress = localOptimizationProgress(
+                HuggingFaceImportStep.PREFLIGHT,
+                "Checking ${source.name} and the ${options.weightOptimization.label} preparation profile"
+            )
+            try {
+                optimizeLocalModelExclusively(source, options)
+            } catch (failure: Throwable) {
+                failLocalModelOptimization(
+                    failure = failure,
+                    progress = progress,
+                    fields = modelPreparationTraceFields(options, source),
+                )
+            }
+        }
+    }
+
+    fun retryLocalModelOptimizationStep(step: HuggingFaceImportStep): Boolean {
+        val state = _localModelOptimizationState.value as? HuggingFaceImportUiState.Failed
+            ?: return false
+        val sourcePath = lastLocalOptimizationPath ?: return false
+        if (state.step != step || _importOperation.value.isBusy) return false
+        viewModelScope.launch { optimizeLocalModel(sourcePath) }
+        return true
+    }
+
+    private fun localOptimizationProgress(
+        step: HuggingFaceImportStep,
+        message: String,
+        completedBytes: Long = 0L,
+        totalBytes: Long? = null,
+    ): HuggingFaceImportProgress = HuggingFaceImportProgress(
+        step = step,
+        message = message,
+        attempt = 1,
+        maxAttempts = 1,
+        resumedBytes = 0L,
+        completedBytes = completedBytes,
+        totalBytes = totalBytes,
+        smoothedBytesPerSecond = null,
+        etaSeconds = null,
+        retryWillResumeOrReuse = true,
+        storagePreflight = null,
+    )
+
+    private fun modelPreparationTraceFields(
+        options: ModelPreparationOptions,
+        source: File,
+    ): Map<String, Any?> = mapOf(
+        "source_name" to source.name,
+        "source_bytes" to source.length(),
+        "profile_sha256" to options.profileSha256(),
+        "weight_optimization" to options.weightOptimization.name,
+        "conversion_mode" to options.weightOptimization.conversionMode,
+        "requantize_type" to options.weightOptimization.requantizeType,
+        "kv_cache_optimization" to options.kvCacheOptimization.name,
+        "tensor_batch_size" to options.tensorBatchSize,
+        "use_memory_mapping" to options.useMemoryMapping,
+        "diagnostic_mode" to options.diagnosticMode.name,
+    )
+
+    private fun failLocalModelOptimization(
+        failure: Throwable,
+        progress: HuggingFaceImportProgress,
+        fields: Map<String, Any?>,
+    ): Result<String> {
+        SmokeDecodeTraceLog(context).recordFailure(
+            "local_optimization_failed",
+            attemptId = null,
+            failure = failure,
+            fields = fields + mapOf("stage" to progress.step.name),
+        )
+        val diagnostic = try {
+            recordImportDiagnostic(
+                "local model optimization",
+                progress.step.label.lowercase(),
+                ImportDiagnosticSeverity.ERROR,
+                failure.message ?: "Local model optimization failed.",
+                "Any completed app-private source copy is retained. Copy the traces, adjust the optimization or diagnostics profile if needed, and retry.",
+                failure = failure,
+                technicalDetails = ImportDiagnosticPolicy.failureDetails(failure) +
+                    "\n" + fields.entries.joinToString(separator = "\n") { (key, value) -> "$key=$value" },
+            )
+        } catch (persistenceFailure: Throwable) {
+            failure.addSuppressed(persistenceFailure)
+            ImportDiagnosticPolicy.create(
+                timestampEpochMillis = System.currentTimeMillis(),
+                operation = "local model optimization",
+                phase = progress.step.label.lowercase(),
+                severity = ImportDiagnosticSeverity.ERROR,
+                summary = failure.message ?: "Local model optimization failed.",
+                remediation = "Any completed app-private source copy is retained; copy the full traces and retry.",
+                technicalDetails = ImportDiagnosticPolicy.failureDetails(failure),
+            )
+        }
+        _localModelOptimizationState.value = HuggingFaceImportUiState.Failed(
+            progress = progress.copy(message = diagnostic.summary),
+            diagnostic = diagnostic,
+            failure = failure,
+        )
+        return Result.failure(failure)
+    }
+
+    private suspend fun optimizeLocalModelExclusively(
+        sourceFile: File,
+        options: ModelPreparationOptions,
+    ): Result<String> {
+        val source = sourceFile.canonicalFile
+        val modelsRoot = File(context.filesDir, "models").canonicalFile
+        require(source.toPath().startsWith(modelsRoot.toPath())) {
+            "Local optimization only accepts models retained in this APK's private model directory."
+        }
+        require(Files.isRegularFile(source.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+            "The selected local model is not a regular file: ${source.name}"
+        }
+        require(source.extension.lowercase() in setOf("gguf", "ggml")) {
+            "Local optimization requires a .gguf or .ggml source model."
+        }
+        require(source.length() > 0L) { "The selected local model is empty." }
+
+        lastLocalOptimizationPath = source.absolutePath
+        val trace = SmokeDecodeTraceLog(context)
+        val fields = modelPreparationTraceFields(options, source)
+        var progress = localOptimizationProgress(
+            HuggingFaceImportStep.PREFLIGHT,
+            "Checking ${source.name} and the ${options.weightOptimization.label} preparation profile"
+        )
+        _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+        trace.record("local_optimization_started", fields = fields)
+        return try {
+            val availableAfterReserve =
+                (source.parentFile?.usableSpace ?: 0L) - DOWNLOAD_SPACE_RESERVE_BYTES
+            require(availableAfterReserve > 0L) {
+                "No writable app storage remains after the ${DOWNLOAD_SPACE_RESERVE_BYTES}-byte safety reserve."
+            }
+
+            progress = localOptimizationProgress(
+                HuggingFaceImportStep.VERIFY,
+                "Hashing ${source.name} before conversion",
+                totalBytes = source.length(),
+            )
+            _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+            val sourceSha256 = sha256(source)
+            progress = progress.copy(
+                message = "Verified ${source.name}; preparing ${options.weightOptimization.label}",
+                completedBytes = source.length(),
+            )
+            _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+            recordImportDiagnostic(
+                "local model optimization",
+                "verify",
+                ImportDiagnosticSeverity.SUCCESS,
+                "Verified ${source.name} (${source.length()} bytes) for profile ${options.profileSha256()}.",
+                "The original source is retained; conversion output and SDZ cache are content-addressed.",
+                technicalDetails = fields.entries.joinToString(separator = "\n") { (key, value) ->
+                    "$key=$value"
+                },
+            )
+
+            val previousSelection = prefs.snapshotActiveSelection()
+            val activation = engineMutex.withLock {
+                activateStandaloneModelLocked(
+                    modelPath = source.absolutePath,
+                    previousSelection = previousSelection,
+                    verifiedSourceSha256 = sourceSha256,
+                    verifiedSourceBytes = source.length(),
+                    preparationOptions = options,
+                ) { step ->
+                    progress = localOptimizationProgress(
+                        step,
+                        when (step) {
+                            HuggingFaceImportStep.CONVERT_SDZ ->
+                                "Converting ${source.name} with ${options.weightOptimization.label}"
+                            HuggingFaceImportStep.TARGET_CACHE ->
+                                "Preparing the ${BuildConfig.SDX_TARGET_PROFILE} accelerator cache"
+                            HuggingFaceImportStep.SDX_LOAD ->
+                                "Loading the optimized SameDiff SDZ model"
+                            HuggingFaceImportStep.SMOKE_DECODE ->
+                                "Running a bounded real-token decode"
+                            HuggingFaceImportStep.ACTIVATE ->
+                                "Publishing the verified optimized model for chat"
+                            else -> step.label
+                        },
+                    )
+                    _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
+                    trace.record(
+                        "local_optimization_stage",
+                        fields = fields + mapOf("stage" to step.name),
+                    )
+                    recordImportDiagnostic(
+                        "local model optimization",
+                        step.label.lowercase(),
+                        ImportDiagnosticSeverity.INFO,
+                        progress.message,
+                        "The original raw model remains retained and this stage can reuse complete content-addressed outputs.",
+                    )
+                }
+            }
+
+            val prepared = activation.preparedModel
+            val activeStorage = prepared?.modelPath ?: activation.modelPath
+            _localModelOptimizationState.value = HuggingFaceImportUiState.Active(
+                artifactName = prepared?.optimizedSourcePath
+                    ?.takeIf(String::isNotBlank)
+                    ?.let(::File)
+                    ?.name
+                    ?: source.name,
+                route = activation.route,
+                storageLocation = activeStorage,
+                message = "${options.weightOptimization.label} profile loaded, smoke-decoded, and activated; original retained at ${source.absolutePath}",
+            )
+            recordImportDiagnostic(
+                "local model optimization",
+                "active",
+                ImportDiagnosticSeverity.SUCCESS,
+                "${source.name} optimized with ${options.weightOptimization.label} and activated on ${activation.route}.",
+                "Return to Chat, or choose another profile to run a repeatable comparison from the retained source.",
+                technicalDetails = buildString {
+                    append(fields.entries.joinToString(separator = "\n") { (key, value) -> "$key=$value" })
+                    prepared?.let {
+                        append("\noptimized_source_path=").append(it.optimizedSourcePath)
+                        append("\noptimized_source_bytes=").append(it.optimizedSourceBytes)
+                        append("\ncanonical_sdz_path=").append(it.canonicalSdzPath)
+                        append("\nactive_model_path=").append(it.modelPath)
+                    }
+                },
+            )
+            trace.record(
+                "local_optimization_completed",
+                fields = fields + mapOf(
+                    "route" to activation.route,
+                    "active_model_bytes" to (File(activeStorage).takeIf(File::isFile)?.length() ?: 0L),
+                ),
+            )
+            refreshLocalModelSources()
+            Result.success(activeStorage)
+        } catch (failure: Throwable) {
+            failLocalModelOptimization(failure, progress, fields)
+        }
+    }
+
     /**
      * Download one resolved public Hugging Face model into app-owned storage, load it through
      * libsdx_llm, run a bounded decode, and publish it as the active chat model transactionally.
@@ -2044,6 +2376,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         blocked = { reason -> throw IllegalStateException(reason) }
     ) {
         withContext(Dispatchers.IO) {
+            val preparationOptions = _modelPreparationOptions.value
             if (preparedRetry == null) {
                 persistHuggingFaceImportCheckpoint(
                     candidate,
@@ -2216,6 +2549,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
                 persistCurrentHuggingFaceObservation()
+                val preparationFields = modelPreparationTraceFields(preparationOptions, modelFile)
+                SmokeDecodeTraceLog(context).record(
+                    "hugging_face_preparation_profile",
+                    fields = preparationFields,
+                )
+                recordImportDiagnostic(
+                    "hugging face model",
+                    "preparation profile",
+                    ImportDiagnosticSeverity.INFO,
+                    "Selected ${preparationOptions.weightOptimization.label}, ${preparationOptions.kvCacheOptimization.label}, " +
+                        "batch ${preparationOptions.tensorBatchSize}, diagnostics ${preparationOptions.diagnosticMode.label}.",
+                    "These immutable settings are included in the conversion cache key and runtime trace.",
+                    technicalDetails = preparationFields.entries.joinToString(separator = "\n") { (key, value) -> "$key=$value" },
+                )
                 // From this visible state onward native work is deliberately non-interruptible.
                 huggingFaceDownloadCancellation = null
                 currentCoroutineContext().ensureActive()
@@ -2226,7 +2573,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         previousSelection,
                         clearHuggingFaceImportOnPromotion = true,
                         verifiedSourceSha256 = downloaded.sha256,
-                        verifiedSourceBytes = downloaded.downloadedBytes
+                        verifiedSourceBytes = downloaded.downloadedBytes,
+                        preparationOptions = preparationOptions,
                     ) { activationStep ->
                         phase = activationStep
                         _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
@@ -2391,12 +2739,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         unavailableMessage: String,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): AcceleratedChatModelAndroid {
         val candidate = openAvailableModel(
             modelPath,
             verifiedSourceSha256,
-            verifiedSourceBytes
+            verifiedSourceBytes,
+            preparationOptions = preparationOptions,
         ) { preparationStage ->
             onImportStep(
                 when (preparationStage) {
@@ -2438,6 +2788,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
         preparedModelInfo: PreparedModelInfo? = null,
+        preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onPreparationStage: (PreparationStage) -> Unit = {}
     ): AcceleratedChatModelAndroid =
         AcceleratedChatModelAndroid(
@@ -2448,7 +2799,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             verifiedSourceSha256 = verifiedSourceSha256,
             verifiedSourceBytes = verifiedSourceBytes,
             onPreparationStage = onPreparationStage,
-            preparedModelInfo = preparedModelInfo
+            preparedModelInfo = preparedModelInfo,
+            preparationOptions = preparationOptions,
         )
 
     /** Caller holds [engineMutex]. Publish a standalone model only after real decode. */
@@ -2458,6 +2810,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         clearHuggingFaceImportOnPromotion: Boolean = false,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): StandaloneActivation {
         var candidateBridge: GraphToolBackend? = null
@@ -2483,6 +2836,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "The imported model could not open in the local SDX runtime",
                         verifiedSourceSha256,
                         verifiedSourceBytes,
+                        preparationOptions,
                         onImportStep
                     )
                 },

@@ -50,16 +50,19 @@ final class CorpusSchemaPromptBuilder {
         } else {
             prompt.append("Return only one JSON object with nodeTypes, relationshipTypes, and patterns arrays.\n");
         }
+        prompt.append("Infer labels only from the corpus text or the existing schema below; never copy a label from these instructions.\n");
         prompt.append("Add each distinct type exactly once. Never repeat an array item.\n");
-        prompt.append("A statement like 'X is a Y' makes Y a node-type candidate, never X.\n");
-        prompt.append("A statement like 'X verb Y' makes the verb a directed relationship-type candidate.\n");
-        prompt.append("Add a node type for each explicit reusable entity category, never for a particular name or value.\n");
-        prompt.append("Add a relationship type for each explicit directed relation category.\n");
-        prompt.append("For every relationship type, add one patterns object whose sourceType and targetType are declared node labels.\n");
-        prompt.append("Type names must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*.\n");
+        prompt.append("For a sentence that classifies a named subject, use its reusable category noun as the node type, never the subject's name or value.\n");
+        prompt.append("For a directed statement between named subjects, derive the relationship type from the verb and preserve subject-to-object direction.\n");
+        prompt.append("nodeTypes and relationshipTypes each contain only plain label strings. Never put JSON, objects, descriptions, names, sentences, or endpoint fields in either array.\n");
+        prompt.append("patterns alone contains endpoint objects with exactly sourceType, relationshipType, and targetType.\n");
+        prompt.append("Every pattern label must exactly copy a declared label: sourceType and targetType from nodeTypes (or the existing schema), and relationshipType from relationshipTypes (or the existing schema).\n");
+        prompt.append("Add exactly one pattern for every relationship type. Do not invent a relationship without its two corpus-grounded endpoint categories.\n");
+        prompt.append("All labels must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*.\n");
+        prompt.append("Before calling the tool, verify that every label is corpus-grounded, every pattern references declared labels, and relation direction matches the passage.\n");
         prompt.append("Use empty arrays only when the passages contain no reusable entity or relation categories.\n\n");
 
-        prompt.append("AUTHORITATIVE EXISTING SCHEMA\n");
+        prompt.append("Existing schema (authoritative)\n");
         if (!hasSchemaContent(establishedSchema)) {
             prompt.append("None. Infer the initial ontology from the passages.\n\n");
         } else {

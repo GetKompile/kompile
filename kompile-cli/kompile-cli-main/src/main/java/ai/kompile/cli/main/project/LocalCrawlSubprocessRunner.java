@@ -50,8 +50,32 @@ public final class LocalCrawlSubprocessRunner {
             JsonNode request,
             GraphContext graphContext,
             ObjectMapper mapper) throws IOException {
+        return execute(profile, projectRoot, dryRun, request, graphContext, mapper, null);
+    }
+
+    /**
+     * Execute the local lifecycle with an optional in-process model-pipeline boundary.
+     *
+     * <p>The override is intentionally valid only for explicit inline execution; callbacks cannot
+     * cross the production subprocess boundary.</p>
+     */
+    public static ExecutionResult execute(
+            KompileProjectCrawlProfile profile,
+            Path projectRoot,
+            boolean dryRun,
+            JsonNode request,
+            GraphContext graphContext,
+            ObjectMapper mapper,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) throws IOException {
         if (executionMode().startsWith("in-process")) {
-            return executeInline(profile, projectRoot, dryRun, request, graphContext, mapper);
+            return executeInline(
+                    profile, projectRoot, dryRun, request, graphContext, mapper,
+                    modelPipelineExecutor);
+        }
+        if (modelPipelineExecutor != null) {
+            throw new IllegalArgumentException(
+                    "An in-process modelPipelineExecutor requires "
+                            + "-Dkompile.local.crawl.execution=inline");
         }
 
         Path tempDirectory = Files.createTempDirectory("kompile-local-crawl-");
@@ -151,9 +175,12 @@ public final class LocalCrawlSubprocessRunner {
             boolean dryRun,
             JsonNode request,
             GraphContext graphContext,
-            ObjectMapper mapper) throws IOException {
-        ProjectCrawlCommand.LocalCrawlExecution execution =
-                ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request);
+            ObjectMapper mapper,
+            ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) throws IOException {
+        ProjectCrawlCommand.LocalCrawlExecution execution = modelPipelineExecutor == null
+                ? ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request)
+                : ProjectCrawlCommand.executeLocalCrawl(
+                        profile, projectRoot, dryRun, request, modelPipelineExecutor);
         LocalProjectGraphBackend.GraphUpdate graphUpdate =
                 updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper);
         return new ExecutionResult(execution, graphUpdate);

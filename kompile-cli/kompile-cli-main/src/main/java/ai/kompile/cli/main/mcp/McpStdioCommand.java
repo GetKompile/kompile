@@ -293,6 +293,21 @@ public class McpStdioCommand implements Callable<Integer> {
         return idNode == null || idNode.isNull() ? null : idNode.asText();
     }
 
+    static String startupToolMessage(boolean ready, int toolCount) {
+        return ready
+                ? "Kompile MCP server started with " + Math.max(0, toolCount) + " tools"
+                : "Kompile MCP server initialized; tools are loading asynchronously";
+    }
+
+    static void populateInitializationHints(ObjectNode hints, boolean ready, int toolCount, String resolvedProfile) {
+        hints.put("eagerLoadTools", true);
+        hints.put("toolsReady", ready);
+        if (ready) {
+            hints.put("toolCount", Math.max(0, toolCount));
+        }
+        hints.put("profile", resolvedProfile);
+    }
+
     /** ObjectMapper shared across the session. */
     private volatile ObjectMapper om;
 
@@ -489,7 +504,7 @@ public class McpStdioCommand implements Callable<Integer> {
                     String msgMethod = msg.path("method").asText("");
                     if ("notifications/initialized".equals(msgMethod) && !clientInitialized) {
                         clientInitialized = true;
-                        sendLogNotification("info", "Kompile MCP server started with " + tools.size() + " tools");
+                        sendLogNotification("info", startupToolMessage(toolsReady.get(), tools.size()));
                     }
 
                     // Dispatch tool calls to a background thread so the main loop
@@ -584,11 +599,12 @@ public class McpStdioCommand implements Callable<Integer> {
                     ObjectNode serverInfo = initResult.putObject("serverInfo");
                     serverInfo.put("name", "kompile-cli");
                     serverInfo.put("version", "0.1.0-SNAPSHOT");
-                    // Hint: tools should be loaded eagerly, not deferred
+                    // Hint clients without publishing a fabricated count while the
+                    // asynchronous registry is still loading. tools/list remains the
+                    // authoritative catalog and waits for initialization to finish.
                     ObjectNode hints = serverInfo.putObject("x-hints");
-                    hints.put("eagerLoadTools", true);
-                    hints.put("toolCount", toolsReady.get() ? tools.size() : 44); // estimate until init completes
-                    hints.put("profile", profile != null ? profile : "full");
+                    populateInitializationHints(hints, toolsReady.get(), tools.size(),
+                            profile != null ? profile : "full");
                     result.set("result", initResult);
                 }
 

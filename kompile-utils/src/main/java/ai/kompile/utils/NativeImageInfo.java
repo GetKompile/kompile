@@ -46,6 +46,13 @@ public final class NativeImageInfo {
     }
 
     public static boolean isRunningInNativeImage() {
+        // Runtime image state must win over any value captured while Graal was
+        // initializing classes in the hosted builder. A cached hosted-process
+        // false would otherwise make the executable skip its side-loaded JNI
+        // bootstrap entirely.
+        if (isRuntimeImageCode()) {
+            return true;
+        }
         Boolean detected = isNativeImage;
         if (detected == null) {
             detected = detectNativeImage();
@@ -55,11 +62,23 @@ public final class NativeImageInfo {
     }
 
     public static String getExecutablePath() {
+        // The runtime executable can differ from the builder output path after
+        // a distribution copies the image. Re-resolve it when runtime imagecode
+        // is present instead of trusting a hosted-process cache.
+        if (isRuntimeImageCode()) {
+            executablePath = detectExecutablePath();
+            executablePathResolved = true;
+            return executablePath;
+        }
         if (!executablePathResolved) {
             executablePath = detectExecutablePath();
             executablePathResolved = true;
         }
         return executablePath;
+    }
+
+    private static boolean isRuntimeImageCode() {
+        return "runtime".equalsIgnoreCase(System.getProperty(IMAGE_CODE_PROPERTY));
     }
 
     public static Path getExecutablePathAsPath() {

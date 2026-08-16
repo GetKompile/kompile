@@ -90,12 +90,14 @@ class CorpusSchemaUnifierTest {
         Map<String, Object> nodeType = asMap(
                 asMap(topProperties.get("nodeTypes")).get("items"));
         assertEquals("string", nodeType.get("type"));
+        assertEquals("^[A-Z][A-Z0-9_]*$", nodeType.get("pattern"));
         assertEquals(48, nodeType.get("maxLength"));
         assertEquals(true, asMap(topProperties.get("nodeTypes")).get("uniqueItems"));
         assertEquals(32, asMap(topProperties.get("nodeTypes")).get("maxItems"));
         Map<String, Object> relationshipType = asMap(
                 asMap(topProperties.get("relationshipTypes")).get("items"));
         assertEquals("string", relationshipType.get("type"));
+        assertEquals("^[A-Z][A-Z0-9_]*$", relationshipType.get("pattern"));
         assertEquals(48, relationshipType.get("maxLength"));
         Map<String, Object> patternProperties = asMap(asMap(
                 asMap(topProperties.get("patterns")).get("items")).get("properties"));

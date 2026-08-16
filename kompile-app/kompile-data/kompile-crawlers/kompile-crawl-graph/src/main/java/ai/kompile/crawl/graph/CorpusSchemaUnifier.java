@@ -42,6 +42,7 @@ final class CorpusSchemaUnifier {
     static final String SCHEMA_TOOL_NAME = "submit_corpus_schema";
     private static final String TASK_TYPE = "llm";
     private static final int MAX_SCHEMA_NAME_CHARS = 48;
+    private static final String SCHEMA_NAME_PATTERN = "^[A-Z][A-Z0-9_]*$";
     private static final int MAX_MODEL_PASSAGES_PER_CALL = 8;
     private static final int MAX_MODEL_PASSAGE_CHARS = 1_024;
     private static final int MAX_MODEL_TEXT_CHARS_PER_CALL = 6_144;
@@ -138,9 +139,10 @@ final class CorpusSchemaUnifier {
                         new StructuredChatLanguageModel.Message("user", prompt)),
                 List.of(new StructuredChatLanguageModel.Tool(
                         SCHEMA_TOOL_NAME,
-                        "Submit missing reusable graph types only. Type names must be UPPER_SNAKE_CASE. "
-                                + "For each relationship, provide sourceType, relationshipType, and targetType. "
-                                + "Never use a source instance as a schema name.",
+                        "Submit missing reusable graph types only. nodeTypes and relationshipTypes contain "
+                                + "plain UPPER_SNAKE_CASE label strings only; never put JSON or descriptions "
+                                + "inside either label array. Put sourceType, relationshipType, and targetType "
+                                + "objects only in patterns. Never use a source instance as a schema name.",
                         SCHEMA_TOOL_PARAMETERS)),
                 true,
                 StructuredChatLanguageModel.ToolDefinitionFormat.FLAT,
@@ -262,6 +264,7 @@ final class CorpusSchemaUnifier {
     private static Map<String, Object> schemaNameSchema(String description) {
         return Map.of(
                 "type", "string",
+                "pattern", SCHEMA_NAME_PATTERN,
                 "maxLength", MAX_SCHEMA_NAME_CHARS,
                 "description", description);
     }

@@ -1,5 +1,6 @@
 package ai.kompile.app.llm.pipeline;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -7,6 +8,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.eclipse.deeplearning4j.llm.generation.GenerationPipeline;
+import org.eclipse.deeplearning4j.llm.generation.sampling.ModelSamplingDefaults.GenerationMode;
+import org.eclipse.deeplearning4j.llm.generation.sampling.SamplingConfig;
 import org.eclipse.deeplearning4j.llm.tokenizer.ChatTemplate;
 import org.eclipse.deeplearning4j.llm.tokenizer.Tokenizer;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -18,6 +21,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -40,6 +46,11 @@ class SameDiffLanguageModelImplTest {
     @BeforeEach
     void setUp() {
         impl = new SameDiffLanguageModelImpl(Optional.empty(), Optional.empty());
+    }
+
+    @AfterEach
+    void tearDown() {
+        impl.shutdown();
     }
 
     // -- Verify the class implements LanguageModel --
@@ -117,8 +128,9 @@ class SameDiffLanguageModelImplTest {
         injectLoadedModel("test-model", mockStructuredBackend);
         when(mockStructuredBackend.generateChat(any(ChatTemplate.Request.class), eq(192)))
                 .thenReturn(new org.eclipse.deeplearning4j.llm.generation.ChatGenerationResult(
-                        "<native>",
+                        "<think>inspect source</think><native>",
                         "",
+                        "inspect source",
                         List.of(ChatTemplate.ToolCall.function(
                                 "call-1", "submit_graph_delta",
                                 Map.of("entities", List.of(), "relations", List.of()))),
@@ -135,12 +147,20 @@ class SameDiffLanguageModelImplTest {
                                 "submit_graph_delta", "submit", Map.of("type", "object"))),
                         true,
                         ai.kompile.core.llm.StructuredChatLanguageModel.ToolDefinitionFormat.FLAT,
-                        ai.kompile.core.llm.StructuredChatLanguageModel.ToolCallFormat.NATIVE);
+                        ai.kompile.core.llm.StructuredChatLanguageModel.ToolCallFormat.NATIVE,
+                        ai.kompile.core.llm.StructuredChatLanguageModel.ToolChoice.REQUIRED,
+                        Map.of("enable_thinking", true));
 
         ai.kompile.core.llm.StructuredChatLanguageModel.Response response =
                 impl.generateChat(request, 192);
 
-        assertEquals("<native>", response.rawText());
+        assertEquals("<think>inspect source</think><native>", response.rawText());
+        assertEquals("", response.content());
+        assertEquals("inspect source", response.reasoningContent());
+        assertEquals(List.of("think"), response.outputBlocks().stream()
+                .map(ai.kompile.core.llm.StructuredChatLanguageModel.OutputBlock::type)
+                .toList());
+        assertEquals("inspect source", response.outputBlocks().get(0).content());
         assertEquals("submit_graph_delta", response.toolCalls().get(0).name());
         var captor = org.mockito.ArgumentCaptor.forClass(ChatTemplate.Request.class);
         verify(mockStructuredBackend).generateChat(captor.capture(), eq(192));
@@ -148,6 +168,10 @@ class SameDiffLanguageModelImplTest {
                 captor.getValue().getToolDefinitionFormat());
         assertEquals(ChatTemplate.ToolCallFormat.NATIVE,
                 captor.getValue().getToolCallFormat());
+        assertEquals(ChatTemplate.ToolChoice.REQUIRED,
+                captor.getValue().getToolChoice());
+        assertEquals(Map.of("enable_thinking", true),
+                captor.getValue().getTemplateArguments());
         assertEquals(List.of("system", "user"),
                 captor.getValue().getMessages().stream()
                         .map(ChatTemplate.Message::getRole).toList());
@@ -195,6 +219,81 @@ class SameDiffLanguageModelImplTest {
         verify(mockBackend, times(1)).close();
         assertFalse(impl.isLoaded());
         assertNull(impl.getLoadedModelId());
+    }
+
+    @Test
+    void pooledBackendOperationsUseOneModelOwnedExecutionLane() throws Exception {
+        injectLoadedModel("test-model", mockBackend);
+        Set<Thread> backendThreads = ConcurrentHashMap.newKeySet();
+        when(mockBackend.generate(anyString())).thenAnswer(invocation -> {
+            backendThreads.add(Thread.currentThread());
+            return "answer";
+        });
+        when(mockBackend.countPromptTokens(anyString())).thenAnswer(invocation -> {
+            backendThreads.add(Thread.currentThread());
+            return 3;
+        });
+        doAnswer(invocation -> {
+            backendThreads.add(Thread.currentThread());
+            return null;
+        }).when(mockBackend).close();
+
+        CompletableFuture<String> generation = CompletableFuture.supplyAsync(
+                () -> impl.generateResponse("question", List.of()));
+        CompletableFuture<Integer> tokenCount = CompletableFuture.supplyAsync(
+                () -> impl.countPromptTokens("question"));
+
+        assertEquals("answer", generation.get());
+        assertEquals(3, tokenCount.get());
+        impl.unloadModel();
+
+        assertEquals(1, backendThreads.size(),
+                "generate, token counting, and close must share one execution lane");
+        assertEquals("samediff-model-execution",
+                backendThreads.iterator().next().getName());
+    }
+
+    @Test
+    void pooledBackendRestoresItsHomeDeviceAtEveryOperationBoundary() throws Exception {
+        FakeModelDeviceContext deviceContext = new FakeModelDeviceContext(0);
+        SameDiffLanguageModelImpl deviceBoundImpl = new SameDiffLanguageModelImpl(
+                Optional.empty(), Optional.empty(), deviceContext);
+        SameDiffLanguageModelImpl.InferenceBackend backend = mock(
+                SameDiffLanguageModelImpl.InferenceBackend.class);
+        try {
+            injectLoadedModel(deviceBoundImpl, "test-model", backend);
+            bindModelExecutionDevice(deviceBoundImpl, 1);
+            when(backend.generate(anyString())).thenAnswer(invocation -> {
+                assertEquals(1, deviceContext.currentDevice(),
+                        "generation must begin on the model home device");
+                // Simulate an internal physically sharded plan finishing on another GPU.
+                deviceContext.setCurrentDevice(0);
+                return "answer";
+            });
+            when(backend.countPromptTokens(anyString())).thenAnswer(invocation -> {
+                assertEquals(1, deviceContext.currentDevice(),
+                        "the next operation must begin back on the model home device");
+                return 3;
+            });
+            doAnswer(invocation -> {
+                assertEquals(1, deviceContext.currentDevice(),
+                        "model cleanup must run on the model home device");
+                return null;
+            }).when(backend).close();
+
+            assertEquals("answer", deviceBoundImpl.generateResponse("question", List.of()));
+            assertEquals(1, deviceContext.currentDevice(),
+                    "the lane must restore its home device after internal sharding");
+            assertEquals(3, deviceBoundImpl.countPromptTokens("question"));
+            deviceBoundImpl.unloadModel();
+
+            assertNull(deviceBoundImpl.getModelExecutionDevice());
+            assertEquals(2, deviceBoundImpl.getModelDeviceRestorations(),
+                    "both stale entry state and internal post-generation drift must be corrected");
+            assertEquals(2, deviceContext.switchCount());
+        } finally {
+            deviceBoundImpl.shutdown();
+        }
     }
 
     @Test
@@ -288,6 +387,63 @@ class SameDiffLanguageModelImplTest {
                 IllegalArgumentException.class,
                 () -> SameDiffLanguageModelImpl.additionalStopTokenIdsOpt(
                         Map.of("additionalStopTokenIds", List.of(7.5d))));
+    }
+
+    @Test
+    void configuredSamplingPropagatesStructuredOutputBudgets() {
+        SamplingConfig configured = SameDiffLanguageModelImpl.configuredSampling(
+                Map.of(
+                        "maxOutputBlockTokens", 48,
+                        "structuredOutputTokenReserve", 96),
+                256,
+                SamplingConfig.greedy());
+
+        assertEquals(48, configured.getMaxOutputBlockTokens());
+        assertEquals(96, configured.getStructuredOutputTokenReserve());
+    }
+
+    @Test
+    void configuredSamplingPreservesModelDefaultStructuredOutputBudgets() {
+        SamplingConfig defaults = SamplingConfig.greedy().toBuilder()
+                .maxOutputBlockTokens(32)
+                .structuredOutputTokenReserve(64)
+                .build();
+
+        SamplingConfig configured = SameDiffLanguageModelImpl.configuredSampling(
+                Map.of(), 256, defaults);
+
+        assertEquals(32, configured.getMaxOutputBlockTokens());
+        assertEquals(64, configured.getStructuredOutputTokenReserve());
+    }
+
+    @Test
+    void resolvesQwenSamplingByThinkingMode() {
+        SamplingConfig nonThinking = SameDiffLanguageModelImpl.modelSamplingDefaults(
+                "qwen3.5-2b-instruct", "qwen3_5", "Qwen3.5-2B",
+                GenerationMode.NON_THINKING_TEXT);
+        SamplingConfig thinking = SameDiffLanguageModelImpl.modelSamplingDefaults(
+                "qwen3.5-2b-instruct", "qwen3_5", "Qwen3.5-2B",
+                GenerationMode.THINKING_TEXT);
+
+        assertEquals(1.0d, nonThinking.getTopP());
+        assertEquals(2.0d, nonThinking.getPresencePenalty());
+        assertEquals(0.95d, thinking.getTopP());
+        assertEquals(1.5d, thinking.getPresencePenalty());
+    }
+
+    @Test
+    void detectsThinkingModeFromTemplateArguments() {
+        ChatTemplate.Request defaultRequest = ChatTemplate.Request.builder().build();
+        ChatTemplate.Request thinkingRequest = ChatTemplate.Request.builder()
+                .templateArguments(Map.of("enable_thinking", true))
+                .build();
+        ChatTemplate.Request stringThinkingRequest = ChatTemplate.Request.builder()
+                .templateArguments(Map.of("enable_thinking", "true"))
+                .build();
+
+        assertFalse(SameDiffLanguageModelImpl.thinkingEnabled(defaultRequest));
+        assertTrue(SameDiffLanguageModelImpl.thinkingEnabled(thinkingRequest));
+        assertTrue(SameDiffLanguageModelImpl.thinkingEnabled(stringThinkingRequest));
     }
 
     @Test
@@ -397,6 +553,13 @@ class SameDiffLanguageModelImplTest {
     private void injectLoadedModel(
             String modelId,
             SameDiffLanguageModelImpl.InferenceBackend backend) throws Exception {
+        injectLoadedModel(impl, modelId, backend);
+    }
+
+    private static void injectLoadedModel(
+            SameDiffLanguageModelImpl target,
+            String modelId,
+            SameDiffLanguageModelImpl.InferenceBackend backend) throws Exception {
         // Access the private LoadedModel inner class via reflection
         Class<?> loadedModelClass = null;
         for (Class<?> inner : SameDiffLanguageModelImpl.class.getDeclaredClasses()) {
@@ -413,9 +576,50 @@ class SameDiffLanguageModelImplTest {
 
         Field loadedField = SameDiffLanguageModelImpl.class.getDeclaredField("loaded");
         loadedField.setAccessible(true);
-        loadedField.set(impl, loadedModel);
+        loadedField.set(target, loadedModel);
 
-        assertTrue(impl.isLoaded());
-        assertEquals(modelId, impl.getLoadedModelId());
+        assertTrue(target.isLoaded());
+        assertEquals(modelId, target.getLoadedModelId());
+    }
+
+    private static void bindModelExecutionDevice(
+            SameDiffLanguageModelImpl target, int deviceId) throws Exception {
+        Field deviceField = SameDiffLanguageModelImpl.class.getDeclaredField("modelExecutionDevice");
+        deviceField.setAccessible(true);
+        deviceField.set(target, deviceId);
+    }
+
+    private static final class FakeModelDeviceContext
+            implements SameDiffLanguageModelImpl.ModelDeviceContext {
+        private final AtomicInteger currentDevice;
+        private final AtomicInteger switchCount = new AtomicInteger();
+
+        private FakeModelDeviceContext(int initialDevice) {
+            this.currentDevice = new AtomicInteger(initialDevice);
+        }
+
+        @Override
+        public int selectDeviceForModel() {
+            return currentDevice.get();
+        }
+
+        @Override
+        public int currentDevice() {
+            return currentDevice.get();
+        }
+
+        @Override
+        public void switchTo(int deviceId, String reason) {
+            currentDevice.set(deviceId);
+            switchCount.incrementAndGet();
+        }
+
+        private void setCurrentDevice(int deviceId) {
+            currentDevice.set(deviceId);
+        }
+
+        private int switchCount() {
+            return switchCount.get();
+        }
     }
 }

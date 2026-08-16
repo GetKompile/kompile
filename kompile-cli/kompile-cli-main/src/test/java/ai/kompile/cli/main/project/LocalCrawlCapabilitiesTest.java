@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -167,6 +168,13 @@ class LocalCrawlCapabilitiesTest {
                     "documentModelExecutable": "workers/vlm",
                     "documentModelExecutableMode": "UNIFIED"
                   },
+                  "modelRuntime": {
+                    "autoBootstrap": true,
+                    "source": "huggingface",
+                    "repository": "ds4sd/SmolDocling-256M-preview",
+                    "format": "vlm",
+                    "type": "vlm_pipeline"
+                  },
                   "documents": [{"path": "%s", "pipelineId": "created-vlm"}],
                   "pipelines": [{
                     "pipelineId": "created-vlm",
@@ -192,6 +200,70 @@ class LocalCrawlCapabilitiesTest {
         assertEquals(180, resolved.chunkerOptions().get("pdfRenderDpi"));
         assertEquals("workers/vlm", resolved.processor().get("documentModelExecutable"));
         assertEquals("UNIFIED", resolved.processor().get("documentModelExecutableMode"));
+        Map<?, ?> modelRuntime = (Map<?, ?>) resolved.processor().get("modelRuntime");
+        assertEquals(true, modelRuntime.get("autoBootstrap"));
+        assertEquals("ds4sd/SmolDocling-256M-preview", modelRuntime.get("repository"));
+        assertEquals("vlm_pipeline", modelRuntime.get("type"));
+    }
+
+    @Test
+    void requestScopedModelsAreBoundToPipelineRoles() throws Exception {
+        Path document = tempDir.resolve("bound-model.txt");
+        Files.writeString(document, "resolution only");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "pipelineRegistry": {
+                    "models": [
+                      {"id":"generator-config","modelId":"generator-model","role":"generator",
+                       "source":"catalog","runtime":{"autoBootstrap":false}},
+                      {"id":"embedding-config","modelId":"embedding-model","role":"embedding",
+                       "source":"catalog","runtime":{"autoBootstrap":false}}
+                    ],
+                    "defaults": [{
+                      "pipelineId":"model-bound-default",
+                      "pipelineType":"CUSTOM",
+                      "loaderName":"text",
+                      "chunkerName":"no-op",
+                      "modelBindings": {
+                        "generator":"generator-config",
+                        "embedding":"embedding-config"
+                      }
+                    }]
+                  },
+                  "pipelines": [{
+                    "pipelineId":"model-bound",
+                    "registeredPipelineId":"model-bound-default"
+                  }],
+                  "documents": [{"path":"%s","pipelineId":"model-bound"}]
+                }
+                """.formatted(document.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, document);
+
+        Map<?, ?> bindings = (Map<?, ?>) resolved.chunkerOptions().get("modelBindings");
+        assertEquals("generator-config", bindings.get("generator"));
+        assertEquals("embedding-config", bindings.get("embedding"));
+        Map<?, ?> definitions = (Map<?, ?>) resolved.processor().get("registeredModelDefinitions");
+        assertTrue(definitions.containsKey("generator-config"));
+        assertTrue(definitions.containsKey("embedding-config"));
+    }
+
+    @Test
+    void malformedModelRegistryAndBindingsFailValidation() throws Exception {
+        JsonNode duplicateModels = mapper.readTree("""
+                {"pipelineRegistry":{"models":[{"id":"same"},{"id":"same"}]}}
+                """);
+        assertTrue(LocalCrawlCapabilities.validationError(duplicateModels)
+                .contains("Duplicate registered model id"));
+
+        JsonNode invalidBinding = mapper.readTree("""
+                {"pipelines":[{"pipelineId":"bad","pipelineType":"CUSTOM",
+                  "modelBindings":{"generator":""}}]}
+                """);
+        assertTrue(LocalCrawlCapabilities.validationError(invalidBinding)
+                .contains("must reference a non-empty model id"));
     }
 
     @Test

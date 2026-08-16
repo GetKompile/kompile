@@ -53,13 +53,31 @@ public final class CrawlDocumentsTool implements CliTool {
     private final LocalProjectCrawlBackend localBackend;
 
     public CrawlDocumentsTool(String baseUrl, ObjectMapper mapper) {
-        this(new GroundingBackendClient(baseUrl), mapper);
+        this(new GroundingBackendClient(baseUrl), mapper, new LocalProjectCrawlBackend(mapper));
+    }
+
+    /**
+     * Create the agent-facing tool with a supplied project-local backend.
+     *
+     * <p>The normal constructor remains the production path. This overload lets JVM embedders run
+     * the same tool contract with an explicitly composed local execution boundary.</p>
+     */
+    public CrawlDocumentsTool(
+            String baseUrl, ObjectMapper mapper, LocalProjectCrawlBackend localBackend) {
+        this(new GroundingBackendClient(baseUrl), mapper, localBackend);
     }
 
     CrawlDocumentsTool(GroundingBackendClient client, ObjectMapper mapper) {
+        this(client, mapper, new LocalProjectCrawlBackend(mapper));
+    }
+
+    CrawlDocumentsTool(
+            GroundingBackendClient client,
+            ObjectMapper mapper,
+            LocalProjectCrawlBackend localBackend) {
         this.client = client;
         this.mapper = mapper;
-        this.localBackend = new LocalProjectCrawlBackend(mapper);
+        this.localBackend = localBackend;
     }
 
     @Override
@@ -124,6 +142,9 @@ public final class CrawlDocumentsTool implements CliTool {
                 .put("description", "Optional processor registered in pipelineRegistry.executors.");
         documentProps.putObject("processor").put("type", "object")
                 .put("description", "Per-document registered processor override.");
+        documentProps.putObject("modelBindings").put("type", "object")
+                .put("description", "Per-document role-to-model overrides. Values reference pipelineRegistry.models or project model ids.")
+                .putObject("additionalProperties").put("type", "string");
         documentProps.putObject("pipelineDefinitionId").put("type", "string");
         documentProps.putObject("pipelineDefinitionPath").put("type", "string");
         documentProps.putObject("loaderName").put("type", "string");
@@ -195,6 +216,7 @@ public final class CrawlDocumentsTool implements CliTool {
         addObjectArray(props, "pipelines",
                 "Named ingest pipeline definitions. pipelineType is an arbitrary portable category; "
                         + "registeredPipelineId inherits a default and executorId/processor selects execution. "
+                        + "modelBindings maps pipeline roles to pipelineRegistry.models or project model ids. "
                         + "VLM, OCR, code, table, and keyword pipelines are built-in registrations, not a closed set.");
         ObjectNode pipelineRegistry = props.putObject("pipelineRegistry");
         pipelineRegistry.put("type", "object");
@@ -206,6 +228,26 @@ public final class CrawlDocumentsTool implements CliTool {
                 "Reusable ingest-pipeline defaults. A pipelines entry may inherit one with registeredPipelineId.");
         addObjectArray(registryProperties, "definitions",
                 "Inline UnifiedPipelineDefinition objects addressable by pipelineDefinitionId.");
+        ObjectNode models = registryProperties.putObject("models");
+        models.put("type", "array");
+        models.put("description", "Request-scoped model definitions. Pipelines bind these ids to named roles with modelBindings.");
+        ObjectNode model = models.putObject("items");
+        model.put("type", "object");
+        ObjectNode modelProperties = model.putObject("properties");
+        modelProperties.putObject("id").put("type", "string");
+        modelProperties.putObject("modelId").put("type", "string")
+                .put("description", "Project/catalog model selection. Defaults to id.");
+        modelProperties.putObject("role").put("type", "string");
+        modelProperties.putObject("source").put("type", "string");
+        modelProperties.putObject("repository").put("type", "string");
+        modelProperties.putObject("revision").put("type", "string");
+        modelProperties.putObject("localPath").put("type", "string");
+        modelProperties.putObject("format").put("type", "string");
+        modelProperties.putObject("type").put("type", "string");
+        modelProperties.putObject("autoBootstrap").put("type", "boolean");
+        modelProperties.putObject("runtime").put("type", "object")
+                .put("description", "Per-model staging/runtime overrides; these take precedence over top-level modelRuntime defaults.");
+        model.putArray("required").add("id");
         ObjectNode executors = registryProperties.putObject("executors");
         executors.put("type", "array");
         ObjectNode executor = executors.putObject("items");
@@ -271,7 +313,8 @@ public final class CrawlDocumentsTool implements CliTool {
         modelRuntime.put("type", "object");
         modelRuntime.put("description", "Folder-local model lifecycle for LOCAL_MODEL routes. Native CLI runs "
                 + "bootstrap and serve through standalone native children; JVM development may use the "
-                + "same executable-JAR ABI. The child exists only for this MCP crawl.");
+                + "same executable-JAR ABI. The child exists only for this MCP crawl. This object supplies "
+                + "defaults; pipelineRegistry.models[].runtime can override them per bound model.");
         ObjectNode modelRuntimeProperties = modelRuntime.putObject("properties");
         modelRuntimeProperties.putObject("autoBootstrap").put("type", "boolean");
         modelRuntimeProperties.putObject("localPath").put("type", "string");
@@ -450,6 +493,7 @@ public final class CrawlDocumentsTool implements CliTool {
                 copyIfPresent(selected, source, "pipelineId");
                 copyIfPresent(selected, source, "executorId");
                 copyIfPresent(selected, source, "processor");
+                copyIfPresent(selected, source, "modelBindings");
                 copyIfPresent(selected, source, "pipelineDefinitionId");
                 copyIfPresent(selected, source, "pipelineDefinitionPath");
                 copyIfPresent(selected, source, "loaderName");

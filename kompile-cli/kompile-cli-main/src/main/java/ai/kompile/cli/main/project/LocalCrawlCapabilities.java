@@ -78,9 +78,25 @@ public final class LocalCrawlCapabilities {
         pipelineTemplate(templates, CODE_PIPELINE, "CODE", "code",
                 "recursive-character", 1_800, 180,
                 "Source code and project files with code validation and boundary-aware chunking.");
-        pipelineTemplate(templates, VLM_PIPELINE, "VLM", "pdf",
+        ObjectNode vlmTemplate = pipelineTemplate(templates, VLM_PIPELINE, "VLM", "pdf",
                 "recursive-character", 2_000, 200, documentModelWorkerAvailable,
                 "Model-backed PDF extraction in the isolated document-model subprocess.");
+        ObjectNode vlmConfiguration = vlmTemplate.putObject("configuration");
+        vlmConfiguration.put("defaultModelId", "smoldocling-256m");
+        vlmConfiguration.putArray("pipelineOptionFields")
+                .add("modelId").add("vlmModel").add("modelSetId")
+                .add("outputFormat").add("maxPages").add("pageRange").add("maxNewTokens")
+                .add("pdfRenderDpi").add("pageBatchSize")
+                .add("temperature").add("topP").add("beamSize").add("doSample")
+                .add("kvCacheEnabled").add("kvCacheMaxEntries").add("timeoutMinutes");
+        vlmConfiguration.putArray("runtimeConfigFields")
+                .add("documentModelExecutable").add("documentModelExecutableMode");
+        vlmConfiguration.put("workerResolution",
+                "Omit runtimeConfig.documentModelExecutable to resolve an installed kompile-vlm-test worker, "
+                        + "or provide an absolute executable path for this request only.");
+        vlmConfiguration.put("modelLifecycle",
+                "Use model_runtime to inspect or import folder models before selecting modelId; "
+                        + "the VLM worker and pipeline remain request-scoped.");
         pipelineTemplate(templates, OCR_PIPELINE, "OCR", "pdf",
                 "recursive-character", 2_000, 200, documentModelWorkerAvailable,
                 "Traditional or VLM-backed OCR in the isolated document-model subprocess.");
@@ -132,6 +148,8 @@ public final class LocalCrawlCapabilities {
         registry.put("requestField", "pipelineRegistry")
                 .put("projectDefaults", "active kompile.project.json pipeline registrations")
                 .put("definitionFormat", "UnifiedPipelineDefinition")
+                .put("modelDefinitions", "pipelineRegistry.models")
+                .put("modelBindings", "pipeline.modelBindings role-to-model map")
                 .put("folderDefinitions", ".kompile/pipelines/unified/*.json")
                 .put("globalDefinitions", "${kompile.data.dir:-~/.kompile}/pipelines/unified/*.json")
                 .put("arbitraryPipelineTypes", true);
@@ -150,7 +168,7 @@ public final class LocalCrawlCapabilities {
                 .put("semanticServing", "processingRoute LOCAL_MODEL/serving or graphExtraction.llmProvider=serving")
                 .put("finalReasoningLearning", "portable FOL/PSL/MEBN hybrid-consensus models stored in the folder .kgraph")
                 .put("lifecycle", "children stop before the MCP command returns")
-                .put("configuration", "pipelineRegistry defaults/definitions/executors, project pipeline "
+                .put("configuration", "pipelineRegistry models/defaults/definitions/executors, project pipeline "
                         + "registrations, or pipeline processor overrides");
         return catalog;
     }
@@ -202,6 +220,8 @@ public final class LocalCrawlCapabilities {
                     }
                     String componentError = componentError(definition, "pipelines[" + i + "]");
                     if (componentError != null) return componentError;
+                    String bindingError = modelBindingError(definition, "pipelines[" + i + "]");
+                    if (bindingError != null) return bindingError;
                 }
             }
 
@@ -235,6 +255,8 @@ public final class LocalCrawlCapabilities {
                     }
                     String componentError = componentError(document, "documents[" + i + "]");
                     if (componentError != null) return componentError;
+                    String bindingError = modelBindingError(document, "documents[" + i + "]");
+                    if (bindingError != null) return bindingError;
                 }
             }
 
@@ -314,7 +336,8 @@ public final class LocalCrawlCapabilities {
         mergeOptions(options, document == null ? null : document.get("options"));
         mergeOptions(options, document == null ? null : document.get("chunkerOptions"));
         for (String field : List.of("pipelineDefinition", "pipelineDefinitionPath", "modelSetId",
-                "pipelineDefinitionId", "modelId", "vlmModel", "processingMode")) {
+                "pipelineDefinitionId", "modelId", "vlmModel", "modelBindings", "modelDefinitions",
+                "modelRefs", "processingMode")) {
             copyOption(options, document, field);
         }
         Map<String, Object> processor = new LinkedHashMap<>(pipeline.processor());
@@ -325,6 +348,10 @@ public final class LocalCrawlCapabilities {
         // Backward-compatible aliases are copied only into the built-in registered processor.
         copyOption(processor, runtimeConfig, "documentModelExecutable");
         copyOption(processor, runtimeConfig, "documentModelExecutableMode");
+        JsonNode modelRuntime = request == null ? null : request.get("modelRuntime");
+        if (modelRuntime != null && modelRuntime.isObject()) {
+            processor.put("modelRuntime", jsonValue(modelRuntime));
+        }
         validateAllowedContentTypes(document, file);
         return new ResolvedPipeline(pipelineId, pipeline.pipelineType(), loader, chunker,
                 chunkSize, chunkOverlap, Map.copyOf(options), Map.copyOf(processor));
@@ -405,6 +432,41 @@ public final class LocalCrawlCapabilities {
         return null;
     }
 
+    private static String modelBindingError(JsonNode node, String location) {
+        if (node == null || !node.isObject()) return null;
+        JsonNode bindings = node.get("modelBindings");
+        if ((bindings == null || bindings.isNull()) && node.path("options").isObject()) {
+            bindings = node.path("options").get("modelBindings");
+        }
+        if (bindings != null && !bindings.isNull()) {
+            if (!bindings.isObject()) return location + ".modelBindings must be an object.";
+            var fields = bindings.fields();
+            while (fields.hasNext()) {
+                var binding = fields.next();
+                if (binding.getKey().isBlank()) {
+                    return location + ".modelBindings contains an empty role.";
+                }
+                if (!binding.getValue().isTextual() || binding.getValue().asText().isBlank()) {
+                    return location + ".modelBindings." + binding.getKey()
+                            + " must reference a non-empty model id.";
+                }
+            }
+        }
+        JsonNode refs = node.get("modelRefs");
+        if ((refs == null || refs.isNull()) && node.path("options").isObject()) {
+            refs = node.path("options").get("modelRefs");
+        }
+        if (refs != null && !refs.isNull()) {
+            if (!refs.isArray()) return location + ".modelRefs must be an array.";
+            for (JsonNode ref : refs) {
+                if (!ref.isTextual() || ref.asText().isBlank()) {
+                    return location + ".modelRefs must contain only non-empty model ids.";
+                }
+            }
+        }
+        return null;
+    }
+
     private static Map<String, PipelineDefinition> pipelineDefinitions(JsonNode request) {
         Map<String, PipelineDefinition> pipelines = new LinkedHashMap<>();
         pipelines.put(STANDARD_TEXT_PIPELINE, new PipelineDefinition(STANDARD_TEXT_PIPELINE,
@@ -427,19 +489,21 @@ public final class LocalCrawlCapabilities {
         JsonNode registry = request == null ? null : request.get("pipelineRegistry");
         Map<String, Map<String, Object>> executors = executorDefinitions(registry);
         Map<String, Object> definitionsById = unifiedDefinitions(registry);
+        Map<String, Object> modelsById = modelDefinitions(registry);
         appendPipelineDefinitions(pipelines, registry == null ? null : registry.get("defaults"),
-                executors, definitionsById);
+                executors, definitionsById, modelsById);
         appendPipelineDefinitions(pipelines, request == null ? null : request.get("registeredPipelines"),
-                executors, definitionsById);
+                executors, definitionsById, modelsById);
         JsonNode definitions = request == null ? null : request.get("pipelines");
-        appendPipelineDefinitions(pipelines, definitions, executors, definitionsById);
+        appendPipelineDefinitions(pipelines, definitions, executors, definitionsById, modelsById);
         return pipelines;
     }
 
     private static void appendPipelineDefinitions(Map<String, PipelineDefinition> pipelines,
                                                   JsonNode definitions,
                                                   Map<String, Map<String, Object>> executors,
-                                                  Map<String, Object> definitionsById) {
+                                                  Map<String, Object> definitionsById,
+                                                  Map<String, Object> modelsById) {
         if (definitions == null || !definitions.isArray()) return;
         for (JsonNode definition : definitions) {
             if (!definition.isObject()) continue;
@@ -475,6 +539,9 @@ public final class LocalCrawlCapabilities {
             copyOption(options, definition, "modelSetId");
             copyOption(options, definition, "modelId");
             copyOption(options, definition, "vlmModel");
+            copyOption(options, definition, "modelBindings");
+            copyOption(options, definition, "modelDefinitions");
+            copyOption(options, definition, "modelRefs");
             copyOption(options, definition, "processingMode");
             Map<String, Object> processor = new LinkedHashMap<>(
                     inherited == null ? Map.of() : inherited.processor());
@@ -488,6 +555,12 @@ public final class LocalCrawlCapabilities {
                 processor.put("executorId", executorId);
             }
             mergeOptions(processor, definition.get("processor"));
+            if (!modelsById.isEmpty()) {
+                processor.put("registeredModelDefinitions", Map.copyOf(modelsById));
+            }
+            copyOption(processor, definition, "modelBindings");
+            copyOption(processor, definition, "modelDefinitions");
+            copyOption(processor, definition, "modelRefs");
             applyDefinitionReference(definition, definitionsById, processor);
             if (processor.isEmpty() && (options.containsKey("pipelineDefinition")
                     || options.containsKey("pipelineDefinitionPath"))) {
@@ -509,10 +582,41 @@ public final class LocalCrawlCapabilities {
         JsonNode registry = request == null ? null : request.get("pipelineRegistry");
         if (registry == null || registry.isNull()) return null;
         if (!registry.isObject()) return "pipelineRegistry must be an object.";
-        for (String field : List.of("defaults", "definitions", "executors")) {
+        for (String field : List.of("models", "defaults", "definitions", "executors")) {
             JsonNode value = registry.get(field);
             if (value != null && !value.isNull() && !value.isArray()) {
                 return "pipelineRegistry." + field + " must be an array.";
+            }
+        }
+        JsonNode models = registry.get("models");
+        if (models != null && models.isArray()) {
+            Set<String> ids = new LinkedHashSet<>();
+            for (int i = 0; i < models.size(); i++) {
+                JsonNode model = models.get(i);
+                if (!model.isObject()) {
+                    return "pipelineRegistry.models[" + i + "] must be an object.";
+                }
+                String id = firstNonBlank(text(model, "id"), text(model, "modelId"));
+                if (id == null) {
+                    return "pipelineRegistry.models[" + i + "].id is required.";
+                }
+                if (!ids.add(id)) return "Duplicate registered model id: " + id;
+                JsonNode runtime = model.get("runtime");
+                if (runtime != null && !runtime.isNull() && !runtime.isObject()) {
+                    return "pipelineRegistry.models[" + i + "].runtime must be an object.";
+                }
+            }
+        }
+        JsonNode defaults = registry.get("defaults");
+        if (defaults != null && defaults.isArray()) {
+            for (int i = 0; i < defaults.size(); i++) {
+                JsonNode definition = defaults.get(i);
+                if (!definition.isObject()) {
+                    return "pipelineRegistry.defaults[" + i + "] must be an object.";
+                }
+                String bindingError = modelBindingError(
+                        definition, "pipelineRegistry.defaults[" + i + "]");
+                if (bindingError != null) return bindingError;
             }
         }
         JsonNode executors = registry.get("executors");
@@ -543,6 +647,9 @@ public final class LocalCrawlCapabilities {
                 String id = text(definition, "pipelineId");
                 if (id == null) return "pipelineRegistry.definitions[" + i + "].pipelineId is required.";
                 if (!ids.add(id)) return "Duplicate registered UnifiedPipelineDefinition: " + id;
+                String bindingError = modelBindingError(
+                        definition, "pipelineRegistry.definitions[" + i + "]");
+                if (bindingError != null) return bindingError;
             }
         }
         return null;
@@ -572,6 +679,17 @@ public final class LocalCrawlCapabilities {
         for (JsonNode definition : definitions) {
             String id = text(definition, "pipelineId");
             if (id != null) result.put(id, jsonValue(definition));
+        }
+        return result;
+    }
+
+    private static Map<String, Object> modelDefinitions(JsonNode registry) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        JsonNode models = registry == null ? null : registry.get("models");
+        if (models == null || !models.isArray()) return result;
+        for (JsonNode model : models) {
+            String id = firstNonBlank(text(model, "id"), text(model, "modelId"));
+            if (id != null) result.put(id, jsonValue(model));
         }
         return result;
     }
@@ -845,15 +963,15 @@ public final class LocalCrawlCapabilities {
         return null;
     }
 
-    private static void pipelineTemplate(ArrayNode target, String id, String type, String loader,
-                                         String chunker, int size, int overlap, String description) {
-        pipelineTemplate(target, id, type, loader, chunker, size, overlap, true, description);
+    private static ObjectNode pipelineTemplate(ArrayNode target, String id, String type, String loader,
+                                               String chunker, int size, int overlap, String description) {
+        return pipelineTemplate(target, id, type, loader, chunker, size, overlap, true, description);
     }
 
-    private static void pipelineTemplate(ArrayNode target, String id, String type, String loader,
-                                         String chunker, int size, int overlap, boolean available,
-                                         String description) {
-        target.addObject().put("pipelineId", id).put("pipelineType", type)
+    private static ObjectNode pipelineTemplate(ArrayNode target, String id, String type, String loader,
+                                               String chunker, int size, int overlap, boolean available,
+                                               String description) {
+        return target.addObject().put("pipelineId", id).put("pipelineType", type)
                 .put("loaderName", loader).put("chunkerName", chunker)
                 .put("chunkSize", size).put("chunkOverlap", overlap)
                 .put("available", available).put("description", description);

@@ -765,43 +765,30 @@ class GraphExtractionOrchestrator {
             ExplicitAssertionSchemaInferencer.Analysis explicitAssertions =
                     ExplicitAssertionSchemaInferencer.analyze(passageTexts);
             GraphSchema explicitAssertionSchema = explicitAssertions.schema();
-            try {
-                GraphSchema semanticSchema = corpusSchemaUnifier.unify(
-                        passageTexts,
-                        candidates,
-                        configuredSchema,
-                        deterministicGraphSchema,
-                        job,
-                        corpus.snapshotId(),
-                        llmDispatcher);
-                return explicitAssertionSchema == null
-                        ? semanticSchema
-                        : CrawlOntology.merge(semanticSchema, explicitAssertionSchema);
-            } catch (RuntimeException schemaToolFailure) {
-                GraphSchema establishedSchema = corpusSchemaUnifier.unify(
-                        passageTexts,
-                        candidates,
-                        configuredSchema,
-                        deterministicGraphSchema,
-                        job,
-                        corpus.snapshotId(),
-                        null);
-                if (explicitAssertionSchema != null) {
-                    establishedSchema = CrawlOntology.merge(establishedSchema, explicitAssertionSchema);
-                }
-                GraphSchema modelDiscoverySchema = deriveSchemaFromModelGraphDiscovery(
-                        passageTexts, config, job, establishedSchema, explicitAssertions);
-                if (modelDiscoverySchema == null) {
-                    throw new IllegalStateException(
-                            "Unified-corpus ontology model pre-pass failed: the schema tool overlay "
-                                    + "was invalid and submit_graph_delta produced no accepted delta",
-                            schemaToolFailure);
-                }
-                log.info("[Job {}] Corpus schema tool overlay was invalid; recovered ontology "
-                                + "through the production native graph-extraction tool path",
-                        jobId);
-                return CrawlOntology.merge(establishedSchema, modelDiscoverySchema);
+            GraphSchema establishedSchema = corpusSchemaUnifier.unify(
+                    passageTexts,
+                    candidates,
+                    configuredSchema,
+                    deterministicGraphSchema,
+                    job,
+                    corpus.snapshotId(),
+                    null);
+            if (explicitAssertionSchema != null) {
+                establishedSchema = CrawlOntology.merge(establishedSchema, explicitAssertionSchema);
             }
+
+            ModelSchemaDiscovery discovery = deriveSchemaFromModelGraphDiscovery(
+                    passageTexts, config, job, establishedSchema, explicitAssertions);
+            if (!discovery.acceptedDelta()) {
+                throw new IllegalStateException(
+                        "Unified-corpus ontology model pre-pass failed: production "
+                                + "submit_graph_delta produced no accepted delta");
+            }
+            log.info("[Job {}] Derived the corpus ontology through the production decomposed "
+                            + "graph-extraction path",
+                    jobId);
+            GraphSchema unified = CrawlOntology.merge(establishedSchema, discovery.schema());
+            return hasSchemaDefinitions(unified) ? unified : null;
         } catch (RuntimeException e) {
             String schemaError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             markSchemaPrepassFailure(job, schemaError);
@@ -810,14 +797,17 @@ class GraphExtractionOrchestrator {
         }
     }
 
-    private GraphSchema deriveSchemaFromModelGraphDiscovery(
+    private record ModelSchemaDiscovery(GraphSchema schema, boolean acceptedDelta) {
+    }
+
+    private ModelSchemaDiscovery deriveSchemaFromModelGraphDiscovery(
             Map<String, String> passageTexts,
             GraphExtractionConfig sourceConfig,
             UnifiedCrawlJob job,
             GraphSchema establishedSchema,
             ExplicitAssertionSchemaInferencer.Analysis explicitAssertions) {
         if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
-            return null;
+            return new ModelSchemaDiscovery(null, false);
         }
         int explicitEntityCount = explicitAssertions == null
                 ? 0 : explicitAssertions.explicitEntityCount();
@@ -852,6 +842,7 @@ class GraphExtractionOrchestrator {
                 .build();
 
         List<Map<String, String>> batches = CorpusSchemaUnifier.modelPassageBatches(passageTexts);
+        boolean acceptedDelta = false;
         for (int index = 0; index < batches.size(); index++) {
             Map<String, String> batch = batches.get(index);
             ExplicitAssertionSchemaInferencer.Analysis batchAssertions =
@@ -882,6 +873,7 @@ class GraphExtractionOrchestrator {
                 var extraction = GraphExtractionValidator.fromJson(json);
                 Graph discovered = GraphExtractionValidator.toGraph(extraction, source.toString());
                 mergeIntoContext(discovered, modelDiscoveryGraph, discoveryConfig);
+                acceptedDelta = true;
             } catch (Exception parseFailure) {
                 log.warn("[Job {}] Native graph schema-discovery batch {} was unusable: {}",
                         job == null ? "?" : job.getJobId(), index + 1,
@@ -890,7 +882,16 @@ class GraphExtractionOrchestrator {
                                 : parseFailure.getMessage());
             }
         }
-        return DeterministicGraphSchemaInferencer.infer(modelDiscoveryGraph);
+        return new ModelSchemaDiscovery(
+                DeterministicGraphSchemaInferencer.infer(modelDiscoveryGraph), acceptedDelta);
+    }
+
+    private static boolean hasSchemaDefinitions(GraphSchema schema) {
+        return schema != null
+                && ((schema.getNodeTypes() != null && !schema.getNodeTypes().isEmpty())
+                || (schema.getRelationshipTypes() != null
+                        && !schema.getRelationshipTypes().isEmpty())
+                || (schema.getPatterns() != null && !schema.getPatterns().isEmpty()));
     }
 
     boolean shouldDeriveCorpusSchema(GraphExtractionConfig config) {
@@ -971,9 +972,11 @@ class GraphExtractionOrchestrator {
             if (graphConstructor != null) {
                 failed = !extractSingleChunkViaConstructor(doc, config, targetGraph, job);
             } else {
-                failed = extractGraphViaLlmDocument(doc, 0, docs.size(), extractionPrompt, config,
+                InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
+                        doc, 0, docs.size(), extractionPrompt, config,
                         targetGraph, job, corpusSchemaOverride, new ConcurrentHashMap<>(),
                         new ConcurrentHashMap<>(), jobFactSheetId(job));
+                failed = outcome.retryable();
             }
             if (failed) {
                 stillFailing.add(doc);
@@ -1965,12 +1968,13 @@ class GraphExtractionOrchestrator {
                 // Legacy serial path: one call per chunk.
                 for (int docIndex = 0; docIndex < effectiveDocuments.size(); docIndex++) {
                     if (isCancelled(job)) return failed;
-                            if (extractGraphViaLlmDocument(effectiveDocuments.get(docIndex), docIndex,
-                                    effectiveDocuments.size(),
-                                    extractionPrompt, config, targetGraph, job,
-                                    corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId)) {
-                                failed.add(effectiveDocuments.get(docIndex));
-                            }
+                    InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
+                            effectiveDocuments.get(docIndex), docIndex,
+                            effectiveDocuments.size(), extractionPrompt, config, targetGraph, job,
+                            corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
+                    if (outcome.retryable()) {
+                        failed.add(effectiveDocuments.get(docIndex));
+                    }
                     memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
                             "after inline graph chunk " + (docIndex + 1) + "/" + effectiveDocuments.size());
                 }
@@ -2031,10 +2035,11 @@ class GraphExtractionOrchestrator {
                         // Legacy path: one LLM call per chunk — byte-for-byte identical behaviour.
                             for (int i = 0; i < batch.items().size(); i++) {
                             if (isCancelled(job)) break;
-                            if (extractGraphViaLlmDocument(batch.items().get(i), baseIndex + i,
-                                    effectiveDocuments.size(),
-                                    extractionPrompt, config, targetGraph, job,
-                                    corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId)) {
+                            InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
+                                    batch.items().get(i), baseIndex + i,
+                                    effectiveDocuments.size(), extractionPrompt, config, targetGraph, job,
+                                    corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
+                            if (outcome.retryable()) {
                                 failed.add(batch.items().get(i));
                             }
                             memoryMonitor.trimNativeMemory(job, "GRAPH_EXTRACTION",
@@ -2130,7 +2135,7 @@ class GraphExtractionOrchestrator {
         return failed;
     }
 
-    private boolean extractGraphViaLlmDocument(Document doc,
+    private InlineLlmExtractionOutcome extractGraphViaLlmDocument(Document doc,
                                             int docIndex,
                                             int totalDocuments,
                                             String extractionPrompt,
@@ -2142,7 +2147,7 @@ class GraphExtractionOrchestrator {
                                             ConcurrentHashMap<String, Optional<GraphNode>> entityNodeCache,
                                             Long factSheetId) {
         String jobId = job.getJobId();
-        if (isCancelled(job)) return false;
+        if (isCancelled(job)) return InlineLlmExtractionOutcome.success();
         memoryMonitor.waitForMemoryCapacity(job, "GRAPH_EXTRACTION");
         job.getCurrentBatchStep().set("GRAPH_CHUNK " + (docIndex + 1) + "/" + totalDocuments);
         updateProgress(job, "GRAPH_EXTRACTION", estimateProgress(job),
@@ -2153,12 +2158,14 @@ class GraphExtractionOrchestrator {
 
         boolean recordedResult = false;
         boolean failed = false;
+        boolean retryableFailure = false;
+        boolean decomposed = DecomposedExtractionExecutor.isEnabled(config);
         try {
             String text = doc.getText();
             if (text == null || text.isBlank()) {
                 documentTracker.recordDocumentProgress(job, doc, "GRAPH_EXTRACTION", "SKIPPED", 0, 0, 0,
                         "Skipped blank chunk", null, EXTRACTORS_INLINE_LLM, false);
-                return false; // blank chunk — nothing to retry
+                return InlineLlmExtractionOutcome.success(); // blank chunk — nothing to retry
             }
 
             // VLM-extracted documents may contain valuable structural markup;
@@ -2183,7 +2190,10 @@ class GraphExtractionOrchestrator {
 
             // Validation retry loop: if the LLM returns parseable but invalid output,
             // retry with a rephrased prompt that includes the validation errors.
-            int maxValRetries = job.getRequest().getMaxValidationRetries();
+            // The tool-driven executor already owns bounded, feedback-carrying semantic repair.
+            // Re-running that complete loop here creates a fresh backend and loses the prior tool
+            // state, so document-level validation retries only apply to the one-shot path.
+            int maxValRetries = decomposed ? 0 : job.getRequest().getMaxValidationRetries();
             String lastValidationErrors = null;
             boolean extractionSucceeded = false;
 
@@ -2198,12 +2208,18 @@ class GraphExtractionOrchestrator {
 
                 long llmCallStart = System.currentTimeMillis();
                 // DECOMPOSED mode replaces the one-shot prompt with one bounded model/tool loop.
-                // It returns the same schema-shaped JSON, so everything below is unchanged. The
-                // validation-retry loop still applies if no graph delta validates in that loop.
-                String response = DecomposedExtractionExecutor.isEnabled(config)
-                        ? extractViaDecomposedPasses(text, doc, config, corpusSchemaOverride,
-                                targetGraph, job, null)
-                        : llmDispatcher.promptWithCapacityFallback(promptToSend, "llm", job);
+                // It returns the same schema-shaped JSON, so everything below is unchanged. Its
+                // own feedback loop is the sole owner of semantic retries for this document.
+                String response;
+                if (decomposed) {
+                    DecomposedPassOutcome outcome = extractViaDecomposedPassesOutcome(
+                            text, doc, config, corpusSchemaOverride, targetGraph, job, null,
+                            compactProposalAnalysis(text, doc, config));
+                    response = outcome.json();
+                    retryableFailure |= outcome.retryable();
+                } else {
+                    response = llmDispatcher.promptWithCapacityFallback(promptToSend, "llm", job);
+                }
                 long llmCallLatencyMs = System.currentTimeMillis() - llmCallStart;
                 // Belt-and-suspenders: record a transcript here when the dispatcher's own logger is
                 // absent (e.g. subprocess context) so the call is never silently dropped.
@@ -2447,6 +2463,7 @@ class GraphExtractionOrchestrator {
             }
 
         } catch (Exception e) {
+            retryableFailure = true;
             String errorDetail = e.getMessage() != null ? e.getMessage()
                     : e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown");
             log.warn("[Job {}] Graph extraction failed for document: {}", job.getJobId(), errorDetail, e);
@@ -2460,7 +2477,17 @@ class GraphExtractionOrchestrator {
             updateProgress(job, "GRAPH_EXTRACTION", estimateProgress(job),
                     "Completed graph chunk " + (docIndex + 1) + "/" + totalDocuments, null);
         }
-        return failed;
+        if (!failed) {
+            return InlineLlmExtractionOutcome.success();
+        }
+        // Preserve the historical one-shot retry/archive path. Only decomposed extraction can
+        // distinguish deterministic semantic exhaustion from transient model/runtime failure.
+        if (!decomposed) {
+            retryableFailure = true;
+        }
+        return retryableFailure
+                ? InlineLlmExtractionOutcome.retryableFailure()
+                : InlineLlmExtractionOutcome.terminalFailure();
     }
 
     // -------------------------------------------------------------------------
@@ -2529,10 +2556,11 @@ class GraphExtractionOrchestrator {
             String extractionPrompt = buildExtractionPrompt(config, buildGraphSchema(config, corpusSchemaOverride));
             for (int index = 0; index < group.size(); index++) {
                 Document document = group.get(index);
-                boolean docFailed = extractGraphViaLlmDocument(document, baseDocIndex + index,
+                InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
+                        document, baseDocIndex + index,
                         totalDocuments, extractionPrompt, config, targetGraph, job,
                         corpusSchemaOverride, parentDocCache, entityNodeCache, factSheetId);
-                if (docFailed) {
+                if (outcome.retryable()) {
                     failed.add(document);
                 }
             }
@@ -2542,11 +2570,11 @@ class GraphExtractionOrchestrator {
         if (group.size() == 1) {
             String extractionPrompt = buildExtractionPrompt(config,
                     buildGraphSchema(config, corpusSchemaOverride));
-            boolean docFailed = extractGraphViaLlmDocument(
+            InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                     group.get(0), baseDocIndex, totalDocuments, extractionPrompt,
                     config, targetGraph, job, corpusSchemaOverride,
                     parentDocCache, entityNodeCache, factSheetId);
-            if (docFailed) failed.add(group.get(0));
+            if (outcome.retryable()) failed.add(group.get(0));
             return failed;
         }
 
@@ -3544,6 +3572,20 @@ class GraphExtractionOrchestrator {
                                       UnifiedCrawlJob job,
                                       ExtractionTaskContext taskContext,
                                       ExplicitAssertionSchemaInferencer.Analysis compactProposalAnalysis) {
+        return extractViaDecomposedPassesOutcome(
+                text, doc, config, corpusSchema, targetGraph, job, taskContext,
+                compactProposalAnalysis).json();
+    }
+
+    private DecomposedPassOutcome extractViaDecomposedPassesOutcome(
+                                      String text,
+                                      Document doc,
+                                      GraphExtractionConfig config,
+                                      GraphSchema corpusSchema,
+                                      Graph targetGraph,
+                                      UnifiedCrawlJob job,
+                                      ExtractionTaskContext taskContext,
+                                      ExplicitAssertionSchemaInferencer.Analysis compactProposalAnalysis) {
         String jobId = job != null ? job.getJobId() : "?";
         String chunkId = doc != null && doc.getId() != null ? doc.getId() : "chunk";
         String sourcePath = docSourcePath(doc);
@@ -3593,6 +3635,23 @@ class GraphExtractionOrchestrator {
                     backend.configureCompactProposalCardinality(
                             compactProposalAnalysis.explicitEntityCount(),
                             compactProposalAnalysis.explicitRelationCount());
+                    backend.configureCompactEntityCandidates(
+                            compactProposalAnalysis.entityAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.EntityAssertion::name)
+                                    .toList(),
+                            compactProposalAnalysis.entityAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.EntityAssertion::type)
+                                    .toList());
+                    backend.configureCompactRelationCandidates(
+                            compactProposalAnalysis.relationAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.RelationAssertion::source)
+                                    .toList(),
+                            compactProposalAnalysis.relationAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.RelationAssertion::target)
+                                    .toList(),
+                            compactProposalAnalysis.relationAssertions().stream()
+                                    .map(ExplicitAssertionSchemaInferencer.RelationAssertion::type)
+                                    .toList());
                     int entityNameMaxLength = compactProposalAnalysis.entityAssertions().stream()
                             .map(ExplicitAssertionSchemaInferencer.EntityAssertion::name)
                             .filter(Objects::nonNull)
@@ -3620,75 +3679,33 @@ class GraphExtractionOrchestrator {
 
             DecomposedExtractionExecutor.PromptProfile promptProfile =
                     DecomposedExtractionExecutor.promptProfileFrom(config, promptCapability);
+            boolean entityThenRelation = config != null
+                    && config.getExtractionTarget()
+                            == GraphExtractionConfig.ExtractionTarget.FULL_GRAPH
+                    && config.getDecomposedPassStrategy()
+                            == GraphExtractionConfig.DecomposedPassStrategy.ENTITIES_THEN_RELATIONS;
             ToolDrivenExtractionExecutor.Result result;
-            if (llmDispatcher.hasStructuredChatBackend()) {
-                result = toolDrivenExecutor.extractStructured(
-                        text,
-                        effectiveTask,
-                        backend,
-                        (passId, request) -> {
-                            int invocation = passSequence.incrementAndGet();
-                            int graphEntities = graphEntityCount(targetGraph);
-                            int graphRelationships = graphRelationshipCount(targetGraph);
-                            CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
-                                    phase, passId, invocation, effectiveTask.taskId(),
-                                    effectiveTask.partitionId(), effectiveTask.chunkId(),
-                                    effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
-                                    graphEntities, graphRelationships);
-                            emitDecomposedPassProgress(job, phase, scope, "started", "INFO", null);
-                            try {
-                                StructuredChatLanguageModel.Response response =
-                                        llmDispatcher.promptStructuredWithCapacityFallback(
-                                                toStructuredChatRequest(request), "llm", job, scope);
-                                boolean usable = response != null
-                                        && (!response.toolCalls().isEmpty()
-                                        || !response.content().isBlank()
-                                        || !response.parseErrors().isEmpty());
-                                emitDecomposedPassProgress(job, phase, scope,
-                                        usable ? "completed" : "returned no usable structured response",
-                                        usable ? "INFO" : "WARN", null);
-                                return toExtractionStructuredResponse(response);
-                            } catch (RuntimeException e) {
-                                emitDecomposedPassProgress(job, phase, scope, "failed", "WARN",
-                                        e.getMessage() != null
-                                                ? e.getMessage() : e.getClass().getSimpleName());
-                                throw e;
-                            }
-                        },
-                        promptProfile,
-                        config == null ? null : config.getCustomPrompt());
+            if (entityThenRelation) {
+                backend.beginTypedEntityPhase();
+                ToolDrivenExtractionExecutor.Result entities = executeToolDrivenPhase(
+                        text, effectiveTask, backend, promptProfile,
+                        phaseInstructions(config, true),
+                        passSequence, phase + "_ENTITIES", targetGraph, job);
+                if (!entities.usable()) {
+                    result = entities;
+                } else {
+                    backend.beginRelationPhase(entities.extraction().entities());
+                    ToolDrivenExtractionExecutor.Result relations = executeToolDrivenPhase(
+                            text, effectiveTask, backend, promptProfile,
+                            phaseInstructions(config, false),
+                            passSequence, phase + "_RELATIONS", targetGraph, job);
+                    result = combinePhasedResults(entities, relations);
+                }
             } else {
-                result = toolDrivenExecutor.extract(
-                        text,
-                        effectiveTask,
-                        backend,
-                        (passId, prompt) -> {
-                            int invocation = passSequence.incrementAndGet();
-                            int graphEntities = graphEntityCount(targetGraph);
-                            int graphRelationships = graphRelationshipCount(targetGraph);
-                            CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
-                                    phase, passId, invocation, effectiveTask.taskId(),
-                                    effectiveTask.partitionId(), effectiveTask.chunkId(),
-                                    effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
-                                    graphEntities, graphRelationships);
-                            emitDecomposedPassProgress(job, phase, scope, "started", "INFO", null);
-                            try {
-                                String response = llmDispatcher.promptWithCapacityFallback(
-                                        prompt, "llm", job, scope);
-                                boolean usable = CrawlLlmDispatcher.isUsableLlmResponse(response);
-                                emitDecomposedPassProgress(job, phase, scope,
-                                        usable ? "completed" : "returned no usable response",
-                                        usable ? "INFO" : "WARN", null);
-                                return response;
-                            } catch (RuntimeException e) {
-                                emitDecomposedPassProgress(job, phase, scope, "failed", "WARN",
-                                        e.getMessage() != null
-                                                ? e.getMessage() : e.getClass().getSimpleName());
-                                throw e;
-                            }
-                        },
-                        promptProfile,
-                        config == null ? null : config.getCustomPrompt());
+                result = executeToolDrivenPhase(
+                        text, effectiveTask, backend, promptProfile,
+                        config == null ? null : config.getCustomPrompt(),
+                        passSequence, phase, targetGraph, job);
             }
             log.debug("[Job {}] Tool-driven extraction chunk {}: {}", jobId, chunkId, result.summary());
             if (!result.usable()) {
@@ -3701,12 +3718,130 @@ class GraphExtractionOrchestrator {
                 }
             }
             result = applyAdmissionPolicy(result, effectiveTask, targetGraph, job, model, config);
-            return result.usable() ? result.json() : null;
+            return new DecomposedPassOutcome(
+                    result.usable() ? result.json() : null,
+                    result.retryableFailure(),
+                    result.summary());
         } catch (RuntimeException e) {
             log.warn("[Job {}] Tool-driven extraction failed for chunk {}: {}",
                     jobId, chunkId, e.toString());
+            return new DecomposedPassOutcome(null, true, e.toString());
+        }
+    }
+
+    private static String phaseInstructions(GraphExtractionConfig config, boolean entityPhase) {
+        if (config == null) {
             return null;
         }
+        String instructions = entityPhase
+                ? config.getTypedEntityPrompt()
+                : config.getRelationPrompt();
+        return instructions == null || instructions.isBlank() ? null : instructions.strip();
+    }
+
+    private ToolDrivenExtractionExecutor.Result executeToolDrivenPhase(
+            String text,
+            ExtractionTaskContext effectiveTask,
+            CrawlExtractionToolBackend backend,
+            DecomposedExtractionExecutor.PromptProfile promptProfile,
+            String additionalInstructions,
+            AtomicInteger passSequence,
+            String scopePhase,
+            Graph targetGraph,
+            UnifiedCrawlJob job) {
+        if (llmDispatcher.hasStructuredChatBackend()) {
+            return toolDrivenExecutor.extractStructured(
+                    text,
+                    effectiveTask,
+                    backend,
+                    (passId, request) -> {
+                        int invocation = passSequence.incrementAndGet();
+                        int graphEntities = graphEntityCount(targetGraph);
+                        int graphRelationships = graphRelationshipCount(targetGraph);
+                        CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
+                                scopePhase, passId, invocation, effectiveTask.taskId(),
+                                effectiveTask.partitionId(), effectiveTask.chunkId(),
+                                effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
+                                graphEntities, graphRelationships);
+                        emitDecomposedPassProgress(
+                                job, scopePhase, scope, "started", "INFO", null);
+                        try {
+                            StructuredChatLanguageModel.Response response =
+                                    llmDispatcher.promptStructuredWithCapacityFallback(
+                                            toStructuredChatRequest(request), "llm", job, scope);
+                            boolean usable = response != null
+                                    && (!response.toolCalls().isEmpty()
+                                    || !response.content().isBlank()
+                                    || !response.parseErrors().isEmpty());
+                            emitDecomposedPassProgress(
+                                    job, scopePhase, scope,
+                                    usable ? "completed"
+                                            : "returned no usable structured response",
+                                    usable ? "INFO" : "WARN", null);
+                            return toExtractionStructuredResponse(response);
+                        } catch (RuntimeException e) {
+                            emitDecomposedPassProgress(
+                                    job, scopePhase, scope, "failed", "WARN",
+                                    e.getMessage() != null
+                                            ? e.getMessage() : e.getClass().getSimpleName());
+                            throw e;
+                        }
+                    },
+                    promptProfile,
+                    additionalInstructions);
+        }
+        return toolDrivenExecutor.extract(
+                text,
+                effectiveTask,
+                backend,
+                (passId, prompt) -> {
+                    int invocation = passSequence.incrementAndGet();
+                    int graphEntities = graphEntityCount(targetGraph);
+                    int graphRelationships = graphRelationshipCount(targetGraph);
+                    CrawlLlmDispatcher.LlmCallScope scope = new CrawlLlmDispatcher.LlmCallScope(
+                            scopePhase, passId, invocation, effectiveTask.taskId(),
+                            effectiveTask.partitionId(), effectiveTask.chunkId(),
+                            effectiveTask.corpusSnapshotId(), effectiveTask.graphRevision(),
+                            graphEntities, graphRelationships);
+                    emitDecomposedPassProgress(
+                            job, scopePhase, scope, "started", "INFO", null);
+                    try {
+                        String response = llmDispatcher.promptWithCapacityFallback(
+                                prompt, "llm", job, scope);
+                        boolean usable = CrawlLlmDispatcher.isUsableLlmResponse(response);
+                        emitDecomposedPassProgress(
+                                job, scopePhase, scope,
+                                usable ? "completed" : "returned no usable response",
+                                usable ? "INFO" : "WARN", null);
+                        return response;
+                    } catch (RuntimeException e) {
+                        emitDecomposedPassProgress(
+                                job, scopePhase, scope, "failed", "WARN",
+                                e.getMessage() != null
+                                    ? e.getMessage() : e.getClass().getSimpleName());
+                        throw e;
+                    }
+                },
+                promptProfile,
+                additionalInstructions);
+    }
+
+    private static ToolDrivenExtractionExecutor.Result combinePhasedResults(
+            ToolDrivenExtractionExecutor.Result entities,
+            ToolDrivenExtractionExecutor.Result relations) {
+        List<String> tools = new ArrayList<>(entities.toolsUsed());
+        tools.addAll(relations.toolsUsed());
+        List<String> notes = new ArrayList<>();
+        entities.notes().forEach(note -> notes.add("entity phase: " + note));
+        relations.notes().forEach(note -> notes.add("relation phase: " + note));
+        return new ToolDrivenExtractionExecutor.Result(
+                relations.json(),
+                relations.extraction(),
+                entities.rounds() + relations.rounds(),
+                entities.toolCalls() + relations.toolCalls(),
+                tools,
+                notes,
+                relations.failureKind());
     }
 
     static boolean ontologyUpdatesAllowed(
@@ -3876,6 +4011,23 @@ class GraphExtractionOrchestrator {
                 task.graphContext(),
                 task.conceptHints(),
                 task.sourceSpans());
+    }
+
+    private record InlineLlmExtractionOutcome(boolean failed, boolean retryable) {
+        static InlineLlmExtractionOutcome success() {
+            return new InlineLlmExtractionOutcome(false, false);
+        }
+
+        static InlineLlmExtractionOutcome terminalFailure() {
+            return new InlineLlmExtractionOutcome(true, false);
+        }
+
+        static InlineLlmExtractionOutcome retryableFailure() {
+            return new InlineLlmExtractionOutcome(true, true);
+        }
+    }
+
+    private record DecomposedPassOutcome(String json, boolean retryable, String summary) {
     }
 
     private record VectorStoreResolution(

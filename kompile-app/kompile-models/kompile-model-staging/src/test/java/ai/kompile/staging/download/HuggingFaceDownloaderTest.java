@@ -105,6 +105,41 @@ class HuggingFaceDownloaderTest {
     }
 
     @Test
+    void vlmOnnxComponentsUseTheModelAssetLimit() throws Exception {
+        HttpServer server = startServer();
+        try {
+            String weights = "0123456789abcdef0123456789abcdef";
+            server.createContext(
+                    "/owner/repo/resolve/main/onnx/vision_encoder.onnx",
+                    exchange -> respond(exchange, 200, weights));
+            server.start();
+
+            StagingAssetLimits limits = new StagingAssetLimits();
+            limits.setConfigBytes(8L);
+            limits.setModelBytes(64L);
+            limits.setTotalBytes(128L);
+            URI base = URI.create("http://127.0.0.1:"
+                    + server.getAddress().getPort() + "/");
+            HuggingFaceDownloader downloader = new HuggingFaceDownloader(base, limits, true);
+            DownloadRequest request = DownloadRequest.builder()
+                    .modelId("vlm-components")
+                    .source("huggingface")
+                    .repository("owner/repo")
+                    .format("vlm")
+                    .files(Map.of("vision_encoder", "onnx/vision_encoder.onnx"))
+                    .build();
+
+            DownloadResult result = downloader.download(
+                    request, tempDir.resolve("vlm-components"));
+
+            assertTrue(result.isSuccess(), result.getErrorMessage());
+            assertEquals(weights.length(), result.getTotalBytes());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void sameOriginRedirectRetainsAuthorization() throws Exception {
         AtomicReference<String> authorization = new AtomicReference<>();
         HttpServer server = startServer();

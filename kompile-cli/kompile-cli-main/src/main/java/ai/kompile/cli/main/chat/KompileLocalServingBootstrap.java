@@ -137,7 +137,7 @@ public final class KompileLocalServingBootstrap {
                     System.getenv());
             return startResolved(
                     model, timeoutSeconds, componentDirectory,
-                    System.getProperties(), System.getenv(), Map.of());
+                    System.getProperties(), System.getenv(), Map.of(), Map.of());
         } catch (IOException e) {
             throw new BootstrapException(e.getMessage(), e);
         }
@@ -185,7 +185,8 @@ public final class KompileLocalServingBootstrap {
                 componentDirectory(),
                 properties,
                 System.getenv(),
-                childEnvironment);
+                childEnvironment,
+                options);
     }
 
     private static StartupResult startResolved(
@@ -194,7 +195,8 @@ public final class KompileLocalServingBootstrap {
             Path componentDirectory,
             Properties properties,
             Map<String, String> environment,
-            Map<String, String> childEnvironment) throws BootstrapException {
+            Map<String, String> childEnvironment,
+            Map<String, Object> runtimeOptions) throws BootstrapException {
         Path installHome = resolveInstallHome(componentDirectory);
         Process process = null;
         Path argsFile = null;
@@ -206,7 +208,7 @@ public final class KompileLocalServingBootstrap {
                     installHome, componentDirectory, properties, environment);
             int port = resolvePort(properties);
             URI baseUrl = URI.create("http://" + HOST + ":" + port);
-            argsFile = writeServingArgs(model, port);
+            argsFile = writeServingArgs(model, port, runtimeOptions);
 
             List<String> command = buildCommand(launcher, argsFile, properties);
             ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -411,6 +413,14 @@ public final class KompileLocalServingBootstrap {
     }
 
     static Path writeServingArgs(ResolvedModel model, int port) throws IOException {
+        return writeServingArgs(model, port, Map.of());
+    }
+
+    static Path writeServingArgs(
+            ResolvedModel model,
+            int port,
+            Map<String, Object> runtimeOptions) throws IOException {
+        Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
         ObjectNode root = MAPPER.createObjectNode();
         root.put("port", port);
         root.put("host", HOST);
@@ -424,27 +434,95 @@ public final class KompileLocalServingBootstrap {
                     model.tokenizerPath().toAbsolutePath().normalize().toString());
         }
         root.putNull("nd4jConfigJson");
-        root.put("memoryThresholdPercent", 85);
-        root.put("memoryCriticalPercent", 90);
-        root.put("memoryKillThresholdPercent", 95);
-        root.put("memoryCheckIntervalMs", 5000L);
-        root.put("gpuMemoryThresholdPercent", 85);
-        root.put("gpuMemoryCriticalPercent", 90);
-        root.put("gpuMemoryKillThresholdPercent", 95);
-        root.put("gpuSoftLimitPercent", 80);
-        root.put("offHeapThresholdPercent", 85);
-        root.put("offHeapCriticalPercent", 90);
-        root.put("offHeapKillThresholdPercent", 95);
-        root.put("maxNewTokens", 1024);
-        root.put("temperature", 0.7);
-        root.put("topK", 0);
-        root.putNull("dspEnabled");
-        root.putNull("optimizerEnabled");
-        root.putNull("optimizerFp16");
+        root.put("memoryThresholdPercent",
+                integerOption(options, "memoryThresholdPercent", 85));
+        root.put("memoryCriticalPercent",
+                integerOption(options, "memoryCriticalPercent", 90));
+        root.put("memoryKillThresholdPercent",
+                integerOption(options, "memoryKillThresholdPercent", 95));
+        root.put("memoryCheckIntervalMs",
+                longOption(options, "memoryCheckIntervalMs", 5000L));
+        root.put("gpuMemoryThresholdPercent",
+                integerOption(options, "gpuMemoryThresholdPercent", 85));
+        root.put("gpuMemoryCriticalPercent",
+                integerOption(options, "gpuMemoryCriticalPercent", 90));
+        root.put("gpuMemoryKillThresholdPercent",
+                integerOption(options, "gpuMemoryKillThresholdPercent", 95));
+        root.put("gpuSoftLimitPercent",
+                integerOption(options, "gpuSoftLimitPercent", 80));
+        root.put("offHeapThresholdPercent",
+                integerOption(options, "offHeapThresholdPercent", 85));
+        root.put("offHeapCriticalPercent",
+                integerOption(options, "offHeapCriticalPercent", 90));
+        root.put("offHeapKillThresholdPercent",
+                integerOption(options, "offHeapKillThresholdPercent", 95));
+        root.put("maxNewTokens", integerOption(options, "maxNewTokens", 1024));
+        putOptionalDouble(root, options, "temperature");
+        putOptionalInteger(root, options, "topK");
+        putOptionalBoolean(root, options, "dspEnabled");
+        putOptionalBoolean(root, options, "optimizerEnabled");
+        putOptionalBoolean(root, options, "optimizerFp16");
 
         Path argsFile = Files.createTempFile("kompile-chat-serving-", ".json");
         MAPPER.writeValue(argsFile.toFile(), root);
         return argsFile;
+    }
+
+    private static int integerOption(
+            Map<String, Object> options, String key, int defaultValue) {
+        Number value = numericOption(options, key);
+        return value == null ? defaultValue : value.intValue();
+    }
+
+    private static long longOption(
+            Map<String, Object> options, String key, long defaultValue) {
+        Number value = numericOption(options, key);
+        return value == null ? defaultValue : value.longValue();
+    }
+
+    private static Number numericOption(Map<String, Object> options, String key) {
+        Object value = options.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number;
+        }
+        throw new IllegalArgumentException(
+                "Local serving runtime option '" + key + "' must be numeric");
+    }
+
+    private static void putOptionalDouble(
+            ObjectNode root, Map<String, Object> options, String key) {
+        Number value = numericOption(options, key);
+        if (value == null) {
+            root.putNull(key);
+        } else {
+            root.put(key, value.doubleValue());
+        }
+    }
+
+    private static void putOptionalInteger(
+            ObjectNode root, Map<String, Object> options, String key) {
+        Number value = numericOption(options, key);
+        if (value == null) {
+            root.putNull(key);
+        } else {
+            root.put(key, value.intValue());
+        }
+    }
+
+    private static void putOptionalBoolean(
+            ObjectNode root, Map<String, Object> options, String key) {
+        Object value = options.get(key);
+        if (value == null) {
+            root.putNull(key);
+        } else if (value instanceof Boolean bool) {
+            root.put(key, bool);
+        } else {
+            throw new IllegalArgumentException(
+                    "Local serving runtime option '" + key + "' must be boolean");
+        }
     }
 
     static void waitForReady(

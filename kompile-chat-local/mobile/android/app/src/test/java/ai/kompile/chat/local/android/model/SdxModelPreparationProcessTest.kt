@@ -314,6 +314,8 @@ class SdxModelPreparationProcessTest {
         assertFalse(cancellation.contains("native.sdxLlm"))
         assertTrue(sdx.contains("native.sdxLlmUnloadModel(runtime, model)"))
         assertTrue(sdx.contains("native.sdxLlmDestroyRuntime(runtime)"))
+        assertTrue(sdx.contains("\"native_generation_report\""))
+        assertTrue(sdx.contains("\"decode_tokens_per_second\""))
 
         val androidAbi = File(
             "src/main/java/ai/kompile/chat/local/android/model/SdxAndroidLlmAbi.kt"
@@ -327,6 +329,7 @@ class SdxModelPreparationProcessTest {
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeResolveModelBundle("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeLoadCompiledModel("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeRenderChatPrompt("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeLastResultJson("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeGenerateStreaming("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeReadUtf8("))
         assertFalse(androidAbi.contains("org.bytedeco.javacpp"))
@@ -342,7 +345,7 @@ class SdxModelPreparationProcessTest {
 
         val apkVerifier = File("../tools/verify-offline-apk.sh").readText()
         assertTrue(apkVerifier.contains("--class ai.kompile.chat.local.android.model.SdxAndroidLlmAbi"))
-        assertTrue(apkVerifier.contains("--class org.nd4j.dsp.model.SdxLlmNative"))
+        assertTrue(apkVerifier.contains("org/nd4j/dsp/model/SdxLlmNative.class"))
         assertFalse(apkVerifier.contains("--class ai.kompile.chat.local.sdx.SdxLlmAbi"))
         assertTrue(apkVerifier.contains("causal-lm-in-graph-state-v2"))
         assertTrue(apkVerifier.contains("io.recurrentStates"))
@@ -468,7 +471,11 @@ class SdxModelPreparationProcessTest {
             targetProfile = "android-arm64-nnapi-accelerator",
             targetSoc = "google-tensor-g3",
             contextLength = 4096,
-            maxPrefillLength = 1024
+            maxPrefillLength = 1024,
+            conversionProfileSha256 = "c".repeat(64),
+            diagnosticMode = ModelDiagnosticMode.DSP_DIAGNOSTICS.wireValue,
+            optimizedSourcePath = "/data/user/0/app/no_backup/sdx-model-cache/v1/source-q4_k.gguf",
+            optimizedSourceBytes = 456_789_123L,
         )
 
         assertEquals(

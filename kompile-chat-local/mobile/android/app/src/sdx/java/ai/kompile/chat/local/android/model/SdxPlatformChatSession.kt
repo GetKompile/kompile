@@ -6,6 +6,7 @@ import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.GenOptions
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
 import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
@@ -52,12 +53,27 @@ internal object SdxPlatformRuntimeOwner {
         context: Context,
         modelPath: String,
         diagnosticModelPath: String = modelPath,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
         routeName: String,
         modelIdPrefix: String,
         loadTransaction: NativeOperationTransaction
     ): SdxOwnedPlatformChatSession {
         val applicationContext = context.applicationContext
         val trace = SmokeDecodeTraceLog(applicationContext)
+        trace.record(
+            "runtime_diagnostics_configured",
+            loadTransaction.snapshot().attemptId,
+            mapOf(
+                "diagnostic_mode" to diagnosticMode.wireValue,
+                "dsp_categories" to diagnosticMode.dspCategories,
+                "dsp_level" to diagnosticMode.dspLevel,
+                "dsp_trace_location" to if (diagnosticMode == ModelDiagnosticMode.DSP_DIAGNOSTICS) {
+                    DspDiagnosticsTraceLog(applicationContext).locationDescription()
+                } else {
+                    "disabled"
+                },
+            )
+        )
         check(Application.getProcessName() == sdxRuntimeProcessName(applicationContext.packageName)) {
             "Direct SDX runtime initialization is allowed only in the app-private runtime process."
         }
@@ -84,7 +100,7 @@ internal object SdxPlatformRuntimeOwner {
                 "Unable to create the device compilation cache: ${deviceCache.absolutePath}"
             }
 
-            val library = SdxAndroidLlmLibrary.configure(applicationContext)
+            val library = SdxAndroidLlmLibrary.configure(applicationContext, diagnosticMode)
             checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.LOAD_NATIVE_TRANSPORT)
             val abi = SdxAndroidLlmLibrary.bind(library)
             native = abi
@@ -423,6 +439,44 @@ internal object SdxPlatformRuntimeOwner {
                 generationStatus,
                 "SDX compiled-model generation failed"
             )
+            val generationReportRef = SdxPointerByReference()
+            val generationReportStatus = native.sdxLlmLastResultJson(
+                runtime,
+                model,
+                generationReportRef
+            )
+            if (generationReportStatus == STATUS_OK && generationReportRef.value != null) {
+                val report = JSONObject(
+                    readAndFree(
+                        native,
+                        runtime,
+                        generationReportRef.value,
+                        "native generation report"
+                    )
+                )
+                trace.record(
+                    "native_generation_report",
+                    attemptId,
+                    mapOf(
+                        "prompt_tokens" to report.optInt("promptTokens", -1),
+                        "generated_tokens" to report.optInt("generatedTokens", -1),
+                        "prefill_ns" to report.optLong("prefillTimeNanos", -1L),
+                        "decode_ns" to report.optLong("decodeTimeNanos", -1L),
+                        "decode_tokens_per_second" to
+                            report.optDouble("decodeTokensPerSecond", -1.0),
+                        "plan_phase" to report.optInt("planPhase", -1),
+                        "execution_count" to report.optInt("executionCount", -1),
+                        "used_fallback" to report.optInt("usedFallback", -1)
+                    )
+                )
+            } else {
+                generationReportRef.value?.let { native.sdxLlmFree(runtime, it) }
+                trace.record(
+                    "native_generation_report_unavailable",
+                    attemptId,
+                    mapOf("status" to generationReportStatus)
+                )
+            }
             val rawDecoded = readAndFree(
                 native, runtime, outputRef.value, "generated text"
             )

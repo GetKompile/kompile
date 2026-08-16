@@ -31,6 +31,7 @@ class VlmTestSubprocessArgsTest {
             assertFalse(args.doSample());
             assertEquals(VlmTestSubprocessArgs.DEFAULT_PDF_RENDER_DPI, args.pdfRenderDpi());
             assertEquals(VlmTestSubprocessArgs.DEFAULT_PAGE_BATCH_SIZE, args.pageBatchSize());
+            assertNull(args.pageRange());
             assertEquals("STATIC", args.kvCacheStrategy());
             assertTrue(args.optimizerEnabled());
             assertTrue(args.optimizerFp16());
@@ -48,7 +49,7 @@ class VlmTestSubprocessArgsTest {
                     .optimizerEnabled(false).optimizerFp16(false)
                     .tritonEnabled(false).tritonTf32(true)
                     .debugDiagnostics(true).opTiming(true)
-                    .speculativeTokens(3)
+                    .speculativeTokens(3).maxPages(2).pageRange("3-4")
                     .callbackBaseUrl("http://x")
                     .options(Map.of("k", "v")).build();
 
@@ -61,6 +62,8 @@ class VlmTestSubprocessArgsTest {
             assertFalse(args.optimizerEnabled());
             assertTrue(args.debugDiagnostics());
             assertEquals(3, args.speculativeTokens());
+            assertEquals(2, args.maxPages());
+            assertEquals("3-4", args.pageRange());
         }
 
         @Test void invalidDefaultsApplied() {
@@ -86,7 +89,7 @@ class VlmTestSubprocessArgsTest {
         @Test void fileRoundTrip() throws IOException {
             var original = VlmTestSubprocessArgs.builder()
                     .taskId("rt1").filePath("/f.pdf").modelId("gotocr2")
-                    .outputFormat("JSON").maxNewTokens(512)
+                    .outputFormat("JSON").maxNewTokens(512).pageRange("2,4")
                     .callbackBaseUrl("http://x").build();
 
             Path file = tempDir.resolve("vlm-args.json");
@@ -97,6 +100,7 @@ class VlmTestSubprocessArgsTest {
             assertEquals(original.taskId(), restored.taskId());
             assertEquals(original.outputFormat(), restored.outputFormat());
             assertEquals(original.maxNewTokens(), restored.maxNewTokens());
+            assertEquals(original.pageRange(), restored.pageRange());
         }
     }
 }

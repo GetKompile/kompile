@@ -47,9 +47,13 @@ class CorpusSchemaPromptBuilderTest {
 
         assertTrue(prompt.contains("node type"));
         assertTrue(prompt.contains("relationship type"));
-        assertTrue(prompt.contains("patterns object"));
-        assertTrue(prompt.contains("Type names must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*"));
-        assertTrue(prompt.contains("never for a particular name or value"));
+        assertTrue(prompt.contains("exactly one pattern for every relationship type"));
+        assertTrue(prompt.contains("nodeTypes and relationshipTypes each contain only plain label strings"));
+        assertTrue(prompt.contains("patterns alone contains endpoint objects"));
+        assertTrue(prompt.contains("Every pattern label must exactly copy a declared label"));
+        assertTrue(prompt.contains("All labels must be UPPER_SNAKE_CASE and match [A-Z][A-Z0-9_]*"));
+        assertTrue(prompt.contains("never the subject's name or value"));
+        assertTrue(prompt.contains("preserve subject-to-object direction"));
         assertTrue(prompt.contains("Call submit_corpus_schema exactly once"));
         assertFalse(prompt.contains("sent by"));
     }
@@ -69,6 +73,9 @@ class CorpusSchemaPromptBuilderTest {
         assertFalse(prompt.contains("chunkId: chunk-08"));
         assertFalse(prompt.contains("EMAIL_MESSAGE"));
         assertFalse(prompt.contains("SENT_BY"));
+        assertFalse(prompt.contains("AUTHOR"));
+        assertFalse(prompt.contains("PUBLISHER"));
+        assertFalse(prompt.contains("WRITES_FOR"));
     }
 
     @Test
