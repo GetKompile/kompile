@@ -33,8 +33,16 @@ fi
 _KOMPILE_BUILD_COMMON_LOADED=1
 
 # ─── Locate project roots ──────────────────────────────────────────────────
-if [ -z "${KOMPILE_ROOT:-}" ]; then
-  _KOMPILE_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_KOMPILE_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# All Bash entrypoints use the same native/posix path boundary layer.
+# shellcheck source=path-normalization.sh
+source "${_KOMPILE_COMMON_DIR}/path-normalization.sh"
+
+# PowerShell/Python may provide a native Windows root. Normalize it before any
+# source, cd, git, or filesystem operation.
+if [ -n "${KOMPILE_ROOT:-}" ]; then
+  KOMPILE_ROOT="$(kompile_path_to_posix "${KOMPILE_ROOT}")"
+else
   KOMPILE_ROOT="$(cd "${_KOMPILE_COMMON_DIR}/.." && pwd)"
 fi
 
@@ -46,7 +54,11 @@ KOMPILE_BRANCH="${KOMPILE_BRANCH:-main}"
 DL4J_REPO_URL="${DL4J_REPO_URL:-https://github.com/deeplearning4j/deeplearning4j.git}"
 KOMPILE_REPO_URL="${KOMPILE_REPO_URL:-https://github.com/GetKompile/kompile.git}"
 
-DL4J_PROJECT_ROOT="${DL4J_PROJECT_ROOT:-$(cd "${KOMPILE_ROOT}/../deeplearning4j" 2>/dev/null && pwd || echo "")}"
+if [ -n "${DL4J_PROJECT_ROOT:-}" ]; then
+  DL4J_PROJECT_ROOT="$(kompile_path_to_posix "${DL4J_PROJECT_ROOT}")"
+else
+  DL4J_PROJECT_ROOT="$(cd "${KOMPILE_ROOT}/../deeplearning4j" 2>/dev/null && pwd || echo "")"
+fi
 
 # ─── Minimal stubs (defined early so ensure_repo can use log) ──────────────
 # These get overwritten if DL4J build-common loads successfully.
@@ -161,13 +173,10 @@ KOMPILE_PUBLISH="${KOMPILE_PUBLISH:-0}"
 KOMPILE_DEPLOY_REPOSITORY_URL="${KOMPILE_DEPLOY_REPOSITORY_URL:-}"
 KOMPILE_DEPLOY_REPOSITORY_ID="${KOMPILE_DEPLOY_REPOSITORY_ID:-}"
 
-# GraalVM — try several locations
-# The release driver passes a native Windows path when this script runs under
-# MSYS2/Git Bash. Normalize it before probing the POSIX-visible installation.
-if [ -n "${GRAALVM_HOME:-}" ] && command -v cygpath >/dev/null 2>&1; then
-  case "${GRAALVM_HOME}" in
-    [A-Za-z]:*) GRAALVM_HOME="$(cygpath -u "${GRAALVM_HOME}")" ;;
-  esac
+# GraalVM — try several locations. The release driver passes a native
+# Windows path when this script runs under MSYS2/Git Bash.
+if [ -n "${GRAALVM_HOME:-}" ]; then
+  GRAALVM_HOME="$(kompile_path_to_posix "${GRAALVM_HOME}")"
 fi
 
 kompile_has_native_image() {
@@ -233,31 +242,6 @@ KOMPILE_NATIVE_CACHE_REMOTE_TOOL="${KOMPILE_NATIVE_CACHE_REMOTE_TOOL:-azcopy}"
 # mktemp receives C:\\k\\... as a relative POSIX path (for example
 # /home/SYSTEM/C:/k/...), so Maven writes the classpath probe somewhere the
 # Windows JVM cannot read and the AOT cache silently degrades to a rebuild.
-kompile_windows_shell() {
-  case "${OSTYPE:-}:${MSYSTEM:-}" in
-    cygwin*|msys*|win32*|*:MSYS*|*:MINGW*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-kompile_path_to_posix() {
-  local path="$1"
-  if kompile_windows_shell && command -v cygpath >/dev/null 2>&1; then
-    cygpath -u -- "${path}"
-  else
-    printf '%s\n' "${path}"
-  fi
-}
-
-kompile_path_to_native() {
-  local path="$1"
-  if kompile_windows_shell && command -v cygpath >/dev/null 2>&1; then
-    cygpath -w -- "${path}"
-  else
-    printf '%s\n' "${path}"
-  fi
-}
-
 # Developer builds default to GraalVM quick build (-Ob). Set
 # KOMPILE_NATIVE_QUICK_BUILD=0 for optimized/release images. The resolved value
 # is passed to Maven and therefore participates in the native cache fingerprint.
@@ -278,6 +262,10 @@ KOMPILE_SDX_OUTPUT_DIR="${KOMPILE_SDX_OUTPUT_DIR:-${KOMPILE_OUTPUT_DIR}/sdx-sdk}
 # DL4J JARs. Point this at an extracted DL4J sdk-assets shard (or a root with
 # one subdirectory per platform).
 DL4J_SDX_ASSETS_DIR="${DL4J_SDX_ASSETS_DIR:-}"
+
+# Normalize every path consumed by Bash. MAVEN_REPO_LOCAL deliberately remains
+# native for Maven/Java arguments and is converted only at shell boundaries.
+kompile_normalize_shell_paths || return 1
 
 # Maven flags for Kompile Java builds. Keep these as an array so repository
 # URLs and local repository paths are never reparsed by the shell.
@@ -584,7 +572,7 @@ kompile_collect_sdx_bindings() {
   # Match the DL4J release driver's package_sdk_jars output: keep unclassified
   # API/platform JARs for the lane and only the requested platform classifier.
   local maven_repository
-  maven_repository="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}"
+  maven_repository="$(kompile_maven_repository_posix)" || return 1
   # Runtime package directories may contain jars/ from an older collection. Replace
   # that directory so a new shard cannot inherit timestamped SNAPSHOT artifacts.
   rm -rf "${dest}/jars"

@@ -37,9 +37,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
 
+# All shell-owned paths use the MSYS namespace. Native Maven/Java arguments
+# retain a separately converted Windows path where required.
+# shellcheck source=build-scripts/path-normalization.sh
+_PATH_HELPER="${SCRIPT_DIR}/build-scripts/path-normalization.sh"
+if [ -f "${_PATH_HELPER}" ]; then
+    source "${_PATH_HELPER}"
+else
+    # Test harnesses may copy this standalone entrypoint without the source tree.
+    # Production distributions include build-scripts/path-normalization.sh.
+    kompile_windows_shell() {
+        case "${OSTYPE:-}:${MSYSTEM:-}" in
+            cygwin*|msys*|win32*|*:MSYS*|*:MINGW*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    if kompile_windows_shell; then
+        echo "ERROR: build-dist.sh requires build-scripts/path-normalization.sh on Windows/MSYS" >&2
+        exit 1
+    fi
+    kompile_path_to_posix() { printf '%s\n' "${1:-}"; }
+    kompile_path_to_native() { printf '%s\n' "${1:-}"; }
+    kompile_normalize_shell_paths() { :; }
+fi
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 GRAALVM_HOME="${GRAALVM_HOME:-${HOME}/.sdkman/candidates/java/21.0.10-graal}"
+GRAALVM_HOME="$(kompile_path_to_posix "${GRAALVM_HOME}")"
 # Maven: env override > PATH > local dev fallback (keeps clones working without edits)
 if [ -z "${MVN:-}" ]; then
     MVN="$(command -v mvn 2>/dev/null || echo /home/agibsonccc/dev-apps/mvn/bin/mvn)"
@@ -95,6 +120,17 @@ if [ -z "${VARIANT}" ]; then
     echo "Variants: cli-only, local, full, hosted, cpu-intel, cpu-arm, cuda, amd-zluda"
     exit 1
 fi
+
+# Arguments arrive here from PowerShell/Python as native Windows paths on the
+# Azure worker. Convert values used by Bash before any mkdir/find/cp/tar/Python
+# operation. The Maven-native values are derived separately below.
+kompile_normalize_shell_paths
+OUTPUT_DIR="$(kompile_path_to_posix "${OUTPUT_DIR}")"
+if [ -n "${SDX_ASSETS_DIR}" ]; then
+    SDX_ASSETS_DIR="$(kompile_path_to_posix "${SDX_ASSETS_DIR}")"
+fi
+JAVA_HOME="${GRAALVM_HOME}"
+export JAVA_HOME
 
 # Resolve version from pom if not specified
 if [ -z "${VERSION}" ]; then
@@ -286,7 +322,9 @@ case "${DISTRIBUTION_CLASSIFIER}" in
     *[!A-Za-z0-9._-]*|'') echo "Invalid distribution classifier: ${DISTRIBUTION_CLASSIFIER}" >&2; exit 1 ;;
 esac
 
-MAVEN_REPOSITORY="${KOMPILE_MAVEN_REPO:-${HOME}/.m2/repository}"
+MAVEN_REPOSITORY_INPUT="${KOMPILE_MAVEN_REPO:-${HOME}/.m2/repository}"
+MAVEN_REPOSITORY="$(kompile_path_to_native "${MAVEN_REPOSITORY_INPUT}")"
+MAVEN_REPOSITORY_SHELL="$(kompile_path_to_posix "${MAVEN_REPOSITORY}")"
 ND4J_VERSION="${ND4J_VERSION:-1.0.0-SNAPSHOT}"
 DL4J_MAVEN_REPOSITORY_URL="${DL4J_MAVEN_REPOSITORY_URL:-}"
 DL4J_MAVEN_REPOSITORY_ID="${DL4J_MAVEN_REPOSITORY_ID:-dl4j-release}"
@@ -328,7 +366,7 @@ fi
 # native-contract crashes that masquerade as dl4j bugs (2026-07-05 CUDA-700 misdiagnosis: Jun-22
 # cuda preset bundled under Jul-5 natives). Warn when the SNAPSHOT set spans >6h of build times.
 if [ -n "${ND4J_BACKEND}" ]; then
-    DL4J_M2="${MAVEN_REPOSITORY}/org/eclipse/deeplearning4j"
+    DL4J_M2="${MAVEN_REPOSITORY_SHELL}/org/eclipse/deeplearning4j"
     if [ -d "${DL4J_M2}" ]; then
         VINTAGE_SPAN_H=$(find "${DL4J_M2}" -maxdepth 3 -name '*-1.0.0-SNAPSHOT*.jar' -printf '%T@\n' 2>/dev/null | sort -n | awk 'NR==1{f=$1} {l=$1} END{if (NR>1) printf "%d", (l-f)/3600}' || true)
         if [ -n "${VINTAGE_SPAN_H:-}" ] && [ "${VINTAGE_SPAN_H}" -gt 6 ]; then
@@ -358,10 +396,10 @@ if [ "${SKIP_JAVA_BUILD}" = true ] && [ "${SKIP_NATIVE}" = true ] && [ "${JARS_O
 fi
 if [ -n "${LIBND4J_EXTENSION}" ] && [ -n "${ND4J_BACKEND}" ] && [ "${MAVEN_WILL_RUN}" = true ] \
         && [ -z "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
-    BACKEND_M2="${MAVEN_REPOSITORY}/org/eclipse/deeplearning4j/${ND4J_BACKEND}"
+    BACKEND_M2="${MAVEN_REPOSITORY_SHELL}/org/eclipse/deeplearning4j/${ND4J_BACKEND}"
     FLAVOR_JAR="$(find "${BACKEND_M2}" -name "*-${PLATFORM}-${LIBND4J_EXTENSION}.jar" -print -quit 2>/dev/null || true)"
     if [ -z "${FLAVOR_JAR}" ]; then
-        echo "ERROR: variant '${VARIANT}' builds the ${LIBND4J_EXTENSION} flavor, but ${MAVEN_REPOSITORY} has no" >&2
+        echo "ERROR: variant '${VARIANT}' builds the ${LIBND4J_EXTENSION} flavor, but ${MAVEN_REPOSITORY_SHELL} has no" >&2
         echo "       ${ND4J_BACKEND} jar with the ${PLATFORM}-${LIBND4J_EXTENSION} classifier." >&2
         echo "" >&2
         echo "       Produce it from the dl4j checkout — libnd4j has to be compiled with the" >&2
@@ -1402,13 +1440,13 @@ if [ "${INSTALL_MAVEN}" = true ]; then
     install_distribution_artifact() {
         local artifact_file="$1"
         local artifact_type="$2"
-        echo "  Installing classified distribution ${artifact_type} in ${MAVEN_REPOSITORY}"
+        echo "  Installing classified distribution ${artifact_type} in ${MAVEN_REPOSITORY_SHELL}"
         local -a install_args=(
             --batch-mode
             --no-transfer-progress
             "-Dmaven.repo.local=${MAVEN_REPOSITORY}"
             org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file
-            "-Dfile=${artifact_file}"
+            "-Dfile=$(kompile_path_to_native "${artifact_file}")"
             -DgroupId=ai.kompile
             -DartifactId=kompile-dist
             "-Dversion=${VERSION}"

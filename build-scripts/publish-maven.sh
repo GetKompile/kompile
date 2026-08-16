@@ -7,6 +7,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=path-normalization.sh
+source "${SCRIPT_DIR}/path-normalization.sh"
 REPOSITORY_TOOL="${SCRIPT_DIR}/../release/central/repository.py"
 SOURCE_REPOSITORY="${MAVEN_REPO_LOCAL:-${HOME}/.m2/repository}"
 REPOSITORY_URL="${KOMPILE_DEPLOY_REPOSITORY_URL:-${DL4J_MAVEN_REPOSITORY_URL:-}}"
@@ -45,6 +47,12 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+# This script performs shell filesystem operations on the local repository and
+# staging tree, but repository.py is a native Python process on Azure Windows.
+SOURCE_REPOSITORY_NATIVE="$(kompile_path_to_native "${SOURCE_REPOSITORY}")"
+SOURCE_REPOSITORY="$(kompile_path_to_posix "${SOURCE_REPOSITORY_NATIVE}")"
+REPOSITORY_TOOL_NATIVE="$(kompile_path_to_native "${REPOSITORY_TOOL}")"
+
 if [ -z "${REPOSITORY_URL}" ]; then
     echo "A target repository is required via --repository-url, KOMPILE_DEPLOY_REPOSITORY_URL, or DL4J_MAVEN_REPOSITORY_URL." >&2
     exit 2
@@ -66,8 +74,8 @@ trap cleanup EXIT
 mkdir -p "${STAGING_REPOSITORY}/ai"
 cp -R "${SOURCE_REPOSITORY}/ai/kompile" "${STAGING_REPOSITORY}/ai/kompile"
 
-python3 "${REPOSITORY_TOOL}" deploy-snapshot \
-    --repository "${STAGING_REPOSITORY}" \
+python3 "${REPOSITORY_TOOL_NATIVE}" deploy-snapshot \
+    --repository "$(kompile_path_to_native "${STAGING_REPOSITORY}")" \
     --release-version "${RELEASE_VERSION}" \
     --repository-id "${REPOSITORY_ID}" \
     --url "${REPOSITORY_URL}" \
