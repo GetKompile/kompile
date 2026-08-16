@@ -446,7 +446,7 @@
                             <metadataRepository>
                                 <enabled>true</enabled>
                             </metadataRepository>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
@@ -573,7 +573,7 @@
                         <configuration>
                             <mainClass>ai.kompile.staging.subprocess.TrainingSubprocessMain</mainClass>
                             <imageName>kompile-training</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>

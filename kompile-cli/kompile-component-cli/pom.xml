@@ -178,7 +178,7 @@
                         <configuration>
                             <mainClass>${main.class}</mainClass>
                             <imageName>kompile-component</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx4g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--enable-url-protocols=https,http</buildArg>

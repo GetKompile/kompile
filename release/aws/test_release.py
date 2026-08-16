@@ -1536,6 +1536,29 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn('windows-*) extra_mvn_args+=("-Dkompile.windows.pe-safe=true")', source)
         self.assertIn('kompile_build_all_native "${extra_mvn_args[@]}"', source)
 
+    def test_windows_pe_safe_build_arg_is_appended_to_native_modules(self):
+        native_poms = (
+            "kompile-cli/kompile-cli-main/pom.xml",
+            "kompile-cli/kompile-component-cli/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-main/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-chat/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-crawl-manager/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-lite/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/pom.xml",
+            "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/pom.xml",
+            "kompile-app/kompile-models/kompile-model-staging/pom.xml",
+        )
+        for relative_path in native_poms:
+            source = (REPOSITORY / relative_path).read_text(encoding="utf-8")
+            self.assertIn(
+                '<buildArgs combine.children="append">',
+                source,
+                relative_path,
+            )
+        root_pom = (REPOSITORY / "pom.xml").read_text(encoding="utf-8")
+        self.assertIn("native-windows-pe-safe", root_pom)
+        self.assertIn("<buildArg>-O1</buildArg>", root_pom)
+
     def test_dl4j_backend_dry_run_preserves_repository_paths_with_spaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

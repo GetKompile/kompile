@@ -780,7 +780,7 @@
                         <configuration>
                             <mainClass>${start-class}</mainClass>
                             <imageName>kompile-app</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx80g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
                                 <buildArg>--verbose</buildArg>
@@ -991,7 +991,7 @@
                         <configuration>
                             <mainClass>ai.kompile.app.subprocess.IngestSubprocessMain</mainClass>
                             <imageName>kompile-ingest</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1101,7 +1101,7 @@
                         <configuration>
                             <mainClass>ai.kompile.app.subprocess.VectorPopulationSubprocessMain</mainClass>
                             <imageName>kompile-vector</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1210,7 +1210,7 @@
                         <configuration>
                             <mainClass>ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain</mainClass>
                             <imageName>kompile-embedding</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1316,7 +1316,7 @@
                         <configuration>
                             <mainClass>ai.kompile.app.subprocess.model.ModelInitSubprocessMain</mainClass>
                             <imageName>kompile-model-init</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1422,7 +1422,7 @@
                         <configuration>
                             <mainClass>ai.kompile.app.subprocess.VlmTestSubprocessMain</mainClass>
                             <imageName>kompile-vlm-test</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
@@ -1534,7 +1534,7 @@
                         <configuration>
                             <mainClass>ai.kompile.staging.subprocess.TrainingSubprocessMain</mainClass>
                             <imageName>kompile-training</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>

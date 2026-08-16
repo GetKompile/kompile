@@ -333,7 +333,7 @@
                         <configuration>
                             <mainClass>${start-class}</mainClass>
                             <imageName>kompile-crawl-manager</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx80g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
                                 <buildArg>--verbose</buildArg>

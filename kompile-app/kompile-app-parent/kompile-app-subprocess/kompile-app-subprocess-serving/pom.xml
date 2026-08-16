@@ -150,7 +150,7 @@
                             <metadataRepository>
                                 <enabled>true</enabled>
                             </metadataRepository>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--enable-url-protocols=http,https</buildArg>
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>

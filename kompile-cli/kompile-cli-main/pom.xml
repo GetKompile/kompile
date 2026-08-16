@@ -383,7 +383,7 @@
                         <configuration>
                             <mainClass>ai.kompile.cli.main.MainCommand</mainClass>
                             <imageName>${project.artifactId}</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx18g</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>

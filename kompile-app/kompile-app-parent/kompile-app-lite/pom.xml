@@ -277,7 +277,7 @@
                         <configuration>
                             <mainClass>${start-class}</mainClass>
                             <imageName>${project.artifactId}-native</imageName>
-                            <buildArgs>
+                            <buildArgs combine.children="append">
                                 <buildArg>-J-Xmx16g</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
