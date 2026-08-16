@@ -317,6 +317,11 @@ fi
 if [ -n "${EXTRA_MVN_FLAGS}" ]; then
     MAVEN_BUILD_ARGS+=("${EXTRA_MVN_FLAGS}")
 fi
+# Large Windows PE/COFF images hit a GraalVM relocation-table layout bug at -O2.
+# Activate the root POM's targeted -O1 profile only for release distribution builds.
+if [[ "${PLATFORM}" == windows-* ]]; then
+    MAVEN_BUILD_ARGS+=("-Dkompile.windows.pe-safe=true")
+fi
 
 # Mixed-vintage guard: kompile bundles dl4j straight from ~/.m2, which accumulates partial `-pl`
 # installs across sessions (api/presets/natives from different builds). Mixed vintages produce

@@ -1524,6 +1524,9 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn('"-Dmaven.repo.local=${MAVEN_REPOSITORY}"', source)
         self.assertIn('"-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"', source)
         self.assertIn('"-Dkompile.backend=${KOMPILE_BACKEND_PROFILE}"', source)
+        self.assertIn('"-Dkompile.windows.pe-safe=true"', source)
+        self.assertIn('native-windows-pe-safe', (REPOSITORY / "pom.xml").read_text(encoding="utf-8"))
+        self.assertIn('<buildArg>-O1</buildArg>', (REPOSITORY / "pom.xml").read_text(encoding="utf-8"))
         self.assertNotIn('eval "${BUILD_CMD}"', source)
 
     def test_dl4j_backend_dry_run_preserves_repository_paths_with_spaces(self):

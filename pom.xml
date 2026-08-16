@@ -855,6 +855,33 @@
       </repositories>
     </profile>
 
+    <!-- The large Windows app image triggers GraalVM's PE/COFF relocation-table
+         bug at the default release optimization level (-O2). build-dist.sh opts
+         into this profile only for Windows distribution builds; -O1 remains fully
+         AOT and avoids the faulty layout path without changing normal development
+         or non-Windows release optimization. -->
+    <profile>
+      <id>native-windows-pe-safe</id>
+      <activation>
+        <property>
+          <name>kompile.windows.pe-safe</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <configuration>
+              <buildArgs combine.children="append">
+                <buildArg>-O1</buildArg>
+              </buildArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <!-- ── ND4J backend variant profiles ────────────────────────────────────
          Activated by -Dkompile.backend=<value>. Classifiers exactly mirror the
          attested ../deeplearning4j/release matrix:
