@@ -220,6 +220,12 @@ KOMPILE_NATIVE_CACHE="${KOMPILE_NATIVE_CACHE:-1}"
 KOMPILE_NATIVE_FORCE_REBUILD="${KOMPILE_NATIVE_FORCE_REBUILD:-0}"
 KOMPILE_NATIVE_CACHE_DIR="${KOMPILE_NATIVE_CACHE_DIR:-${HOME}/.cache/kompile/native-images}"
 KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR="${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR:-${KOMPILE_NATIVE_CACHE_DIR}/dependency-manifests}"
+# Optional durable cache endpoint. Azure workers set this to a Blob prefix and
+# authenticate the configured tool (AzCopy) with their managed identity. The
+# endpoint is deliberately empty for local/AWS builds, preserving local-only
+# cache behavior unless a backend explicitly opts in.
+KOMPILE_NATIVE_CACHE_REMOTE_ROOT="${KOMPILE_NATIVE_CACHE_REMOTE_ROOT:-}"
+KOMPILE_NATIVE_CACHE_REMOTE_TOOL="${KOMPILE_NATIVE_CACHE_REMOTE_TOOL:-azcopy}"
 
 # Developer builds default to GraalVM quick build (-Ob). Set
 # KOMPILE_NATIVE_QUICK_BUILD=0 for optimized/release images. The resolved value
@@ -948,6 +954,82 @@ kompile_native_validate_cache_receipt() {
   KOMPILE_NATIVE_RECEIPT_CHECKSUM="${checksum}"
 }
 
+# Restore/publish one cache entry through an optional durable backend. Entries
+# are addressed by the same target/AOT fingerprint as the local cache and carry
+# the receipt beside the executable. A partial remote entry is treated as a miss;
+# the build remains authoritative and will repair it after a successful image.
+kompile_native_remote_copy() {
+  local source="$1"
+  local destination="$2"
+  [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}" ] || return 1
+  command -v "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" >/dev/null 2>&1 || return 1
+  "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" copy "${source}" "${destination}" \
+    --overwrite=true >/dev/null 2>&1
+}
+
+kompile_native_remote_path() {
+  local target="$1"
+  local aot_fingerprint="$2"
+  local filename="$3"
+  printf '%s/%s/%s/%s' "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT%/}" \
+    "${target}" "${aot_fingerprint}" "${filename}"
+}
+
+kompile_native_remote_restore() {
+  local target="$1"
+  local cache_dir="$2"
+  local cached_image="$3"
+  local cached_metadata="$4"
+  local aot_fingerprint="$5"
+  local remote_image remote_metadata temporary_dir downloaded_image downloaded_metadata checksum
+
+  [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}" ] || return 1
+  remote_image="$(kompile_native_remote_path "${target}" "${aot_fingerprint}" "$(basename "${cached_image}")")"
+  remote_metadata="${remote_image}.native-cache"
+  mkdir -p "${cache_dir}" || return 1
+  temporary_dir="$(mktemp -d "${cache_dir}/.remote-cache.XXXXXX")" || return 1
+  downloaded_image="${temporary_dir}/$(basename "${cached_image}")"
+  downloaded_metadata="${downloaded_image}.native-cache"
+  if ! kompile_native_remote_copy "${remote_image}" "${temporary_dir}" \
+      || ! kompile_native_remote_copy "${remote_metadata}" "${temporary_dir}"; then
+    rm -rf "${temporary_dir}"
+    return 1
+  fi
+  if [ ! -x "${downloaded_image}" ] || [ ! -f "${downloaded_metadata}" ] \
+      || ! kompile_native_validate_cache_receipt "${downloaded_metadata}" "${aot_fingerprint}"; then
+    rm -rf "${temporary_dir}"
+    return 1
+  fi
+  checksum="$(kompile_sha256_file "${downloaded_image}")" || {
+    rm -rf "${temporary_dir}"
+    return 1
+  }
+  if [ "${checksum}" != "${KOMPILE_NATIVE_RECEIPT_CHECKSUM}" ]; then
+    rm -rf "${temporary_dir}"
+    return 1
+  fi
+  chmod +x,a-w "${downloaded_image}"
+  mv -f "${downloaded_image}" "${cached_image}"
+  mv -f "${downloaded_metadata}" "${cached_metadata}"
+  rm -rf "${temporary_dir}"
+  log "REMOTE CACHE HIT: restored native image ${target} from ${remote_image}"
+}
+
+kompile_native_remote_publish() {
+  local target="$1"
+  local image_path="$2"
+  local aot_fingerprint="$3"
+  local remote_image remote_metadata
+
+  [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}" ] || return 0
+  [ -x "${image_path}" ] && [ ! -L "${image_path}" ] || return 1
+  remote_image="$(kompile_native_remote_path "${target}" "${aot_fingerprint}" "$(basename "${image_path}")")"
+  remote_metadata="${remote_image}.native-cache"
+  kompile_native_remote_copy "${image_path}" "${remote_image}" || return 1
+  kompile_native_remote_copy "${image_path}.native-cache" "${remote_metadata}" || return 1
+  log "Published native image ${target} to durable cache ${remote_image}"
+}
+
 kompile_restore_cached_native_image() {
   local target="$1"
   local image_path="$2"
@@ -973,7 +1055,9 @@ kompile_restore_cached_native_image() {
   local temporary_image
   if [ ! -x "${cached_image}" ] || [ -L "${cached_image}" ] \
       || ! kompile_native_validate_cache_receipt "${cached_metadata}" "${aot_fingerprint}"; then
-    return 1
+    kompile_native_remote_restore \
+      "${target}" "${cache_dir}" "${cached_image}" "${cached_metadata}" \
+      "${aot_fingerprint}" || return 1
   fi
   actual_checksum="$(kompile_sha256_file "${cached_image}")"
   [ "${actual_checksum}" = "${KOMPILE_NATIVE_RECEIPT_CHECKSUM}" ] || return 1
@@ -1015,6 +1099,8 @@ kompile_publish_cached_native_image() {
       && [ "$(kompile_sha256_file "${cached_image}")" = "${checksum}" ]; then
     kompile_native_write_cache_receipt "${cached_metadata}" \
       "${aot_fingerprint}" "${runtime_fingerprint}" "${checksum}" || return 1
+    kompile_native_remote_publish "${target}" "${cached_image}" \
+      "${aot_fingerprint}" || log "WARNING: could not publish native cache entry for ${target}"
     log "Native AOT cache already contains ${target}: ${cache_dir}"
     return 0
   fi
@@ -1029,6 +1115,8 @@ kompile_publish_cached_native_image() {
   mv -f "${temporary_image}" "${cached_image}"
   kompile_native_write_cache_receipt "${cached_metadata}" \
     "${aot_fingerprint}" "${runtime_fingerprint}" "${checksum}" || return 1
+  kompile_native_remote_publish "${target}" "${cached_image}" \
+    "${aot_fingerprint}" || log "WARNING: could not publish native cache entry for ${target}"
   log "Cached native image ${target}: ${cache_dir} (runtime ${runtime_fingerprint})"
 }
 

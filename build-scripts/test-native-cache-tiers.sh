@@ -96,9 +96,30 @@ read -r AOT_METADATA_CHANGED RUNTIME_METADATA_CHANGED <<< "$(dependency_fingerpr
 KOMPILE_NATIVE_CACHE_DIR="${TEST_ROOT}/cache"
 KOMPILE_OUTPUT_DIR="${TEST_ROOT}/output"
 KOMPILE_NATIVE_QUICK_BUILD=1
-export KOMPILE_ROOT GRAALVM_HOME KOMPILE_NATIVE_CACHE_DIR KOMPILE_OUTPUT_DIR KOMPILE_NATIVE_QUICK_BUILD
+KOMPILE_NATIVE_CACHE_REMOTE_ROOT="remote://kompile-native-cache"
+KOMPILE_NATIVE_CACHE_REMOTE_TOOL="test-double"
+export KOMPILE_ROOT GRAALVM_HOME KOMPILE_NATIVE_CACHE_DIR KOMPILE_OUTPUT_DIR \
+  KOMPILE_NATIVE_QUICK_BUILD KOMPILE_NATIVE_CACHE_REMOTE_ROOT KOMPILE_NATIVE_CACHE_REMOTE_TOOL
 # shellcheck source=build-common.sh
 source "${SCRIPT_DIR}/build-common.sh"
+
+REMOTE_STORE="${TEST_ROOT}/remote-cache"
+kompile_native_remote_copy() {
+  local source="$1"
+  local destination="$2"
+  local relative
+  if [[ "${source}" == "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/"* ]]; then
+    relative="${source#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}"
+    mkdir -p "${destination}"
+    cp "${REMOTE_STORE}/${relative}" "${destination}/$(basename "${source}")"
+  elif [[ "${destination}" == "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/"* ]]; then
+    relative="${destination#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}"
+    mkdir -p "${REMOTE_STORE}/$(dirname "${relative}")"
+    cp "${source}" "${REMOTE_STORE}/${relative}"
+  else
+    return 1
+  fi
+}
 
 TARGET_IMAGE="${TEST_ROOT}/target/native-worker"
 mkdir -p "$(dirname "${TARGET_IMAGE}")"
@@ -112,6 +133,10 @@ kompile_publish_cached_native_image   fixture "${TARGET_IMAGE}" "${AOT_RECEIPT_K
 EXPECTED_IMAGE_SHA="$(kompile_sha256_file "${TARGET_IMAGE}")"
 printf 'corrupted-local-target' > "${TARGET_IMAGE}"
 chmod +x "${TARGET_IMAGE}"
+# Force the restore through the remote backend to prove a fresh worker can
+# recover an image after its local cache directory is gone.
+rm -rf -- "${KOMPILE_NATIVE_CACHE_DIR}"
+mkdir -p "${KOMPILE_NATIVE_CACHE_DIR}"
 
 kompile_restore_cached_native_image   fixture "${TARGET_IMAGE}" "${AOT_RECEIPT_KEY}" "${RUNTIME_RECEIPT_V2}" ||
   fail "AOT cache did not restore across a runtime-only fingerprint change"

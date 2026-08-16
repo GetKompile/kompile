@@ -46,6 +46,8 @@ PLATFORM=$(config shard.build.javacppPlatform)
 CONTAINER_IMAGE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["shard"].get("containerImage", ""))' "${CONFIG_FILE}")
 CONTAINER_FAMILY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["shard"].get("containerFamily", "debian"))' "${CONFIG_FILE}")
 BLOB_ROOT="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${ARTIFACT_CONTAINER}/${ARTIFACT_PREFIX}/${RUN_ID}/${SHARD_ID}"
+NATIVE_IMAGE_CACHE_PREFIX=$(config nativeImageCachePrefix)
+NATIVE_IMAGE_CACHE_ROOT="https://${STORAGE_ACCOUNT}.blob.core.windows.net/${ARTIFACT_CONTAINER}/${NATIVE_IMAGE_CACHE_PREFIX}/${SHARD_ID}"
 
 azcopy_retry() {
   local attempt
@@ -97,6 +99,8 @@ curl --fail --location --retry 5 "${AZCOPY_URL}" -o /tmp/azcopy.tar.gz
 tar -xzf /tmp/azcopy.tar.gz -C /tmp
 install "$(find /tmp -path '*/azcopy' -type f | head -1)" /usr/local/bin/azcopy
 azcopy login --identity --identity-client-id "${IDENTITY_CLIENT_ID}"
+export KOMPILE_NATIVE_CACHE_REMOTE_ROOT="${NATIVE_IMAGE_CACHE_ROOT}"
+export KOMPILE_NATIVE_CACHE_REMOTE_TOOL=azcopy
 
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-$(dpkg --print-architecture)
 export CCACHE_DIR=${WORK_ROOT}/ccache

@@ -27,6 +27,12 @@ New-Item -ItemType Directory -Force -Path $WorkRoot,$OutputDir,$MavenRepo | Out-
 $Config = Get-Content -Raw $ConfigFile | ConvertFrom-Json
 $Shard = $Config.shard
 $BlobRoot = "https://$($Config.storageAccount).blob.core.windows.net/$($Config.artifactContainer)/$($Config.artifactPrefix)/$($Config.runId)/$($Shard.id)"
+$NativeImageCachePrefix = [string]$Config.nativeImageCachePrefix
+$NativeImageCacheRoot = if ($NativeImageCachePrefix) {
+  "https://$($Config.storageAccount).blob.core.windows.net/$($Config.artifactContainer)/$NativeImageCachePrefix/$($Shard.id)"
+} else {
+  ""
+}
 $ExitCode = 1
 $UploadFailed = $false
 $TranscriptStarted = $false
@@ -92,7 +98,11 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Chocolatey bootstrap package installation failed' }
   $MachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
   $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  $env:PATH = "C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+  $env:PATH = "$WorkRoot;C:\Program Files\Git\cmd;C:\Program Files\Git\bin;C:\ProgramData\chocolatey\bin;$MachinePath;$UserPath;C:\tools\msys64\mingw64\bin;C:\tools\msys64\usr\bin;$env:PATH"
+  if ($NativeImageCacheRoot) {
+    $env:KOMPILE_NATIVE_CACHE_REMOTE_ROOT = $NativeImageCacheRoot
+    $env:KOMPILE_NATIVE_CACHE_REMOTE_TOOL = 'azcopy'
+  }
   git config --system core.longpaths true
   if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long-path support' }
   $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue

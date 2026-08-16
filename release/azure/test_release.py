@@ -41,6 +41,10 @@ class AzurePlanTest(unittest.TestCase):
             self.plan["artifactContainer"], self.plan["repositoryContainer"]
         )
 
+    def test_native_image_cache_is_separate_from_dl4j_compiler_cache(self):
+        self.assertEqual("kompile/native-image-cache/v1", MODULE.NATIVE_IMAGE_CACHE_PREFIX)
+        self.assertNotIn("deeplearning4j", MODULE.NATIVE_IMAGE_CACHE_PREFIX)
+
     def test_plan_matches_dl4j_azure_classifier_matrix(self):
         expected = {
             "linux-x86_64",
@@ -774,6 +778,20 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("Get-Command mvn.cmd", powershell)
         self.assertIn("Start-Process $PythonExe", powershell)
         self.assertIn("& $PythonExe -c", powershell)
+
+    def test_workers_enable_durable_native_image_cache(self):
+        shell = (ROOT / "worker.sh").read_text(encoding="utf-8")
+        powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")
+        for source in (shell, powershell):
+            self.assertIn("nativeImageCachePrefix", source)
+            self.assertIn("KOMPILE_NATIVE_CACHE_REMOTE_ROOT", source)
+            self.assertIn("KOMPILE_NATIVE_CACHE_REMOTE_TOOL", source)
+        build_common = (REPOSITORY / "build-scripts" / "build-common.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("kompile_native_remote_restore", build_common)
+        self.assertIn("kompile_native_remote_publish", build_common)
+        self.assertIn("REMOTE CACHE HIT", build_common)
 
     def test_windows_worker_pins_gnu_rust_toolchain_for_cbindgen(self):
         powershell = (ROOT / "worker.ps1").read_text(encoding="utf-8")

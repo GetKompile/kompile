@@ -41,6 +41,9 @@ DEFAULT_REPOSITORY = "https://github.com/GetKompile/kompile.git"
 DEFAULT_DL4J_REPOSITORY = "https://github.com/deeplearning4j/deeplearning4j.git"
 DEFAULT_DL4J_CACHE_CONTAINER = "releases"
 DEFAULT_DL4J_CACHE_PREFIX = "deeplearning4j/releases"
+# Kompile AOT artifacts are kept in the controller-owned artifact account,
+# separate from DL4J's compiler/toolchain cache namespace.
+NATIVE_IMAGE_CACHE_PREFIX = "kompile/native-image-cache/v1"
 BLOB_DATA_CONTRIBUTOR = "Storage Blob Data Contributor"
 BLOB_DATA_READER = "Storage Blob Data Reader"
 NAME_PATTERN = re.compile(r"[^a-z0-9-]+")
@@ -1377,6 +1380,7 @@ def start(args: argparse.Namespace) -> None:
         "artifactContainer": plan["artifactContainer"],
         "controlContainer": plan["controlContainer"],
         "artifactPrefix": plan["artifactPrefix"],
+        "nativeImageCachePrefix": NATIVE_IMAGE_CACHE_PREFIX,
         "runId": run_id,
         "releaseVersion": args.version,
         "snapshotVersion": args.snapshot_version,

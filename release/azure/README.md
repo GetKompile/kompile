@@ -191,6 +191,15 @@ toolchain snapshots use the managed identity. Storage account keys are not
 embedded in workers. Role-assignment propagation is handled by bounded AzCopy
 retries.
 
+Kompile's content-addressed Graal native-image cache is separate from DL4J's
+compiler cache. Azure workers use the managed identity to restore and publish
+entries under `kompile/native-image-cache/v1/<shard>/<aot-fingerprint>/`; the
+existing local cache remains the first-level cache, and the receipt's SHA-256
+checksum is verified before an image is restored. A new VM can therefore reuse
+completed CLI/app/service images without rerunning Graal, while a changed source,
+Maven dependency, Graal version, or native-image argument naturally gets a new
+fingerprint.
+
 The cache account defaults to the canonical DL4J account derived from the Azure
 subscription and location (`dl4jrel…`). Override it with
 `--dl4j-cache-storage-account` or `DL4J_AZURE_STORAGE_ACCOUNT` when using an
