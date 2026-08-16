@@ -227,6 +227,37 @@ KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR="${KOMPILE_NATIVE_DEPENDENCY_MANIFE
 KOMPILE_NATIVE_CACHE_REMOTE_ROOT="${KOMPILE_NATIVE_CACHE_REMOTE_ROOT:-}"
 KOMPILE_NATIVE_CACHE_REMOTE_TOOL="${KOMPILE_NATIVE_CACHE_REMOTE_TOOL:-azcopy}"
 
+# Bash on Windows is supplied by MSYS2/Git Bash while Maven and GraalVM are
+# native Windows processes. Keep shell-owned cache paths in the MSYS namespace,
+# but convert paths passed to native JVMs/Windows command files. Without this,
+# mktemp receives C:\\k\\... as a relative POSIX path (for example
+# /home/SYSTEM/C:/k/...), so Maven writes the classpath probe somewhere the
+# Windows JVM cannot read and the AOT cache silently degrades to a rebuild.
+kompile_windows_shell() {
+  case "${OSTYPE:-}:${MSYSTEM:-}" in
+    cygwin*|msys*|win32*|*:MSYS*|*:MINGW*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+kompile_path_to_posix() {
+  local path="$1"
+  if kompile_windows_shell && command -v cygpath >/dev/null 2>&1; then
+    cygpath -u -- "${path}"
+  else
+    printf '%s\n' "${path}"
+  fi
+}
+
+kompile_path_to_native() {
+  local path="$1"
+  if kompile_windows_shell && command -v cygpath >/dev/null 2>&1; then
+    cygpath -w -- "${path}"
+  else
+    printf '%s\n' "${path}"
+  fi
+}
+
 # Developer builds default to GraalVM quick build (-Ob). Set
 # KOMPILE_NATIVE_QUICK_BUILD=0 for optimized/release images. The resolved value
 # is passed to Maven and therefore participates in the native cache fingerprint.
@@ -752,8 +783,10 @@ kompile_native_dependency_fingerprints() {
     printf 'Native dependency fingerprint helper is missing: %s\n' "${helper}" >&2
     return 1
   }
+  local manifest_cache_dir
+  manifest_cache_dir="$(kompile_path_to_native "${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR}")" || return 1
   output="$("${GRAALVM_HOME}/bin/java" --source 17 "${helper}" "${classpath_file}" \
-    "${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR}")" || return 1
+    "${manifest_cache_dir}")" || return 1
 
   while IFS='=' read -r key value; do
     case "${key}" in
@@ -809,10 +842,15 @@ kompile_native_fingerprint() {
   shift 4
   local -a fingerprint_args=("$@")
 
-  mkdir -p "${KOMPILE_OUTPUT_DIR}"
-  local probe_dir classpath_file probe_log
-  probe_dir="$(mktemp -d "${KOMPILE_OUTPUT_DIR}/.native-cache-probe.XXXXXX")" || return 1
-  classpath_file="${probe_dir}/dependencies.classpath"
+  local output_dir_posix probe_dir probe_dir_native classpath_file probe_log
+  output_dir_posix="$(kompile_path_to_posix "${KOMPILE_OUTPUT_DIR}")" || return 1
+  mkdir -p "${output_dir_posix}"
+  probe_dir="$(mktemp -d "${output_dir_posix%/}/.native-cache-probe.XXXXXX")" || return 1
+  probe_dir_native="$(kompile_path_to_native "${probe_dir}")" || {
+    rm -rf "${probe_dir}"
+    return 1
+  }
+  classpath_file="${probe_dir_native}/dependencies.classpath"
   probe_log="${probe_dir}/maven.log"
 
   local -a dependency_cmd=(

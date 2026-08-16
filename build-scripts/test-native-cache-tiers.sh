@@ -103,6 +103,28 @@ export KOMPILE_ROOT GRAALVM_HOME KOMPILE_NATIVE_CACHE_DIR KOMPILE_OUTPUT_DIR \
 # shellcheck source=build-common.sh
 source "${SCRIPT_DIR}/build-common.sh"
 
+# Exercise the Windows/MSYS conversion branch even when this test runs on
+# Linux CI. The production worker supplies cygpath from MSYS2; this deterministic
+# shim verifies that native JVM paths are converted in both directions.
+_saved_ostype="${OSTYPE-}"
+_saved_msystem="${MSYSTEM-}"
+cygpath() {
+  case "$1" in
+    -u) printf '/c/k/output\n' ;;
+    -w) printf '%s\n' 'C:\k\output' ;;
+    *) return 1 ;;
+  esac
+}
+OSTYPE=cygwin
+MSYSTEM=MSYS
+[[ "$(kompile_path_to_posix 'C:\\k\\output')" == '/c/k/output' ]] ||
+  fail 'Windows path was not converted to the MSYS namespace'
+[[ "$(kompile_path_to_native '/c/k/output')" == 'C:\k\output' ]] ||
+  fail 'MSYS path was not converted to the native Windows namespace'
+unset -f cygpath
+OSTYPE="${_saved_ostype}"
+MSYSTEM="${_saved_msystem}"
+
 REMOTE_STORE="${TEST_ROOT}/remote-cache"
 kompile_native_remote_copy() {
   local source="$1"
