@@ -781,7 +781,7 @@
                             <mainClass>${start-class}</mainClass>
                             <imageName>kompile-app</imageName>
                             <buildArgs combine.children="append">
-                                <buildArg>-J-Xmx80g</buildArg>
+                                <buildArg>-J-Xmx32g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>

@@ -334,7 +334,7 @@
                             <mainClass>${start-class}</mainClass>
                             <imageName>kompile-crawl-manager</imageName>
                             <buildArgs combine.children="append">
-                                <buildArg>-J-Xmx80g</buildArg>
+                                <buildArg>-J-Xmx32g</buildArg>
                                 <buildArg>--enable-monitoring=jfr</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>

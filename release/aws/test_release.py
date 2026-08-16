@@ -1559,6 +1559,17 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("native-windows-pe-safe", root_pom)
         self.assertIn("<buildArg>-O1</buildArg>", root_pom)
 
+    def test_windows_native_heap_caps_fit_64_gib_azure_host(self):
+        native_poms = (
+            "kompile-app/kompile-app-parent/kompile-app-main/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-chat/pom.xml",
+            "kompile-app/kompile-app-parent/kompile-app-crawl-manager/pom.xml",
+        )
+        for relative_path in native_poms:
+            source = (REPOSITORY / relative_path).read_text(encoding="utf-8")
+            self.assertNotIn("-J-Xmx80g", source, relative_path)
+            self.assertIn("-J-Xmx32g", source, relative_path)
+
     def test_dl4j_backend_dry_run_preserves_repository_paths_with_spaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
