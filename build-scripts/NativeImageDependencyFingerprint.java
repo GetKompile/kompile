@@ -9,7 +9,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -163,23 +162,18 @@ public final class NativeImageDependencyFingerprint {
     private static String archiveSnapshotIdentity(Path archive) throws IOException {
         BasicFileAttributes attributes = Files.readAttributes(
                 archive, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        FileTime changeTime;
-        try {
-            Object value = Files.getAttribute(archive, "unix:ctime", LinkOption.NOFOLLOW_LINKS);
-            if (!(value instanceof FileTime fileTime)) {
-                return null;
-            }
-            changeTime = fileTime;
-        } catch (UnsupportedOperationException unsupported) {
-            return null;
-        }
-
+        // The Unix ctime attribute is not available from the Windows file-system
+        // provider.  Using it here made the helper abort before it could emit a
+        // fingerprint on Azure Windows workers, which looked like a native-cache
+        // path failure and forced every image to rebuild.  BasicFileAttributes is
+        // portable; creation time plus size/mtime/file-key still identifies a
+        // local immutable Maven artifact without depending on a platform view.
         String snapshot = String.join("\n",
                 "schema=kompile-native-archive-snapshot-v1",
                 "path=" + archive.toRealPath(LinkOption.NOFOLLOW_LINKS),
                 "size=" + attributes.size(),
+                "created=" + attributes.creationTime().toInstant(),
                 "modified=" + attributes.lastModifiedTime().toInstant(),
-                "changed=" + changeTime.toInstant(),
                 "file-key=" + String.valueOf(attributes.fileKey()));
         return sha256Text(snapshot);
     }
