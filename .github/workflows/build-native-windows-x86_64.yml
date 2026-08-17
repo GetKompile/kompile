@@ -387,6 +387,18 @@ jobs:
             }
           }
 
+      - name: Install Azure CLI for durable AOT cache
+        if: env.KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING != ''
+        shell: powershell
+        run: |
+          if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+            choco install azure-cli -y --no-progress
+            $azureCliBin = Join-Path ${env:ProgramFiles} 'Microsoft SDKs\Azure\CLI2\wbin'
+            Add-Content -Path $env:GITHUB_PATH -Value $azureCliBin
+            $env:Path = "$azureCliBin;$env:Path"
+          }
+          az version --output none
+
       - name: Configure durable Azure AOT cache
         shell: bash
         run: |
