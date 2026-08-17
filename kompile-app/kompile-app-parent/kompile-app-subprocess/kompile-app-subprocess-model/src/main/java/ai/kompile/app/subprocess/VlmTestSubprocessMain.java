@@ -18,6 +18,7 @@ package ai.kompile.app.subprocess;
 
 import ai.kompile.app.config.NativeLibraryResolver;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.utils.NativeImageInfo;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.OcrPipelineConfig;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -58,9 +59,30 @@ public class VlmTestSubprocessMain {
     private static final Logger logger = LoggerFactory.getLogger(VlmTestSubprocessMain.class);
     private static final ObjectMapper OBJECT_MAPPER = JsonUtils.standardMapper();
 
+    private static final String IMPORTER_CLASS_GRAPH_SCAN_RESOURCE = "sdx-classgraph-scan.json";
+
     private static PrintStream originalStdout;
     private static volatile VlmTestSubprocessArgs currentArgs;
     private static volatile SubprocessMemoryWatchdog memoryWatchdog;
+
+    /**
+     * SameDiff's framework importers discover ONNX hooks (including Equal) through
+     * ClassGraph. Native images cannot scan their runtime classpath, so use the
+     * scan baked from the upstream SDX AOT dependency. This must run before any
+     * importer class is initialized; JVM runs retain normal ClassGraph discovery.
+     */
+    private static void configureImporterClassGraphScan() {
+        if (!NativeImageInfo.isRunningInNativeImage()
+                || System.getProperty(ND4JSystemProperties.CLASS_GRAPH_SCAN_RESOURCES) != null) {
+            return;
+        }
+        if (VlmTestSubprocessMain.class.getResource("/" + IMPORTER_CLASS_GRAPH_SCAN_RESOURCE) == null) {
+            throw new IllegalStateException("Native VLM image is missing " + IMPORTER_CLASS_GRAPH_SCAN_RESOURCE
+                    + "; rebuild the native-vlm-test profile so the baked ONNX importer scan is packaged.");
+        }
+        System.setProperty(ND4JSystemProperties.CLASS_GRAPH_SCAN_RESOURCES,
+                IMPORTER_CLASS_GRAPH_SCAN_RESOURCE);
+    }
 
     public static VlmTestSubprocessArgs getCurrentArgs() {
         return currentArgs;
@@ -71,6 +93,7 @@ public class VlmTestSubprocessMain {
     }
 
     public static void main(String[] args) {
+        configureImporterClassGraphScan();
         NativeLibraryResolver.bootstrapOrThrow();
         originalStdout = System.out;
         System.setOut(System.err);

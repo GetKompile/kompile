@@ -69,9 +69,15 @@ exec-jar, and all native-image steps).
 ```bash
 ./build-dist.sh cuda            # variants: cli-only | full | hosted | cpu-intel | cpu-arm | cuda | amd-zluda
 ./build-dist.sh full            # CLI native + all service exec JARs + jlink runtime
-./build-dist.sh cpu-intel --jars-only    # exec JARs + jlink runtime, no native-image
+./build-dist.sh cpu-intel --jars-only    # shaded/exec JARs + JBang wrapper + jlink runtime
 ./build-dist.sh cuda --skip-java-build   # reuse ~/.m2, only native steps
 ```
+
+The `--jars-only` lane is the JVM version of the distribution boundary: it skips
+native-image compilation, writes the CLI uber JAR to `lib/kompile-cli.jar`, packages
+the delegated CLI JARs and executable service JARs beside it, and installs
+`bin/kompile` as a JBang-first wrapper. The document-model/VLM worker is currently
+native-only and is omitted from this lane.
 
 Output includes both
 `dist/kompile-dist-<version>-<variant>-<release-lane>.zip` and `.tar.gz`.
@@ -82,6 +88,8 @@ example `cpu-intel-linux-x86_64-avx2` and
 JavaCPP `.so`s — the images exclude native libs via `-H:ExcludeResources` and
 load them from `lib/` at runtime), `conf/`, `runtime/` (jlink), seed
 `data/`, and the validated `sdx-sdk/` companion for backend distributions.
+JAR-only archives do not contain native binaries or side-loaded native libraries;
+they still include `runtime/` when the selected variant bundles a jlink runtime.
 The ZIP is installed locally as
 `ai.kompile:kompile-dist:<version>:zip:<variant>-<release-lane>`.
 

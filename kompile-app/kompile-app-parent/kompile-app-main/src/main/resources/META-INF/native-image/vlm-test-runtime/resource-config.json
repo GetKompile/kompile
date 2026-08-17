@@ -1,0 +1,10 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "sdx-classgraph-scan\\.json"
+      }
+    ]
+  },
+  "bundles": []
+}

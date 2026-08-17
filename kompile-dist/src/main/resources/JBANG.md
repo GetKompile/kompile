@@ -1,8 +1,9 @@
 # Running Kompile via JBang (JAR fallback)
 
-The native binaries in `bin/` are the primary way to run Kompile. This `jbang-catalog.json`
-and selected product JARs in `lib/` provide a JVM path for the CLI and server personas.
-Local MCP model workers are native-only and side-load their backend libraries from `lib/`.
+The normal distribution can use native binaries in `bin/`, while a `--jars-only`
+distribution uses the shaded CLI and executable service JARs in `lib/`. The
+`bin/kompile` wrapper prefers JBang and falls back to the bundled/system Java runtime.
+The dedicated document-model/VLM worker remains native-only and is omitted from the JAR tier.
 
 ## Install JBang
 
@@ -16,6 +17,8 @@ Or via SDKMan: `sdk install jbang`
 
 ```bash
 # From the extracted dist directory:
+./bin/kompile --help
+jbang ./lib/kompile-cli.jar --help
 jbang --catalog ./jbang-catalog.json kompile-server
 jbang --catalog ./jbang-catalog.json kompile
 ```
@@ -60,6 +63,7 @@ jbang --catalog ./jbang-catalog.json kompile-model-init
 ## Note on native binaries vs JARs
 
 Native binaries in `bin/` start faster (no JVM warmup) and use less resident memory.
-The JBang aliases cover only the listed JVM product surfaces. Model staging, model serving,
-pipeline serving, and document-model execution require their native binaries and matching
-side-loaded `lib/` payload; they do not cross into a JAR fallback.
+`build-dist.sh --jars-only` switches the CLI, delegated CLI commands, server, staging,
+and local serving components to their shaded/exec JARs and skips native-image compilation.
+The document-model/VLM worker has no executable-JAR counterpart yet, so it is not included
+in that mode.

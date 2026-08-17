@@ -1406,6 +1406,39 @@
             <id>native-vlm-test</id>
             <build>
                 <plugins>
+                    <!--
+                        SameDiff's ONNX importer discovers hook implementations through ClassGraph.
+                        Native images cannot scan their runtime classpath, so carry only the baked
+                        scan resource from the upstream sdx-aot artifact. Do not add sdx-aot as a
+                        runtime dependency: its AOT jar also brings a CPU backend and Android image
+                        properties that do not belong in this CUDA-capable worker.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>unpack-onnx-importer-classgraph-scan</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>unpack</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                                    <artifactItems>
+                                        <artifactItem>
+                                            <groupId>org.eclipse.deeplearning4j</groupId>
+                                            <artifactId>sdx-aot</artifactId>
+                                            <version>${nd4j.version}</version>
+                                            <type>jar</type>
+                                            <overWrite>true</overWrite>
+                                            <includes>sdx-classgraph-scan.json</includes>
+                                        </artifactItem>
+                                    </artifactItems>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
                     <plugin>
                         <groupId>org.graalvm.buildtools</groupId>
                         <artifactId>native-maven-plugin</artifactId>
@@ -1427,8 +1460,9 @@
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
-                                <!-- Match the proven main-image threshold and stay below GraalVM's aligned-chunk ceiling. -->
-                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
+                                <!-- Keep relocatable image-heap constants out of Graal's huge-object partition. -->
+                                <!-- GraalVM 17.0.12 reports a 522192-byte usable aligned chunk here. -->
+                                <buildArg>-H:LargeArrayThreshold=522192</buildArg>
                                 <!-- PDFBox and document loaders require legacy encodings such as Windows-1252. -->
                                 <buildArg>-H:+AddAllCharsets</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>

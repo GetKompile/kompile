@@ -1,5 +1,5 @@
 {
-  "description": "JBang catalog for JVM product surfaces in an unpacked Kompile distribution. Local MCP model workers are native-only and are intentionally not exposed here.",
+  "description": "JBang catalog for the JVM product surfaces in an unpacked Kompile distribution. The --jars-only build uses these local JARs without native images; the document-model worker remains native-only.",
   "catalogs": {},
   "aliases": {
     "kompile": {

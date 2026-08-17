@@ -2,7 +2,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Kompile Distribution Builder
 #
-# Builds platform-specific distribution archives containing native binaries.
+# Builds platform-specific distribution archives containing native binaries or JVM
+# executable JARs, depending on the selected packaging mode.
 #
 # Usage:
 #   ./build-dist.sh <variant> [options]
@@ -169,12 +170,12 @@ echo ""
 # ── Variant configuration ────────────────────────────────────────────────────
 
 # What to build for each variant
-CLI_NATIVE=true            # Always build CLI
+CLI_NATIVE=true            # Native CLI unless --jars-only selects the JVM tier
 APP_NATIVE=false           # kompile-app-main native
 STAGING_NATIVE=false       # kompile-model-staging native
 LOCAL_RUNTIME=false        # request-scoped model/pipeline serving artifacts
 DOCUMENT_MODEL_NATIVE=false # dedicated request-scoped document/VLM worker
-SERVER_JARS_ONLY=false     # keep CLI native, package service JARs instead of service images
+SERVER_JARS_ONLY=false     # package service JARs instead of service images
 BUNDLE_RUNTIME=true        # jlink runtime for JVM fallback/product services
 INCLUDE_CLI_JAR=true       # shaded CLI/JBang fallback
 INCLUDE_PRODUCT_EXTRAS=true # web personas, SDK server, C/Python bindings, app config
@@ -279,14 +280,15 @@ if [ -n "${ND4J_BACKEND}" ]; then
     DOCUMENT_MODEL_NATIVE=true
 fi
 
-# A native CLI plus JVM-only workers is not a jars-only distribution; it is a
-# mixed execution graph whose MCP behavior changes by component. Do not publish
-# that shape. JVM development remains supported directly through Maven exec
-# JARs, while distributions keep the native boundary end-to-end.
+# The JAR tier is a complete JVM distribution boundary. Native images are not
+# built or copied, while the existing shaded/exec JARs remain addressable by the
+# same component names through ComponentRegistry. The document-model worker is
+# currently native-only, so it is intentionally omitted from this tier.
 if [ "${JARS_ONLY}" = true ]; then
-    echo "--jars-only would mix the required native CLI with JVM-only child workers." >&2
-    echo "Kompile distributions require native subprocess artifacts; build JVM modules directly for development." >&2
-    exit 1
+    CLI_NATIVE=false
+    SERVER_JARS_ONLY=true
+    INCLUDE_CLI_JAR=true
+    DOCUMENT_MODEL_NATIVE=false
 fi
 
 if [ -n "${SDK_CLASSIFIER_OVERRIDE}" ]; then
@@ -424,7 +426,11 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
     if [ "${VARIANT}" = "cli-only" ]; then
         # A CLI-only archive must not require a DL4J backend just because the
         # repository root also contains model-serving modules.
-        BUILD_CMD+=(-pl :kompile-cli-main -am)
+        if [ "${JARS_ONLY}" = true ]; then
+            BUILD_CMD+=(-pl :kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli -am)
+        else
+            BUILD_CMD+=(-pl :kompile-cli-main -am)
+        fi
     elif [ "${VARIANT}" = "local" ]; then
         # Keep the Java reactor at the local execution boundary. app-main is
         # included only because it currently owns the dedicated VLM entrypoint;
@@ -786,9 +792,10 @@ if [ "${BUNDLE_RUNTIME}" = true ] && [ -d "${RUNTIME_DEST:-}" ] && [ -x "${RUNTI
     echo "  runtime/ (bundled JDK — $(du -sh "${DIST_DIR}/runtime" | cut -f1))"
 fi
 
-# Copy CLI binary (canonical name: bin/kompile; back-compat symlink: bin/kompile-cli)
+# Copy the native CLI when the native tier is selected (canonical name: bin/kompile;
+# back-compat symlink: bin/kompile-cli).
 CLI_BIN="kompile-cli/kompile-cli-main/target/kompile-cli-main${EXE_SUFFIX}"
-if [ -f "${CLI_BIN}" ]; then
+if [ "${CLI_NATIVE}" = true ] && [ -f "${CLI_BIN}" ]; then
     cp "${CLI_BIN}" "${DIST_DIR}/bin/kompile${EXE_SUFFIX}"
     chmod +x "${DIST_DIR}/bin/kompile${EXE_SUFFIX}"
     normalize_elf_portability "${DIST_DIR}/bin/kompile${EXE_SUFFIX}"
@@ -800,13 +807,13 @@ if [ -f "${CLI_BIN}" ]; then
         echo "  bin/kompile ($(du -h "${CLI_BIN}" | cut -f1)) + bin/kompile-cli symlink"
     fi
 fi
-if [ ! -x "${DIST_DIR}/bin/kompile${EXE_SUFFIX}" ]; then
+if [ "${CLI_NATIVE}" = true ] && [ ! -x "${DIST_DIR}/bin/kompile${EXE_SUFFIX}" ]; then
     echo "  ERROR: required CLI native binary is missing: ${CLI_BIN}" >&2
     exit 1
 fi
 
-# Copy CLI shaded jar into lib/ only for distributions that intentionally carry
-# a JVM/JBang fallback. The local variant is native end-to-end.
+# Copy the shaded CLI uber JAR into lib/ for the JVM/JBang tier (and for the
+# existing native distributions that expose a JVM fallback).
 if [ "${INCLUDE_CLI_JAR}" = true ]; then
     CLI_SHADED_JAR="kompile-cli/kompile-cli-main/target/kompile-cli-main-${VERSION}-shaded.jar"
     if [ -f "${CLI_SHADED_JAR}" ]; then
@@ -823,9 +830,27 @@ if [ "${INCLUDE_CLI_JAR}" = true ]; then
         fi
     fi
 fi
+if [ "${CLI_NATIVE}" = false ] && [ ! -f "${DIST_DIR}/lib/kompile-cli.jar" ]; then
+    echo "  ERROR: JVM distribution requires lib/kompile-cli.jar" >&2
+    exit 1
+fi
 if [ "${VARIANT}" = full ] && [ ! -f "${DIST_DIR}/lib/kompile-cli.jar" ]; then
     echo "  ERROR: full distribution requires lib/kompile-cli.jar" >&2
     exit 1
+fi
+
+# The JBang wrapper is also installed as bin/kompile so a jars-only archive
+# keeps the canonical command name without shadowing native bin/kompile.
+if [ "${JARS_ONLY}" = true ]; then
+    CLI_WRAPPER_SRC="kompile-dist/src/main/scripts/kompile.sh"
+    if [ ! -f "${CLI_WRAPPER_SRC}" ]; then
+        echo "  ERROR: missing JBang CLI wrapper: ${CLI_WRAPPER_SRC}" >&2
+        exit 1
+    fi
+    cp "${CLI_WRAPPER_SRC}" "${DIST_DIR}/bin/kompile.sh"
+    cp "${CLI_WRAPPER_SRC}" "${DIST_DIR}/bin/kompile"
+    chmod +x "${DIST_DIR}/bin/kompile.sh" "${DIST_DIR}/bin/kompile"
+    echo "  bin/kompile + bin/kompile.sh (JBang/JVM wrapper)"
 fi
 
 # Copy app-main (native binary: bin/kompile-server; back-compat symlink: bin/kompile-app-main)
@@ -882,12 +907,21 @@ if [ "${APP_NATIVE}" = true ]; then
     fi
 fi
 
-# Copy model staging as a native-only local MCP worker. A native CLI must never
-# cross into a Spring Boot executable-JAR fallback; native payload is side-loaded
-# from the distribution lib/ directory instead.
+# Copy model staging in the selected execution form. The JVM tier uses the
+# existing Spring Boot executable JAR; the native tier keeps the side-loaded
+# native payload behavior.
 if [ "${STAGING_NATIVE}" = true ]; then
     STAGING_TARGET="kompile-app/kompile-models/kompile-model-staging/target"
     STAGING_SHIPPED=false
+
+    if [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; then
+        STAGING_EXEC_JAR=$(ls "${STAGING_TARGET}"/*-exec.jar 2>/dev/null | head -1 || true)
+        if [ -n "${STAGING_EXEC_JAR}" ] && [ -f "${STAGING_EXEC_JAR}" ]; then
+            cp "${STAGING_EXEC_JAR}" "${DIST_DIR}/lib/kompile-model-staging.jar"
+            echo "  lib/kompile-model-staging.jar ($(du -h "${STAGING_EXEC_JAR}" | cut -f1))"
+            STAGING_SHIPPED=true
+        fi
+    fi
 
     if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ] \
             && [ -f "${STAGING_TARGET}/kompile-model-staging" ]; then
@@ -909,13 +943,12 @@ if [ "${STAGING_NATIVE}" = true ]; then
     fi
 
     if [ "${STAGING_SHIPPED}" = false ]; then
-        echo "  ERROR: native model-staging worker is missing" >&2
+        echo "  ERROR: model-staging worker is missing in the selected form" >&2
         exit 1
     fi
 fi
 
-# Ship request-scoped local runtimes as native executables only. The local MCP
-# lifecycle is deliberately native end-to-end and resolves JNI/CUDA from lib/.
+# Ship request-scoped local runtimes in the selected execution form.
 if [ "${LOCAL_RUNTIME}" = true ]; then
     for RUNTIME in \
         "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving:kompile-model-serving" \
@@ -924,6 +957,15 @@ if [ "${LOCAL_RUNTIME}" = true ]; then
         RUNTIME_ARTIFACT="${RUNTIME##*:}"
         RUNTIME_TARGET="${RUNTIME_MODULE}/target"
         RUNTIME_SHIPPED=false
+
+        if [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; then
+            RUNTIME_EXEC_JAR=$(ls "${RUNTIME_TARGET}"/*-exec.jar 2>/dev/null | head -1 || true)
+            if [ -n "${RUNTIME_EXEC_JAR}" ] && [ -f "${RUNTIME_EXEC_JAR}" ]; then
+                cp "${RUNTIME_EXEC_JAR}" "${DIST_DIR}/lib/${RUNTIME_ARTIFACT}.jar"
+                echo "  lib/${RUNTIME_ARTIFACT}.jar ($(du -h "${RUNTIME_EXEC_JAR}" | cut -f1))"
+                RUNTIME_SHIPPED=true
+            fi
+        fi
 
         if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ] \
                 && [ -f "${RUNTIME_TARGET}/${RUNTIME_ARTIFACT}" ]; then
@@ -938,7 +980,7 @@ if [ "${LOCAL_RUNTIME}" = true ]; then
         fi
 
         if [ "${RUNTIME_SHIPPED}" = false ]; then
-            echo "  ERROR: native ${RUNTIME_ARTIFACT} worker is missing" >&2
+            echo "  ERROR: ${RUNTIME_ARTIFACT} worker is missing in the selected form" >&2
             exit 1
         fi
     done
@@ -1076,11 +1118,20 @@ if [ "${APP_NATIVE}" = true ]; then
     fi
 fi
 if [ "${STAGING_NATIVE}" = true ]; then
-    require_native_component "model-staging" "kompile-model-staging"
+    if [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; then
+        require_component_forms "model-staging" "kompile-model-staging" "kompile-model-staging.jar"
+    else
+        require_native_component "model-staging" "kompile-model-staging"
+    fi
 fi
 if [ "${LOCAL_RUNTIME}" = true ]; then
-    require_native_component "model-serving" "kompile-model-serving"
-    require_native_component "pipeline-serving" "kompile-pipeline-serving"
+    if [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; then
+        require_component_forms "model-serving" "kompile-model-serving" "kompile-model-serving.jar"
+        require_component_forms "pipeline-serving" "kompile-pipeline-serving" "kompile-pipeline-serving.jar"
+    else
+        require_native_component "model-serving" "kompile-model-serving"
+        require_native_component "pipeline-serving" "kompile-pipeline-serving"
+    fi
 fi
 if [ "${DOCUMENT_MODEL_NATIVE}" = true ] \
         && [ ! -x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}" ]; then
@@ -1106,8 +1157,9 @@ if [ -d "${SCRIPTS_SRC}" ]; then
     fi
 fi
 
-# JBang belongs to the JVM fallback tier, not the native local runtime.
-if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ]; then
+# JBang belongs to the JVM fallback tier. A jars-only CLI archive includes
+# the catalog/docs even when product extras are otherwise disabled.
+if [ "${INCLUDE_PRODUCT_EXTRAS}" = true ] || [ "${JARS_ONLY}" = true ]; then
     JBANG_CATALOG_SRC="kompile-dist/src/main/resources/jbang-catalog.json"
     JBANG_MD_SRC="kompile-dist/src/main/resources/JBANG.md"
     if [ -f "${JBANG_CATALOG_SRC}" ]; then
@@ -1136,26 +1188,30 @@ else
 fi
 
 # GraalVM shared library + headers from kompile-pipelines-framework-runtime → lib/
-PFW_DIR="kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target"
-for pfw_file in libkompile_pipelines.so libkompile_pipelines.dylib libkompile_pipelines.dll \
-                graal_isolate.h graal_isolate_dynamic.h libkompile_pipelines.h libkompile_pipelines_dynamic.h; do
-    if [ -f "${PFW_DIR}/${pfw_file}" ]; then
-        cp "${PFW_DIR}/${pfw_file}" "${DIST_DIR}/lib/${pfw_file}"
-        echo "  lib/${pfw_file} ($(du -h "${PFW_DIR}/${pfw_file}" | cut -f1))"
-    else
-        echo "  SKIP: ${pfw_file} not found at ${PFW_DIR} (build kompile-pipelines-framework-runtime with native profile)"
-    fi
-done
+if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+    PFW_DIR="kompile-app/kompile-data/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target"
+    for pfw_file in libkompile_pipelines.so libkompile_pipelines.dylib libkompile_pipelines.dll \
+                    graal_isolate.h graal_isolate_dynamic.h libkompile_pipelines.h libkompile_pipelines_dynamic.h; do
+        if [ -f "${PFW_DIR}/${pfw_file}" ]; then
+            cp "${PFW_DIR}/${pfw_file}" "${DIST_DIR}/lib/${pfw_file}"
+            echo "  lib/${pfw_file} ($(du -h "${PFW_DIR}/${pfw_file}" | cut -f1))"
+        else
+            echo "  SKIP: ${pfw_file} not found at ${PFW_DIR} (build kompile-pipelines-framework-runtime with native profile)"
+        fi
+    done
+fi
 
 # CMake-built C wrapper → lib/libkompile_c_library.*
-for clib_file in libkompile_c_library.so libkompile_c_library.dylib libkompile_c_library.dll; do
-    if [ -f "kompile-c-library/${clib_file}" ]; then
-        cp "kompile-c-library/${clib_file}" "${DIST_DIR}/lib/${clib_file}"
-        echo "  lib/${clib_file} ($(du -h "kompile-c-library/${clib_file}" | cut -f1))"
-    else
-        echo "  SKIP: ${clib_file} not found (build kompile-c-library with CMake to include)"
-    fi
-done
+if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+    for clib_file in libkompile_c_library.so libkompile_c_library.dylib libkompile_c_library.dll; do
+        if [ -f "kompile-c-library/${clib_file}" ]; then
+            cp "kompile-c-library/${clib_file}" "${DIST_DIR}/lib/${clib_file}"
+            echo "  lib/${clib_file} ($(du -h "kompile-c-library/${clib_file}" | cut -f1))"
+        else
+            echo "  SKIP: ${clib_file} not found (build kompile-c-library with CMake to include)"
+        fi
+    done
+fi
 
 # Python sdx_runtime wheel → python/*.whl
 PYTHON_DIST="kompile-python/dist"
@@ -1197,19 +1253,53 @@ else
     echo "  SKIP: ${CONF_SRC} not found (kompile-app-main not checked out)"
 fi
 
-# Copy extra CLI binaries if they exist (agent, model, component, app-cli)
-for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
-             kompile-cli/kompile-app-cli/target/kompile-app-cli \
-             kompile-cli/kompile-model-cli/target/kompile-model \
-             kompile-cli/kompile-component-cli/target/kompile-component; do
-    if [ -f "${extra}" ]; then
-        BNAME=$(basename "${extra}")
-        cp "${extra}" "${DIST_DIR}/bin/${BNAME}"
-        chmod +x "${DIST_DIR}/bin/${BNAME}"
-        normalize_elf_portability "${DIST_DIR}/bin/${BNAME}"
-        echo "  bin/${BNAME} ($(du -h "${extra}" | cut -f1))"
+# Copy extra CLI binaries only for native distributions. The JVM tier uses the
+# sibling shaded JARs copied below instead.
+if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
+    for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
+                 kompile-cli/kompile-app-cli/target/kompile-app-cli \
+                 kompile-cli/kompile-model-cli/target/kompile-model \
+                 kompile-cli/kompile-component-cli/target/kompile-component; do
+        if [ -f "${extra}" ]; then
+            BNAME=$(basename "${extra}")
+            cp "${extra}" "${DIST_DIR}/bin/${BNAME}"
+            chmod +x "${DIST_DIR}/bin/${BNAME}"
+            normalize_elf_portability "${DIST_DIR}/bin/${BNAME}"
+            echo "  bin/${BNAME} ($(du -h "${extra}" | cut -f1))"
+        fi
+    done
+fi
+fi
+
+# A jars-only CLI carries the standalone delegated command JARs beside the
+# main CLI uber JAR. MainCommand resolves these exact names through lib/.
+if [ "${JARS_ONLY}" = true ]; then
+    for CLI_CHILD in \
+        "kompile-cli/kompile-agent-cli/target:kompile-agent.jar" \
+        "kompile-cli/kompile-app-cli/target:kompile-app-cli.jar" \
+        "kompile-cli/kompile-model-cli/target:kompile-model.jar" \
+        "kompile-cli/kompile-component-cli/target:kompile-component.jar"; do
+        CLI_CHILD_TARGET="${CLI_CHILD%%:*}"
+        CLI_CHILD_NAME="${CLI_CHILD##*:}"
+        CLI_CHILD_JAR=$(find "${CLI_CHILD_TARGET}" -maxdepth 1 -type f -name '*-shaded.jar' -print -quit 2>/dev/null || true)
+        if [ -z "${CLI_CHILD_JAR}" ]; then
+            CLI_CHILD_JAR=$(find "${CLI_CHILD_TARGET}" -maxdepth 1 -type f -name '*.jar' ! -name 'original-*' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print -quit 2>/dev/null || true)
+        fi
+        if [ -z "${CLI_CHILD_JAR}" ]; then
+            echo "  ERROR: required delegated CLI uber JAR is missing: ${CLI_CHILD_TARGET}/*.jar" >&2
+            exit 1
+        fi
+        cp "${CLI_CHILD_JAR}" "${DIST_DIR}/lib/${CLI_CHILD_NAME}"
+        echo "  lib/${CLI_CHILD_NAME} ($(du -h "${CLI_CHILD_JAR}" | cut -f1))"
+    done
+
+    # The full reactor may also have the optional self-contained Lite app.
+    LITE_TARGET="kompile-app/kompile-app-parent/kompile-app-lite/target"
+    LITE_JAR=$(find "${LITE_TARGET}" -maxdepth 1 -type f -name '*-exec.jar' -print -quit 2>/dev/null || true)
+    if [ "${VARIANT}" != "cli-only" ] && [ -n "${LITE_JAR}" ]; then
+        cp "${LITE_JAR}" "${DIST_DIR}/lib/kompile-lite.jar"
+        echo "  lib/kompile-lite.jar ($(du -h "${LITE_JAR}" | cut -f1))"
     fi
-done
 fi
 
 # Copy build scripts for platform rebuilds from installed dist
@@ -1302,7 +1392,7 @@ if [ -n "${SDX_ASSETS_DIR}" ]; then
     SDX_JAR_COUNT=$(find "${DIST_DIR}/sdx-sdk/jars" -type f -name '*.jar' 2>/dev/null | wc -l || true)
     echo "  sdx-sdk/ (${SDX_RUNTIME_COUNT} runtime package(s), ${SDX_JAR_COUNT} platform JAR(s))"
 fi
-if [ -n "${ND4J_BACKEND}" ]; then
+if [ -n "${ND4J_BACKEND}" ] && [ "${JARS_ONLY}" = false ]; then
     SDX_VALIDATOR="${SCRIPT_DIR}/kompile-dist/src/main/build/validate-sdx-assets.sh"
     if ! bash "${SDX_VALIDATOR}" "${DIST_DIR}/sdx-sdk" "${VARIANT}" "${PLATFORM}" \
             "${ND4J_VERSION}" "${CUDA_VERSION}" "${ND4J_BACKEND}" "${SDK_CLASSIFIER}"; then
@@ -1333,8 +1423,14 @@ echo "${VARIANT}" > "${DIST_DIR}/.variant"
 component_forms() {
     binary_present=false
     jar_present=false
-    if [ -f "${DIST_DIR}/bin/$1" ] || [ -f "${DIST_DIR}/bin/$1.exe" ]; then
+    if [ -f "${DIST_DIR}/bin/$1.exe" ]; then
         binary_present=true
+    elif [ -f "${DIST_DIR}/bin/$1" ]; then
+        # jars-only installs use a shell wrapper at bin/kompile. Do not report
+        # that launcher as an AOT binary in the manifest.
+        if [ "$1" != "kompile" ] || ! head -n 1 "${DIST_DIR}/bin/$1" | grep -q '^#!'; then
+            binary_present=true
+        fi
     fi
     [ -f "${DIST_DIR}/lib/$2" ] && jar_present=true
     present=false

@@ -14,12 +14,13 @@
 #  See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Launcher for the native kompile-model-staging service.
+# Launcher for the kompile-model-staging service.
 #
 # Behavior:
 #   - Resolves the bundle root via the script location.
-#   - Requires the GraalVM native binary at bin/kompile-model-staging.
-#   - Side-loads JavaCPP/ND4J/CUDA libraries from the matching dist lib/ tree.
+#   - Prefers the GraalVM native binary at bin/kompile-model-staging.
+#   - Falls back to lib/kompile-model-staging.jar in a jars-only distribution.
+#   - Native execution side-loads JavaCPP/ND4J/CUDA libraries from lib/.
 #   - Defaults to port 8090, but accepts overrides via the KOMPILE_STAGING_PORT
 #     environment variable or a `--port <N>` command-line flag (the flag takes
 #     precedence). Any other arguments are forwarded verbatim.
@@ -35,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || ec
 DIST_HOME="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 NATIVE_BIN="${DIST_HOME}/bin/kompile-model-staging"
+JAR="${DIST_HOME}/lib/kompile-model-staging.jar"
 
 # Determine port: CLI flag > env var > default 8090.
 PORT="${KOMPILE_STAGING_PORT:-8090}"
@@ -67,14 +69,37 @@ export KOMPILE_NATIVE_LIB_DIR="${DIST_HOME}/lib"
 export LD_LIBRARY_PATH="${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export DYLD_LIBRARY_PATH="${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
-if [ ! -x "${NATIVE_BIN}" ]; then
-    echo "error: native model-staging worker not found: ${NATIVE_BIN}" >&2
-    echo "       install a complete backend-matched Kompile distribution" >&2
+if [ -x "${NATIVE_BIN}" ]; then
+    exec "${NATIVE_BIN}" \
+        -Dkompile.dist.home="${DIST_HOME}" \
+        -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
+        "--server.port=${PORT}" \
+        "${PASSTHROUGH_ARGS[@]}"
+fi
+
+if [ ! -f "${JAR}" ]; then
+    echo "error: neither native model-staging worker ${NATIVE_BIN} nor exec JAR ${JAR} found" >&2
     exit 1
 fi
 
-exec "${NATIVE_BIN}" \
+# Java resolution order: explicit override, bundled runtime, JAVA_HOME, PATH.
+if [ -x "${KOMPILE_JAVA:-}" ]; then
+    JAVA_BIN="${KOMPILE_JAVA}"
+elif [ -x "${DIST_HOME}/runtime/bin/java" ]; then
+    JAVA_BIN="${DIST_HOME}/runtime/bin/java"
+elif [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
+    JAVA_BIN="${JAVA_HOME}/bin/java"
+elif command -v java >/dev/null 2>&1; then
+    JAVA_BIN="java"
+else
+    echo "error: no Java runtime found. Install Java 17+, set JAVA_HOME, or rebuild the dist" >&2
+    exit 1
+fi
+
+exec "${JAVA_BIN}" \
+    -Djava.library.path="${DIST_HOME}/bin:${DIST_HOME}/lib" \
     -Dkompile.dist.home="${DIST_HOME}" \
     -Dspring.config.additional-location="optional:file:${DIST_HOME}/conf/" \
+    -jar "${JAR}" \
     "--server.port=${PORT}" \
     "${PASSTHROUGH_ARGS[@]}"

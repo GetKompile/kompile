@@ -17,6 +17,7 @@
 package ai.kompile.cli.main;
 
 import ai.kompile.utils.NativeLibraryResolver;
+import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.main.a2a.A2ACommand;
 import ai.kompile.cli.main.auth.AuthCommand;
 import ai.kompile.cli.main.app.AppCommand;
@@ -146,6 +147,8 @@ public class MainCommand implements Callable<Integer> {
 
 
     public static void main(String...args) {
+        configureStartupLogging();
+
         // Native payloads are deliberately excluded from every Graal image. The CLI
         // owns only its manifest-declared direct JNI closure; CUDA/ND4J initialization
         // belongs to the model-serving subprocesses spawned on demand.
@@ -190,6 +193,22 @@ public class MainCommand implements Callable<Integer> {
     }
 
     /**
+     * Keep routine dependency/bootstrap chatter out of the CLI's user-facing startup
+     * while leaving warnings and errors visible. Set the opt-in property when diagnosing
+     * native loading or other startup behavior.
+     */
+    private static void configureStartupLogging() {
+        if (Boolean.getBoolean("kompile.cli.verbose-startup")) {
+            return;
+        }
+        java.util.logging.Logger rootLogger = java.util.logging.Logger.getLogger("");
+        rootLogger.setLevel(java.util.logging.Level.WARNING);
+        for (java.util.logging.Handler handler : rootLogger.getHandlers()) {
+            handler.setLevel(java.util.logging.Level.WARNING);
+        }
+    }
+
+    /**
      * Built-in command registrar loaded through the same ServiceLoader SPI used by
      * external CLI plugins.
      */
@@ -227,10 +246,17 @@ public class MainCommand implements Callable<Integer> {
             // Distribution-local binaries win. ComponentRegistry resolves custom
             // install roots and the running native image's sibling bin/ directory,
             // while user state remains under ~/.kompile.
-            File distributionBinary = new ComponentRegistry()
-                    .getDistributionBinaryPath(binaryName);
+            ComponentRegistry registry = new ComponentRegistry();
+            File distributionBinary = registry.getDistributionBinaryPath(binaryName);
             if (distributionBinary != null) {
                 return execBinary(distributionBinary);
+            }
+
+            // JVM-only distributions keep the same component names in lib/. Prefer
+            // those jars before falling back to a separately installed executable.
+            File distributionJar = registry.getDistributionJarPath(binaryName);
+            if (distributionJar != null) {
+                return execJar(distributionJar);
             }
 
             // Search for the binary on PATH
@@ -258,6 +284,37 @@ public class MainCommand implements Callable<Integer> {
             System.err.println("'" + binaryName + "' not found on PATH or in ~/.kompile/bin/.");
             System.err.println("Install it with: kompile install " + binaryName.replace("kompile-", ""));
             return 1;
+        }
+
+        private int execJar(File jar) throws IOException, InterruptedException {
+            String[] childArgs = remainingArgs != null && remainingArgs.length > 0
+                    ? remainingArgs
+                    : new String[]{"--help"};
+            File distributionHome = ComponentRegistry.inferDistributionHome(jar.toPath());
+            int commandPrefixLength = distributionHome == null ? 3 : 4;
+            String[] cmd = new String[childArgs.length + commandPrefixLength];
+            int index = 0;
+            cmd[index++] = JavaRuntimeLocator.javaExecutable();
+            if (distributionHome != null) {
+                cmd[index++] = "-Dkompile.dist.home=" + distributionHome.getAbsolutePath();
+            }
+            cmd[index++] = "-jar";
+            cmd[index++] = jar.getAbsolutePath();
+            System.arraycopy(childArgs, 0, cmd, index, childArgs.length);
+
+            ProcessBuilder pb = new ProcessBuilder(cmd).inheritIO();
+            if (distributionHome != null) {
+                pb.environment().put("KOMPILE_INSTALL_DIR", distributionHome.getAbsolutePath());
+            }
+
+            Process process = pb.start();
+            try {
+                return process.waitFor();
+            } catch (InterruptedException e) {
+                process.destroyForcibly();
+                Thread.currentThread().interrupt();
+                return 1;
+            }
         }
 
         private int execBinary(File binary) throws IOException, InterruptedException {
