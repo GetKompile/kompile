@@ -333,6 +333,19 @@ is_nd4j_binding_native() {
     return 1
 }
 
+# A JavaCPP producer may publish a runtime library both from its base native
+# artifact and from a companion bindings artifact. Bindings still own unique
+# JNI bridges, but the base artifact owns a same-named runtime when both are
+# present. Keep that ownership rule generic (path based) so new producers do
+# not require another artifact-name exception.
+is_bindings_native() {
+    local relative_path="${1#${SOURCE_DIR}/}"
+    case "/${relative_path}" in
+        */bindings/*) return 0 ;;
+    esac
+    return 1
+}
+
 copy_flat_native() {
     local mode="$1"
     local source_path="$2"
@@ -422,6 +435,7 @@ if [ "${BACKEND_ARTIFACT}" != "none" ]; then
 fi
 
 PLATFORM_NATIVE_SOURCES=()
+PLATFORM_NATIVE_SOURCES_RAW=()
 FLAVOR_NATIVE_SOURCES=()
 while IFS= read -r native_source; do
     if is_nd4j_binding_native "${native_source}"; then
@@ -430,9 +444,34 @@ while IFS= read -r native_source; do
     if native_matches_requested_flavor "${native_source}"; then
         FLAVOR_NATIVE_SOURCES+=("${native_source}")
     elif native_matches_base_platform "${native_source}"; then
-        PLATFORM_NATIVE_SOURCES+=("${native_source}")
+        PLATFORM_NATIVE_SOURCES_RAW+=("${native_source}")
     fi
 done < <(native_source_files | LC_ALL=C sort)
+
+# Prefer a non-bindings producer for a same-named runtime while retaining
+# bindings-only files (for example the JNI bridge). This removes the
+# traversal-order dependency that previously made tokenizers distributions
+# fail even though the two artifacts intentionally represented one runtime.
+for native_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
+    if is_bindings_native "${native_source}"; then
+        loader_name="$(basename "${native_source}")"
+        duplicate_runtime=false
+        for base_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
+            if [ "${base_source}" = "${native_source}" ] || is_bindings_native "${base_source}"; then
+                continue
+            fi
+            if [ "$(basename "${base_source}")" = "${loader_name}" ]; then
+                duplicate_runtime=true
+                break
+            fi
+        done
+        if [ "${duplicate_runtime}" = true ]; then
+            echo "  bindings duplicate: keeping base producer for ${loader_name}"
+            continue
+        fi
+    fi
+    PLATFORM_NATIVE_SOURCES+=("${native_source}")
+done
 
 validate_source_collisions backend "${SELECTED_BACKEND_SOURCES[@]}"
 validate_source_collisions baseline "${PLATFORM_NATIVE_SOURCES[@]}"

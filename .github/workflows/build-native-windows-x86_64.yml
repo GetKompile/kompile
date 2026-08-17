@@ -24,6 +24,9 @@ on:
       prerelease:
         type: string
         default: 'true'
+    secrets:
+      AZURE_SCCACHE_CONNECTION_STRING:
+        required: false
   workflow_dispatch:
     inputs:
       buildThreads:
@@ -298,6 +301,8 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+    env:
+      KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING: ${{ secrets.AZURE_SCCACHE_CONNECTION_STRING }}
     steps:
       - name: Disable Windows Defender
         continue-on-error: true
@@ -382,6 +387,25 @@ jobs:
             }
           }
 
+      - name: Configure durable Azure AOT cache
+        shell: bash
+        run: |
+          if [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" ]; then
+            command -v az >/dev/null 2>&1 || {
+              echo "::error::Azure CLI is required when AZURE_SCCACHE_CONNECTION_STRING is configured"
+              exit 1
+            }
+            {
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_ROOT=deeplearning4j/releases/kompile-native-cache/v1"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER=releases"
+              echo "KOMPILE_NATIVE_CACHE_REMOTE_TOOL=azure-cli"
+            } >> "${GITHUB_ENV}"
+            echo "Azure AOT cache enabled: releases/deeplearning4j/releases/kompile-native-cache/v1"
+          else
+            echo "KOMPILE_NATIVE_CACHE_REMOTE_ROOT=" >> "${GITHUB_ENV}"
+            echo "Azure AOT cache disabled (AZURE_SCCACHE_CONNECTION_STRING is not configured)"
+          fi
+
       - name: Configure Maven settings for snapshots
         shell: bash
         run: |
@@ -437,55 +461,26 @@ jobs:
             echo "build_component=$(echo $TARGETS | grep -qw component && echo true || echo false)" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build kompile-cli native image
-        if: steps.targets.outputs.build_cli == 'true'
-        shell: cmd
-        timeout-minutes: 60
+      - name: Build kompile native images (content-addressed AOT cache)
+        if: steps.targets.outputs.build_cli == 'true' || steps.targets.outputs.build_agent == 'true' || steps.targets.outputs.build_app_cli == 'true' || steps.targets.outputs.build_model == 'true' || steps.targets.outputs.build_component == 'true'
+        shell: bash
+        timeout-minutes: 90
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+          KOMPILE_NATIVE_CACHE: "1"
+          KOMPILE_NATIVE_PLATFORM: "windows-x86_64"
         run: |
-          set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli\kompile-cli-main
-          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-cli-main.exe
-
-      - name: Build kompile-agent native image
-        if: steps.targets.outputs.build_agent == 'true'
-        shell: cmd
-        timeout-minutes: 30
-        run: |
-          set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli\kompile-agent-cli
-          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-agent.exe
-
-      - name: Build kompile-app-cli native image
-        if: steps.targets.outputs.build_app_cli == 'true'
-        shell: cmd
-        timeout-minutes: 30
-        run: |
-          set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli\kompile-app-cli
-          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-app-cli.exe
-
-      - name: Build kompile-model native image
-        if: steps.targets.outputs.build_model == 'true'
-        shell: cmd
-        timeout-minutes: 30
-        run: |
-          set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli\kompile-model-cli
-          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-model.exe
-
-      - name: Build kompile-component native image
-        if: steps.targets.outputs.build_component == 'true'
-        shell: cmd
-        timeout-minutes: 30
-        run: |
-          set "MAVEN_OPTS=-Xmx4g"
-          cd kompile-cli\kompile-component-cli
-          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
-          dir target\kompile-component.exe
+          TARGETS=""
+          REQUESTED_TARGETS="${{ inputs.nativeTargets || 'all' }}"
+          if [ "${REQUESTED_TARGETS}" = "all" ]; then
+            TARGETS="cli,agent,app-cli,model,component"
+          else
+            TARGETS="${REQUESTED_TARGETS}"
+          fi
+          NATIVE_TARGETS="${TARGETS}" ./build-scripts/build-kompile-native-only.sh \
+            2>&1 | tee /tmp/kompile-native.log
+          echo "=== Native images built ==="
+          ls -lh kompile-cli/kompile-*/target/kompile-*.exe 2>/dev/null || true
 
       - name: Collect native binaries
         shell: bash
@@ -514,6 +509,8 @@ jobs:
         with:
           name: kompile-native-build-logs-windows-x86_64
           path: |
+            /tmp/kompile-native.log
+            dist/native-*.log
             kompile-cli/kompile-cli-main/target/*.log
             kompile-cli/kompile-agent-cli/target/*.log
             kompile-cli/kompile-app-cli/target/*.log

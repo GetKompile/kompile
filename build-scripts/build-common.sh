@@ -201,7 +201,11 @@ GRAALVM_HOME="${GRAALVM_HOME:-}"
 # Native image targets (comma-separated)
 # Valid targets:
 #   cli            — kompile CLI (kompile-cli-main)
-#   component-cli  — component query CLI (kompile-component-cli)
+#   agent          — kompile agent CLI (kompile-agent-cli)
+#   app-cli        — kompile app CLI (kompile-app-cli)
+#   model          — kompile model CLI (kompile-model-cli)
+#   component      — component query CLI (kompile-component-cli)
+#   component-cli  — alias for component
 #   app            — RAG server (kompile-sample / generated project)
 #   app-lite       — lightweight RAG server (kompile-app-lite)
 #   staging        — model staging orchestrator (kompile-model-staging)
@@ -230,11 +234,13 @@ KOMPILE_NATIVE_FORCE_REBUILD="${KOMPILE_NATIVE_FORCE_REBUILD:-0}"
 KOMPILE_NATIVE_CACHE_DIR="${KOMPILE_NATIVE_CACHE_DIR:-${HOME}/.cache/kompile/native-images}"
 KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR="${KOMPILE_NATIVE_DEPENDENCY_MANIFEST_CACHE_DIR:-${KOMPILE_NATIVE_CACHE_DIR}/dependency-manifests}"
 # Optional durable cache endpoint. Azure workers set this to a Blob prefix and
-# authenticate the configured tool (AzCopy) with their managed identity. The
-# endpoint is deliberately empty for local/AWS builds, preserving local-only
-# cache behavior unless a backend explicitly opts in.
+# authenticate the configured tool with managed identity or a short-lived
+# connection string. The endpoint is deliberately empty for local/AWS builds,
+# preserving local-only cache behavior unless a backend explicitly opts in.
 KOMPILE_NATIVE_CACHE_REMOTE_ROOT="${KOMPILE_NATIVE_CACHE_REMOTE_ROOT:-}"
 KOMPILE_NATIVE_CACHE_REMOTE_TOOL="${KOMPILE_NATIVE_CACHE_REMOTE_TOOL:-azcopy}"
+KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER="${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER:-releases}"
+KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING="${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING:-}"
 
 # Bash on Windows is supplied by MSYS2/Git Bash while Maven and GraalVM are
 # native Windows processes. Keep shell-owned cache paths in the MSYS namespace,
@@ -987,7 +993,38 @@ kompile_native_validate_cache_receipt() {
 kompile_native_remote_copy() {
   local source="$1"
   local destination="$2"
+  local remote_name
+  local local_destination
   [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}" ] || return 1
+
+  # GitHub-hosted runners do not have an Azure managed identity.  The release
+  # workflow can instead provide the same short-lived Blob connection string
+  # used by DL4J's compiler cache and use the Azure CLI transport.  Keep the
+  # secret in the environment; never put it in the cache path or a generated
+  # settings file.
+  if [ "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" = "azure-cli" ]; then
+    command -v az >/dev/null 2>&1 || return 1
+    [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" ] || return 1
+    if [ -f "${source}" ]; then
+      remote_name="${destination#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}"
+      az storage blob upload \
+        --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
+        --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
+        --name "${remote_name}" --file "${source}" --overwrite true \
+        --only-show-errors >/dev/null 2>&1
+    else
+      mkdir -p "${destination}" || return 1
+      local_destination="${destination}/$(basename "${source}")"
+      az storage blob download \
+        --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
+        --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
+        --name "${source#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}" \
+        --file "${local_destination}" --overwrite true \
+        --only-show-errors >/dev/null 2>&1
+    fi
+    return
+  fi
+
   command -v "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" >/dev/null 2>&1 || return 1
   "${KOMPILE_NATIVE_CACHE_REMOTE_TOOL}" copy "${source}" "${destination}" \
     --overwrite=true >/dev/null 2>&1
@@ -1166,7 +1203,22 @@ kompile_build_native_image() {
       profile="native"
       image_name="kompile-cli-main"
       ;;
-    component-cli)
+    agent)
+      module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-agent-cli"
+      profile="native"
+      image_name="kompile-agent"
+      ;;
+    app-cli)
+      module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-app-cli"
+      profile="native"
+      image_name="kompile-app-cli"
+      ;;
+    model)
+      module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-model-cli"
+      profile="native"
+      image_name="kompile-model"
+      ;;
+    component-cli|component)
       module_dir="${KOMPILE_ROOT}/kompile-cli/kompile-component-cli"
       profile="native"
       image_name="kompile-component"
@@ -1256,7 +1308,7 @@ kompile_build_native_image() {
       ;;
     *)
       log "ERROR: Unknown native target '${target}'"
-      log "Valid targets: cli, component-cli, app, chat, crawl-manager, sample, app-lite, staging, model-serving, pipeline-serving, ingest, vector, embedding, model-init, vlm-test, training"
+      log "Valid targets: cli, agent, app-cli, model, component, app, chat, crawl-manager, sample, app-lite, staging, model-serving, pipeline-serving, ingest, vector, embedding, model-init, vlm-test, training"
       return 1
       ;;
   esac
@@ -1333,7 +1385,7 @@ kompile_build_native_image() {
 }
 
 # All valid native image target names
-ALL_NATIVE_TARGETS="cli,component-cli,app,chat,crawl-manager,sample,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,vlm-test,training"
+ALL_NATIVE_TARGETS="cli,agent,app-cli,model,component,app,chat,crawl-manager,sample,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,vlm-test,training"
 
 # Build all requested native image targets.
 # Reads NATIVE_TARGETS (comma-separated, or "all" for everything)
