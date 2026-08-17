@@ -1061,7 +1061,9 @@ kompile_native_remote_restore() {
     rm -rf "${temporary_dir}"
     return 1
   fi
-  if [ ! -x "${downloaded_image}" ] || [ ! -f "${downloaded_metadata}" ] \
+  # Blob downloads do not preserve the executable mode. Validate the file
+  # and receipt first, then restore the mode before installing the image.
+  if [ ! -f "${downloaded_image}" ] || [ ! -f "${downloaded_metadata}" ] \
       || ! kompile_native_validate_cache_receipt "${downloaded_metadata}" "${aot_fingerprint}"; then
     rm -rf "${temporary_dir}"
     return 1
