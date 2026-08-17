@@ -1427,8 +1427,8 @@
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
-                                <!-- Keep relocatable image-heap metadata below the existing 1 MiB aligned-chunk ceiling. -->
-                                <buildArg>-H:LargeArrayThreshold=1048576</buildArg>
+                                <!-- Match the proven main-image threshold and stay below GraalVM's aligned-chunk ceiling. -->
+                                <buildArg>-H:LargeArrayThreshold=8192</buildArg>
                                 <!-- PDFBox and document loaders require legacy encodings such as Windows-1252. -->
                                 <buildArg>-H:+AddAllCharsets</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
