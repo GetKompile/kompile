@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-app-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -54,72 +54,72 @@
 
     <dependencies>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-config</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-dto</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-ingest</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-facts</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-platform</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-mcp</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-crawl</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-subprocess-common</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-subprocess-ingest</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-knowledge-graph</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-loaders-orchestrator</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-utils</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
         </dependency>
         <dependency>

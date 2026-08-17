@@ -20,7 +20,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-pipelines-steps-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>

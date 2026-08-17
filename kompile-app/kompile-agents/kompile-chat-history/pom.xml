@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-agents</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -31,13 +31,13 @@
 
     <dependencies>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
 
         <!-- Shared chat source adapters + aggregation helpers -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
         </dependency>
 

@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-agents</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -16,19 +16,19 @@
 
     <dependencies>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-common</artifactId>
         </dependency>
         <!-- Core interfaces -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-core</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Orchestrator for workflow integration -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-orchestrator</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
@@ -36,7 +36,7 @@
 
         <!-- Filter chain for reasoning phases -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-filter-chain</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
@@ -44,7 +44,7 @@
 
         <!-- Evaluation framework for eval-based reasoning -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-evaluation</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>

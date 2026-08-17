@@ -9,7 +9,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -37,32 +37,32 @@
     <!-- Reactor ordering only: the packager consumes the native images from target/. -->
     <dependencies>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-main</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-staging</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-subprocess-serving</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipeline-serving</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>
         <!-- app-main currently owns only the dedicated VLM native entrypoint. -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-main</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>

@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.eclipse.deeplearning4j</groupId>
+    <groupId>ai.kompile</groupId>
     <artifactId>kompile</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
@@ -21,7 +21,7 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-app</artifactId>
         <version>${project.version}</version>
         <type>pom</type>
@@ -35,18 +35,18 @@
     <!-- Core modules                                                   -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-utils</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-main</artifactId>
       <scope>test</scope>
       <exclusions>
@@ -62,19 +62,19 @@
     <!-- Persona-owned controllers and services are no longer transitively exposed by
          kompile-app-main. Keep E2E coverage aligned with the split runtime boundaries. -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-web-chat</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-web-crawl</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-model-manager</artifactId>
       <scope>test</scope>
     </dependency>
@@ -83,12 +83,12 @@
     <!-- CLI modules                                                    -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-cli-main</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-cli-common</artifactId>
       <scope>test</scope>
     </dependency>
@@ -97,27 +97,27 @@
     <!-- Embedding modules                                              -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-openai</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-anserini</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-samediff</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-sentence-transformer</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-postgresml</artifactId>
       <scope>test</scope>
     </dependency>
@@ -126,22 +126,22 @@
     <!-- Vector store modules                                           -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-vectorstore-anserini</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-vectorstore-chroma</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-vectorstore-pgvector</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-vectorstore-vespa</artifactId>
       <scope>test</scope>
     </dependency>
@@ -150,27 +150,27 @@
     <!-- Chunker modules                                                -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-sentence</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-recursivecharacter</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-markdown</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-token</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-table-aware</artifactId>
       <scope>test</scope>
     </dependency>
@@ -179,17 +179,17 @@
     <!-- Loader modules                                                 -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-loaders-orchestrator</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-tika</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-pdf-extended</artifactId>
       <scope>test</scope>
     </dependency>
@@ -198,18 +198,18 @@
     <!-- Graph modules                                                  -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-graph-algorithms</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-graph-neo4j</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-compute-graph-scripting</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
@@ -219,82 +219,82 @@
     <!-- Tool and service modules                                       -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-rag</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-knowledge-graph</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-query-transformer</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-guardrails</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-evaluation</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chat-history</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-react-agent</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-orchestrator</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-agent-gateway-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kclaw</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-filter-chain</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-anserini</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kvcache</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-model-staging</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-llm-pipeline</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-ocr-integration</artifactId>
       <scope>test</scope>
     </dependency>
@@ -303,17 +303,17 @@
     <!-- Pipeline framework modules                                     -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-pipelines-framework-api</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-pipelines-framework-core</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-pipelines-steps-samediff</artifactId>
       <scope>test</scope>
     </dependency>

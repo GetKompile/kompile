@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.eclipse.deeplearning4j</groupId>
+    <groupId>ai.kompile</groupId>
     <artifactId>kompile-chat-local</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
@@ -18,7 +18,7 @@
 
   <dependencies>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chat-local-core</artifactId>
       <version>${project.version}</version>
       <exclusions>
@@ -33,7 +33,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-graph-reasoning</artifactId>
       <version>${project.version}</version>
     </dependency>

@@ -7,7 +7,7 @@
     <artifactId>spring-boot-starter-parent</artifactId>
     <version>3.4.5</version>
   </parent>
-  <groupId>org.eclipse.deeplearning4j.rag.instance</groupId>
+  <groupId>ai.kompile.rag.instance</groupId>
   <artifactId>kompile-fpna</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <properties>
@@ -116,127 +116,127 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-main</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-core</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-loaders-orchestrator</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-tika</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-pdf-extended</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-web</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-excel</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-knowledge-graph</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-pdf-extended</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-embedding-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-vectorstore-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-cli-llm</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-filesystem</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-rag</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-workflow</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-process-engine</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-model-staging</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-gateway</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kvcache</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-code-indexer</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
@@ -258,151 +258,151 @@
       <version>1.27.1</version>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-a2a</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-llm-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chat-history</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-evaluation</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-filter-chain</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-guardrails</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-model-manager</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-model-staging</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-orchestrator</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-pipeline-management</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-query-transformer</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-react-agent</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-table-aware</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-loader-pdf-tables</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-ocr-integration</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-oauth2-client</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-kclaw</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-test-milestone</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-compute-graph-core</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-compute-graph-scripting</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-rag-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-graph-algorithms</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-crawler-core</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-tool-crawler</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-crawl-graph</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>

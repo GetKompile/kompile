@@ -20,7 +20,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>org.eclipse.deeplearning4j</groupId>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -55,42 +55,42 @@
     -->
     <dependencies>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-agent-cli</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-cli</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-model-cli</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-component-cli</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-main</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
@@ -99,7 +99,7 @@
         <!-- JVM worker for JavaScript/Python SCRIPT steps. The app-main native image contains
              only its lightweight client; GraalJS/Truffle remain inside this exec JAR. -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-compute-graph-scripting</artifactId>
             <version>${project.version}</version>
             <classifier>exec</classifier>
@@ -107,7 +107,7 @@
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-lite</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
@@ -124,7 +124,7 @@
             docs/architecture/app-persona-boundary.md.
         -->
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-chat</artifactId>
             <version>${project.version}</version>
             <classifier>exec</classifier>
@@ -132,7 +132,7 @@
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-crawl-manager</artifactId>
             <version>${project.version}</version>
             <classifier>exec</classifier>
@@ -140,14 +140,14 @@
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-sdk-serving</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
             <version>${project.version}</version>
             <type>pom</type>
@@ -228,7 +228,7 @@
                         <configuration>
                             <artifactItems>
                                 <artifactItem>
-                                    <groupId>org.eclipse.deeplearning4j</groupId>
+                                    <groupId>ai.kompile</groupId>
                                     <artifactId>kompile-compute-graph-scripting</artifactId>
                                     <version>${project.version}</version>
                                     <classifier>exec</classifier>
@@ -254,7 +254,7 @@
                         <configuration>
                             <artifactItems>
                                 <artifactItem>
-                                    <groupId>org.eclipse.deeplearning4j</groupId>
+                                    <groupId>ai.kompile</groupId>
                                     <artifactId>kompile-app-chat</artifactId>
                                     <version>${project.version}</version>
                                     <classifier>exec</classifier>
@@ -263,7 +263,7 @@
                                     <outputDirectory>${project.build.directory}/persona-deps</outputDirectory>
                                 </artifactItem>
                                 <artifactItem>
-                                    <groupId>org.eclipse.deeplearning4j</groupId>
+                                    <groupId>ai.kompile</groupId>
                                     <artifactId>kompile-app-crawl-manager</artifactId>
                                     <version>${project.version}</version>
                                     <classifier>exec</classifier>
