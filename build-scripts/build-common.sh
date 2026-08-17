@@ -1006,7 +1006,10 @@ kompile_native_remote_copy() {
     command -v az >/dev/null 2>&1 || return 1
     [ -n "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" ] || return 1
     if [ -f "${source}" ]; then
-      remote_name="${destination#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}"
+      # The Azure container already hosts the complete logical cache prefix.
+      # Preserve it in the blob name; stripping it would flatten entries into
+      # unrelated container-root paths.
+      remote_name="${destination}"
       az storage blob upload \
         --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
         --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
@@ -1018,7 +1021,7 @@ kompile_native_remote_copy() {
       az storage blob download \
         --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
         --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
-        --name "${source#${KOMPILE_NATIVE_CACHE_REMOTE_ROOT}/}" \
+        --name "${source}" \
         --file "${local_destination}" --overwrite true \
         --only-show-errors >/dev/null 2>&1
     fi
