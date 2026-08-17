@@ -15,6 +15,7 @@ class SdxModelPreparationWireInstrumentedTest {
     fun prepareRequestRoundTripsWithBootClassLoaderUsingFrameworkScalarsOnly() {
         val request = buildSdxModelPreparationRequest(
             modelPath = "/data/user/0/example/files/model.gguf",
+            tokenizerSourcePath = "/data/user/0/example/files/model.gguf.tokenizer.json",
             verifiedSourceSha256 = "a".repeat(64),
             verifiedSourceBytes = 1_516_744_736L,
             options = ModelPreparationOptions(),
@@ -25,6 +26,10 @@ class SdxModelPreparationWireInstrumentedTest {
         requireFrameworkOnlySdxWireBundle(decoded, "round-tripped request")
 
         assertEquals("/data/user/0/example/files/model.gguf", decoded.getString("model_path"))
+        assertEquals(
+            "/data/user/0/example/files/model.gguf.tokenizer.json",
+            decoded.getString("tokenizer_source_path")
+        )
         assertEquals("a".repeat(64), decoded.getString("verified_sha256"))
         assertEquals(1_516_744_736L, decoded.getLong("verified_bytes"))
         assertEquals("attempt-id", decoded.getString("operation_attempt_id"))

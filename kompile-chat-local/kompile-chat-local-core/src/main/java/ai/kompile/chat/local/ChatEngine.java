@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Drives a multi-turn conversation loop with graph tool-calling.
@@ -23,9 +24,24 @@ public final class ChatEngine {
 
     private static final Logger log = LoggerFactory.getLogger(ChatEngine.class);
 
+    /** Controls when the graph catalog is attached to a model request. */
+    public enum ToolRouting {
+        /** Preserve the desktop behavior: expose tools on every turn. */
+        ALWAYS,
+        /** Expose tools only for explicit graph intent or an active tool exchange. */
+        RELEVANT
+    }
+
+    private static final List<String> GRAPH_INTENT_MARKERS = List.of(
+            "graph", "knowledge base", "kgraph", "entity", "entities", "relationship",
+            "relation", "node", "edge", "neighbor", "path", "timeline", "fact",
+            "verify", "why not", "rank", "asset", "artifact", "connected",
+            "organization", "people", "person");
+
     private final InferenceRouter router;
     private final GraphToolBackend bridge;
     private final int maxToolRounds;
+    private final ToolRouting toolRouting;
     private final String systemPrompt;
 
     /**
@@ -38,12 +54,32 @@ public final class ChatEngine {
     public record ToolRound(String tool, String argsJson, String resultJson) {}
 
     /**
+     * Exact provider-neutral request and model-owned raw response for one inference attempt.
+     * Retaining this at the turn boundary makes chat-template and MCP encoding failures debuggable
+     * without asking a backend to expose native pointers or implementation-specific state.
+     */
+    public record ProtocolExchange(
+            String requestJson,
+            String rawResponse,
+            List<String> protocolErrors) {
+        public ProtocolExchange {
+            requestJson = requestJson == null ? "" : requestJson;
+            rawResponse = rawResponse == null ? "" : rawResponse;
+            protocolErrors = protocolErrors == null ? List.of() : List.copyOf(protocolErrors);
+        }
+    }
+
+    /**
      * Result of a single user turn.
      *
-     * @param answer the final assistant response text
-     * @param rounds any tool dispatches that occurred before the final answer
+     * @param answer    the final assistant response text
+     * @param rounds    any tool dispatches that occurred before the final answer
+     * @param exchanges raw structured-protocol requests and responses for diagnostics
      */
-    public record TurnResult(String answer, List<ToolRound> rounds) {}
+    public record TurnResult(
+            String answer,
+            List<ToolRound> rounds,
+            List<ProtocolExchange> exchanges) {}
 
     /**
      * Create a chat engine.
@@ -53,9 +89,25 @@ public final class ChatEngine {
      * @param maxToolRounds maximum tool calls per user turn before forcing synthesis
      */
     public ChatEngine(InferenceRouter router, GraphToolBackend bridge, int maxToolRounds) {
+        this(router, bridge, maxToolRounds, ToolRouting.ALWAYS);
+    }
+
+    /**
+     * Create a chat engine with an explicit tool-routing policy.
+     *
+     * <p>{@link ToolRouting#RELEVANT} is intended for memory-constrained local accelerators. It
+     * keeps ordinary conversation out of the model's structured-tool template while preserving
+     * graph tools for explicit graph questions and ongoing tool exchanges.</p>
+     */
+    public ChatEngine(
+            InferenceRouter router,
+            GraphToolBackend bridge,
+            int maxToolRounds,
+            ToolRouting toolRouting) {
         this.router = router;
         this.bridge = bridge;
         this.maxToolRounds = maxToolRounds;
+        this.toolRouting = toolRouting == null ? ToolRouting.ALWAYS : toolRouting;
         this.systemPrompt = GraphChatPrompt.systemPrompt();
     }
 
@@ -84,17 +136,32 @@ public final class ChatEngine {
         working.add(Message.user(userInput));
 
         List<ToolRound> rounds = new ArrayList<>();
-        String toolsJson = bridge.catalogJson();
+        List<ProtocolExchange> exchanges = new ArrayList<>();
+        boolean toolsEnabled = toolRouting == ToolRouting.ALWAYS
+                || hasGraphToolIntent(history, userInput);
+        if (!toolsEnabled) {
+            ChatResponse response = generateWithProtocolRetry(
+                    working, "[]", ChatRequest.ToolChoice.NONE, opts, exchanges);
+            if (!response.toolCalls().isEmpty()) {
+                throw new ChatException("Model returned tool calls when tool use was disabled");
+            }
+            return new TurnResult(
+                    requireAnswer(response.content()), List.of(), List.copyOf(exchanges));
+        }
 
+        String toolsJson = bridge.catalogJson();
         for (int round = 0; round < maxToolRounds; round++) {
             ChatResponse response = generateWithProtocolRetry(
-                    working, toolsJson, ChatRequest.ToolChoice.AUTO, opts);
+                    working, toolsJson, ChatRequest.ToolChoice.AUTO, opts, exchanges);
             log.debug("Structured model output (round {}): content={}, calls={}, errors={}",
                     round, response.content(), response.toolCalls().size(),
                     response.protocolErrors());
 
             if (response.toolCalls().isEmpty()) {
-                return new TurnResult(requireAnswer(response.content()), rounds);
+                return new TurnResult(
+                        requireAnswer(response.content()),
+                        List.copyOf(rounds),
+                        List.copyOf(exchanges));
             }
 
             working.add(Message.assistant(response));
@@ -112,20 +179,26 @@ public final class ChatEngine {
         working.add(Message.user(
                 "Please synthesize an answer from the tool results above without calling more tools."));
         ChatResponse synthesised = generateWithProtocolRetry(
-                working, toolsJson, ChatRequest.ToolChoice.NONE, opts);
+                working, toolsJson, ChatRequest.ToolChoice.NONE, opts, exchanges);
         if (!synthesised.toolCalls().isEmpty()) {
             throw new ChatException("Model returned tool calls when tool use was disabled");
         }
-        return new TurnResult(requireAnswer(synthesised.content()), rounds);
+        return new TurnResult(
+                requireAnswer(synthesised.content()),
+                List.copyOf(rounds),
+                List.copyOf(exchanges));
     }
 
     private ChatResponse generateWithProtocolRetry(
             List<Message> messages,
             String toolsJson,
             ChatRequest.ToolChoice toolChoice,
-            GenOptions opts) {
-        ChatResponse first = router.generate(
-                new ChatRequest(messages, toolsJson, toolChoice), opts);
+            GenOptions opts,
+            List<ProtocolExchange> exchanges) {
+        ChatRequest firstRequest = new ChatRequest(messages, toolsJson, toolChoice);
+        ChatResponse first = router.generate(firstRequest, opts);
+        exchanges.add(new ProtocolExchange(
+                firstRequest.toJson(), first.rawText(), first.protocolErrors()));
         if (first.isProtocolValid()) {
             return first;
         }
@@ -138,13 +211,30 @@ public final class ChatEngine {
                 "The previous assistant response failed the model's tool-call protocol validation: "
                         + String.join("; ", first.protocolErrors())
                         + ". Retry the same turn using the model's declared response protocol."));
-        ChatResponse retry = router.generate(
-                new ChatRequest(retryMessages, toolsJson, toolChoice), opts);
+        ChatRequest retryRequest = new ChatRequest(retryMessages, toolsJson, toolChoice);
+        ChatResponse retry = router.generate(retryRequest, opts);
+        exchanges.add(new ProtocolExchange(
+                retryRequest.toJson(), retry.rawText(), retry.protocolErrors()));
         if (!retry.isProtocolValid()) {
             throw new ChatException("Model protocol failure after retry: "
                     + String.join("; ", retry.protocolErrors()));
         }
         return retry;
+    }
+
+    private static boolean hasGraphToolIntent(List<Message> history, String userInput) {
+        for (Message message : history) {
+            if ("tool".equals(message.role()) || !message.toolCalls().isEmpty()) {
+                return true;
+            }
+        }
+        String normalized = userInput == null ? "" : userInput.toLowerCase(Locale.ROOT);
+        for (String marker : GRAPH_INTENT_MARKERS) {
+            if (normalized.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String requireAnswer(String answer) {

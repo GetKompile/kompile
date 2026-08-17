@@ -89,7 +89,8 @@ public final class LocalProjectModelBootstrap {
         }
 
         Map<String, Object> result = runStaging(root, model, options);
-        Path modelPath = requireProjectArtifact(root, stringValue(result.get("modelPath")));
+        Path modelPath = requireProjectArtifact(
+                root, stringValue(result.get("modelPath")), isVlmPipeline(model));
         Path tokenizerPath = optionalProjectArtifact(root, stringValue(result.get("tokenizerPath")));
         Path runtimePath = Path.of(stringValue(result.get("runtimePath")));
 
@@ -238,11 +239,12 @@ public final class LocalProjectModelBootstrap {
         String type = model.getMetadata().getOrDefault(
                 "registry.type", "LLM".equalsIgnoreCase(model.getRole()) ? "llm_ggml" : "");
         String typeDirectory = registryDirectory(type);
+        boolean vlmPipeline = isVlmPipeline(model);
         candidates.add(root.resolve("data/models").resolve(typeDirectory).resolve(id));
         candidates.add(root.resolve("data/models").resolve(id));
 
         for (Path candidate : candidates) {
-            Path artifact = findArtifact(candidate.toAbsolutePath().normalize());
+            Path artifact = findArtifact(candidate.toAbsolutePath().normalize(), vlmPipeline);
             if (artifact != null && artifact.startsWith(root)) {
                 return artifact;
             }
@@ -250,8 +252,8 @@ public final class LocalProjectModelBootstrap {
         return null;
     }
 
-    private static Path findArtifact(Path candidate) {
-        if (Files.isRegularFile(candidate) && supportedArtifact(candidate)) {
+    private static Path findArtifact(Path candidate, boolean vlmPipeline) {
+        if (Files.isRegularFile(candidate) && supportedArtifact(candidate, vlmPipeline)) {
             return candidate;
         }
         if (!Files.isDirectory(candidate)) {
@@ -259,7 +261,7 @@ public final class LocalProjectModelBootstrap {
         }
         try (var files = Files.walk(candidate, 3)) {
             return files.filter(Files::isRegularFile)
-                    .filter(LocalProjectModelBootstrap::supportedArtifact)
+                    .filter(path -> supportedArtifact(path, vlmPipeline))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                     .findFirst().orElse(null);
         } catch (IOException e) {
@@ -267,11 +269,40 @@ public final class LocalProjectModelBootstrap {
         }
     }
 
-    private static boolean supportedArtifact(Path path) {
+    private static boolean supportedArtifact(Path path, boolean vlmPipeline) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (vlmPipeline) {
+            if (name.equals("pipeline.json")) {
+                return true;
+            }
+            if (!(name.endsWith(".sdz") || name.endsWith(".fb") || name.endsWith(".sdnb"))) {
+                return false;
+            }
+            return hasVlmRuntimeComponents(path.getParent());
+        }
         return name.endsWith(".gguf") || name.endsWith(".ggml")
                 || name.endsWith(".sdz") || name.endsWith(".fb")
                 || name.endsWith(".onnx") || name.equals("pipeline.json");
+    }
+
+    private static boolean hasVlmRuntimeComponents(Path directory) {
+        if (directory == null) {
+            return false;
+        }
+        boolean decoder = Files.isRegularFile(directory.resolve("decoder.sdz"))
+                || Files.isRegularFile(directory.resolve("decoder_model.sdz"))
+                || Files.isRegularFile(directory.resolve("decoder_model_merged.sdz"))
+                || Files.isRegularFile(directory.resolve("language_model.sdz"))
+                || Files.isRegularFile(directory.resolve("model.sdz"));
+        boolean vision = Files.isRegularFile(directory.resolve("vision_encoder.sdz"))
+                || Files.isRegularFile(directory.resolve("encoder.sdz"));
+        return decoder && vision;
+    }
+
+    private static boolean isVlmPipeline(KompileProjectModel model) {
+        String type = model.getMetadata().getOrDefault("registry.type", "");
+        return type.toLowerCase(Locale.ROOT).startsWith("vlm")
+                || "VLM".equalsIgnoreCase(model.getRole());
     }
 
     private static Map<String, Object> runStaging(
@@ -467,9 +498,10 @@ public final class LocalProjectModelBootstrap {
         store.registerModel(root, model);
     }
 
-    private static Path requireProjectArtifact(Path root, String value) throws IOException {
+    private static Path requireProjectArtifact(
+            Path root, String value, boolean vlmPipeline) throws IOException {
         Path path = optionalProjectArtifact(root, value);
-        if (path == null || !supportedArtifact(path)) {
+        if (path == null || !supportedArtifact(path, vlmPipeline)) {
             throw new IOException("Model staging returned no supported project artifact: " + value);
         }
         return path;

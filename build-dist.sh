@@ -9,7 +9,7 @@
 #
 # Variants:
 #   cli-only      — Just the kompile-cli binary (smallest, fastest)
-#   local         — CLI + native local MCP/model workers; no web or batch server
+#   local         — CLI + native local execution workers; no staging/web/batch server
 #   full          — CLI native + all service exec JARs + bundled Java runtime
 #   hosted        — CLI + app-main + staging (for API-key/hosted LLM users)
 #   cpu-intel     — CLI + app-main + staging with nd4j-native x86_64
@@ -192,10 +192,11 @@ case "${VARIANT}" in
         INCLUDE_PRODUCT_EXTRAS=false
         ;;
     local)
-        # Native folder-local orchestration only. Local crawl is a hidden mode of
-        # the CLI itself; these four children are the complete executable closure.
+        # Native folder-local execution only. Local crawl is a hidden mode of the
+        # CLI itself; provisioning/staging is an explicit workflow, not part of
+        # the default inference closure.
         APP_NATIVE=false
-        STAGING_NATIVE=true
+        STAGING_NATIVE=false
         BUNDLE_RUNTIME=false
         INCLUDE_CLI_JAR=false
         INCLUDE_PRODUCT_EXTRAS=false
@@ -426,8 +427,11 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
         BUILD_CMD+=(-pl :kompile-cli-main -am)
     elif [ "${VARIANT}" = "local" ]; then
         # Keep the Java reactor at the local execution boundary. app-main is
-        # included only because it currently owns the dedicated VLM entrypoint.
-        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-staging,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main -am)
+        # included only because it currently owns the dedicated VLM entrypoint;
+        # the combined staging REST/CLI application is intentionally excluded.
+        # Upstream Kompile/DL4J artifacts must already be installed; do not widen
+        # this focused build with Maven's also-make reactor expansion.
+        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main)
     fi
     # When building JARs (not native), produce exec JARs for app-main
     if { [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; } \

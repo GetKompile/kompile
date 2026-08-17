@@ -41,7 +41,11 @@ class SdxModelPreparationProcessTest {
             "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"
         ).readText()
         assertTrue(source.contains("class SdxRuntimeService : Service()"))
+        assertTrue(source.contains("context.startService(runtimeIntent)"))
         assertTrue(source.contains("context.bindService("))
+        assertTrue(source.indexOf("context.startService(runtimeIntent)") < source.indexOf("context.bindService("))
+        assertTrue(source.contains("override fun onStartCommand"))
+        assertTrue(source.contains("START_NOT_STICKY"))
         assertTrue(source.contains("service.linkToDeath(this, 0)"))
         assertTrue(source.contains("NativeOperationCrashRecovery.recoverAttemptAndPersist("))
         assertTrue(source.contains("awaitExitEvidence("))
@@ -64,6 +68,59 @@ class SdxModelPreparationProcessTest {
         assertTrue(manifest.contains("android:name=\".model.SdxRuntimeService\""))
         assertTrue(manifest.contains("android:process=\":sdx_model_runtime\""))
         assertTrue(manifest.contains("android:exported=\"false\""))
+        assertTrue(manifest.contains("android:stopWithTask=\"false\""))
+    }
+
+    @Test
+    fun runtimeRecyclesOrphanedOrRetiringWorkerBeforeOpeningAnotherSession() {
+        assertFalse(
+            sdxRuntimeWorkerMustRestartBeforeOpen(
+                SdxRuntimeWorkerState(
+                    pid = 101,
+                    ownsModelSession = false,
+                    retiring = false
+                )
+            )
+        )
+        assertTrue(
+            sdxRuntimeWorkerMustRestartBeforeOpen(
+                SdxRuntimeWorkerState(
+                    pid = 102,
+                    ownsModelSession = true,
+                    retiring = false
+                )
+            )
+        )
+        assertTrue(
+            "A cleanly closed worker remains unsafe once its queued retirement starts",
+            sdxRuntimeWorkerMustRestartBeforeOpen(
+                SdxRuntimeWorkerState(
+                    pid = 103,
+                    ownsModelSession = false,
+                    retiring = true
+                )
+            )
+        )
+
+        val source = File(
+            "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"
+        ).readText()
+        assertTrue(source.contains("SdxRuntimeConnection.bindForNewSession(applicationContext)"))
+        assertTrue(source.contains("putBoolean(KEY_HAS_ACTIVE_SESSION, activeSession != null)"))
+        assertTrue(source.contains("putBoolean(KEY_WORKER_RETIRING, sdxRuntimeWorkerRetiring.get())"))
+        assertTrue(source.contains("check(!sdxRuntimeWorkerRetiring.get())"))
+        assertTrue(source.contains("Process.killProcess(state.pid)"))
+        assertTrue(source.contains("check(state.pid != Process.myPid())"))
+        val unbindStart = source.indexOf("override fun onUnbind(intent: Intent?): Boolean")
+        val unbindEnd = source.indexOf("override fun onDestroy()", unbindStart)
+        assertTrue("Missing isolated runtime unbind lifecycle", unbindStart >= 0)
+        assertTrue("Missing isolated runtime destroy lifecycle", unbindEnd > unbindStart)
+        val unbind = source.substring(unbindStart, unbindEnd)
+        val retire = unbind.indexOf("sdxRuntimeWorkerRetiring.set(true)")
+        val kill = unbind.indexOf("post { Process.killProcess(pid) }")
+        assertTrue("Worker retirement must be visible before queued process death", retire >= 0)
+        assertTrue("Queued process death must follow the retirement marker", kill > retire)
+        assertFalse(unbind.contains("postDelayed"))
     }
 
     @Test
@@ -218,6 +275,7 @@ class SdxModelPreparationProcessTest {
         assertCheckpointBeforeCall(importer, "native.sdxLlmDestroyRuntime(runtime)", "DESTROY_IMPORTER_RUNTIME")
         assertEquals(7, Regex("native\\.sdxLlm[A-Za-z0-9]+\\(").findAll(importer).count())
         assertTrue(importer.contains("internal object SdxGgufModelImporter"))
+        assertTrue(importer.contains("model.absolutePath,\n                    tokenizerPath,"))
         assertFalse(importer.contains(": PlatformLocalChatSession"))
         assertFalse(importer.contains("PlatformLocalChatModelFactory.open("))
 
@@ -225,6 +283,7 @@ class SdxModelPreparationProcessTest {
             "src/main/java/ai/kompile/chat/local/android/model/AcceleratedChatModelAndroid.kt"
         ).readText()
         assertTrue(modelSeam.contains("SdxGgufModelImporter.prepare("))
+        assertTrue(modelSeam.contains("tokenizerPath = tokenizerPath"))
         assertTrue(modelSeam.contains("preparationInfo?.canonicalSdzPath ?: modelPath"))
         assertEquals(
             1,
@@ -249,6 +308,11 @@ class SdxModelPreparationProcessTest {
         )
         assertTrue(viewModel.contains("val activeModelPath = preparedModel?.canonicalSdzPath ?: exactModelPath"))
         assertTrue(viewModel.contains("modelPath = activeModelPath"))
+        assertTrue(
+            viewModel.contains(
+                "tokenizerPath = tokenizerAssets.paths[\"tokenizer.json\"]?.toString()"
+            )
+        )
         assertFalse(viewModel.contains("SdxRawGgufChatSession"))
 
         val sdx = File(
@@ -302,6 +366,13 @@ class SdxModelPreparationProcessTest {
             "native.sdxLlmGenerateStreaming(",
             "GENERATE_TOKENS"
         )
+        assertCheckpointBeforeCall(
+            sdx,
+            "native.sdxLlmTokenCount(",
+            "GENERATE_TOKENS"
+        )
+        assertTrue(sdx.contains("TENSOR_G3_MAX_PROMPT_TOKENS = 256"))
+        assertTrue(sdx.contains("prevent a low-memory termination"))
         val cancellation = sdx.substring(
             sdx.indexOf("override fun cancel("),
             sdx.indexOf("override fun close(")
@@ -329,6 +400,7 @@ class SdxModelPreparationProcessTest {
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeResolveModelBundle("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeLoadCompiledModel("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeRenderChatPrompt("))
+        assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeTokenCount("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeLastResultJson("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeGenerateStreaming("))
         assertTrue(androidAbi.contains("SdxAndroidLlmNative.nativeReadUtf8("))

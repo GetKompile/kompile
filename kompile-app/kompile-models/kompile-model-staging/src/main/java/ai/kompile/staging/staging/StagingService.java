@@ -328,7 +328,30 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             Path outputPath;
             ConversionArtifact conversionArtifact = null;
 
-            if (shouldConvert(modelPath, request.getModelType(), request.getFormat())) {
+            boolean convertVlmBundle = isVlmPipeline(request.getModelType(), request.getFormat())
+                    && hasVlmOnnxComponents(pendingDir);
+            boolean convertSingleModel = shouldConvert(
+                    modelPath, request.getModelType(), request.getFormat());
+
+            if (convertVlmBundle) {
+                diagnosticPhase = ImportPhase.COMPILE;
+                recordDiagnostic(
+                        operation,
+                        diagnosticPhase,
+                        ImportDiagnosticCode.COMPILE_STARTED,
+                        "Compiling the VLM component bundle into runtime-owned SameDiff/SDZ artifacts.",
+                        diagnosticDetails(request));
+                info.withStatus(StagingStatus.CONVERTING, 40, "Converting VLM components to SameDiff format");
+                progressCallback.accept(info);
+
+                outputPath = convertVlmBundle(pendingDir, operation);
+                recordDiagnostic(
+                        operation,
+                        ImportPhase.COMPILE,
+                        ImportDiagnosticCode.COMPILE_COMPLETE,
+                        "Compiled and validated the multipart VLM SameDiff/SDZ bundle.",
+                        Map.of("artifact", outputPath.getFileName().toString()));
+            } else if (convertSingleModel) {
                 diagnosticPhase = ImportPhase.COMPILE;
                 recordDiagnostic(
                         operation,
@@ -1129,6 +1152,39 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 files.put(asset.getKey(), asset.getValue());
             }
         }
+        if (inferredType.isVlm()) {
+            addFirstExistingLocalAsset(
+                    files,
+                    sourceDirectory,
+                    "vlm.model.vision_encoder",
+                    "vision_encoder.onnx",
+                    "encoder.onnx",
+                    "vision_encoder.sdz",
+                    "encoder.sdz");
+            addFirstExistingLocalAsset(
+                    files,
+                    sourceDirectory,
+                    "vlm.model.embed_tokens",
+                    "embed_tokens.onnx",
+                    "embeddings.onnx",
+                    "embed_tokens.sdz",
+                    "embeddings.sdz");
+            addFirstExistingLocalAsset(
+                    files,
+                    sourceDirectory,
+                    "vlm.model.decoder",
+                    "decoder_model_merged.onnx",
+                    "decoder_model.onnx",
+                    "decoder.onnx",
+                    "decoder.sdz",
+                    "decoder_model.sdz");
+            addFirstExistingLocalAsset(
+                    files,
+                    sourceDirectory,
+                    "vlm.preprocessor_config",
+                    "preprocessor_config.json",
+                    "processor_config.json");
+        }
 
         DownloadRequest request = DownloadRequest.builder()
                 .source("trusted-local")
@@ -1149,6 +1205,19 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
             });
         }
         return stagingModels.get(validModelId);
+    }
+
+    private void addFirstExistingLocalAsset(
+            Map<String, String> files,
+            Path sourceDirectory,
+            String key,
+            String... names) {
+        for (String name : names) {
+            if (Files.isRegularFile(sourceDirectory.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+                files.put(key, name);
+                return;
+            }
+        }
     }
 
     /**
@@ -1604,6 +1673,74 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 || name.endsWith(".ggml");
     }
 
+    private boolean isVlmPipeline(ModelType type, String format) {
+        if (type != null && type.isVlm()) {
+            return true;
+        }
+        String normalizedFormat = format != null ? format.trim().toLowerCase(Locale.ROOT) : "";
+        return "vlm".equals(normalizedFormat) || "vlm_pipeline".equals(normalizedFormat);
+    }
+
+    private boolean hasVlmOnnxComponents(Path directory) throws IOException {
+        return findFile(
+                directory,
+                "decoder_model_merged.onnx",
+                "decoder_model.onnx",
+                "decoder.onnx",
+                "vision_encoder.onnx",
+                "embed_tokens.onnx") != null;
+    }
+
+    /**
+     * Convert a downloaded VLM bundle before it becomes runnable. Native inference workers
+     * consume SDZ and must never become responsible for ONNX importer availability.
+     */
+    private Path convertVlmBundle(Path directory, StagingCancellation cancellation) throws IOException {
+        Path decoder = findFile(
+                directory,
+                "decoder_model_merged.onnx",
+                "decoder_model.onnx",
+                "decoder.onnx");
+        Path tokenizer = findFile(directory, "tokenizer.json");
+        if (decoder == null) {
+            throw new IOException(
+                    "VLM conversion requires decoder_model_merged.onnx, decoder_model.onnx, or decoder.onnx");
+        }
+        if (tokenizer == null) {
+            throw new IOException("VLM conversion requires tokenizer.json");
+        }
+
+        Path vision = findFile(directory, "vision_encoder.onnx", "encoder.onnx");
+        Path embedTokens = findFile(directory, "embed_tokens.onnx", "embeddings.onnx");
+
+        convertVlmComponent(vision, directory.resolve("vision_encoder.sdz"), cancellation, true);
+        convertVlmComponent(embedTokens, directory.resolve("embed_tokens.sdz"), cancellation, false);
+        return convertVlmComponent(decoder, directory.resolve("decoder.sdz"), cancellation, true);
+    }
+
+    private Path convertVlmComponent(
+            Path source,
+            Path target,
+            StagingCancellation cancellation,
+            boolean required) throws IOException {
+        if (source == null) {
+            if (required) {
+                throw new IOException("Required VLM component is missing for " + target.getFileName());
+            }
+            return null;
+        }
+
+        cancellation.checkpoint();
+        ConversionResult result = conversionService.convertVlmOnnx(source, target, cancellation);
+        if (!result.isSuccess() || result.getArtifact() == null) {
+            throw new IOException(
+                    "VLM component conversion failed for " + source.getFileName() + ": "
+                            + result.getErrorMessage());
+        }
+        cancellation.checkpoint();
+        return result.getArtifact().requireCanonicalSdz();
+    }
+
     private boolean shouldConvert(Path modelPath, ModelType type, String format) {
         if (type != null && type.isVlm()) {
             return false;
@@ -2009,7 +2146,14 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
      */
     private Path findModelFile(Path dir) throws IOException {
         // First check for VLM runtime artifacts or real single-file SameDiff model.
-        Path single = findFile(dir, "pipeline.json", "decoder_model_merged.onnx", "model.sdz", ".fb");
+        Path single = findFile(
+                dir,
+                "decoder.sdz",
+                "decoder_model_merged.sdz",
+                "pipeline.json",
+                "decoder_model_merged.onnx",
+                "model.sdz",
+                ".fb");
         if (single != null) return single;
 
         // Check for a single (non-sharded) .sdnb file with content

@@ -12,6 +12,8 @@ internal class SdxPointerByReference {
     var value: SdxNativeHandle? = null
 }
 
+internal data class SdxTokenCountResult(val status: Int, val count: Int)
+
 /**
  * Android-only direct JNI adapter around libsdx_llm's stable C ABI.
  *
@@ -108,6 +110,23 @@ internal object SdxAndroidLlmAbi {
             addGenerationPrompt,
             output
         )
+    }
+
+    fun sdxLlmTokenCount(
+        runtime: SdxNativeHandle,
+        model: SdxNativeHandle,
+        text: String,
+        addSpecialTokens: Int = 0
+    ): SdxTokenCountResult {
+        val count = intArrayOf(0)
+        val status = SdxAndroidLlmNative.nativeTokenCount(
+            runtime.address,
+            model.address,
+            text.utf8(),
+            addSpecialTokens,
+            count
+        )
+        return SdxTokenCountResult(status, count[0])
     }
 
     fun sdxLlmParseChatResult(

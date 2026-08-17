@@ -1,0 +1,80 @@
+[
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Ready",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Progress",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$PhaseTransition",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Heartbeat",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Completed",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Failed",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$WorkerStatus",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$Log",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$RuntimeInfo",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$ProgressStats",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$BatchHistoryEntry",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.subprocess.SubprocessMessage$WorkerStatusSnapshot",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "ai.kompile.app.config.Nd4jEnvironmentConfig",
+    "allDeclaredFields": true,
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  }
+]

@@ -229,22 +229,41 @@ class StagingServiceLocalModelTest {
         assertEquals(ModelType.VLM_PIPELINE, model.getType());
         assertEquals("pipeline.json", model.getModelFile());
         verify(conversionService, never()).convert(any(), any(), any(), any());
+        verify(conversionService, never()).convertVlmOnnx(any(), any(), any());
         verify(conversionService, never()).validate(any());
     }
 
     @Test
-    void stageLocalVlmOnnx_doesNotConvertOrSameDiffValidate() throws Exception {
+    void stageLocalVlmOnnx_convertsCompleteBundleBeforePromotion() throws Exception {
         String modelId = "vlm-onnx-test";
         Path decoderFile = sourceDir.resolve("decoder_model_merged.onnx");
         Files.write(decoderFile, new byte[]{1, 2, 3});
+        Files.write(sourceDir.resolve("vision_encoder.onnx"), new byte[]{4, 5, 6});
+        Files.write(sourceDir.resolve("embed_tokens.onnx"), new byte[]{7, 8, 9});
+        Files.writeString(sourceDir.resolve("tokenizer.json"), "{\"model\":{\"vocab\":{}}}");
+
+        when(conversionService.convertVlmOnnx(any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    Path outputPath = invocation.getArgument(1);
+                    Files.write(outputPath, new byte[100]);
+                    return ConversionResult.builder()
+                            .success(true)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
+                            .build();
+                });
 
         stagingService.stageLocalModel(modelId, decoderFile.toString(), "vlm", true);
         awaitStatus(modelId, StagingStatus.COMPLETED, 15);
 
         ModelEntry model = registryService.getModel(modelId).orElseThrow();
         assertEquals(ModelType.VLM_PIPELINE, model.getType());
-        assertEquals("decoder_model_merged.onnx", model.getModelFile());
-        verify(conversionService, never()).convert(any(), any(), any(), any());
+        assertEquals("decoder.sdz", model.getModelFile());
+
+        Path productionDir = tempDir.resolve(model.getPath());
+        assertTrue(Files.isRegularFile(productionDir.resolve("vision_encoder.sdz")));
+        assertTrue(Files.isRegularFile(productionDir.resolve("embed_tokens.sdz")));
+        assertTrue(Files.isRegularFile(productionDir.resolve("decoder.sdz")));
+        verify(conversionService, times(3)).convertVlmOnnx(any(), any(), any());
         verify(conversionService, never()).validate(any());
     }
 

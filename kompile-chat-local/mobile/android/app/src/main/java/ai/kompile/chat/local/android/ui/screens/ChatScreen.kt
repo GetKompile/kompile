@@ -34,9 +34,11 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -66,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -73,8 +76,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.R
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
@@ -84,20 +87,69 @@ import ai.kompile.chat.local.android.viewmodel.EngineNotice
 import ai.kompile.chat.local.android.viewmodel.GraphUiState
 import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportUiState
 import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
+import ai.kompile.chat.local.android.viewmodel.ModelLoadProgressUi
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
 import ai.kompile.chat.local.android.viewmodel.ToolRoundUi
 import ai.kompile.chat.local.android.viewmodel.UiMessage
 import ai.kompile.chat.local.android.viewmodel.engineNotice
+import ai.kompile.chat.local.android.viewmodel.modelStatusUi
 import ai.kompile.chat.local.android.viewmodel.routeBadgeUi
 import ai.kompile.chat.local.android.viewmodel.routeCanCancelGeneration
 import kotlinx.coroutines.launch
+
+internal fun shouldShowHuggingFaceImportOnChat(
+    state: HuggingFaceImportUiState,
+    modelState: ModelUiState
+): Boolean = modelState !is ModelUiState.Ready && state is HuggingFaceImportUiState.Observable
+
+internal fun copyableChatTranscript(
+    messages: List<UiMessage>,
+    route: String,
+    error: String?,
+    errorStackTrace: String?
+): String = buildString {
+    appendLine("Kompile Chat raw transcript")
+    appendLine("Route: $route")
+    messages.forEachIndexed { messageIndex, message ->
+        appendLine()
+        appendLine("message[$messageIndex].role=${message.role}")
+        appendLine("message[$messageIndex].content:")
+        appendLine(message.content)
+        message.toolRounds.forEachIndexed { roundIndex, round ->
+            appendLine("message[$messageIndex].tool[$roundIndex].name=${round.tool}")
+            appendLine("message[$messageIndex].tool[$roundIndex].arguments:")
+            appendLine(round.argsJson)
+            appendLine("message[$messageIndex].tool[$roundIndex].result:")
+            appendLine(round.resultJson)
+        }
+        message.protocolExchanges.forEachIndexed { exchangeIndex, exchange ->
+            appendLine("message[$messageIndex].protocol[$exchangeIndex].request_json:")
+            appendLine(exchange.requestJson)
+            appendLine("message[$messageIndex].protocol[$exchangeIndex].raw_response:")
+            appendLine(exchange.rawResponse)
+            if (exchange.protocolErrors.isNotEmpty()) {
+                appendLine("message[$messageIndex].protocol[$exchangeIndex].errors:")
+                exchange.protocolErrors.forEach { appendLine(it) }
+            }
+        }
+    }
+    if (!error.isNullOrBlank()) {
+        appendLine()
+        appendLine("current_error:")
+        appendLine(error)
+    }
+    if (!errorStackTrace.isNullOrBlank()) {
+        appendLine("current_error_stack:")
+        appendLine(errorStackTrace)
+    }
+}.trimEnd()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     onOpenSettings: () -> Unit,
-    vm: ChatViewModel = viewModel()
+    vm: ChatViewModel
 ) {
     val messages by vm.messages.collectAsState()
     val thinking  by vm.thinking.collectAsState()
@@ -105,12 +157,18 @@ fun ChatScreen(
     val errorStackTrace by vm.errorStackTrace.collectAsState()
     val route      by vm.activeRoute.collectAsState()
     val modelState by vm.modelState.collectAsState()
+    val modelLoadProgress by vm.modelLoadProgress.collectAsState()
     val graphState by vm.graphState.collectAsState()
     val diagnostics by vm.importDiagnostics.collectAsState()
     val clipboard = LocalClipboardManager.current
     val traceContext = LocalContext.current
     val copySmokeDecodeTrace = {
         clipboard.setText(AnnotatedString(SmokeDecodeTraceLog(traceContext).readContents()))
+    }
+    val copyTranscript = {
+        clipboard.setText(
+            AnnotatedString(copyableChatTranscript(messages, route, error, errorStackTrace))
+        )
     }
 
     val listState = rememberLazyListState()
@@ -191,6 +249,12 @@ fun ChatScreen(
                 },
                 navigationIcon = {},
                 actions = {
+                    IconButton(
+                        onClick = copyTranscript,
+                        enabled = messages.isNotEmpty() || !error.isNullOrBlank()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy transcript")
+                    }
                     // Small local context windows make resetting the conversation a
                     // first-class action, not a hidden side effect of Settings changes.
                     IconButton(
@@ -215,6 +279,13 @@ fun ChatScreen(
                 .padding(padding)
                 .imePadding()
         ) {
+            ModelStatusHeader(
+                modelState = modelState,
+                importOperation = importOperation,
+                loadProgress = modelLoadProgress,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+
             // Thinking indicator.
             if (thinking) {
                 LinearProgressIndicator(
@@ -223,7 +294,7 @@ fun ChatScreen(
                 )
             }
 
-            if (huggingFaceImportState !is HuggingFaceImportUiState.Idle) {
+            if (shouldShowHuggingFaceImportOnChat(huggingFaceImportState, modelState)) {
                 HuggingFaceImportProgressPanel(
                     state = huggingFaceImportState,
                     onCancelStep = vm::cancelHuggingFaceStep,
@@ -315,6 +386,74 @@ fun ChatScreen(
 }
 
 // ── Sub-composables ───────────────────────────────────────────────────────────
+
+@Composable
+internal fun ModelStatusHeader(
+    modelState: ModelUiState,
+    importOperation: ImportOperationKind,
+    loadProgress: ModelLoadProgressUi? = null,
+    modifier: Modifier = Modifier,
+) {
+    val status = modelStatusUi(modelState, importOperation, loadProgress)
+    val containerColor = when {
+        status.error -> MaterialTheme.colorScheme.errorContainer
+        status.loading -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(8.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("top_model_status"),
+    ) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                if (status.loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .testTag("model_loading_indicator"),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = status.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = status.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (status.loading) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .testTag("model_compiler_progress"),
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun RouteBadge(route: String) {

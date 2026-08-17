@@ -3,7 +3,6 @@
 #
 # The archive contains only:
 #   - kompile (the standard chat/MCP CLI; local crawl is an internal CLI mode)
-#   - kompile-model-staging
 #   - kompile-model-serving
 #   - kompile-pipeline-serving
 #   - kompile-vlm-test
@@ -22,7 +21,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_NATIVE_TARGETS="cli,staging,model-serving,pipeline-serving,vlm-test"
+LOCAL_NATIVE_TARGETS="cli,model-serving,pipeline-serving,vlm-test"
 
 export VARIANT=local
 export NATIVE_TARGETS="${NATIVE_TARGETS:-${LOCAL_NATIVE_TARGETS}}"

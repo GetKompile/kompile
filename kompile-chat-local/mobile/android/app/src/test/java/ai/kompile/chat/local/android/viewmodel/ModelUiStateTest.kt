@@ -131,4 +131,37 @@ class ModelUiStateTest {
         assertEquals("/projects/research/project.kgraph", active.graphPath)
         assertEquals(3, active.sourceCount)
     }
+
+    @Test
+    fun tensorG3CapsGenerationAtTheSmokeProvenKvWindow() {
+        assertEquals(
+            TENSOR_G3_MAX_GENERATION_TOKENS,
+            effectiveMaxTokensForTarget(1024, TENSOR_G3_TARGET_PROFILE)
+        )
+        assertEquals(64, effectiveMaxTokensForTarget(64, TENSOR_G3_TARGET_PROFILE))
+        assertEquals(
+            TENSOR_G3_MAX_GENERATION_TOKENS,
+            maxGenerationTokensForTarget(TENSOR_G3_TARGET_PROFILE)
+        )
+    }
+
+    @Test
+    fun otherAcceleratorsKeepTheirConfiguredGenerationBudget() {
+        assertEquals(1024, effectiveMaxTokensForTarget(1024, "android-arm64-vulkan"))
+        assertEquals(4096, maxGenerationTokensForTarget("android-arm64-vulkan"))
+    }
+
+    @Test
+    fun modelLoadingIncludesStartupAndModelProducingImportsOnly() {
+        assertTrue(isModelLoading(ModelUiState.Checking, ImportOperationKind.NONE))
+        assertTrue(isModelLoading(ModelUiState.Missing, ImportOperationKind.HUGGING_FACE))
+        assertTrue(isModelLoading(ModelUiState.Missing, ImportOperationKind.MODEL_ARCHIVE))
+        assertFalse(isModelLoading(ModelUiState.Missing, ImportOperationKind.GRAPH))
+        assertFalse(
+            isModelLoading(
+                ModelUiState.Ready("/models/model.sdz", "LOCAL_TENSOR_G3_NNAPI"),
+                ImportOperationKind.NONE
+            )
+        )
+    }
 }

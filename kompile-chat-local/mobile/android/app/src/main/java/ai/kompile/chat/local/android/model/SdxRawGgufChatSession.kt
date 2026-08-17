@@ -132,6 +132,7 @@ internal object SdxGgufModelImporter {
     fun prepare(
         context: Context,
         modelPath: String,
+        tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
         options: ModelPreparationOptions = ModelPreparationOptions(),
@@ -142,6 +143,7 @@ internal object SdxGgufModelImporter {
         val prepared = SdxModelPreparationClient.prepare(
             context.applicationContext,
             model,
+            tokenizerPath,
             verifiedSourceSha256,
             verifiedSourceBytes,
             options,
@@ -155,6 +157,7 @@ internal object SdxGgufModelImporter {
         internal fun prepareInImporterProcess(
             context: Context,
             modelPath: String,
+            tokenizerPath: String?,
             verifiedSourceSha256: String?,
             verifiedSourceBytes: Long?,
             options: ModelPreparationOptions,
@@ -182,6 +185,7 @@ internal object SdxGgufModelImporter {
                 library,
                 model,
                 modelCache,
+                tokenizerPath,
                 verifiedSourceSha256,
                 verifiedSourceBytes,
                 options,
@@ -194,6 +198,7 @@ internal object SdxGgufModelImporter {
             library: File,
             model: File,
             modelCache: File,
+            tokenizerPath: String?,
             verifiedSourceSha256: String?,
             verifiedSourceBytes: Long?,
             options: ModelPreparationOptions,
@@ -221,7 +226,7 @@ internal object SdxGgufModelImporter {
                 val status = native.sdxLlmPrepareGguf(
                     runtime,
                     model.absolutePath,
-                    null,
+                    tokenizerPath,
                     BuildConfig.SDX_TARGET_PROFILE,
                     modelCache.absolutePath,
                     SdxRawGgufContract.preparationOptionsJson(

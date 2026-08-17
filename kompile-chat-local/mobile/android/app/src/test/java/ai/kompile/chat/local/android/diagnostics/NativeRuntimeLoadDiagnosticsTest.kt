@@ -133,7 +133,7 @@ class NativeRuntimeLoadDiagnosticsTest {
         )
 
         assertEquals(ImportDiagnosticSeverity.ERROR, diagnostic.severity)
-        assertEquals("Load the canonical sharded SDZ model", diagnostic.phase)
+        assertEquals("Compile or restore the accelerator execution plan", diagnostic.phase)
         assertTrue(diagnostic.summary.contains("native crash"))
         assertTrue(diagnostic.technicalDetails.contains("Exit status or signal: 11"))
         assertTrue(diagnostic.technicalDetails.contains("Exit PID: 1234"))
@@ -146,7 +146,7 @@ class NativeRuntimeLoadDiagnosticsTest {
         assertFalse(diagnostic.technicalDetails.contains("/data/app/private"))
         assertTrue(
             ImportDiagnosticPolicy.copyText(diagnostic)
-                .contains("Load the canonical sharded SDZ model")
+                .contains("Compile or restore the accelerator execution plan")
         )
     }
 

@@ -20,6 +20,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
@@ -38,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,7 +61,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
 import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
@@ -74,6 +76,8 @@ import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
 import ai.kompile.chat.local.android.viewmodel.ModelSmokeUiState
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
+import ai.kompile.chat.local.android.viewmodel.effectiveMaxTokensForTarget
+import ai.kompile.chat.local.android.viewmodel.maxGenerationTokensForTarget
 import ai.kompile.chat.local.android.viewmodel.stagingUrlProblem
 import kotlinx.coroutines.launch
 import org.nd4j.dsp.model.HuggingFaceGgmlResolver
@@ -82,7 +86,8 @@ import org.nd4j.dsp.model.HuggingFaceGgmlResolver
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
-    vm: ChatViewModel = viewModel()
+    onOpenChat: () -> Unit,
+    vm: ChatViewModel
 ) {
     val prefs = vm.prefs
     val context = LocalContext.current
@@ -99,14 +104,22 @@ fun SettingsScreen(
     }
     var maxRounds   by remember { mutableIntStateOf(prefs.maxToolRounds) }
     var temperature by remember { mutableFloatStateOf(prefs.temperature) }
-    var maxTokens   by remember { mutableIntStateOf(prefs.maxTokens) }
+    val maxTokenLimit = maxGenerationTokensForTarget(BuildConfig.SDX_TARGET_PROFILE)
+    var maxTokens by remember {
+        mutableIntStateOf(
+            effectiveMaxTokensForTarget(prefs.maxTokens, BuildConfig.SDX_TARGET_PROFILE)
+        )
+    }
     val importOperation by vm.importOperation.collectAsState()
     val importing = importOperation != ImportOperationKind.NONE
-    // Imports and the decode test are refused during generation; disabling the
-    // buttons here beats a refusal message that only ChatScreen's snackbar shows.
     val thinking by vm.thinking.collectAsState()
-    val importBlocked = importing || thinking
     val modelState by vm.modelState.collectAsState()
+    val modelLoadProgress by vm.modelLoadProgress.collectAsState()
+    val activeModelLoaded = modelState is ModelUiState.Ready
+    // A proven model owns the runtime until the user explicitly unloads it. This
+    // mirrors the ViewModel gate and prevents stale picker callbacks from replacing it.
+    val lifecycleBusy = importing || thinking
+    val importBlocked = lifecycleBusy || activeModelLoaded
     val modelSmokeState by vm.modelSmokeState.collectAsState()
     val importDiagnostics by vm.importDiagnostics.collectAsState()
     val huggingFaceImportState by vm.huggingFaceImportState.collectAsState()
@@ -285,12 +298,19 @@ fun SettingsScreen(
                     }
                 },
                 actions = {
-                    Button(
+                    TextButton(
+                        onClick = onOpenChat,
+                        modifier = Modifier.testTag("open_chat_from_settings"),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Chat")
+                    }
+                    IconButton(
                         onClick = { save() },
                         enabled = !importing && stagingProblem == null,
-                        modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        Text("Save")
+                        Icon(Icons.Default.Check, contentDescription = "Save settings")
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
@@ -307,7 +327,12 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Spacer(Modifier.height(4.dp))
+            ModelStatusHeader(
+                modelState = modelState,
+                importOperation = importOperation,
+                loadProgress = modelLoadProgress,
+                modifier = Modifier.padding(top = 4.dp),
+            )
 
             // ── Canonical offline model and optional knowledge project ──────────
             SectionHeader(icon = Icons.Default.Memory, title = "Offline Model & Project")
@@ -360,6 +385,51 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(12.dp))
+                    if (activeModelLoaded) {
+                        Text(
+                            text = "This model exclusively owns the local runtime. Use it now, or unload it before selecting another model, project, or graph.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = onOpenChat,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("use_active_model")
+                        ) {
+                            Text("Use active model")
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    clearImportError()
+                                    importNotice = null
+                                    val result = vm.unloadActiveModel()
+                                    refreshSelectionFromPrefs()
+                                    result.fold(
+                                        onSuccess = {
+                                            importNotice =
+                                                "Model unloaded. You can now import another model or project."
+                                        },
+                                        onFailure = { failure ->
+                                            importError = failure.message
+                                                ?: "The active model could not be unloaded."
+                                            importErrorStackTrace = failure.stackTraceToString()
+                                        }
+                                    )
+                                }
+                            },
+                            enabled = !lifecycleBusy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("unload_active_model")
+                        ) {
+                            Text("Unload active model")
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
                     Button(
                         onClick = { modelPicker.launch("*/*") },
                         enabled = !importBlocked,
@@ -919,11 +989,18 @@ fun SettingsScreen(
                     Slider(
                         value = maxTokens.toFloat(),
                         onValueChange = { maxTokens = it.toInt() },
-                        valueRange = 64f..4096f,
-                        // 63 intervals of exactly 64 tokens, so the shown value is
-                        // always a clean multiple of 64 (steps counts interior stops).
-                        steps = 62
+                        valueRange = 64f..maxTokenLimit.toFloat(),
+                        // Use exact 64-token stops. Tensor G3 is intentionally capped at
+                        // the 128-token KV window already proven by the smoke decode.
+                        steps = ((maxTokenLimit - 64) / 64 - 1).coerceAtLeast(0)
                     )
+                    if (BuildConfig.SDX_TARGET_PROFILE == "android-arm64-nnapi-accelerator") {
+                        Text(
+                            text = "Tensor G3 limit: 128 tokens to keep the NNAPI KV-cache allocation within the device memory envelope.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "Max Tool Rounds: $maxRounds",

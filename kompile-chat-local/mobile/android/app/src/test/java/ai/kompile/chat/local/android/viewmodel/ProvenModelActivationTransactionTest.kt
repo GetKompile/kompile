@@ -181,6 +181,7 @@ class ProvenModelActivationTransactionTest {
         val downloaded = File("models/hugging-face/exact-download.gguf").absoluteFile
         var stagedFile: File? = null
         var openedFile: File? = null
+        var openedCandidate: Candidate? = null
         var publishedFile: File? = null
         var publishedCandidate: Candidate? = null
 
@@ -189,7 +190,7 @@ class ProvenModelActivationTransactionTest {
             detachPreviousRuntime = {},
             openCandidate = { file ->
                 openedFile = file
-                Candidate(file)
+                Candidate(file).also { openedCandidate = it }
             },
             decodedGeneration = { "ready" },
             publish = { file, candidate ->
@@ -209,6 +210,7 @@ class ProvenModelActivationTransactionTest {
         assertSame(downloaded, openedFile)
         assertSame(downloaded, publishedFile)
         assertSame(downloaded, active.file)
+        assertSame(openedCandidate, publishedCandidate)
         assertSame(publishedCandidate, active.candidate)
         assertSame(downloaded, active.candidate.file)
     }

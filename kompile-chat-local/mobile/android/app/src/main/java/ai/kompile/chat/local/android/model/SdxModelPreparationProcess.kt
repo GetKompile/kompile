@@ -41,6 +41,7 @@ private const val KEY_REQUEST_ID = "request_id"
 private const val KEY_PREPARATION_STAGE = "preparation_stage"
 private const val KEY_PID = "pid"
 private const val KEY_MODEL_PATH = "model_path"
+private const val KEY_TOKENIZER_SOURCE_PATH = "tokenizer_source_path"
 private const val KEY_VERIFIED_SHA256 = "verified_sha256"
 private const val KEY_VERIFIED_BYTES = "verified_bytes"
 private const val KEY_HAS_VERIFIED_BYTES = "has_verified_bytes"
@@ -102,6 +103,7 @@ internal fun requireFrameworkOnlySdxWireBundle(bundle: Bundle, description: Stri
 
 internal fun buildSdxModelPreparationRequest(
     modelPath: String,
+    tokenizerSourcePath: String? = null,
     verifiedSourceSha256: String?,
     verifiedSourceBytes: Long?,
     options: ModelPreparationOptions,
@@ -109,6 +111,7 @@ internal fun buildSdxModelPreparationRequest(
 ): Bundle = requireFrameworkOnlySdxWireBundle(
     Bundle().apply {
         putString(KEY_MODEL_PATH, modelPath)
+        putString(KEY_TOKENIZER_SOURCE_PATH, tokenizerSourcePath)
         putString(KEY_VERIFIED_SHA256, verifiedSourceSha256)
         putBoolean(KEY_HAS_VERIFIED_BYTES, verifiedSourceBytes != null)
         if (verifiedSourceBytes != null) putLong(KEY_VERIFIED_BYTES, verifiedSourceBytes)
@@ -205,6 +208,7 @@ internal object SdxModelPreparationClient {
     fun prepare(
         context: Context,
         model: File,
+        tokenizerSourcePath: String?,
         verifiedSourceSha256: String?,
         verifiedSourceBytes: Long?,
         options: ModelPreparationOptions,
@@ -236,6 +240,7 @@ internal object SdxModelPreparationClient {
             try {
                 val request = buildSdxModelPreparationRequest(
                     modelPath = model.absolutePath,
+                    tokenizerSourcePath = tokenizerSourcePath,
                     verifiedSourceSha256 = verifiedSourceSha256,
                     verifiedSourceBytes = verifiedSourceBytes,
                     options = options,
@@ -826,6 +831,7 @@ class SdxModelPreparationService : Service() {
             val prepared = SdxGgufModelImporter.prepareInImporterProcess(
                 serviceContext,
                 modelPath,
+                extras.getString(KEY_TOKENIZER_SOURCE_PATH),
                 extras.getString(KEY_VERIFIED_SHA256),
                 verifiedBytes,
                 options,

@@ -18,6 +18,7 @@ package ai.kompile.staging.conversion;
 
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SDZSerializer;
+import org.eclipse.deeplearning4j.vlm.model.loading.OnnxModelCache;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
 import ai.kompile.staging.download.StagingCancellation;
@@ -71,6 +72,26 @@ public class ConversionService {
             Path outputPath,
             String format,
             StagingCancellation cancellation) {
+        return convertInternal(inputPath, outputPath, format, cancellation, false);
+    }
+
+    /**
+     * Convert one VLM ONNX component through the canonical SameDiff-VLM import and
+     * graph-optimization path used by production inference.
+     */
+    public ConversionResult convertVlmOnnx(
+            Path inputPath,
+            Path outputPath,
+            StagingCancellation cancellation) {
+        return convertInternal(inputPath, outputPath, "onnx", cancellation, true);
+    }
+
+    private ConversionResult convertInternal(
+            Path inputPath,
+            Path outputPath,
+            String format,
+            StagingCancellation cancellation,
+            boolean vlmOptimizedImport) {
         long startTime = System.currentTimeMillis();
         List<String> warnings = new ArrayList<>();
         StagingCancellation signal =
@@ -97,8 +118,12 @@ public class ConversionService {
             }
             Files.createDirectories(canonicalOutput.getParent());
 
-            // Import model based on format
-            SameDiff sameDiff = importModel(inputPath, resolvedFormat);
+            // VLM components must use the same graph optimizer and cache-fingerprint
+            // ownership as production inference. Generic ONNX conversion intentionally remains
+            // unchanged for non-VLM models.
+            SameDiff sameDiff = vlmOptimizedImport
+                    ? OnnxModelCache.importWithCache(inputPath.toString())
+                    : importModel(inputPath, resolvedFormat);
             signal.checkpoint();
 
             if (sameDiff == null) {
@@ -134,6 +159,9 @@ public class ConversionService {
             signal.checkpoint();
             publishAtomically(pendingOutput, canonicalOutput);
             pendingOutput = null;
+            if (vlmOptimizedImport) {
+                removeTransientVlmImportCache(inputPath, canonicalOutput);
+            }
 
             ConversionArtifact artifact = ConversionArtifact.canonicalSdz(canonicalOutput);
             String checksum = calculateSha256(artifact.canonicalPath());
@@ -348,6 +376,32 @@ public class ConversionService {
             sb.append(String.format("%02x", b));
         }
         return sb.toString();
+    }
+
+    private void removeTransientVlmImportCache(Path inputPath, Path canonicalOutput) {
+        String inputName = inputPath.getFileName().toString();
+        int extension = inputName.toLowerCase(Locale.ROOT).lastIndexOf(".onnx");
+        String baseName = extension >= 0 ? inputName.substring(0, extension) : inputName;
+        Path baseSdz = inputPath.resolveSibling(baseName + ".sdz").toAbsolutePath().normalize();
+        Path optimizedSdz = inputPath.resolveSibling(baseName + ".opt.sdz").toAbsolutePath().normalize();
+        Path normalizedOutput = canonicalOutput.toAbsolutePath().normalize();
+
+        List<Path> transientArtifacts = new ArrayList<>();
+        if (!baseSdz.equals(normalizedOutput)) {
+            transientArtifacts.add(baseSdz);
+        }
+        transientArtifacts.add(Path.of(baseSdz + ".meta"));
+        transientArtifacts.add(Path.of(baseSdz + ".lock"));
+        transientArtifacts.add(optimizedSdz);
+        transientArtifacts.add(Path.of(optimizedSdz + ".meta"));
+
+        for (Path artifact : transientArtifacts) {
+            try {
+                Files.deleteIfExists(artifact);
+            } catch (IOException cleanupFailure) {
+                log.warn("Could not remove transient VLM import cache {}", artifact, cleanupFailure);
+            }
+        }
     }
 
     private static void publishAtomically(Path pending, Path output) throws IOException {

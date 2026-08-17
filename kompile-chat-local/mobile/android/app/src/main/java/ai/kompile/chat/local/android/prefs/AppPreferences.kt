@@ -113,6 +113,16 @@ class AppPreferences(context: Context) {
         .putString(KEY_PROJECT_TARGET_PROFILE, selection.targetProfile)
         .commit()
 
+    /**
+     * Retire the active model in one durable commit while preserving the independently
+     * selected graph. Imported files stay on disk and may be selected again later.
+     */
+    fun deactivateModel(): Boolean = prefs.edit()
+        .putString(KEY_MODEL_PATH, "")
+        .clearProjectMetadata()
+        .clearPendingSelection()
+        .commit()
+
     /** Persist a candidate without changing the last proven active selection. */
     fun stagePendingSelection(selection: ActiveProjectSelection): Boolean = prefs.edit()
         .putBoolean(KEY_PENDING_SELECTION, true)

@@ -92,7 +92,8 @@ public class BootstrapCommand implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         Optional<ModelEntry> installed = registryService.getModel(modelId);
-        if (installed.isPresent() && resolveModelPath(installed.get()) != null) {
+        Path installedPath = installed.map(this::resolveModelPath).orElse(null);
+        if (installed.isPresent() && isRuntimeReady(installed.get(), installedPath)) {
             emit(installed.get(), "existing");
             return 0;
         }
@@ -184,8 +185,8 @@ public class BootstrapCommand implements Callable<Integer> {
 
     private void emit(ModelEntry entry, String disposition) throws Exception {
         Path modelPath = resolveModelPath(entry);
-        if (modelPath == null) {
-            throw new IllegalStateException("Registry entry has no readable model artifact: " + modelId);
+        if (!isRuntimeReady(entry, modelPath)) {
+            throw new IllegalStateException("Registry entry has no runnable model artifact: " + modelId);
         }
         Path directory = modelPath.getParent();
         Path tokenizer = directory == null ? null : directory.resolve("tokenizer.json");
@@ -209,6 +210,51 @@ public class BootstrapCommand implements Callable<Integer> {
                 .resolve(entry.getModelFile())
                 .toAbsolutePath().normalize();
         return Files.isRegularFile(candidate) ? candidate : null;
+    }
+
+    static boolean isRuntimeReady(ModelEntry entry, Path modelPath) {
+        if (entry == null || modelPath == null || !Files.isRegularFile(modelPath)) {
+            return false;
+        }
+        ModelType modelType = entry.getType();
+        if (modelType == null || !modelType.isVlm()) {
+            return true;
+        }
+
+        String modelFileName = modelPath.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        if ("pipeline.json".equals(modelFileName)) {
+            return true;
+        }
+        if (!(modelFileName.endsWith(".sdz")
+                || modelFileName.endsWith(".fb")
+                || modelFileName.endsWith(".sdnb"))) {
+            return false;
+        }
+
+        Path directory = modelPath.getParent();
+        return hasRuntimeComponent(
+                        directory,
+                        "decoder.sdz",
+                        "decoder_model.sdz",
+                        "decoder_model_merged.sdz",
+                        "language_model.sdz",
+                        "model.sdz")
+                && hasRuntimeComponent(
+                        directory,
+                        "vision_encoder.sdz",
+                        "encoder.sdz");
+    }
+
+    private static boolean hasRuntimeComponent(Path directory, String... names) {
+        if (directory == null) {
+            return false;
+        }
+        for (String name : names) {
+            if (Files.isRegularFile(directory.resolve(name))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String inferFormat(Path artifact, String configured) {

@@ -19,9 +19,9 @@
     <name>Kompile :: Local Execution Distribution</name>
     <description>
         Lean native distribution for standard CLI chat and folder-local MCP execution.
-        It contains the CLI, model staging, model serving, pipeline serving, the
-        document-model worker, and one validated side-loaded backend. It deliberately
-        excludes the web, persona, batch, JVM fallback, C/Python, and app-server tiers.
+        It contains the CLI, model serving, pipeline serving, the document-model
+        worker, and one validated side-loaded backend. It deliberately excludes model
+        provisioning/staging, web, persona, batch, JVM fallback, C/Python, and app-server tiers.
     </description>
 
     <properties>
@@ -39,12 +39,6 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-cli-main</artifactId>
-            <version>${project.version}</version>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-model-staging</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>
         </dependency>

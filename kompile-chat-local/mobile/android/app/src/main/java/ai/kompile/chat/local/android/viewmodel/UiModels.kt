@@ -14,6 +14,7 @@ data class UiMessage(
     val role: String,           // "user" | "assistant"
     val content: String,
     val toolRounds: List<ToolRoundUi> = emptyList(),
+    val protocolExchanges: List<ProtocolExchangeUi> = emptyList(),
     val id: Long = System.nanoTime()
 )
 
@@ -22,6 +23,13 @@ data class ToolRoundUi(
     val tool: String,
     val argsJson: String,
     val resultJson: String
+)
+
+/** Raw structured-chat transport retained only for the user-requested transcript export. */
+data class ProtocolExchangeUi(
+    val requestJson: String,
+    val rawResponse: String,
+    val protocolErrors: List<String>
 )
 
 /** Explicit local-model lifecycle state; expected first-run setup is not an error. */
@@ -59,11 +67,106 @@ enum class ImportOperationKind {
     LOCAL_MODEL_OPTIMIZATION,
     MODEL_ARCHIVE,
     PROJECT_ARCHIVE,
-    GRAPH
+    GRAPH,
+    MODEL_UNLOAD
 }
 
 internal val ImportOperationKind.isBusy: Boolean
     get() = this != ImportOperationKind.NONE
+
+internal const val TENSOR_G3_TARGET_PROFILE = "android-arm64-nnapi-accelerator"
+internal const val TENSOR_G3_MAX_GENERATION_TOKENS = 128
+private const val DEFAULT_MAX_GENERATION_TOKENS = 4096
+
+/** Tensor G3 must stay within the KV-cache window proven by the activation smoke decode. */
+internal fun maxGenerationTokensForTarget(targetProfile: String): Int =
+    if (targetProfile == TENSOR_G3_TARGET_PROFILE) {
+        TENSOR_G3_MAX_GENERATION_TOKENS
+    } else {
+        DEFAULT_MAX_GENERATION_TOKENS
+    }
+
+internal fun effectiveMaxTokensForTarget(requested: Int, targetProfile: String): Int =
+    requested.coerceIn(1, maxGenerationTokensForTarget(targetProfile))
+
+internal fun isModelLoading(
+    modelState: ModelUiState,
+    operation: ImportOperationKind
+): Boolean = modelState is ModelUiState.Checking || operation in setOf(
+    ImportOperationKind.HUGGING_FACE,
+    ImportOperationKind.LOCAL_MODEL_OPTIMIZATION,
+    ImportOperationKind.MODEL_ARCHIVE,
+    ImportOperationKind.PROJECT_ARCHIVE
+)
+
+/** Exact long-running native preparation phase shown in the shared model banner. */
+data class ModelLoadProgressUi(
+    val title: String,
+    val detail: String,
+)
+
+/** One top-of-screen model identity slot shared by Chat and Settings. */
+internal data class ModelStatusUi(
+    val title: String,
+    val detail: String,
+    val loading: Boolean = false,
+    val error: Boolean = false,
+)
+
+internal fun modelStatusUi(
+    modelState: ModelUiState,
+    operation: ImportOperationKind,
+    loadProgress: ModelLoadProgressUi? = null,
+): ModelStatusUi {
+    if (isModelLoading(modelState, operation) || loadProgress != null) {
+        loadProgress?.let {
+            return ModelStatusUi(it.title, it.detail, loading = true)
+        }
+        val (title, detail) = when (operation) {
+            ImportOperationKind.HUGGING_FACE ->
+                "Preparing Hugging Face model…" to "Importing and proving the local runtime"
+            ImportOperationKind.LOCAL_MODEL_OPTIMIZATION ->
+                "Optimizing local model…" to "Preparing an accelerator-ready chat model"
+            ImportOperationKind.MODEL_ARCHIVE ->
+                "Loading model archive…" to "Opening and proving the selected model"
+            ImportOperationKind.PROJECT_ARCHIVE ->
+                "Loading project model…" to "Opening the project model for chat"
+            else ->
+                "Loading local model…" to "Opening the saved model for chat"
+        }
+        return ModelStatusUi(title, detail, loading = true)
+    }
+
+    return when (modelState) {
+        is ModelUiState.Ready -> ModelStatusUi(
+            title = modelState.path.substringAfterLast('/').ifBlank { "Local model" },
+            detail = if (modelState.route == "LOCAL_TENSOR_G3_NNAPI") {
+                "Ready · google-edgetpu NNAPI islands + ARM64 replay"
+            } else {
+                "Loaded and ready for chat"
+            },
+        )
+        ModelUiState.Missing -> ModelStatusUi(
+            title = "No model loaded",
+            detail = "Open Settings to import or prepare one",
+        )
+        is ModelUiState.Failed -> ModelStatusUi(
+            title = "Model unavailable",
+            detail = modelState.message,
+            error = true,
+        )
+        ModelUiState.Checking -> error("Checking must be represented as loading")
+    }
+}
+
+/** Artifact changes require an explicit unload so one proven runtime remains authoritative. */
+internal val ImportOperationKind.requiresUnloadedModel: Boolean
+    get() = this != ImportOperationKind.NONE && this != ImportOperationKind.MODEL_UNLOAD
+
+/** One-shot destinations emitted only after a lifecycle transaction has committed. */
+sealed interface AppNavigationEvent {
+    data object OpenChat : AppNavigationEvent
+}
 
 /** App-owned raw model retained for repeatable local optimization experiments. */
 data class LocalModelSource(
@@ -82,9 +185,9 @@ enum class HuggingFaceImportStep(val label: String) {
     TOKENIZER_ASSETS("Fetch tokenizer assets"),
     CONVERT_SDZ("Convert and optimize SDZ"),
     TARGET_CACHE("Prepare accelerator cache"),
-    SDX_LOAD("Load SameDiff SDZ model"),
+    SDX_LOAD("Compile or restore accelerator plan"),
     SMOKE_DECODE("Run smoke decode"),
-    ACTIVATE("Activate for chat"),
+    ACTIVATE("Finish chat setup"),
     ACTIVE("Active")
 }
 
@@ -487,7 +590,7 @@ internal fun huggingFaceStepResumeBehavior(step: HuggingFaceImportStep): String 
     HuggingFaceImportStep.SMOKE_DECODE ->
         "Resume behavior: native decode is non-interruptible; if Android stops it, reopen the verified model and rerun the bounded decode without redownloading."
     HuggingFaceImportStep.ACTIVATE ->
-        "Resume behavior: activation is transactional; retry reuses the verified model while the previous chat model stays active."
+        "Resume behavior: chat setup transactionally publishes the already smoke-tested session; it does not load or decode the model again."
     HuggingFaceImportStep.ACTIVE ->
         "Resume behavior: no resume is required; this exact app-owned model is active for chat."
 }
@@ -739,10 +842,15 @@ internal fun targetProfileProblem(selectedTarget: String, buildTarget: String): 
     else "The active selection was prepared for target '$selectedTarget', but this APK runs '" +
         buildTarget + "'. Import a .kproject prepared for this APK."
 
-/** Single-flight policy for SAF imports; imports never overlap each other or a reply. */
-internal fun importBlockedReason(importBusy: Boolean, generating: Boolean): String? = when {
+/** Single-owner policy for imports; an active runtime must be explicitly unloaded first. */
+internal fun importBlockedReason(
+    importBusy: Boolean,
+    generating: Boolean,
+    activeModelLoaded: Boolean = false
+): String? = when {
     importBusy -> "Another import is already running. Wait for it to finish."
     generating -> "Wait for the current response to finish before importing."
+    activeModelLoaded -> "Unload the active model before importing or changing model artifacts."
     else -> null
 }
 

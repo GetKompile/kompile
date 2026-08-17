@@ -669,43 +669,57 @@ verify_sdx_aot_sdk_receipt() {
     "$optimization_metadata" \
     "$generated_javacpp" \
     "$generated_sdx" \
-    "$staged_javacpp_lifecycle_bridge" \
-    "$expected_build_script" \
-    "$expected_javacpp_reachability_generator" \
-    "$expected_javacpp_lifecycle_bridge" \
-    "$expected_object_builder" \
-    "$expected_linker_script"; do
+    "$staged_javacpp_lifecycle_bridge"; do
     [[ -s "$required_file" ]] || {
       echo "SDX AOT SDK receipt dependency is missing: $required_file" >&2
       return 1
     }
   done
+  if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
+    for required_file in \
+      "$expected_build_script" \
+      "$expected_javacpp_reachability_generator" \
+      "$expected_javacpp_lifecycle_bridge" \
+      "$expected_object_builder" \
+      "$expected_linker_script"; do
+      [[ -s "$required_file" ]] || {
+        echo "SDX AOT SDK source dependency is missing: $required_file" >&2
+        return 1
+      }
+    done
+  fi
 
-  expected_source="$(dl4j_aot_source_manifest_sha256)"
+  if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
+    expected_source="$(dl4j_aot_source_manifest_sha256)"
+  fi
   expected_maven="$(command -v "$MAVEN")" || return 1
   expected_maven="$(realpath -e -- "$expected_maven")" || return 1
   maven_version="$({ env JAVA_HOME="$JAVA_HOME_ARG" PATH="$JAVA_HOME_ARG/bin:$PATH" "$expected_maven" --version; } 2>&1)"
   java_version="$({ "$JAVA_HOME_ARG/bin/java" -version; } 2>&1)"
   require_receipt_value "SDX AOT SDK" format "${SDX_AOT_RECEIPT_VALUES[format]}" "8" || return 1
   require_receipt_value "SDX AOT SDK" stage "${SDX_AOT_RECEIPT_VALUES[stage]}" "android-aot-sdk" || return 1
-  require_receipt_value "SDX AOT SDK" source_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[source_manifest_sha256]}" "$expected_source" || return 1
+  if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
+    require_receipt_value "SDX AOT SDK" source_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[source_manifest_sha256]}" "$expected_source" || return 1
+  fi
   require_receipt_value "SDX AOT SDK" fresh_class_builds_sha256 "${SDX_AOT_RECEIPT_VALUES[fresh_class_builds_sha256]}" "$(sha256_file "$fresh_class_builds")" || return 1
-  require_receipt_value "SDX AOT SDK" javacpp_reachability_generator "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_generator]}" "$(realpath -e -- "$expected_javacpp_reachability_generator")" || return 1
-  require_receipt_value "SDX AOT SDK" javacpp_reachability_generator_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_generator_sha256]}" "$(sha256_file "$expected_javacpp_reachability_generator")" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_reachability_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_manifest_sha256]}" "$(sha256_file "$javacpp_reachability_manifest")" || return 1
-  require_receipt_value "SDX AOT SDK" javacpp_lifecycle_source_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" "$(sha256_file "$expected_javacpp_lifecycle_bridge")" || return 1
   require_receipt_value "SDX AOT SDK staged" javacpp_lifecycle_source_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" "$(sha256_file "$staged_javacpp_lifecycle_bridge")" || return 1
-  require_receipt_value "SDX AOT SDK" build_script "${SDX_AOT_RECEIPT_VALUES[build_script]}" "$(realpath -e -- "$expected_build_script")" || return 1
-  require_receipt_value "SDX AOT SDK" build_script_sha256 "${SDX_AOT_RECEIPT_VALUES[build_script_sha256]}" "$(sha256_file "$expected_build_script")" || return 1
-  require_receipt_value "SDX AOT SDK" object_builder "${SDX_AOT_RECEIPT_VALUES[object_builder]}" "$(realpath -e -- "$expected_object_builder")" || return 1
-  require_receipt_value "SDX AOT SDK" object_builder_sha256 "${SDX_AOT_RECEIPT_VALUES[object_builder_sha256]}" "$(sha256_file "$expected_object_builder")" || return 1
   require_receipt_value "SDX AOT SDK" jdk_support_receipt_sha256 "${SDX_AOT_RECEIPT_VALUES[jdk_support_receipt_sha256]}" "$(sha256_file "$jdk_support_receipt")" || return 1
+  if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
+    require_receipt_value "SDX AOT SDK" javacpp_reachability_generator "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_generator]}" "$(realpath -e -- "$expected_javacpp_reachability_generator")" || return 1
+    require_receipt_value "SDX AOT SDK" javacpp_reachability_generator_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_reachability_generator_sha256]}" "$(sha256_file "$expected_javacpp_reachability_generator")" || return 1
+    require_receipt_value "SDX AOT SDK" javacpp_lifecycle_source_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" "$(sha256_file "$expected_javacpp_lifecycle_bridge")" || return 1
+    require_receipt_value "SDX AOT SDK" build_script "${SDX_AOT_RECEIPT_VALUES[build_script]}" "$(realpath -e -- "$expected_build_script")" || return 1
+    require_receipt_value "SDX AOT SDK" build_script_sha256 "${SDX_AOT_RECEIPT_VALUES[build_script_sha256]}" "$(sha256_file "$expected_build_script")" || return 1
+    require_receipt_value "SDX AOT SDK" object_builder "${SDX_AOT_RECEIPT_VALUES[object_builder]}" "$(realpath -e -- "$expected_object_builder")" || return 1
+    require_receipt_value "SDX AOT SDK" object_builder_sha256 "${SDX_AOT_RECEIPT_VALUES[object_builder_sha256]}" "$(sha256_file "$expected_object_builder")" || return 1
+    require_receipt_value "SDX AOT SDK" linker_script_sha256 "${SDX_AOT_RECEIPT_VALUES[linker_script_sha256]}" "$(sha256_file "$expected_linker_script")" || return 1
+  fi
   require_receipt_value "SDX AOT SDK" maven "${SDX_AOT_RECEIPT_VALUES[maven]}" "$expected_maven" || return 1
   require_receipt_value "SDX AOT SDK" maven_sha256 "${SDX_AOT_RECEIPT_VALUES[maven_sha256]}" "$(sha256_file "$expected_maven")" || return 1
   require_receipt_value "SDX AOT SDK" maven_version_sha256 "${SDX_AOT_RECEIPT_VALUES[maven_version_sha256]}" "$(printf '%s' "$maven_version" | sha256sum | cut -d ' ' -f 1)" || return 1
   require_receipt_value "SDX AOT SDK" java_home "${SDX_AOT_RECEIPT_VALUES[java_home]}" "$(realpath -e -- "$JAVA_HOME_ARG")" || return 1
   require_receipt_value "SDX AOT SDK" java_version_sha256 "${SDX_AOT_RECEIPT_VALUES[java_version_sha256]}" "$(printf '%s' "$java_version" | sha256sum | cut -d ' ' -f 1)" || return 1
-  require_receipt_value "SDX AOT SDK" linker_script_sha256 "${SDX_AOT_RECEIPT_VALUES[linker_script_sha256]}" "$(sha256_file "$expected_linker_script")" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_jar "${SDX_AOT_RECEIPT_VALUES[javacpp_jar]}" "$(realpath -e -- "$JAVACPP_JAR")" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_jar_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_jar_sha256]}" "$(sha256_file "$JAVACPP_JAR")" || return 1
   require_receipt_value "SDX AOT SDK" ndk_revision_sha256 "${SDX_AOT_RECEIPT_VALUES[ndk_revision_sha256]}" "$(sha256_file "$ANDROID_NDK_ARG/source.properties")" || return 1
@@ -725,10 +739,12 @@ verify_sdx_aot_sdk_receipt() {
       echo "Unexpected or duplicate fresh class build artifact: $artifact" >&2
       return 1
     }
-    [[ "$source_sha" == "$(dl4j_aot_module_source_manifest_sha256 "${expected_module_roots[$artifact]}")" ]] || {
-      echo "SDX AOT SDK fresh classes were compiled from different $artifact source" >&2
-      return 1
-    }
+    if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
+      [[ "$source_sha" == "$(dl4j_aot_module_source_manifest_sha256 "${expected_module_roots[$artifact]}")" ]] || {
+        echo "SDX AOT SDK fresh classes were compiled from different $artifact source" >&2
+        return 1
+      }
+    fi
     seen_fresh_class_builds["$artifact"]=1
     fresh_class_hashes["$artifact"]="$tree_sha"
   done <"$fresh_class_builds"
@@ -857,6 +873,9 @@ verify_sdx_aot_sdk_receipt() {
     echo "SDX AOT SDK receipt input digest is inconsistent" >&2
     return 1
   }
+  if (( REUSE_RECEIPTED_PRODUCERS == 1 )); then
+    echo "Verified immutable SDX AOT SDK from historical producer receipt: $receipt"
+  fi
   SDX_AOT_RECEIPT="$(realpath -e -- "$receipt")"
   SDX_AOT_PROVENANCE_SHA256="$(sha256_file "$receipt")"
 }

@@ -26,7 +26,8 @@ public class StagingAssetLimits {
     private long cancellationWaitMillis = 60_000L;
 
     public long maxBytesFor(String assetKey) {
-        if (TextModelAssetMap.MODEL.equals(assetKey)) {
+        if (TextModelAssetMap.MODEL.equals(assetKey)
+                || (assetKey != null && assetKey.startsWith("vlm.model."))) {
             return positive(modelBytes, "modelBytes");
         }
         if (TextModelAssetMap.TOKENIZER.equals(assetKey)

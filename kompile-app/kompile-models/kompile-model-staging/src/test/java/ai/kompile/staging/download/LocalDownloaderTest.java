@@ -112,6 +112,29 @@ class LocalDownloaderTest {
     }
 
     @Test
+    void vlmModelComponentsUseTheModelAssetLimit() throws Exception {
+        Path modelDir = tempDir.resolve("models");
+        Path source = tempDir.resolve("vlm-components");
+        Files.createDirectories(source);
+        Files.write(source.resolve("vision_encoder.onnx"), new byte[]{1, 2, 3});
+
+        StagingAssetLimits limits = new StagingAssetLimits();
+        limits.setConfigBytes(2L);
+        limits.setModelBytes(4L);
+        DownloadResult result = new LocalDownloader(modelDir, tempDir, limits).download(
+                DownloadRequest.builder()
+                        .source("trusted-local")
+                        .repository(source.toString())
+                        .modelId("vlm")
+                        .files(Map.of("vlm.model.vision_encoder", "vision_encoder.onnx"))
+                        .build(),
+                tempDir.resolve("vlm-output"));
+
+        assertTrue(result.isSuccess(), result.getErrorMessage());
+        assertTrue(Files.isRegularFile(tempDir.resolve("vlm-output/vision_encoder.onnx")));
+    }
+
+    @Test
     void enforcesConfiguredPerAssetAndTotalLimits() throws Exception {
         Path modelDir = tempDir.resolve("models");
         Path source = tempDir.resolve("bounded");

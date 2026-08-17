@@ -8,7 +8,6 @@ inside a project without starting `kompile-app`.
 The archive contains:
 
 - `kompile`, including the hidden local-crawl child mode
-- `kompile-model-staging`
 - `kompile-model-serving`
 - `kompile-pipeline-serving`
 - `kompile-vlm-test`
@@ -16,8 +15,10 @@ The archive contains:
 - matching SDX runtime packages and platform JARs
 - the canonical Kompile build scripts
 
-It intentionally excludes the web/app server, persona and batch services, JVM
-fallback runtime and CLI JAR, C/Python bindings, and unrelated product CLIs.
+It intentionally excludes model provisioning/staging, the web/app server, persona
+and batch services, JVM fallback runtime and CLI JAR, C/Python bindings, and
+unrelated product CLIs. Staging remains an explicit build/distribution target for
+workflows that need to download, convert, validate, or promote new model assets.
 
 ## End-to-end builds
 
@@ -49,9 +50,9 @@ canonical skip flags rather than using a separate packaging path:
 ```
 
 The default native target closure is
-`cli,staging,model-serving,pipeline-serving,vlm-test`. Override
-`NATIVE_TARGETS` only for incremental development; a release archive still
-fails closed if any required local executable is absent.
+`cli,model-serving,pipeline-serving,vlm-test`. Override `NATIVE_TARGETS` only
+for incremental development; a release archive still fails closed if any
+required local execution executable is absent.
 
 ## Maven module
 

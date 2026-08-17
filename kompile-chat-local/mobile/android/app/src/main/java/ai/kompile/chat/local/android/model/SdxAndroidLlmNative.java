@@ -65,6 +65,13 @@ public final class SdxAndroidLlmNative {
             int addGenerationPrompt,
             long[] outPrompt);
 
+    public static native int nativeTokenCount(
+            long runtime,
+            long model,
+            byte[] text,
+            int addSpecialTokens,
+            int[] outCount);
+
     public static native int nativeParseChatResult(
             long runtime,
             long model,

@@ -31,6 +31,10 @@ Options:
 The default path is a full source build. Upstream sources are pinned to exact
 commits and cached below the work directory. Reuse options exist for fast,
 deterministic relinking and CI audits.
+
+Native Image resource environment:
+  SDX_NATIVE_IMAGE_MAX_HEAP=16g  Maximum Native Image JVM heap
+  SDX_NATIVE_IMAGE_THREADS=8     Native Image analysis/compiler thread limit
 USAGE
 }
 
@@ -40,6 +44,8 @@ ANDROID_NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}}"
 GRAALVM_HOME="${GRAALVM_HOME:-${JAVA_HOME:-}}"
 MAVEN="${MAVEN:-$MODULE_DIR/../../../../mvnw}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
+NATIVE_IMAGE_MAX_HEAP="${SDX_NATIVE_IMAGE_MAX_HEAP:-16g}"
+NATIVE_IMAGE_THREADS="${SDX_NATIVE_IMAGE_THREADS:-8}"
 WORK_DIR="$MODULE_DIR/target/android-ndk-aot"
 OUTPUT_DIR="$MODULE_DIR/target/android-aot"
 CLASSES_DIR=""
@@ -107,6 +113,16 @@ assert_unix_file_attributes_abi() {
         fail "$binary references forbidden GraalVM field $FORBIDDEN_UNIX_FILE_ATTRIBUTES_FIELD"
     fi
 }
+
+[[ "$NATIVE_IMAGE_MAX_HEAP" =~ ^[1-9][0-9]*[mMgG]$ ]] ||
+    fail "SDX_NATIVE_IMAGE_MAX_HEAP must be a positive JVM memory size such as 16g"
+[[ "$NATIVE_IMAGE_THREADS" =~ ^[1-9][0-9]*$ ]] ||
+    fail "SDX_NATIVE_IMAGE_THREADS must be a positive integer"
+NATIVE_IMAGE_RESOURCE_ARGS=(
+    "-J-Xmx$NATIVE_IMAGE_MAX_HEAP"
+    "-J-XX:ActiveProcessorCount=$NATIVE_IMAGE_THREADS"
+    "-H:NumberOfThreads=$NATIVE_IMAGE_THREADS"
+)
 
 [[ -d "$ANDROID_NDK" ]] || fail "Android NDK not found: $ANDROID_NDK"
 [[ -x "$GRAALVM_HOME/bin/native-image" ]] || fail "native-image not found: $GRAALVM_HOME/bin/native-image"
@@ -530,7 +546,7 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
     if [[ ! -s "$CAP_CACHE/AArch64LibCHelperDirectives.cap" ]]; then
         command -v "${QEMU_AARCH64:-qemu-aarch64-static}" >/dev/null 2>&1 ||             fail "qemu-aarch64-static is required to generate the bionic CAP cache"
         mkdir -p "$CAP_CACHE"
-        ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"         QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"         "$GRAALVM_HOME/bin/native-image"             -H:+UnlockExperimentalVMOptions             --shared --no-fallback             -H:Name="$WORK_DIR/cap-probe"             -H:CCompilerPath="$COMPILER_WRAPPER"             -H:+NewCAPCache -H:+UseCAPCache -H:+QueryIfNotInCAPCache             -H:+ExitAfterCAPCache             -H:CAPCacheDir="$CAP_CACHE"             -H:-SpawnIsolates             -Dsvm.targetArch=aarch64             -H:TargetPlatform=linux-aarch64             --libc=bionic             -H:CompilerBackend=lir             -cp "$GRAPH_CLASSPATH"
+        ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"         QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"         "$GRAALVM_HOME/bin/native-image"             "${NATIVE_IMAGE_RESOURCE_ARGS[@]}"             -H:+UnlockExperimentalVMOptions             --shared --no-fallback             -H:Name="$WORK_DIR/cap-probe"             -H:CCompilerPath="$COMPILER_WRAPPER"             -H:+NewCAPCache -H:+UseCAPCache -H:+QueryIfNotInCAPCache             -H:+ExitAfterCAPCache             -H:CAPCacheDir="$CAP_CACHE"             -H:-SpawnIsolates             -Dsvm.targetArch=aarch64             -H:TargetPlatform=linux-aarch64             --libc=bionic             -H:CompilerBackend=lir             -cp "$GRAPH_CLASSPATH"
     fi
 
     IMAGE_CAP_CACHE="$WORK_DIR/image-capcache"
@@ -543,7 +559,7 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
     classpath_completeness_args=(--allow-incomplete-classpath)
     [[ "$STRICT_CLASSPATH" == false ]] || classpath_completeness_args=()
 
-    ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"     QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"     "$STAGED_GRAAL/bin/native-image"         -H:+UnlockExperimentalVMOptions         --shared --no-fallback         -H:Name="$GENERATED_DIR/libkompile_reasoning_android"         -H:CCompilerPath="$COMPILER_WRAPPER"         -H:CLibraryPath="$SVM_LIB_DIR"         -H:+AddAllCharsets         -H:+ReportExceptionStackTraces         -H:+RemoveSaturatedTypeFlows         -H:+ExitAfterRelocatableImageWrite         -H:TempDirectory="$IMAGE_TMP"         -H:IncludeResources=META-INF/services/.*         -H:IncludeResources=META-INF/native-image/.*         --initialize-at-build-time=org.slf4j         "${classpath_completeness_args[@]}"         -H:-SpawnIsolates         -Dsvm.targetArch=aarch64         -H:TargetPlatform=linux-aarch64         -H:+ForceNoROSectionRelocations         --libc=bionic         -H:+UseCAPCache         -H:CAPCacheDir="$IMAGE_CAP_CACHE"         -H:CompilerBackend=lir         -cp "$GRAPH_CLASSPATH"
+    ANDROID_NDK="$ANDROID_NDK" ANDROID_API="$ANDROID_API"     QEMU_AARCH64="${QEMU_AARCH64:-qemu-aarch64-static}"     "$STAGED_GRAAL/bin/native-image"         "${NATIVE_IMAGE_RESOURCE_ARGS[@]}"         -H:+UnlockExperimentalVMOptions         --shared --no-fallback         -H:Name="$GENERATED_DIR/libkompile_reasoning_android"         -H:CCompilerPath="$COMPILER_WRAPPER"         -H:CLibraryPath="$SVM_LIB_DIR"         -H:+AddAllCharsets         -H:+ReportExceptionStackTraces         -H:+RemoveSaturatedTypeFlows         -H:+ExitAfterRelocatableImageWrite         -H:TempDirectory="$IMAGE_TMP"         -H:IncludeResources=META-INF/services/.*         -H:IncludeResources=META-INF/native-image/.*         --initialize-at-build-time=org.slf4j         "${classpath_completeness_args[@]}"         -H:-SpawnIsolates         -Dsvm.targetArch=aarch64         -H:TargetPlatform=linux-aarch64         -H:+ForceNoROSectionRelocations         --libc=bionic         -H:+UseCAPCache         -H:CAPCacheDir="$IMAGE_CAP_CACHE"         -H:CompilerBackend=lir         -cp "$GRAPH_CLASSPATH"
 
     shopt -s nullglob
     GRAPH_OBJECTS=("$IMAGE_TMP"/SVM-*/libkompile_reasoning_android.o)

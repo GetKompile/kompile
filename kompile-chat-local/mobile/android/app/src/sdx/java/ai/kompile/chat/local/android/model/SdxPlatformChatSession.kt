@@ -4,13 +4,11 @@ import android.app.Application
 import android.content.Context
 import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.GenOptions
-import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
 import ai.kompile.chat.local.android.diagnostics.NativeOperationTransaction
 import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -26,7 +24,7 @@ internal interface SdxOwnedPlatformChatSession {
     val modelId: String
 
     fun generate(
-        messages: List<Message>,
+        requestJson: String,
         opts: GenOptions,
         onChunk: Consumer<String>?,
         operation: NativeOperationTransaction
@@ -48,6 +46,8 @@ internal object SdxPlatformRuntimeOwner {
 
     private const val STATUS_OK = 0
     private const val RESOLVED_MODEL_SCHEMA = "sdx-resolved-text-model-v1"
+    private const val TENSOR_G3_TARGET_PROFILE = "android-arm64-nnapi-accelerator"
+    private const val TENSOR_G3_MAX_PROMPT_TOKENS = 256
 
     fun open(
         context: Context,
@@ -326,19 +326,14 @@ internal object SdxPlatformRuntimeOwner {
         private val cancelRequested = AtomicBoolean(false)
 
         override fun generate(
-            messages: List<Message>,
+            requestJson: String,
             opts: GenOptions,
             onChunk: Consumer<String>?,
             operation: NativeOperationTransaction
         ): String {
             cancelRequested.set(false)
             val attemptId = operation.snapshot().attemptId
-            val requestJson = JSONObject()
-                .put("messages", JSONArray(encodeSdxRuntimeMessages(messages)))
-                .put("tools", JSONArray())
-                .put("tool_choice", "none")
-                .put("add_generation_prompt", true)
-                .toString()
+            val canonicalRequestJson = JSONObject(requestJson).toString()
 
             operation.checkpoint(NativeOperationCheckpoint.RENDER_CHAT_TEMPLATE)
             trace.record(
@@ -350,7 +345,7 @@ internal object SdxPlatformRuntimeOwner {
             val renderStatus = native.sdxLlmRenderChatPrompt(
                 runtime,
                 model,
-                requestJson,
+                canonicalRequestJson,
                 1,
                 promptRef
             )
@@ -361,13 +356,38 @@ internal object SdxPlatformRuntimeOwner {
                 "SDX could not render the model chat template"
             )
             val prompt = readAndFree(native, runtime, promptRef.value, "rendered prompt")
+
+            operation.checkpoint(NativeOperationCheckpoint.GENERATE_TOKENS)
+            val tokenCount = native.sdxLlmTokenCount(runtime, model, prompt)
+            requireStatus(
+                native,
+                runtime,
+                tokenCount.status,
+                "SDX could not count rendered prompt tokens"
+            )
+            val maxPromptTokens = if (BuildConfig.SDX_TARGET_PROFILE == TENSOR_G3_TARGET_PROFILE) {
+                TENSOR_G3_MAX_PROMPT_TOKENS
+            } else {
+                Int.MAX_VALUE
+            }
             trace.record(
                 "render_prompt_return",
                 attemptId,
-                mapOf("prompt_chars" to prompt.length)
+                mapOf(
+                    "prompt_chars" to prompt.length,
+                    "prompt_tokens" to tokenCount.count,
+                    "max_prompt_tokens" to maxPromptTokens
+                )
             )
+            if (tokenCount.count > maxPromptTokens) {
+                throw ChatException(
+                    "Rendered chat prompt has ${tokenCount.count} tokens; the " +
+                        "${BuildConfig.SDX_TARGET_PROFILE} safety limit is $maxPromptTokens. " +
+                        "The request was stopped before NNAPI execution to prevent a low-memory termination. " +
+                        "Start a new conversation or ask a shorter graph question."
+                )
+            }
 
-            operation.checkpoint(NativeOperationCheckpoint.GENERATE_TOKENS)
             val callbackFailure = AtomicReference<Throwable?>()
             val chunkCount = AtomicInteger(0)
             val chunkChars = AtomicLong(0L)
@@ -484,7 +504,7 @@ internal object SdxPlatformRuntimeOwner {
             val parseStatus = native.sdxLlmParseChatResult(
                 runtime,
                 model,
-                requestJson,
+                canonicalRequestJson,
                 rawDecoded,
                 parsedRef
             )
@@ -497,29 +517,21 @@ internal object SdxPlatformRuntimeOwner {
             val structured = JSONObject(
                 readAndFree(native, runtime, parsedRef.value, "structured chat result")
             )
-            val protocolErrors = structured.getJSONArray("protocolErrors")
-            check(protocolErrors.length() == 0) {
-                "SDX model protocol failure: " +
-                    (0 until protocolErrors.length())
-                        .joinToString("; ") { protocolErrors.getString(it) }
-            }
-            check(structured.getJSONArray("toolCalls").length() == 0) {
-                "Content-only Android generation unexpectedly returned tool calls"
-            }
-            val decoded = structured.getString("content").trim()
-            check(decoded.isNotEmpty()) { "The model returned no assistant text" }
-            onChunk?.accept(decoded)
+            val decoded = structured.optString("content").trim()
+            if (decoded.isNotEmpty()) onChunk?.accept(decoded)
             trace.record(
                 "native_output_ready",
                 attemptId,
                 mapOf(
                     "output_chars" to decoded.length,
+                    "tool_calls" to structured.getJSONArray("toolCalls").length(),
+                    "protocol_errors" to structured.getJSONArray("protocolErrors").length(),
                     "chunk_count" to chunkCount.get(),
                     "chunk_chars" to chunkChars.get()
                 )
             )
             operation.complete()
-            return decoded
+            return structured.toString()
         }
 
         override fun cancel(operation: NativeOperationTransaction) {

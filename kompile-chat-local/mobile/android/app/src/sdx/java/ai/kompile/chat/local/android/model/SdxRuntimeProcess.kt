@@ -19,6 +19,8 @@ import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
 import ai.kompile.chat.local.ChatException
+import ai.kompile.chat.local.ChatRequest
+import ai.kompile.chat.local.ChatResponse
 import ai.kompile.chat.local.GenOptions
 import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.diagnostics.NativeOperationCheckpoint
@@ -51,6 +53,8 @@ private const val EVENT_CHUNK = 101
 private const val KEY_REQUEST_ID = "request_id"
 private const val KEY_OPERATION_ATTEMPT_ID = "operation_attempt_id"
 private const val KEY_PID = "pid"
+private const val KEY_HAS_ACTIVE_SESSION = "has_active_session"
+private const val KEY_WORKER_RETIRING = "worker_retiring"
 private const val KEY_SUCCESS = "success"
 private const val KEY_FAILURE_CLASS = "failure_class"
 private const val KEY_FAILURE_MESSAGE = "failure_message"
@@ -62,8 +66,8 @@ private const val KEY_ROUTE_NAME = "route_name"
 private const val KEY_MODEL_ID_PREFIX = "model_id_prefix"
 private const val KEY_SESSION_ID = "session_id"
 private const val KEY_MODEL_ID = "model_id"
-private const val KEY_GENERATED_TEXT = "generated_text"
-private const val KEY_MESSAGES_JSON = "messages_json"
+private const val KEY_CHAT_REQUEST_JSON = "chat_request_json"
+private const val KEY_STRUCTURED_RESPONSE_JSON = "structured_response_json"
 private const val KEY_OPTIONS_JSON = "options_json"
 private const val KEY_CHUNK = "chunk"
 private const val SERVICE_BIND_TIMEOUT_MILLIS = 30_000L
@@ -74,11 +78,25 @@ private const val SERVICE_TOKEN_TIMEOUT_MILLIS = 15_000L
 private const val SERVICE_CONTROL_TIMEOUT_MILLIS = 60_000L
 private const val SERVICE_POLL_MILLIS = 100L
 private const val EXIT_EVIDENCE_WAIT_MILLIS = 5_000L
+private const val MAX_CLEAN_WORKER_BIND_ATTEMPTS = 3
 private const val MAX_REMOTE_STACK_CHARS = 512 * 1024
 private const val TAG = "SdxRuntimeProcess"
 
+// Service objects can be recreated in the same isolated process before queued process death runs.
+// Retirement therefore belongs to the process, not to one Service instance.
+private val sdxRuntimeWorkerRetiring = AtomicBoolean(false)
+
 internal fun sdxRuntimeProcessName(packageName: String): String =
     packageName + RUNTIME_PROCESS_SUFFIX
+
+internal data class SdxRuntimeWorkerState(
+    val pid: Int,
+    val ownsModelSession: Boolean,
+    val retiring: Boolean
+)
+
+internal fun sdxRuntimeWorkerMustRestartBeforeOpen(state: SdxRuntimeWorkerState): Boolean =
+    state.ownsModelSession || state.retiring
 
 private fun isFrameworkOnlyRuntimeWireValueClass(valueClass: Class<*>): Boolean =
     valueClass == String::class.java ||
@@ -112,9 +130,10 @@ internal object SdxPlatformChatSession {
         check(Application.getProcessName() != sdxRuntimeProcessName(applicationContext.packageName)) {
             "The SDX runtime IPC client cannot run inside its own worker process."
         }
-        val connection = SdxRuntimeConnection.bind(applicationContext)
+        val (connection, workerState) =
+            SdxRuntimeConnection.bindForNewSession(applicationContext)
         try {
-            val pid = connection.requireRemotePid()
+            val pid = workerState.pid
             val processName = sdxRuntimeProcessName(applicationContext.packageName)
             check(pid != Process.myPid()) {
                 "SDX runtime service was not isolated: runtime pid=$pid app pid=${Process.myPid()}"
@@ -175,10 +194,10 @@ internal object SdxPlatformChatSession {
         private val closed = AtomicBoolean(false)
 
         override fun generate(
-            messages: List<Message>,
+            request: ChatRequest,
             opts: GenOptions,
             onChunk: Consumer<String>?
-        ): String {
+        ): ChatResponse {
             requireOpen()
             val operation = NativeOperationJournal(applicationContext).begin(
                 modelPath = diagnosticModelPath,
@@ -187,25 +206,26 @@ internal object SdxPlatformChatSession {
                 processName = processName,
                 processId = processId
             )
-            val request = Bundle().apply {
+            val wireRequest = Bundle().apply {
                 putString(KEY_SESSION_ID, sessionId)
-                putString(KEY_MESSAGES_JSON, encodeSdxRuntimeMessages(messages))
+                putString(KEY_CHAT_REQUEST_JSON, request.toJson())
                 putString(KEY_OPTIONS_JSON, opts.toOptionsJson())
                 putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
             }
             val timeout = sdxRuntimeGenerationTimeoutMillis(opts.maxTokens())
             return try {
-                executeJournaledRequest(
+                val structuredJson = executeJournaledRequest(
                     applicationContext,
                     connection,
                     processName,
                     processId,
                     operation,
                     MSG_GENERATE,
-                    request,
+                    wireRequest,
                     timeout,
                     onChunk
-                ).requireString(KEY_GENERATED_TEXT)
+                ).requireString(KEY_STRUCTURED_RESPONSE_JSON)
+                ChatResponse.fromStructuredJson(structuredJson)
             } catch (failure: Throwable) {
                 if (!connection.isProcessAlive(processId)) {
                     closed.set(true)
@@ -213,6 +233,27 @@ internal object SdxPlatformChatSession {
                 }
                 throw failure
             }
+        }
+
+        override fun generate(
+            messages: List<Message>,
+            opts: GenOptions,
+            onChunk: Consumer<String>?
+        ): String {
+            val response = generate(
+                ChatRequest(messages, "[]", ChatRequest.ToolChoice.NONE),
+                opts,
+                onChunk
+            )
+            if (!response.isProtocolValid) {
+                throw ChatException(
+                    "Model protocol failure: " + response.protocolErrors().joinToString("; ")
+                )
+            }
+            if (response.toolCalls().isNotEmpty()) {
+                throw ChatException("Content-only generation unexpectedly returned tool calls")
+            }
+            return response.content()
         }
 
         override fun cancel() {
@@ -535,7 +576,7 @@ private class SdxRuntimeConnection private constructor(
         markDead(ChatException("The app-private SDX runtime process Binder died."))
     }
 
-    fun requireRemotePid(): Int {
+    fun requireRemoteState(): SdxRuntimeWorkerState {
         val reply = request(
             MSG_PID,
             Bundle(),
@@ -546,7 +587,11 @@ private class SdxRuntimeConnection private constructor(
         val pid = reply.getInt(KEY_PID, -1)
         if (pid <= 0) throw ChatException("The SDX runtime service returned an invalid pid: $pid")
         remotePid = pid
-        return pid
+        return SdxRuntimeWorkerState(
+            pid = pid,
+            ownsModelSession = reply.getBoolean(KEY_HAS_ACTIVE_SESSION, false),
+            retiring = reply.getBoolean(KEY_WORKER_RETIRING, false)
+        )
     }
 
     fun request(
@@ -725,13 +770,69 @@ private class SdxRuntimeConnection private constructor(
     }
 
     companion object {
-        fun bind(context: Context): SdxRuntimeConnection {
+        fun bindForNewSession(context: Context): Pair<SdxRuntimeConnection, SdxRuntimeWorkerState> {
+            var lastFailure: Throwable? = null
+            repeat(MAX_CLEAN_WORKER_BIND_ATTEMPTS) { bindAttempt ->
+                val connection = try {
+                    bind(context)
+                } catch (failure: Throwable) {
+                    lastFailure = failure
+                    if (bindAttempt == MAX_CLEAN_WORKER_BIND_ATTEMPTS - 1) throw failure
+                    return@repeat
+                }
+                val state = try {
+                    connection.requireRemoteState()
+                } catch (failure: Throwable) {
+                    connection.close()
+                    lastFailure = failure
+                    if (bindAttempt == MAX_CLEAN_WORKER_BIND_ATTEMPTS - 1) throw failure
+                    return@repeat
+                }
+                check(state.pid != Process.myPid()) {
+                    "SDX runtime service was not isolated: runtime pid=${state.pid} app pid=${Process.myPid()}"
+                }
+                if (!sdxRuntimeWorkerMustRestartBeforeOpen(state)) {
+                    return connection to state
+                }
+
+                Log.w(
+                    TAG,
+                    "Recycling unavailable SDX runtime pid=${state.pid} " +
+                        "active=${state.ownsModelSession} retiring=${state.retiring} " +
+                        "before opening a new model session."
+                )
+                connection.close()
+                if (File("/proc/${state.pid}").exists()) Process.killProcess(state.pid)
+                if (!awaitWorkerExit(state.pid)) {
+                    throw ChatException(
+                        "The stale SDX runtime process ${state.pid} did not exit before model load."
+                    )
+                }
+                lastFailure = ChatException(
+                    "The previous SDX runtime process ${state.pid} was not reusable " +
+                        "(active=${state.ownsModelSession}, retiring=${state.retiring})."
+                )
+            }
+            throw ChatException(
+                "Could not acquire a clean app-private SDX runtime process.",
+                lastFailure
+            )
+        }
+
+        private fun bind(context: Context): SdxRuntimeConnection {
             check(Looper.myLooper() != Looper.getMainLooper()) {
                 "SDX runtime service binding must run off Android's UI thread."
             }
+            val runtimeIntent = Intent(context, SdxRuntimeService::class.java)
+            // A bound-only worker has no started-service lifetime. Android's remove-task path may
+            // kill such a background process even while a user-started import foreground service
+            // is waiting for it. Start before binding so the native load survives task removal;
+            // close() explicitly stops this lifetime after the session is retired.
+            context.startService(runtimeIntent)
+                ?: throw ChatException("Android refused to start the app-private SDX runtime service.")
             val connection = SdxRuntimeConnection(context.applicationContext)
             val bound = context.bindService(
-                Intent(context, SdxRuntimeService::class.java),
+                runtimeIntent,
                 connection,
                 Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT
             )
@@ -741,6 +842,23 @@ private class SdxRuntimeConnection private constructor(
             }
             connection.awaitConnected()
             return connection
+        }
+
+        private fun awaitWorkerExit(pid: Int): Boolean {
+            val deadline = SystemClock.elapsedRealtime() + EXIT_EVIDENCE_WAIT_MILLIS
+            while (File("/proc/$pid").exists()) {
+                if (SystemClock.elapsedRealtime() >= deadline) return false
+                try {
+                    Thread.sleep(SERVICE_POLL_MILLIS)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw ChatException(
+                        "Waiting for the stale SDX runtime process $pid to exit was interrupted.",
+                        interrupted
+                    )
+                }
+            }
+            return true
         }
     }
 }
@@ -774,16 +892,18 @@ class SdxRuntimeService : Service() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+
     override fun onBind(intent: Intent?): IBinder = inboundMessenger.binder
 
     override fun onUnbind(intent: Intent?): Boolean {
+        // Mark this process permanently unavailable before scheduling process death. A replacement
+        // Service instance can race the posted kill, so its PID handshake and open gate must reject
+        // the retiring worker instead of opening a session teardown is about to kill.
+        sdxRuntimeWorkerRetiring.set(true)
         stopSelf()
-        if (activeSession != null) {
-            // The supervising process vanished without a successful CLOSE response. Never retain
-            // half-executed JNI/driver state for a future bind in this worker process.
-            val pid = Process.myPid()
-            Handler(Looper.getMainLooper()).postDelayed({ Process.killProcess(pid) }, 100L)
-        }
+        val pid = Process.myPid()
+        Handler(Looper.getMainLooper()).post { Process.killProcess(pid) }
         return false
     }
 
@@ -821,6 +941,8 @@ class SdxRuntimeService : Service() {
                 Bundle().apply {
                     putBoolean(KEY_SUCCESS, true)
                     putInt(KEY_PID, Process.myPid())
+                    putBoolean(KEY_HAS_ACTIVE_SESSION, activeSession != null)
+                    putBoolean(KEY_WORKER_RETIRING, sdxRuntimeWorkerRetiring.get())
                 }
             )
             MSG_CANCEL -> executeCancellation(replyTo, requestId, requestData)
@@ -874,6 +996,9 @@ class SdxRuntimeService : Service() {
                 "diagnostic_mode" to extras.requireString(KEY_DIAGNOSTIC_MODE)
             )
         )
+        check(!sdxRuntimeWorkerRetiring.get()) {
+            "The SDX runtime process is retiring and cannot open another model session."
+        }
         check(activeSession == null) { "The SDX runtime process already owns a model session." }
         val operation = try {
             resumeOperation(extras)
@@ -954,7 +1079,7 @@ class SdxRuntimeService : Service() {
             val heartbeat = trace.startHeartbeat(attemptId, "session.generate")
             try {
                 val result = session.generate(
-                    decodeSdxRuntimeMessages(extras.requireString(KEY_MESSAGES_JSON)),
+                    extras.requireString(KEY_CHAT_REQUEST_JSON),
                     decodeSdxRuntimeGenerationOptions(extras.requireString(KEY_OPTIONS_JSON)),
                     Consumer { chunk -> sendChunk(replyTo, requestId, chunk) },
                     operation
@@ -967,7 +1092,7 @@ class SdxRuntimeService : Service() {
                 Bundle().apply {
                     putBoolean(KEY_SUCCESS, true)
                     putInt(KEY_PID, Process.myPid())
-                    putString(KEY_GENERATED_TEXT, result)
+                    putString(KEY_STRUCTURED_RESPONSE_JSON, result)
                 }
             } finally {
                 heartbeat.close()

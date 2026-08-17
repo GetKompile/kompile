@@ -31,6 +31,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProjectCommandVlmOcrPresetTest {
@@ -111,8 +112,26 @@ class ProjectCommandVlmOcrPresetTest {
                 descriptorInventory.get("resolvedArtifact"));
 
         Files.delete(descriptor);
-        Path promotedComponent = descriptor.getParent().resolve("decoder_model_merged.onnx");
-        Files.write(promotedComponent, new byte[]{1, 2, 3});
+        Path sourceComponent = descriptor.getParent().resolve("decoder_model_merged.onnx");
+        Files.write(sourceComponent, new byte[]{1, 2, 3});
+        Map<String, Object> sourceOnlyInventory = LocalProjectModelBootstrap.inventory(projectRoot).stream()
+                .filter(model -> "smoldocling-256m".equals(model.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(false, sourceOnlyInventory.get("ready"));
+        assertNull(sourceOnlyInventory.get("resolvedArtifact"),
+                "Raw VLM ONNX is a staging input, not a runnable native artifact");
+
+        Path promotedComponent = descriptor.getParent().resolve("decoder.sdz");
+        Files.write(promotedComponent, new byte[]{4, 5, 6});
+        Map<String, Object> decoderOnlyInventory = LocalProjectModelBootstrap.inventory(projectRoot).stream()
+                .filter(model -> "smoldocling-256m".equals(model.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(false, decoderOnlyInventory.get("ready"),
+                "A decoder without a converted vision encoder is not a runnable VLM");
+
+        Files.write(descriptor.getParent().resolve("vision_encoder.sdz"), new byte[]{7, 8, 9});
         Map<String, Object> promotedInventory = LocalProjectModelBootstrap.inventory(projectRoot).stream()
                 .filter(model -> "smoldocling-256m".equals(model.get("id")))
                 .findFirst()

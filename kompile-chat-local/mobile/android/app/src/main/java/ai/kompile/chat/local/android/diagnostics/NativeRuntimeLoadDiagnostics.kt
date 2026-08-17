@@ -76,7 +76,7 @@ internal enum class NativeOperationCheckpoint(val label: String) {
     LOAD_NATIVE_TRANSPORT("Load the shared SDX runtime library"),
     CREATE_NATIVE_RUNTIME("Create the native SDX runtime"),
     QUERY_RUNTIME_ABI("Query the native runtime ABI"),
-    LOAD_MODEL_BUNDLE("Load the canonical sharded SDZ model"),
+    LOAD_MODEL_BUNDLE("Compile or restore the accelerator execution plan"),
     LOAD_TOKENIZER("Load the tokenizer runtime"),
     CREATE_TEXT_SESSION("Create the generation session"),
 

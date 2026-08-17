@@ -50,6 +50,8 @@ class ChatEngineTest {
             assertEquals(1, result.rounds().size(), "expected exactly 1 tool round");
             assertEquals("graph_reasoning_query", result.rounds().get(0).tool());
             assertNotNull(result.rounds().get(0).resultJson());
+            assertFalse(result.exchanges().isEmpty());
+            assertTrue(result.exchanges().get(0).requestJson().contains("\"tool_choice\":\"auto\""));
         }
     }
 
@@ -133,6 +135,60 @@ class ChatEngineTest {
                     () -> engine.chat(List.of(), "Say something", GenOptions.defaults()));
 
             assertEquals("The model returned no assistant text.", failure.getMessage());
+        }
+    }
+
+    @Test
+    void testRelevantRoutingKeepsOrdinaryChatOutOfToolTemplate() throws Exception {
+        GraphToolBackend bridge = new GraphToolBackend() {
+            @Override
+            public String catalogJson() {
+                throw new AssertionError("ordinary chat must not load the graph catalog");
+            }
+
+            @Override
+            public String execute(String toolName, String argsJson) {
+                throw new AssertionError("ordinary chat must not execute graph tools");
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        ChatEngine engine = new ChatEngine(
+                new InferenceRouter(ScriptedChatModel.of("Hello back."), null),
+                bridge,
+                4,
+                ChatEngine.ToolRouting.RELEVANT);
+
+        ChatEngine.TurnResult result = engine.chat(List.of(), "Hello", GenOptions.defaults());
+
+        assertEquals("Hello back.", result.answer());
+        assertTrue(result.rounds().isEmpty());
+        assertEquals(1, result.exchanges().size());
+        assertTrue(result.exchanges().get(0).requestJson().contains("\"tools\":[]"));
+        assertTrue(result.exchanges().get(0).requestJson().contains("\"tool_choice\":\"none\""));
+    }
+
+    @Test
+    void testRelevantRoutingEnablesToolsForExplicitGraphQuestion() throws Exception {
+        Path kgraph = buildAndSaveTinyGraph();
+        try (GraphToolBridge bridge = GraphToolBridge.open(kgraph)) {
+            ScriptedChatModel scripted = ScriptedChatModel.ofResponses(
+                    toolCall("graph_reasoning_query", Map.of("operation", "OVERVIEW")),
+                    ChatResponse.content("The graph contains Alice and AcmeCorp."));
+            ChatEngine engine = new ChatEngine(
+                    new InferenceRouter(scripted, null),
+                    bridge,
+                    4,
+                    ChatEngine.ToolRouting.RELEVANT);
+
+            ChatEngine.TurnResult result = engine.chat(
+                    List.of(), "What is in the graph?", GenOptions.defaults());
+
+            assertEquals(1, result.rounds().size());
+            assertTrue(result.exchanges().get(0).requestJson().contains("\"tool_choice\":\"auto\""));
+            assertFalse(result.exchanges().get(0).requestJson().contains("\"tools\":[]"));
         }
     }
 

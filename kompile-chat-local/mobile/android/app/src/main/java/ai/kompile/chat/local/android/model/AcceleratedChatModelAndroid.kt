@@ -3,6 +3,8 @@ package ai.kompile.chat.local.android.model
 import android.content.Context
 import ai.kompile.chat.local.ChatException
 import ai.kompile.chat.local.ChatModel
+import ai.kompile.chat.local.ChatRequest
+import ai.kompile.chat.local.ChatResponse
 import ai.kompile.chat.local.GenOptions
 import ai.kompile.chat.local.Message
 import java.util.function.Consumer
@@ -18,6 +20,7 @@ internal class AcceleratedChatModelAndroid(
     modelPath: String,
     temperature: Float,
     maxTokens: Int,
+    tokenizerPath: String? = null,
     verifiedSourceSha256: String? = null,
     verifiedSourceBytes: Long? = null,
     preparationOptions: ModelPreparationOptions = ModelPreparationOptions(),
@@ -28,12 +31,13 @@ internal class AcceleratedChatModelAndroid(
     val preparationInfo: PreparedModelInfo? =
         preparedModelInfo ?: if (SdxGgufModelImporter.supports(modelPath)) {
             SdxGgufModelImporter.prepare(
-                context.applicationContext,
-                modelPath,
-                verifiedSourceSha256,
-                verifiedSourceBytes,
-                preparationOptions,
-                onPreparationStage
+                context = context.applicationContext,
+                modelPath = modelPath,
+                tokenizerPath = tokenizerPath,
+                verifiedSourceSha256 = verifiedSourceSha256,
+                verifiedSourceBytes = verifiedSourceBytes,
+                options = preparationOptions,
+                onPreparationStage = onPreparationStage
             )
         } else {
             null
@@ -55,6 +59,9 @@ internal class AcceleratedChatModelAndroid(
 
     val routeName: String
         get() = session?.routeName ?: "NONE"
+
+    override fun generate(request: ChatRequest, opts: GenOptions): ChatResponse =
+        requireSession().generate(request, opts, null)
 
     override fun generate(messages: List<Message>, opts: GenOptions): String =
         requireSession().generate(messages, opts, null)
@@ -92,6 +99,17 @@ internal class AcceleratedChatModelAndroid(
 internal interface PlatformLocalChatSession : AutoCloseable {
     val routeName: String
     val modelId: String
+
+    fun generate(
+        request: ChatRequest,
+        opts: GenOptions,
+        onChunk: Consumer<String>?
+    ): ChatResponse {
+        if (request.toolChoice() != ChatRequest.ToolChoice.NONE) {
+            throw ChatException("This accelerator does not implement structured tool-capable chat")
+        }
+        return ChatResponse.content(generate(request.messages(), opts, onChunk))
+    }
 
     fun generate(
         messages: List<Message>,

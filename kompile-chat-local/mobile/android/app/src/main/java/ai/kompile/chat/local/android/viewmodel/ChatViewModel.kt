@@ -50,12 +50,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
@@ -132,14 +135,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         .sortedByDescending { it.attempt.checkpointEpochMillis }
     private val huggingFaceCheckpointLoad = loadHuggingFaceCheckpoint()
     private var huggingFaceCheckpoint = huggingFaceCheckpointLoad.checkpoint
+
+    private fun recoveredOperationTargetsActiveSelection(
+        recovered: RecoveredNativeOperation
+    ): Boolean {
+        val activeModelPath = prefs.modelPath.takeIf(String::isNotBlank) ?: return false
+        return NativeOperationDiagnosticPolicy.modelPathFingerprint(activeModelPath) ==
+            recovered.attempt.modelPathFingerprint
+    }
+
     private val recoveredImportOperation = recoveredNativeOperations.firstOrNull {
-        it.attempt.operation.recoveryTarget == NativeOperationRecoveryTarget.HUGGING_FACE_IMPORT ||
+        !recoveredOperationTargetsActiveSelection(it) &&
             (
-                huggingFaceCheckpoint != null &&
-                    it.attempt.operation in setOf(
-                        NativeOperationKind.SDX_MODEL_LOAD,
-                        NativeOperationKind.SDX_MODEL_EXECUTION
-                    )
+                it.attempt.operation.recoveryTarget == NativeOperationRecoveryTarget.HUGGING_FACE_IMPORT ||
+                    (
+                        huggingFaceCheckpoint != null &&
+                            it.attempt.operation in setOf(
+                                NativeOperationKind.SDX_MODEL_LOAD,
+                                NativeOperationKind.SDX_MODEL_EXECUTION
+                            )
+                        )
                 )
     }
     private val recoveredActiveModelOperation = recoveredNativeOperations.firstOrNull {
@@ -279,6 +294,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _modelState = MutableStateFlow<ModelUiState>(ModelUiState.Checking)
     val modelState: StateFlow<ModelUiState> = _modelState.asStateFlow()
 
+    /** Exact native preparation phase; NNAPI compilation exposes no numeric percentage. */
+    private val _modelLoadProgress = MutableStateFlow<ModelLoadProgressUi?>(null)
+    val modelLoadProgress: StateFlow<ModelLoadProgressUi?> = _modelLoadProgress.asStateFlow()
+
+    private val _navigationEvents = Channel<AppNavigationEvent>(Channel.BUFFERED)
+    val navigationEvents: Flow<AppNavigationEvent> = _navigationEvents.receiveAsFlow()
+
     /** Result of an actual bounded token decode, separate from native session startup. */
     private val _modelSmokeState = MutableStateFlow<ModelSmokeUiState>(ModelSmokeUiState.NotRun)
     val modelSmokeState: StateFlow<ModelSmokeUiState> = _modelSmokeState.asStateFlow()
@@ -296,6 +318,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val importBusy: StateFlow<Boolean> = importOperation
         .map { it.isBusy }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    private fun publishModelPreparationStage(stage: PreparationStage) {
+        _modelLoadProgress.value = when (stage) {
+            PreparationStage.CONVERT_AND_CACHE_SDZ -> ModelLoadProgressUi(
+                title = "Converting and caching model…",
+                detail = "Building the canonical sharded SDZ and text assets",
+            )
+            PreparationStage.TARGET_CACHE_READY -> ModelLoadProgressUi(
+                title = "Preparing accelerator artifacts…",
+                detail = "Canonical SDZ is ready; resolving the strict Tensor G3 target",
+            )
+            PreparationStage.LOAD_ACCELERATOR -> {
+                val driverCache = File(context.codeCacheDir, "sdx-device-compilation")
+                val cacheCandidatePresent = driverCache.list()?.isNotEmpty() == true
+                ModelLoadProgressUi(
+                    title = "Compiling or restoring Edge TPU plan…",
+                    detail = if (cacheCandidatePresent) {
+                        "NNAPI driver-cache files found; Android is validating the google-edgetpu plan"
+                    } else {
+                        "First load: compiling google-edgetpu segments; later loads reuse the driver cache"
+                    },
+                )
+            }
+        }
+    }
 
     /** Public Hugging Face acquisition is complete only after a real SDX decode activates. */
     private val _huggingFaceImportState = MutableStateFlow<HuggingFaceImportUiState>(
@@ -539,6 +586,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         summary: String,
         failure: Throwable
     ) {
+        _modelLoadProgress.value = null
         var state = ModelUiState.Failed(modelPath, summary, failure.stackTraceToString())
         _modelState.value = state
         var diagnostic = ImportDiagnosticPolicy.create(
@@ -624,13 +672,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             val toolRoundsList: List<ToolRoundUi> = result.rounds().map { round ->
                                 ToolRoundUi(round.tool(), round.argsJson(), round.resultJson())
                             }
+                            val protocolExchanges = result.exchanges().map { exchange ->
+                                ProtocolExchangeUi(
+                                    requestJson = exchange.requestJson(),
+                                    rawResponse = exchange.rawResponse(),
+                                    protocolErrors = exchange.protocolErrors()
+                                )
+                            }
 
                             withContext(Dispatchers.Main.immediate) {
                                 appendUiMessage(
                                     UiMessage(
                                         role = "assistant",
                                         content = answer,
-                                        toolRounds = toolRoundsList
+                                        toolRounds = toolRoundsList,
+                                        protocolExchanges = protocolExchanges
                                     )
                                 )
                             }
@@ -810,6 +866,66 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Explicitly retire the sole active runtime before another artifact can be imported.
+     * The model file and independently selected graph remain on disk; only active ownership
+     * and project provenance are cleared.
+     */
+    suspend fun unloadActiveModel(): Result<Unit> = runExclusiveImport(
+        operation = ImportOperationKind.MODEL_UNLOAD,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) }
+    ) {
+        try {
+            withContext(Dispatchers.IO) {
+                engineMutex.withLock {
+                    var cleanupFailure: Throwable? = null
+                    try {
+                        closeEngineResourcesLocked()
+                    } catch (failure: Throwable) {
+                        // Resources are detached before close. A dead isolated runtime must not
+                        // keep the persisted model selected or strand the user on Settings.
+                        cleanupFailure = failure
+                    }
+
+                    if (!prefs.deactivateModel()) {
+                        val persistenceFailure = IllegalStateException(
+                            "Could not persist the unloaded model state."
+                        )
+                        cleanupFailure?.let(persistenceFailure::addSuppressed)
+                        try {
+                            rebuildEngineLocked(resetConversation = false)
+                        } catch (restoreFailure: Throwable) {
+                            persistenceFailure.addSuppressed(restoreFailure)
+                        }
+                        throw persistenceFailure
+                    }
+
+                    clearConversationLocked()
+                    _activeRoute.value = "NONE"
+                    _modelState.value = ModelUiState.Missing
+                    _modelSmokeState.value = ModelSmokeUiState.NotRun
+                    _graphState.value = GraphUiState.WaitingForModel
+                    _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
+                    _localModelOptimizationState.value = HuggingFaceImportUiState.Idle
+                    _huggingFaceDiscovery.value = null
+                    _huggingFaceSelection.value = null
+                    _error.value = null
+                    _errorStackTrace.value = null
+                    cleanupFailure?.let {
+                        Log.w(TAG, "Model ownership cleared after native cleanup reported a failure", it)
+                    }
+                }
+            }
+            Result.success(Unit)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Throwable) {
+            _error.value = failure.message ?: "The active model could not be unloaded."
+            _errorStackTrace.value = failure.stackTraceToString()
+            Result.failure(failure)
+        }
+    }
+
     // --- Engine lifecycle ---
 
     private suspend fun rebuildEngine(
@@ -826,6 +942,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         closeEngineResourcesLocked()
 
         _activeRoute.value = "NONE"
+        _modelLoadProgress.value = null
         _graphState.value = GraphUiState.WaitingForModel
         _modelSmokeState.value = ModelSmokeUiState.NotRun
         _error.value = null
@@ -853,10 +970,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // Every selected model reaches the same canonical-SDZ provider seam.
         val newLocal = try {
             AcceleratedChatModelAndroid(
-                context,
-                modelFilePath,
-                prefs.temperature,
-                prefs.maxTokens
+                context = context,
+                modelPath = modelFilePath,
+                temperature = prefs.temperature,
+                maxTokens = effectiveMaxTokensForTarget(
+                    prefs.maxTokens,
+                    BuildConfig.SDX_TARGET_PROFILE
+                ),
+                onPreparationStage = ::publishModelPreparationStage,
             )
         } catch (failure: Throwable) {
             val message = failure.message ?: "The selected model could not open on this accelerator."
@@ -868,6 +989,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val route = newLocal.routeName
         localModel = newLocal
         _modelState.value = ModelUiState.Ready(modelFilePath, route)
+        _modelLoadProgress.value = null
         _activeRoute.value = route
         _graphState.value = GraphUiState.Checking
 
@@ -907,7 +1029,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         bridge = newBridge
         _graphState.value = GraphUiState.Ready(graphPath)
         try {
-            engine = ChatEngine(InferenceRouter(newLocal, null), newBridge, prefs.maxToolRounds)
+            engine = ChatEngine(
+                InferenceRouter(newLocal, null),
+                newBridge,
+                prefs.maxToolRounds,
+                ChatEngine.ToolRouting.RELEVANT
+            )
         } catch (failure: Exception) {
             val message = "Chat engine initialization failed: " +
                 (failure.message ?: failure.javaClass.simpleName)
@@ -1025,7 +1152,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         _importOperation.value = operation
         try {
-            importBlockedReason(importBusy = false, generating = _thinking.value)?.let {
+            importBlockedReason(
+                importBusy = false,
+                generating = _thinking.value,
+                activeModelLoaded = operation.requiresUnloadedModel &&
+                    _modelState.value is ModelUiState.Ready
+            )?.let {
                 return blocked(it)
             }
             return body()
@@ -2572,6 +2704,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelFile.absolutePath,
                         previousSelection,
                         clearHuggingFaceImportOnPromotion = true,
+                        tokenizerPath = tokenizerAssets.paths["tokenizer.json"]?.toString(),
                         verifiedSourceSha256 = downloaded.sha256,
                         verifiedSourceBytes = downloaded.downloadedBytes,
                         preparationOptions = preparationOptions,
@@ -2586,7 +2719,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     HuggingFaceImportStep.TARGET_CACHE ->
                                         "Canonical SDZ is cached; preparing the strict ${BuildConfig.SDX_TARGET_PROFILE} target"
                                     HuggingFaceImportStep.SDX_LOAD ->
-                                        "Loading the sharded SameDiff SDZ model through ${BuildConfig.SDX_TARGET_PROFILE}"
+                                        "Compiling or restoring the google-edgetpu NNAPI plan through ${BuildConfig.SDX_TARGET_PROFILE}"
                                     HuggingFaceImportStep.SMOKE_DECODE ->
                                         "Running a bounded real-token decode"
                                     HuggingFaceImportStep.ACTIVATE ->
@@ -2610,7 +2743,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     HuggingFaceImportStep.TARGET_CACHE ->
                                         "The CPU importer has been released; SDX is reusing or preparing the strict accelerator target bundle."
                                     HuggingFaceImportStep.SDX_LOAD ->
-                                        "SDX is loading the prepared sharded SameDiff SDZ model through the strict accelerator provider and NNAPI driver cache."
+                                        "SDX is compiling or restoring google-edgetpu segments through Android's NNAPI driver cache; Android exposes no numeric compiler percentage."
                                     HuggingFaceImportStep.SMOKE_DECODE ->
                                         "SDX is running a bounded real-token decode before activation."
                                     HuggingFaceImportStep.ACTIVATE ->
@@ -2631,7 +2764,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         storagePreflight = preflight.storage
                     )
                 )
-                persistCurrentHuggingFaceObservation()
+                // The model is already transactionally promoted. Do not recreate the import
+                // checkpoint here: a later chat-process death must be reported as chat execution.
                 preflight.obsoleteCacheFilesAfterActivation.forEach { obsolete ->
                     val modelPath = obsolete.toPath()
                     val obsoletePaths = listOf(modelPath) +
@@ -2660,7 +2794,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         } ?: "Active model=$activeStorage."),
                     "Return to Chat; execution uses the displayed active target, while the verified source remains reusable."
                 )
-                huggingFaceCheckpoint = null
+                check(clearHuggingFaceImportCheckpoint()) {
+                    "The completed Hugging Face import checkpoint could not be retired."
+                }
                 clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = false)
                 _huggingFaceImportState.value = HuggingFaceImportUiState.Active(
                     artifactName = downloaded.safeFilename,
@@ -2737,30 +2873,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun openVerifiedModelLocked(
         modelPath: String,
         unavailableMessage: String,
+        tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
         preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): AcceleratedChatModelAndroid {
-        val candidate = openAvailableModel(
-            modelPath,
-            verifiedSourceSha256,
-            verifiedSourceBytes,
-            preparationOptions = preparationOptions,
-        ) { preparationStage ->
-            onImportStep(
-                when (preparationStage) {
-                    PreparationStage.CONVERT_AND_CACHE_SDZ -> HuggingFaceImportStep.CONVERT_SDZ
-                    PreparationStage.TARGET_CACHE_READY -> HuggingFaceImportStep.TARGET_CACHE
-                    PreparationStage.LOAD_ACCELERATOR -> HuggingFaceImportStep.SDX_LOAD
-                }
-            )
+        val candidate = try {
+            openAvailableModel(
+                modelPath = modelPath,
+                tokenizerPath = tokenizerPath,
+                verifiedSourceSha256 = verifiedSourceSha256,
+                verifiedSourceBytes = verifiedSourceBytes,
+                preparationOptions = preparationOptions,
+            ) { preparationStage ->
+                onImportStep(
+                    when (preparationStage) {
+                        PreparationStage.CONVERT_AND_CACHE_SDZ -> HuggingFaceImportStep.CONVERT_SDZ
+                        PreparationStage.TARGET_CACHE_READY -> HuggingFaceImportStep.TARGET_CACHE
+                        PreparationStage.LOAD_ACCELERATOR -> HuggingFaceImportStep.SDX_LOAD
+                    }
+                )
+            }
+        } catch (failure: Throwable) {
+            _modelLoadProgress.value = null
+            throw failure
         }
         try {
             if (!candidate.isAvailable()) {
                 throw IOException(unavailableMessage)
             }
             onImportStep(HuggingFaceImportStep.SMOKE_DECODE)
+            _modelLoadProgress.value = ModelLoadProgressUi(
+                title = "Proving loaded model…",
+                detail = "Running a bounded real-token decode before chat activation",
+            )
             when (val smoke = smokeTestModelLocked(candidate)) {
                 is ModelSmokeUiState.Passed -> Unit
                 is ModelSmokeUiState.Failed -> throw ChatException(
@@ -2773,6 +2920,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         } catch (failure: Throwable) {
+            _modelLoadProgress.value = null
             try {
                 candidate.close()
             } catch (closeFailure: Throwable) {
@@ -2785,6 +2933,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun openAvailableModel(
         modelPath: String,
+        tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
         preparedModelInfo: PreparedModelInfo? = null,
@@ -2795,10 +2944,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             context = context,
             modelPath = modelPath,
             temperature = prefs.temperature,
-            maxTokens = prefs.maxTokens,
+            maxTokens = effectiveMaxTokensForTarget(
+                prefs.maxTokens,
+                BuildConfig.SDX_TARGET_PROFILE
+            ),
+            tokenizerPath = tokenizerPath,
             verifiedSourceSha256 = verifiedSourceSha256,
             verifiedSourceBytes = verifiedSourceBytes,
-            onPreparationStage = onPreparationStage,
+            onPreparationStage = { stage ->
+                publishModelPreparationStage(stage)
+                onPreparationStage(stage)
+            },
             preparedModelInfo = preparedModelInfo,
             preparationOptions = preparationOptions,
         )
@@ -2808,6 +2964,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         modelPath: String,
         previousSelection: ActiveProjectSelection,
         clearHuggingFaceImportOnPromotion: Boolean = false,
+        tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
         preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
@@ -2827,17 +2984,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         try {
-            return ProvenModelActivationTransaction<String, AcceleratedChatModelAndroid, StandaloneActivation>(
+            val activation =
+                ProvenModelActivationTransaction<String, AcceleratedChatModelAndroid, StandaloneActivation>(
                 stagePendingSelection = { prefs.stagePendingSelection(candidateSelection) },
                 detachPreviousRuntime = { closeEngineResourcesLocked() },
                 openCandidate = { exactModelPath ->
                     openVerifiedModelLocked(
-                        exactModelPath,
-                        "The imported model could not open in the local SDX runtime",
-                        verifiedSourceSha256,
-                        verifiedSourceBytes,
-                        preparationOptions,
-                        onImportStep
+                        modelPath = exactModelPath,
+                        unavailableMessage = "The imported model could not open in the local SDX runtime",
+                        tokenizerPath = tokenizerPath,
+                        verifiedSourceSha256 = verifiedSourceSha256,
+                        verifiedSourceBytes = verifiedSourceBytes,
+                        preparationOptions = preparationOptions,
+                        onImportStep = onImportStep
                     )
                 },
                 decodedGeneration = {
@@ -2863,7 +3022,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val candidateEngine = ChatEngine(
                         InferenceRouter(openedModel, null),
                         openedBridge,
-                        prefs.maxToolRounds
+                        prefs.maxToolRounds,
+                        ChatEngine.ToolRouting.RELEVANT
                     )
                     val activation = StandaloneActivation(
                         modelPath = activeModelPath,
@@ -2881,6 +3041,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _errorStackTrace.value = null
                     _activeRoute.value = route
                     _modelState.value = ModelUiState.Ready(activeModelPath, route)
+                    _modelLoadProgress.value = null
                     _graphState.value =
                         GraphUiState.Ready(previousSelection.graphPath.takeIf(String::isNotBlank))
                     activation
@@ -2906,6 +3067,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 },
                 closeCandidate = AcceleratedChatModelAndroid::close
             ).execute(modelPath)
+            _navigationEvents.trySend(AppNavigationEvent.OpenChat)
+            return activation
         } catch (failure: Throwable) {
             try {
                 candidateBridge?.close()
@@ -2956,7 +3119,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val candidateEngine = ChatEngine(
                         InferenceRouter(openedModel, null),
                         openedBridge,
-                        prefs.maxToolRounds
+                        prefs.maxToolRounds,
+                        ChatEngine.ToolRouting.RELEVANT
                     )
                     engine = candidateEngine
                     bridge = openedBridge
@@ -2970,6 +3134,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         installed.modelPath().toString(),
                         openedModel.routeName
                     )
+                    _modelLoadProgress.value = null
                     _graphState.value = GraphUiState.Ready(installed.graphPath().toString())
                     StandaloneActivation(
                         modelPath = installed.modelPath().toString(),
@@ -2993,6 +3158,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 },
                 closeCandidate = AcceleratedChatModelAndroid::close
             ).execute(installed.modelPath().toString())
+            _navigationEvents.trySend(AppNavigationEvent.OpenChat)
             Log.i(
                 TAG,
                 "Activated project " + installed.projectId()
@@ -3134,7 +3300,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun currentGenOptions(): GenOptions =
         GenOptions.builder()
             .temperature(prefs.temperature.toDouble())
-            .maxTokens(prefs.maxTokens)
+            .maxTokens(
+                effectiveMaxTokensForTarget(
+                    prefs.maxTokens,
+                    BuildConfig.SDX_TARGET_PROFILE
+                )
+            )
             .build()
 
     private fun appendUiMessage(msg: UiMessage) {
