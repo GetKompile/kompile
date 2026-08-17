@@ -7,7 +7,7 @@
     <artifactId>spring-boot-starter-parent</artifactId>
     <version>3.2.5</version>
   </parent>
-  <groupId>ai.kompile.rag.instance</groupId>
+  <groupId>org.eclipse.deeplearning4j.rag.instance</groupId>
   <artifactId>kompile-fpna-v5</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <properties>
@@ -38,7 +38,7 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-app</artifactId>
         <version>${kompile.project.version}</version>
         <type>pom</type>
@@ -143,7 +143,7 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-main</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -166,7 +166,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-core</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -189,7 +189,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-loaders-orchestrator</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -212,7 +212,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -235,7 +235,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-chat-history</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -258,7 +258,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-llm-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -281,7 +281,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-app-cli-llm</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -304,7 +304,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-embedding-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -327,7 +327,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-embedding-sentence-transformer</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -350,7 +350,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-vectorstore-anserini</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -373,7 +373,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-loader-pdf-extended</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -396,7 +396,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-loader-tika</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -419,7 +419,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-loader-microsoft</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -442,7 +442,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-loader-mail</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -465,7 +465,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-chunker-sentence</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -488,7 +488,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-chunker-recursivecharacter</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -511,7 +511,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-chunker-markdown</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -534,7 +534,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-chunker-token</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -557,7 +557,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-tool-filesystem</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -580,7 +580,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-tool-rag</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -603,7 +603,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-tool-table-search</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -626,7 +626,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-ocr-core</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -649,7 +649,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-ocr-models</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -672,7 +672,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-ocr-postprocess</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -695,7 +695,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-ocr-integration</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -718,7 +718,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-ocr-datapipeline</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -741,7 +741,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-crawler-core</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -764,7 +764,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-crawl-graph</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -787,7 +787,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-process-discovery</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -810,7 +810,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-event-attribution</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -833,7 +833,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-code-indexer</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -856,7 +856,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-data-enrichment</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -879,7 +879,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-rag-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -902,7 +902,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-kvcache</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -925,7 +925,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-model-manager</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -948,7 +948,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-graph-algorithms</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -971,7 +971,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-knowledge-graph</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>
@@ -994,7 +994,7 @@
       </exclusions>
     </dependency>
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>kompile-loader-excel</artifactId>
       <version>${kompile.project.version}</version>
       <exclusions>

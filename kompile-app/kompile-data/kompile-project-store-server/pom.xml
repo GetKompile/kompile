@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-data</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -18,7 +18,7 @@
     <dependencies>
         <!-- Reuse the project manifest model from the client-side store. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-project-store</artifactId>
             <version>${project.version}</version>
         </dependency>

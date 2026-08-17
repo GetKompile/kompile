@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-app-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -50,17 +50,17 @@
              (ai.kompile.app.runtime.KompileServerRuntime), the shutdown handlers, and the
              EnvironmentPostProcessor that seeds the framework defaults. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-crawl</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -71,7 +71,7 @@
             which SPA loads would come down to jar order.
         -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ui</artifactId>
             <version>${project.version}</version>
             <classifier>crawl</classifier>
@@ -81,36 +81,36 @@
              documents, so the loader implementations the orchestrator discovers must be here;
              without them ingestion silently supports nothing. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-pdf-extended</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-pdf-tables</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-microsoft</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-web</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-tika</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-gdrive</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-onedrive</artifactId>
         </dependency>
         <!-- Table-aware chunker for structured data -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-chunker-table-aware</artifactId>
         </dependency>
         <!-- Crawl-time language enrichment. kompile-crawler-core marks kompile-langdetect <optional>,
@@ -118,12 +118,12 @@
              switches the whole feature off. The crawl manager is the process that runs crawls, so it
              is the process that declares it. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-langdetect</artifactId>
         </dependency>
         <!-- OCR for scanned sources -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-ocr-integration</artifactId>
         </dependency>
         <!-- kompile-ocr-integration does NOT declare this itself: VlmDocumentPipeline names
@@ -132,22 +132,22 @@
              is why the gap only showed up here — the crawl manager died on
              NoClassDefFoundError: ai/kompile/kvcache/bridge/VlmKvCacheIntegrationService. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-kvcache</artifactId>
         </dependency>
         <!-- Note sync / Connections is a crawl-manager surface: the OAuth-backed source providers
              registered through /api/source-providers have to be on THIS classpath, otherwise the
              provider list comes back empty. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-source-gdrive</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-source-onedrive</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-oauth2-client</artifactId>
         </dependency>
 
@@ -235,7 +235,7 @@
              three personas scan the classpath the same way and agree on which module owns which
              base path. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>

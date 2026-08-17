@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-app-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -49,17 +49,17 @@
              (ai.kompile.app.runtime.KompileServerRuntime), the shutdown handlers, and the
              EnvironmentPostProcessor that seeds the framework defaults. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-chat</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -70,7 +70,7 @@
             which SPA loads would come down to jar order.
         -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ui</artifactId>
             <version>${project.version}</version>
             <classifier>chat</classifier>
@@ -159,7 +159,7 @@
              app mounts the chat surface and nothing else. Shared as a test-jar so all three personas
              scan the classpath the same way and agree on which module owns which base path. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>

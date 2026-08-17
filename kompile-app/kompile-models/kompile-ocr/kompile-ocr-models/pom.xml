@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-ocr</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -32,21 +32,21 @@
     <dependencies>
         <!-- OCR Core interfaces -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-ocr-core</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- OCR Data Pipeline for parsing -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-ocr-datapipeline</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Model Manager for downloading and caching models -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
 
@@ -69,7 +69,7 @@
 
         <!-- KV Cache integration (optional - for persistent managed KV cache) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-kvcache</artifactId>
             <version>${project.version}</version>
             <optional>true</optional>

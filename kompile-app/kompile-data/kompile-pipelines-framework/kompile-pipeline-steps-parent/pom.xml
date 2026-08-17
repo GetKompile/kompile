@@ -20,12 +20,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-pipelines-framework</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <groupId>ai.kompile</groupId>
+    <groupId>org.eclipse.deeplearning4j</groupId>
     <artifactId>kompile-pipelines-steps-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
@@ -50,12 +50,12 @@
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>ai.kompile</groupId>
+                <groupId>org.eclipse.deeplearning4j</groupId>
                 <artifactId>kompile-pipelines-framework-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>ai.kompile</groupId>
+                <groupId>org.eclipse.deeplearning4j</groupId>
                 <artifactId>kompile-pipelines-framework-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -64,12 +64,12 @@
 
     <dependencies>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-pipelines-framework-api</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-pipelines-framework-core</artifactId>
             <version>${project.version}</version>
         </dependency>

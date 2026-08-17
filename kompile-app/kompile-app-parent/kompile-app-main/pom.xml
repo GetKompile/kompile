@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-app-parent</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -43,7 +43,7 @@
             <version>1.14.13</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-cli-common</artifactId>
         </dependency>
         <dependency>
@@ -65,115 +65,115 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-core</artifactId>
         </dependency>
         <!-- Shared DTO kernel (web.dto) — depended on by both the web and service layers;
              extracting it below both broke the former services⇄web circular dependency. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-dto</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Low-level config properties/holders (the app-main-decoupled subset of app.config). -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-config</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Runtime observability: Micrometer binders plus Actuator/Prometheus endpoints. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-metrics</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Isolated subprocess entry-point modules (Mains bundle into the uber jar; app-main's
              launchers reference them by string and share their args/message data classes). -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-common</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-learning</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-serving</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-model</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-ingest</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Feature modules extracted from app-main (Spring-wired on the classpath, same packages). -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-rag</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-source</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-facts</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ingest</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Platform/resource kernel (model/gpu/memory/resource/scheduler) — the low-level layer
              the rest of the service package sits on. See services-decomposition-spec.md. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-platform</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-mcp</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-agent</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-crawl</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ingest-svc</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ontology</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-crawl-svc</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -189,12 +189,12 @@
             See docs/architecture/app-persona-boundary.md.
         -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-admin</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -205,27 +205,27 @@
             which SPA loads would come down to jar order.
         -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-ui</artifactId>
             <version>${project.version}</version>
             <classifier>admin</classifier>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-enforcer</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-diff</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-utils</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-model-manager</artifactId>
         </dependency>
         <!-- kompile-model-staging is a STANDALONE service (separate :8090 subprocess). app-main reaches it
@@ -234,15 +234,15 @@
              controllers, and Angular UI into the app and it hijacks the served root UI.
              See memory: feedback_model_staging_never_in_app_main. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-project-store</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-anserini</artifactId>
             <exclusions>
                 <exclusion>
@@ -252,11 +252,11 @@
             </exclusions>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-vectorstore-anserini</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-loaders-orchestrator</artifactId>
         </dependency>
         <dependency>
@@ -265,43 +265,43 @@
             <version>${javacpp.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-filesystem</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-rag</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-chat-history</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-knowledge-graph</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-graph-change-tracking</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-event-attribution</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-graph-reasoning</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-graph-algorithms</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-react-agent</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-oauth2-client</artifactId>
         </dependency>
         <dependency>
@@ -327,7 +327,7 @@
              three personas scan the classpath the same way and agree on which module owns which
              base path. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-web-shared</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>
@@ -401,51 +401,51 @@
 
         <!-- Streaming Document Loaders for Large Document Processing -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-pdf-extended</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-pdf-tables</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-microsoft</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-web</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-tika</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-gdrive</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-onedrive</artifactId>
         </dependency>
         <!-- OAuth-backed source provider modules for UI data source registration -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-source-gdrive</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-source-onedrive</artifactId>
         </dependency>
         <!-- Table-aware chunker for structured data -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-chunker-table-aware</artifactId>
         </dependency>
 
         <!-- Orchestrator module for state machine task orchestration -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-orchestrator</artifactId>
         </dependency>
 
@@ -459,138 +459,138 @@
 
         <!-- Query transformation, guardrails, and RAG evaluation -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-query-transformer</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-guardrails</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-filter-chain</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-evaluation</artifactId>
         </dependency>
 
         <!-- KClaw Agent Framework -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-kclaw</artifactId>
         </dependency>
 
         <!-- OCR Integration -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-ocr-integration</artifactId>
         </dependency>
 
         <!-- Pipeline Management -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-pipeline-management</artifactId>
         </dependency>
 
         <!-- Pipeline Serving (subprocess-based execution) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-pipeline-serving</artifactId>
         </dependency>
 
         <!-- RAG Pipeline Management -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-rag-pipeline</artifactId>
         </dependency>
 
         <!-- KV Cache Management -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-kvcache</artifactId>
         </dependency>
 
         <!-- A2A protocol -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-a2a</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Process engine -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-process-engine</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Tool gateway -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-gateway</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Data enrichment -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-data-enrichment</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Compute graph core -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-compute-graph-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- Language runtimes are a separate JVM worker. Keep GraalJS/Truffle/Python4J out of
              app-main's native-image closure while preserving the normal NodeExecutor contract. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-compute-graph-scripting-client</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Code indexer -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-code-indexer</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Crawl graph -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-crawl-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Process discovery -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-process-discovery</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Process attribution (Bayesian/MEBN process risk + step attribution) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-process-attribution</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Event observation + empirical event priors (feeds the Bayesian/MEBN priors) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-event-observation</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Tool crawler -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-crawler</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -617,62 +617,62 @@
 
         <!-- Test milestone tracking -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-test-milestone</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Email IMAP loader -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-email-imap</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Email inbox value extraction -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-email-inbox</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Excel loader -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-loader-excel</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Unified knowledge search tool -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-knowledge</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Graph search/mutation/community/algorithms tools for the MCP servers -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Graph localization tools (multi-hop topology search, structural patterns, centrality) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-graph-localization</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- Table search tool -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-tool-table-search</artifactId>
         </dependency>
 
         <!-- LLM: pipeline-backed LanguageModel and on-demand /api/llm/* endpoints -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-llm-pipeline</artifactId>
             <version>${project.version}</version>
         </dependency>

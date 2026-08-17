@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-app-subprocess</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
@@ -36,30 +36,30 @@
 
     <dependencies>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-utils</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-app-subprocess-common</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-graph-reasoning</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-knowledge-graph</artifactId>
         </dependency>
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-vectorstore-anserini</artifactId>
         </dependency>
         <!-- GraphMatrixSubprocessMain wires the event-attribution reasoning services
              (Bayesian / PSL / EventAttribution) into the matrix subprocess context. -->
         <dependency>
-            <groupId>ai.kompile</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>kompile-event-attribution</artifactId>
         </dependency>
         <dependency>
