@@ -37,6 +37,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -46,6 +48,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Agentic chat loop with proper terminal rendering, output truncation,
@@ -120,6 +123,8 @@ public class AgenticChatLoop {
 
     // Cancel signal - set by ChatRepl when user presses Escape
     private volatile AtomicBoolean cancelSignal;
+    private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
+    private final AtomicReference<String> activeRemoteProcessId = new AtomicReference<>();
 
     // Optional production crawl/run controller. It is null for ordinary chat.
     private volatile AgentRunController runController;
@@ -284,6 +289,35 @@ public class AgenticChatLoop {
         this.cancelSignal = cancelSignal;
         if (directLlmClient != null) {
             directLlmClient.setCancelSignal(cancelSignal);
+        }
+    }
+
+    /** Interrupts a blocking server stream and asks the server to kill its agent process. */
+    public void cancelActiveTurn() {
+        AtomicBoolean signal = cancelSignal;
+        if (signal != null) {
+            signal.set(true);
+        }
+        InputStream responseBody = activeResponseBody.getAndSet(null);
+        if (responseBody != null) {
+            try {
+                responseBody.close();
+            } catch (IOException ignored) {
+                // The stream owner will observe the cancellation signal.
+            }
+        }
+        String processId = activeRemoteProcessId.getAndSet(null);
+        if (processId != null && !processId.isBlank() && baseUrl != null && !baseUrl.isBlank()) {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(baseUrl + "/api/agents/chat/cancel/" + processId))
+                        .POST(HttpRequest.BodyPublishers.noBody())
+                        .timeout(Duration.ofSeconds(5))
+                        .build();
+                httpClient.sendAsync(request, HttpResponse.BodyHandlers.discarding());
+            } catch (Exception ignored) {
+                // Local stream closure remains effective if remote cleanup is unavailable.
+            }
         }
     }
 
@@ -921,8 +955,8 @@ public class AgenticChatLoop {
         while (step < maxSteps) {
             // Check cancellation and external crawl controls before each step.
             if (isCancelled()) {
-                emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
-                fullResponse.append("\n[Cancelled by user]");
+                emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
+                fullResponse.append("\n[Interrupted by user]");
                 break;
             }
 
@@ -981,8 +1015,8 @@ public class AgenticChatLoop {
                 if (!result.text.isEmpty()) {
                     fullResponse.append(result.text);
                 }
-                emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
-                fullResponse.append("\n[Cancelled by user]");
+                emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
+                fullResponse.append("\n[Interrupted by user]");
                 break;
             }
 
@@ -1033,8 +1067,8 @@ public class AgenticChatLoop {
             for (ToolCallRequest call : result.toolCalls) {
                 // Check cancellation before each tool
                 if (isCancelled()) {
-                    emitLine("\n" + renderer.yellow("  ⊘ Cancelled — skipping remaining tools"));
-                    fullResponse.append("\n[Cancelled by user — tools skipped]");
+                    emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user — skipping remaining tools"));
+                    fullResponse.append("\n[Interrupted by user — tools skipped]");
                     break;
                 }
 
@@ -1435,7 +1469,9 @@ public class AgenticChatLoop {
             }
 
             // Parse SSE stream
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
+            InputStream responseBody = response.body();
+            activeResponseBody.set(responseBody);
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody))) {
                 String eventType = null;
                 StringBuilder dataBuffer = new StringBuilder();
                 String line;
@@ -1456,6 +1492,7 @@ public class AgenticChatLoop {
                     }
                 }
             }
+            activeResponseBody.compareAndSet(responseBody, null);
             markdownRenderer.flush();
 
         } catch (Exception e) {
@@ -1500,6 +1537,14 @@ public class AgenticChatLoop {
                 try {
                     JsonNode json = objectMapper.readTree(data);
                     String agent = json.path("agent").asText("");
+                    String processId = json.path("processId").asText("");
+                    if (!processId.isBlank()) {
+                        activeRemoteProcessId.set(processId);
+                        if (isCancelled()) {
+                            activeRemoteProcessId.compareAndSet(processId, null);
+                            cancelActiveTurn();
+                        }
+                    }
                     if (!agent.isEmpty()) {
                         emitLine(renderer.dim("[Agent: " + agent + "]"));
                     }

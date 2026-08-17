@@ -114,25 +114,31 @@ public final class ChatEngine {
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Process a single user turn.
-     *
-     * @param history   prior conversation turns (mutated by caller; engine appends nothing here)
-     * @param userInput the user's latest message
-     * @param opts      generation options
-     * @return the final answer and any tool rounds that preceded it
-     * @throws ChatException if no inference backend is available or generation fails fatally
+     * Process a single user turn without exposing progress callbacks.
      */
     public TurnResult chat(List<Message> history, String userInput, GenOptions opts)
             throws ChatException {
+        return chatStreaming(history, userInput, opts, ChatStreamListener.NO_OP);
+    }
 
-        // Build the working message list
+    /**
+     * Process a turn while forwarding native text, tool, and protocol events.
+     *
+     * <p>The returned result is still authoritative; callbacks are deliberately
+     * progress-only so a dropped UI event cannot change the conversation.</p>
+     */
+    public TurnResult chatStreaming(
+            List<Message> history,
+            String userInput,
+            GenOptions opts,
+            ChatStreamListener listener) throws ChatException {
+        ChatStreamListener events = listener == null ? ChatStreamListener.NO_OP : listener;
+        events.onStatus("starting");
+
         List<Message> working = new ArrayList<>(history);
-
-        // Prepend system prompt if missing
         if (working.isEmpty() || !"system".equals(working.get(0).role())) {
             working.add(0, Message.system(systemPrompt));
         }
-
         working.add(Message.user(userInput));
 
         List<ToolRound> rounds = new ArrayList<>();
@@ -140,24 +146,29 @@ public final class ChatEngine {
         boolean toolsEnabled = toolRouting == ToolRouting.ALWAYS
                 || hasGraphToolIntent(history, userInput);
         if (!toolsEnabled) {
+            events.onStatus("tools_disabled");
             ChatResponse response = generateWithProtocolRetry(
-                    working, "[]", ChatRequest.ToolChoice.NONE, opts, exchanges);
+                    working, "[]", ChatRequest.ToolChoice.NONE, opts, exchanges, events);
             if (!response.toolCalls().isEmpty()) {
                 throw new ChatException("Model returned tool calls when tool use was disabled");
             }
+            events.onStatus("complete");
             return new TurnResult(
                     requireAnswer(response.content()), List.of(), List.copyOf(exchanges));
         }
 
+        events.onStatus("tools_available");
         String toolsJson = bridge.catalogJson();
         for (int round = 0; round < maxToolRounds; round++) {
+            events.onStatus("planning_tool_use");
             ChatResponse response = generateWithProtocolRetry(
-                    working, toolsJson, ChatRequest.ToolChoice.AUTO, opts, exchanges);
+                    working, toolsJson, ChatRequest.ToolChoice.AUTO, opts, exchanges, events);
             log.debug("Structured model output (round {}): content={}, calls={}, errors={}",
                     round, response.content(), response.toolCalls().size(),
                     response.protocolErrors());
 
             if (response.toolCalls().isEmpty()) {
+                events.onStatus("complete");
                 return new TurnResult(
                         requireAnswer(response.content()),
                         List.copyOf(rounds),
@@ -167,22 +178,25 @@ public final class ChatEngine {
             working.add(Message.assistant(response));
             for (ChatToolCall call : response.toolCalls()) {
                 String argsJson = MiniJson.write(call.arguments());
+                events.onToolCall(call.name(), argsJson);
+                events.onStatus("running_tool");
                 String toolResult = bridge.execute(call.name(), argsJson);
+                events.onToolResult(call.name(), argsJson, toolResult);
                 rounds.add(new ToolRound(call.name(), argsJson, toolResult));
                 log.debug("Tool '{}' returned: {}", call.name(), toolResult);
-                working.add(Message.toolResult(
-                        call.id(), call.name(), toolResult));
+                working.add(Message.toolResult(call.id(), call.name(), toolResult));
             }
         }
 
-        // Max rounds hit — ask the model to synthesise without more tool calls
         working.add(Message.user(
                 "Please synthesize an answer from the tool results above without calling more tools."));
+        events.onStatus("synthesizing");
         ChatResponse synthesised = generateWithProtocolRetry(
-                working, toolsJson, ChatRequest.ToolChoice.NONE, opts, exchanges);
+                working, toolsJson, ChatRequest.ToolChoice.NONE, opts, exchanges, events);
         if (!synthesised.toolCalls().isEmpty()) {
             throw new ChatException("Model returned tool calls when tool use was disabled");
         }
+        events.onStatus("complete");
         return new TurnResult(
                 requireAnswer(synthesised.content()),
                 List.copyOf(rounds),
@@ -194,15 +208,24 @@ public final class ChatEngine {
             String toolsJson,
             ChatRequest.ToolChoice toolChoice,
             GenOptions opts,
-            List<ProtocolExchange> exchanges) {
+            List<ProtocolExchange> exchanges,
+            ChatStreamListener listener) {
         ChatRequest firstRequest = new ChatRequest(messages, toolsJson, toolChoice);
-        ChatResponse first = router.generate(firstRequest, opts);
-        exchanges.add(new ProtocolExchange(
-                firstRequest.toJson(), first.rawText(), first.protocolErrors()));
+        java.util.function.Consumer<String> textConsumer = toolChoice == ChatRequest.ToolChoice.NONE
+                ? listener::onText
+                : ignored -> {};
+        ChatResponse first = router.generateStreaming(firstRequest, opts, textConsumer);
+        listener.onResponse(first);
+        ProtocolExchange firstExchange = new ProtocolExchange(
+                firstRequest.toJson(), first.rawText(), first.protocolErrors());
+        exchanges.add(firstExchange);
+        listener.onProtocolExchange(
+                firstExchange.requestJson(), firstExchange.rawResponse(), firstExchange.protocolErrors());
         if (first.isProtocolValid()) {
             return first;
         }
 
+        listener.onStatus("protocol_retry");
         log.debug("Model protocol failure; requesting one retry: {}",
                 first.protocolErrors());
         List<Message> retryMessages = new ArrayList<>(messages);
@@ -212,9 +235,13 @@ public final class ChatEngine {
                         + String.join("; ", first.protocolErrors())
                         + ". Retry the same turn using the model's declared response protocol."));
         ChatRequest retryRequest = new ChatRequest(retryMessages, toolsJson, toolChoice);
-        ChatResponse retry = router.generate(retryRequest, opts);
-        exchanges.add(new ProtocolExchange(
-                retryRequest.toJson(), retry.rawText(), retry.protocolErrors()));
+        ChatResponse retry = router.generateStreaming(retryRequest, opts, textConsumer);
+        listener.onResponse(retry);
+        ProtocolExchange retryExchange = new ProtocolExchange(
+                retryRequest.toJson(), retry.rawText(), retry.protocolErrors());
+        exchanges.add(retryExchange);
+        listener.onProtocolExchange(
+                retryExchange.requestJson(), retryExchange.rawResponse(), retryExchange.protocolErrors());
         if (!retry.isProtocolValid()) {
             throw new ChatException("Model protocol failure after retry: "
                     + String.join("; ", retry.protocolErrors()));

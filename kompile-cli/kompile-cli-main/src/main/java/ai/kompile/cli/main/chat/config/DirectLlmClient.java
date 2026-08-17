@@ -316,7 +316,7 @@ public class DirectLlmClient {
         ResponsesStreamState state = new ResponsesStreamState();
 
         try {
-            ResponsesHistoryLinks historyLinks = sanitizeResponsesHistory();
+            ResponsesHistoryLinks historyLinks = sanitizeResponsesHistory(toolResults);
             List<ObjectNode> stagedToolResultItems =
                     prepareResponsesToolResultItems(toolResults, historyLinks);
             ArrayNode input = buildResponsesInput(
@@ -416,9 +416,22 @@ public class DirectLlmClient {
     /**
      * Remove malformed/duplicate Responses linkage left by an interrupted older
      * client. Function outputs are valid only when the matching function call is
-     * present earlier in the same retained request history.
+     * present earlier in the same retained request history. A function call with
+     * neither a retained output nor a currently pending executor result is also
+     * incomplete and must not be sent on the next request.
      */
-    private ResponsesHistoryLinks sanitizeResponsesHistory() {
+    private ResponsesHistoryLinks sanitizeResponsesHistory(
+            List<ToolCallResultInput> pendingToolResults) {
+        Set<String> pendingCalls = new LinkedHashSet<>();
+        if (pendingToolResults != null) {
+            for (ToolCallResultInput toolResult : pendingToolResults) {
+                if (toolResult != null && toolResult.callId != null
+                        && !toolResult.callId.isBlank()) {
+                    pendingCalls.add(toolResult.callId.trim());
+                }
+            }
+        }
+
         Set<String> calls = new LinkedHashSet<>();
         Set<String> outputs = new LinkedHashSet<>();
         List<ObjectNode> sanitized = new ArrayList<>(conversationHistory.size());
@@ -437,11 +450,25 @@ public class DirectLlmClient {
             }
             sanitized.add(item);
         }
-        if (sanitized.size() != conversationHistory.size()) {
-            conversationHistory.clear();
-            conversationHistory.addAll(sanitized);
+
+        List<ObjectNode> complete = new ArrayList<>(sanitized.size());
+        Set<String> retainedCalls = new LinkedHashSet<>();
+        for (ObjectNode item : sanitized) {
+            if ("function_call".equals(item.path("type").asText(""))) {
+                String callId = item.path("call_id").asText("");
+                if (!outputs.contains(callId) && !pendingCalls.contains(callId)) {
+                    continue;
+                }
+                retainedCalls.add(callId);
+            }
+            complete.add(item);
         }
-        return new ResponsesHistoryLinks(calls, outputs);
+
+        if (complete.size() != conversationHistory.size()) {
+            conversationHistory.clear();
+            conversationHistory.addAll(complete);
+        }
+        return new ResponsesHistoryLinks(retainedCalls, outputs);
     }
 
     /**

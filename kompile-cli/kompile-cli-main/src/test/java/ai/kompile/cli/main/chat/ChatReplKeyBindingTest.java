@@ -1,12 +1,15 @@
 package ai.kompile.cli.main.chat;
 
 import org.jline.keymap.KeyMap;
+import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
 import org.jline.reader.Reference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -114,6 +117,22 @@ class ChatReplKeyBindingTest {
         Object bound = keyMap.getBound("\033");
         assertInstanceOf(Reference.class, bound);
         assertEquals("cancel-operation", ((Reference) bound).name());
+    }
+
+    @Test
+    void cancelKeyIsBoundInEveryPossibleActiveKeymap() {
+        Map<String, KeyMap<Binding>> keyMaps = new LinkedHashMap<>();
+        keyMaps.put(LineReader.EMACS, new KeyMap<>());
+        keyMaps.put(LineReader.VIINS, new KeyMap<>());
+        keyMaps.put(LineReader.VICMD, new KeyMap<>());
+
+        ChatRepl.bindCancelKey(keyMaps, "\033");
+
+        for (KeyMap<Binding> map : keyMaps.values()) {
+            Object bound = map.getBound("\033");
+            assertInstanceOf(Reference.class, bound);
+            assertEquals("cancel-operation", ((Reference) bound).name());
+        }
     }
 
     @Test

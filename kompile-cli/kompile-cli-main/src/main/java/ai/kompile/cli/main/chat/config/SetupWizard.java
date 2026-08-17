@@ -584,23 +584,12 @@ public class SetupWizard {
         if (vendor == null || vendor.isBlank()) {
             return null;
         }
-        if ("openai".equalsIgnoreCase(vendor)) {
-            return "openai-codex";
-        }
         OAuthProviderRegistry registry = new OAuthProviderRegistry();
-        return registry.find(vendor).isPresent() ? vendor : null;
+        return registry.oauthProviderForVendor(vendor).orElse(null);
     }
 
     private static boolean supportsApiKey(String vendor) {
-        if (vendor == null || vendor.isBlank()
-                || "kompile".equalsIgnoreCase(vendor)
-                || "ollama".equalsIgnoreCase(vendor)) {
-            return false;
-        }
-        if ("openai".equalsIgnoreCase(vendor)) {
-            return true;
-        }
-        return !new OAuthProviderRegistry().isOAuthOnly(vendor);
+        return new OAuthProviderRegistry().supportsApiKey(vendor);
     }
 
     private static String vendorLabel(String vendor) {

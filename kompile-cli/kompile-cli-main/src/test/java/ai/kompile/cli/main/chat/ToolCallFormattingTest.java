@@ -550,6 +550,62 @@ class ToolCallFormattingTest {
         }
 
         @Test
+        void completedToolCall_shouldShowMultilineResultDetails() {
+            ToolResult result = ToolResult.success(
+                    "AGENTS.md", "line one\nline two", Map.of("totalLines", 2));
+
+            String output = renderer.renderSubagentToolCall(
+                    "read", "{\"file_path\":\"AGENTS.md\"}", result);
+
+            assertTrue(output.contains("Read"));
+            assertTrue(output.contains("↳ output:"));
+            assertTrue(output.contains("line one"));
+            assertTrue(output.contains("line two"));
+            assertTrue(output.contains("totalLines=2"));
+            assertTrue(output.contains("\n"));
+        }
+
+        @Test
+        void completedToolCall_shouldBoundLargeResultDetails() {
+            String output = renderer.renderSubagentToolCall(
+                    "read", "{\"file_path\":\"large.txt\"}",
+                    ToolResult.success("large.txt", "x".repeat(8_001)));
+
+            assertTrue(output.contains("tool output truncated at 8000 chars"));
+            assertFalse(output.contains("x".repeat(8_001)));
+        }
+
+        @Test
+        void editDiff_shouldColorRemovedAndAddedLines() {
+            TerminalRenderer ansiRenderer = new TerminalRenderer(true);
+            String input = "{\"file_path\":\"src/Main.java\","
+                    + "\"old_string\":\"old line\\nkeep\","
+                    + "\"new_string\":\"new line\\nkeep\"}";
+
+            String output = ansiRenderer.renderSubagentToolCall(
+                    "edit", input, ToolResult.success("Main.java", "Applied edit"));
+
+            String esc = String.valueOf((char) 27);
+            assertTrue(output.contains(esc + "[31m- old line" + esc + "[0m"));
+            assertTrue(output.contains(esc + "[32m+ new line" + esc + "[0m"));
+        }
+
+        @Test
+        void patchDiff_shouldColorUnifiedRemovedAndAddedLines() {
+            TerminalRenderer ansiRenderer = new TerminalRenderer(true);
+            String input = "{\"patch\":\"*** Begin Patch\\n"
+                    + "*** Update File: src/Main.java\\n@@\\n"
+                    + "-old line\\n+new line\\n*** End Patch\"}";
+
+            String output = ansiRenderer.renderSubagentToolCall(
+                    "patch", input, ToolResult.success("patch", "Patch applied"));
+
+            String esc = String.valueOf((char) 27);
+            assertTrue(output.contains(esc + "[31m-old line" + esc + "[0m"));
+            assertTrue(output.contains(esc + "[32m+new line" + esc + "[0m"));
+        }
+
+        @Test
         void errorToolCall_shouldShowCross() {
             String output = renderer.renderSubagentToolCall("bash", true);
             assertTrue(output.contains("Bash"));

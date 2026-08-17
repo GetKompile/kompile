@@ -28,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
@@ -68,6 +69,8 @@ public class ChatMessageHandler {
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
     private final Object turnDispatchLock = new Object();
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
+    private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
+    private final AtomicReference<String> activeRemoteProcessId = new AtomicReference<>();
 
     // Mutable llmBusy flag — read/written by ChatRepl main loop as well
     // We access it via ChatRepl accessors to keep a single source of truth.
@@ -127,6 +130,11 @@ public class ChatMessageHandler {
             return;
         }
 
+        dispatchTurn(message, () -> handleAcceptedChatMessage(message), "standard-chat-dispatch");
+    }
+
+    /** Runs one foreground turn on its own owner thread so Escape can interrupt it. */
+    private void dispatchTurn(String message, Runnable action, String threadName) {
         synchronized (turnDispatchLock) {
             if (repl.isLlmBusy()) {
                 enqueueChatMessage(message);
@@ -137,13 +145,17 @@ public class ChatMessageHandler {
             // second Enter can race the worker and launch two model turns.
             repl.setLlmBusy(true);
             cancelSignal.set(false);
+            activeRemoteProcessId.set(null);
             Thread dispatchThread = new Thread(() -> {
                 try {
-                    handleAcceptedChatMessage(message);
+                    action.run();
                 } finally {
-                    activeDispatchThread.compareAndSet(Thread.currentThread(), null);
+                    if (activeDispatchThread.compareAndSet(Thread.currentThread(), null)) {
+                        activeResponseBody.set(null);
+                        activeRemoteProcessId.set(null);
+                    }
                 }
-            }, "standard-chat-dispatch");
+            }, threadName);
             dispatchThread.setDaemon(true);
             activeDispatchThread.set(dispatchThread);
             dispatchThread.start();
@@ -156,12 +168,41 @@ public class ChatMessageHandler {
      * HTTP sends and process waits immediately.
      */
     public boolean requestCancel() {
-        cancelSignal.set(true);
+        // Snapshot the owner before closing any stream: closing the body can make
+        // the worker finish synchronously, but this request still cancelled an
+        // active turn and must report that fact to the widget.
         Thread active = activeDispatchThread.get();
+        String processId = activeRemoteProcessId.getAndSet(null);
+        cancelSignal.set(true);
+        agenticLoop.cancelActiveTurn();
+        InputStream responseBody = activeResponseBody.getAndSet(null);
+        if (responseBody != null) {
+            try {
+                responseBody.close();
+            } catch (IOException ignored) {
+                // The owner thread will observe the cancellation signal.
+            }
+        }
+        if (processId != null && !processId.isBlank()) {
+            cancelRemoteProcess(processId);
+        }
         if (active != null && active != Thread.currentThread()) {
             active.interrupt();
         }
         return active != null;
+    }
+
+    private void cancelRemoteProcess(String processId) {
+        try {
+            HttpRequest cancelRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(repl.getBaseUrl() + "/api/agents/chat/cancel/" + processId))
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .timeout(Duration.ofSeconds(5))
+                    .build();
+            httpClient.sendAsync(cancelRequest, HttpResponse.BodyHandlers.discarding());
+        } catch (Exception ignored) {
+            // Local cancellation remains effective even if the remote cleanup request fails.
+        }
     }
 
     private void enqueueChatMessage(String message) {
@@ -198,7 +239,7 @@ public class ChatMessageHandler {
                 handleServerChat(message);
             }
         } finally {
-            ChatCompleter.setActivity(null);
+            setActivityAfterTurn();
             repl.requestStatusRedraw();
             synchronized (turnDispatchLock) {
                 // completeTaskWithAutoDequeue may synchronously call back into
@@ -211,6 +252,22 @@ public class ChatMessageHandler {
 
     private void emitLine(String line) {
         ChatCompleter.printAbove(line);
+    }
+
+    private void setActivityAfterTurn() {
+        if (cancelSignal.get()) {
+            ChatCompleter.markInterrupted();
+        } else {
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    private void emitInterruptedMessage(BackgroundTaskManager.BackgroundTask task) {
+        repl.stopGeneratingSpinner();
+        emitLine(renderer.yellow("  ⊘ Interrupted by user"));
+        if (task != null) {
+            task.appendOutput("\n[Interrupted by user]");
+        }
     }
 
     private void startActivityIndicator() {
@@ -262,9 +319,13 @@ public class ChatMessageHandler {
             task.appendOutput(response);
             sessionMetrics.recordAssistantTurn(response, turnDuration);
         } catch (Exception e) {
-            repl.stopGeneratingSpinner();
-            emitLine(renderer.red("Error in chat: " + e.getMessage()));
-            task.setError(e);
+            if (cancelSignal.get()) {
+                emitInterruptedMessage(task);
+            } else {
+                repl.stopGeneratingSpinner();
+                emitLine(renderer.red("Error in chat: " + e.getMessage()));
+                task.setError(e);
+            }
         }
     }
 
@@ -327,9 +388,13 @@ public class ChatMessageHandler {
                 chatHistory.logAssistantMessage(rawResponse, 0, 0);
             }
         } catch (Exception e) {
-            repl.stopGeneratingSpinner();
-            emitLine(renderer.red("Error sending message: " + e.getMessage()));
-            task.setError(e);
+            if (cancelSignal.get()) {
+                emitInterruptedMessage(task);
+            } else {
+                repl.stopGeneratingSpinner();
+                emitLine(renderer.red("Error sending message: " + e.getMessage()));
+                task.setError(e);
+            }
         }
     }
 
@@ -343,7 +408,10 @@ public class ChatMessageHandler {
             emitLine("Sends a message to the configured agent with streaming output.");
             return;
         }
+        dispatchTurn(message, () -> streamAgentChatAccepted(message), "server-stream-chat");
+    }
 
+    private void streamAgentChatAccepted(String message) {
         chatHistory.logUserMessage("/ask " + message);
 
         // Build memory-enriched message if memory is enabled
@@ -401,7 +469,9 @@ public class ChatMessageHandler {
             StreamingMarkdownRenderer streamingMd =
                     new StreamingMarkdownRenderer(asciiRenderer, this::emitLine);
 
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body()))) {
+            InputStream responseBody = response.body();
+            activeResponseBody.set(responseBody);
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(responseBody))) {
                 String eventType = null;
                 StringBuilder dataBuffer = new StringBuilder();
                 String line;
@@ -409,8 +479,8 @@ public class ChatMessageHandler {
                 while ((line = reader.readLine()) != null) {
                     if (cancelSignal.get()) {
                         streamingMd.flush();
-                        emitLine("\n" + renderer.yellow("  ⊘ Cancelled"));
-                        fullResponse.append("\n[Cancelled by user]");
+                        emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
+                        fullResponse.append("\n[Interrupted by user]");
                         break;
                     }
                     if (line.startsWith("event:")) {
@@ -424,6 +494,7 @@ public class ChatMessageHandler {
                     }
                 }
             }
+            activeResponseBody.compareAndSet(responseBody, null);
             streamingMd.flush();
 
             emitLine("");
@@ -434,11 +505,15 @@ public class ChatMessageHandler {
             sessionMetrics.recordAssistantTurn(responseText, durationMs[0]);
 
         } catch (Exception e) {
-            repl.stopGeneratingSpinner();
-            emitLine(renderer.red("Error in agent stream: " + e.getMessage()));
-            task.setError(e);
+            if (cancelSignal.get()) {
+                emitInterruptedMessage(task);
+            } else {
+                repl.stopGeneratingSpinner();
+                emitLine(renderer.red("Error in agent stream: " + e.getMessage()));
+                task.setError(e);
+            }
         } finally {
-            ChatCompleter.setActivity(null);
+            setActivityAfterTurn();
             repl.requestStatusRedraw();
             repl.completeTaskWithAutoDequeue();
         }
@@ -449,15 +524,21 @@ public class ChatMessageHandler {
     // ========================================================================
 
     public void agenticChat(String message) {
-        try {
+        if (message.isBlank()) {
             runAgenticChat(message);
-        } finally {
-            ChatCompleter.setActivity(null);
-            repl.requestStatusRedraw();
-            synchronized (turnDispatchLock) {
-                repl.completeTaskWithAutoDequeue();
-            }
+            return;
         }
+        dispatchTurn(message, () -> {
+            try {
+                runAgenticChat(message);
+            } finally {
+                setActivityAfterTurn();
+                repl.requestStatusRedraw();
+                synchronized (turnDispatchLock) {
+                    repl.completeTaskWithAutoDequeue();
+                }
+            }
+        }, "agentic-chat-dispatch");
     }
 
     private void runAgenticChat(String message) {
@@ -501,9 +582,13 @@ public class ChatMessageHandler {
             sessionMetrics.recordAssistantTurn(response, turnDuration);
 
         } catch (Exception e) {
-            repl.stopGeneratingSpinner();
-            emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
-            task.setError(e);
+            if (cancelSignal.get()) {
+                emitInterruptedMessage(task);
+            } else {
+                repl.stopGeneratingSpinner();
+                emitLine(renderer.red("Error in agentic chat: " + e.getMessage()));
+                task.setError(e);
+            }
         }
     }
 
@@ -533,6 +618,14 @@ public class ChatMessageHandler {
                 try {
                     JsonNode json = objectMapper.readTree(data);
                     String agent = json.path("agent").asText("");
+                    String processId = json.path("processId").asText("");
+                    if (!processId.isBlank()) {
+                        activeRemoteProcessId.set(processId);
+                        if (cancelSignal.get()) {
+                            activeRemoteProcessId.compareAndSet(processId, null);
+                            cancelRemoteProcess(processId);
+                        }
+                    }
                     emitLine(renderer.dim("[Agent: " + agent + "]"));
                 } catch (Exception e) {
                     // ignore
@@ -580,7 +673,7 @@ public class ChatMessageHandler {
 
             case "cancelled":
                 streamingMd.flush();
-                emitLine("[Cancelled]");
+                emitLine(renderer.yellow("[Interrupted by user]"));
                 break;
 
             default:

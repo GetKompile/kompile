@@ -58,16 +58,27 @@ public interface ChatModel {
     String modelId();
 
     /**
+     * Stream a structured response to a consumer.
+     *
+     * <p>The default keeps existing backends source-compatible: it performs one
+     * structured generation and emits the final content once. Native providers
+     * override this path to forward their actual token chunks.</p>
+     */
+    default ChatResponse generateStreaming(ChatRequest request, GenOptions opts,
+                                              Consumer<String> tokenConsumer) throws ChatException {
+        ChatResponse result = generate(request, opts);
+        if (!result.content().isEmpty()) {
+            tokenConsumer.accept(result.content());
+        }
+        return result;
+    }
+
+    /**
      * Stream generated tokens to a consumer.
      *
      * <p>The default implementation calls {@link #generate(List, GenOptions)} and passes
      * the entire result as a single token to {@code tokenConsumer}. Implementations that
      * support true streaming should override this.</p>
-     *
-     * @param messages      conversation history
-     * @param opts          generation options
-     * @param tokenConsumer receives tokens as they are produced
-     * @throws ChatException if generation fails
      */
     default void generateStreaming(List<Message> messages, GenOptions opts,
                                    Consumer<String> tokenConsumer) throws ChatException {

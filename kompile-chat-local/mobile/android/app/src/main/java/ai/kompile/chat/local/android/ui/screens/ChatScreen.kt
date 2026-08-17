@@ -90,6 +90,8 @@ import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
 import ai.kompile.chat.local.android.viewmodel.ModelLoadProgressUi
 import ai.kompile.chat.local.android.viewmodel.ModelUiState
 import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
+import ai.kompile.chat.local.android.viewmodel.StreamingUiState
+import ai.kompile.chat.local.android.viewmodel.ToolActivityUi
 import ai.kompile.chat.local.android.viewmodel.ToolRoundUi
 import ai.kompile.chat.local.android.viewmodel.UiMessage
 import ai.kompile.chat.local.android.viewmodel.engineNotice
@@ -107,7 +109,8 @@ internal fun copyableChatTranscript(
     messages: List<UiMessage>,
     route: String,
     error: String?,
-    errorStackTrace: String?
+    errorStackTrace: String?,
+    streaming: StreamingUiState? = null
 ): String = buildString {
     appendLine("Kompile Chat raw transcript")
     appendLine("Route: $route")
@@ -134,6 +137,22 @@ internal fun copyableChatTranscript(
             }
         }
     }
+    streaming?.let { live ->
+        appendLine()
+        appendLine("streaming.phase=${live.phase}")
+        appendLine("streaming.reasoning:")
+        appendLine(live.reasoning)
+        appendLine("streaming.content:")
+        appendLine(live.content)
+        live.toolActivities.forEachIndexed { index, activity ->
+            appendLine("streaming.tool[${index}].name=${activity.tool}")
+            appendLine("streaming.tool[${index}].status=${activity.status}")
+            appendLine("streaming.tool[${index}].arguments:")
+            appendLine(activity.argsJson)
+            appendLine("streaming.tool[${index}].result:")
+            appendLine(activity.resultJson)
+        }
+    }
     if (!error.isNullOrBlank()) {
         appendLine()
         appendLine("current_error:")
@@ -153,6 +172,7 @@ fun ChatScreen(
 ) {
     val messages by vm.messages.collectAsState()
     val thinking  by vm.thinking.collectAsState()
+    val streaming by vm.streaming.collectAsState()
     val error      by vm.error.collectAsState()
     val errorStackTrace by vm.errorStackTrace.collectAsState()
     val route      by vm.activeRoute.collectAsState()
@@ -166,8 +186,15 @@ fun ChatScreen(
         clipboard.setText(AnnotatedString(SmokeDecodeTraceLog(traceContext).readContents()))
     }
     val copyTranscript = {
+        val transcript = copyableChatTranscript(messages, route, error, errorStackTrace)
+        val liveTranscript = streaming?.let {
+            copyableChatTranscript(emptyList(), route, null, null, it)
+        }
         clipboard.setText(
-            AnnotatedString(copyableChatTranscript(messages, route, error, errorStackTrace))
+            AnnotatedString(
+                if (liveTranscript.isNullOrBlank()) transcript
+                else "$transcript\n\n$liveTranscript"
+            )
         )
     }
 
@@ -219,8 +246,8 @@ fun ChatScreen(
     val engineReady = modelState is ModelUiState.Ready && graphState is GraphUiState.Ready
 
     // Auto-scroll to newest message.
-    LaunchedEffect(messages.size, thinking) {
-        val target = messages.size + (if (thinking) 1 else 0)
+    LaunchedEffect(messages.size, thinking, streaming?.content?.length, streaming?.reasoning?.length) {
+        val target = messages.size + (if (streaming != null || thinking) 1 else 0)
         if (target > 0) listState.animateScrollToItem(target - 1)
     }
 
@@ -251,7 +278,7 @@ fun ChatScreen(
                 actions = {
                     IconButton(
                         onClick = copyTranscript,
-                        enabled = messages.isNotEmpty() || !error.isNullOrBlank()
+                        enabled = messages.isNotEmpty() || streaming != null || !error.isNullOrBlank()
                     ) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy transcript")
                     }
@@ -284,6 +311,11 @@ fun ChatScreen(
                 importOperation = importOperation,
                 loadProgress = modelLoadProgress,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+            ToolUsageIndicator(
+                graphState = graphState,
+                streaming = streaming,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
             )
 
             // Thinking indicator.
@@ -332,7 +364,7 @@ fun ChatScreen(
             }
 
             // Message list.
-            if (messages.isEmpty() && !thinking) {
+            if (messages.isEmpty() && streaming == null && !thinking) {
                 StartupStatePanel(
                     modelState = modelState,
                     graphState = graphState,
@@ -356,10 +388,16 @@ fun ChatScreen(
                     items(messages, key = { it.id }) { msg ->
                         MessageRow(msg = msg)
                     }
-                    if (thinking) {
+                    streaming?.let { live ->
+                        item(key = "streaming-assistant") {
+                            StreamingAssistantRow(live)
+                        }
+                    } ?: if (thinking) {
                         item(key = "thinking") {
                             ThinkingBubble()
                         }
+                    } else {
+                        // No live generation row.
                     }
                 }
             }
@@ -451,6 +489,54 @@ internal fun ModelStatusHeader(
                         .testTag("model_compiler_progress"),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ToolUsageIndicator(
+    graphState: GraphUiState,
+    streaming: StreamingUiState?,
+    modifier: Modifier = Modifier
+) {
+    val runningTool = streaming?.toolActivities?.lastOrNull { it.status == "running" }
+    val label = when {
+        runningTool != null -> "Tool running: ${runningTool.tool}"
+        streaming?.phase == "planning_tool_use" -> "Tools: planning a graph action"
+        streaming?.phase == "protocol_retry" -> "Tools: protocol retry"
+        graphState is GraphUiState.Ready -> "Tools: automatic for graph questions"
+        else -> "Tools: unavailable until the graph is ready"
+    }
+    val active = runningTool != null || streaming?.phase == "planning_tool_use"
+    Surface(
+        color = if (active) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        },
+        shape = RoundedCornerShape(6.dp),
+        modifier = modifier.fillMaxWidth().testTag("tool_usage_indicator")
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Build,
+                contentDescription = "Tool usage",
+                tint = if (active) MaterialTheme.colorScheme.secondary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (active) MaterialTheme.colorScheme.onSecondaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -843,6 +929,139 @@ private fun EngineStatusBanner(
                 OutlinedButton(onClick = onOpenSettings) {
                     Text("Settings")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamingAssistantRow(live: StreamingUiState) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (live.reasoning.isNotBlank()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(end = 48.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "Thinking",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    SelectionContainer {
+                        Text(
+                            text = live.reasoning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+
+        if (live.content.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier
+                    .align(Alignment.Start)
+                    .widthIn(max = 320.dp)
+                    .padding(end = 48.dp)
+            ) {
+                Text(
+                    text = live.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 4.dp)
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = streamPhaseLabel(live.phase),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        live.toolActivities.forEach { activity ->
+            LiveToolActivityCard(activity)
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+private fun streamPhaseLabel(phase: String): String = when (phase) {
+    "starting" -> "Starting the local model…"
+    "tools_disabled" -> "Generating response…"
+    "tools_available" -> "Tools available for this request"
+    "planning_tool_use" -> "Planning tool use…"
+    "running_tool" -> "Running graph tool…"
+    "synthesizing" -> "Writing the final response…"
+    "protocol_retry" -> "Retrying the response protocol…"
+    "complete" -> "Complete"
+    "failed" -> "Generation stopped"
+    else -> "Generating…"
+}
+
+@Composable
+private fun LiveToolActivityCard(activity: ToolActivityUi) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, end = 48.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+        ),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (activity.status == "running") {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (activity.status == "running") {
+                        "Using ${activity.tool}"
+                    } else {
+                        "Used ${activity.tool}"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+            if (activity.status == "complete" && activity.resultJson.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                MonoLabel("Result")
+                MonoBlock(activity.resultJson)
             }
         }
     }

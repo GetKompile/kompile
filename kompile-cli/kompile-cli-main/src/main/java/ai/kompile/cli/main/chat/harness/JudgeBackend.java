@@ -61,6 +61,29 @@ public interface JudgeBackend {
     default void close() {}
 
     /**
+     * Stop a failed backend and make the next request create a fresh process/connection.
+     * Backends that do not own a restartable process may leave the default implementation.
+     */
+    default void restart() throws Exception {
+        close();
+    }
+
+    /**
+     * Modify the backend's active selection (for example a CLI agent name). Returns
+     * {@code true} when the value was accepted and applied.
+     */
+    default boolean modify(String selection) throws Exception {
+        return false;
+    }
+
+    /**
+     * Human-readable failure detail, if the backend has become unavailable.
+     */
+    default String failureReason() {
+        return "";
+    }
+
+    /**
      * Human-readable description of the backend for logging/diagnostics.
      */
     default String describe() {

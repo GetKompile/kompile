@@ -104,7 +104,9 @@ public final class CrawlDocumentsTool implements CliTool {
     public String compactHint() {
         return "Use {} to auto-configure and bootstrap the current directory locally, or provide "
                 + "documents=[{path|url,...}], explicit additional codeProjects=[id|name|*], and an optional "
-                + "knowledgeBase={id|name}. Local runs complete synchronously.";
+                + "knowledgeBase={id|name}. For reusable pipelines, call crawl_discover section=pipelines and "
+                + "follow its wiringRecipe; set dryRun=true to validate and preview the composed crawl "
+                + "without creating or changing a knowledge base. Local runs complete synchronously.";
     }
 
     @Override
@@ -116,6 +118,10 @@ public final class CrawlDocumentsTool implements CliTool {
         props.putObject("name")
                 .put("type", "string")
                 .put("description", "Optional human-readable crawl job name.");
+        props.putObject("dryRun")
+                .put("type", "boolean")
+                .put("default", false)
+                .put("description", "Validate and preview the complete composed crawl, including pipeline and worker resolution, without persisting a knowledge base, graph, or crawl artifacts.");
 
         ObjectNode documents = props.putObject("documents");
         documents.put("type", "array");
@@ -213,11 +219,92 @@ public final class CrawlDocumentsTool implements CliTool {
         props.putObject("defaultPipelineId").put("type", "string");
         props.putObject("maxValidationRetries").put("type", "integer").put("minimum", 0);
 
-        addObjectArray(props, "pipelines",
-                "Named ingest pipeline definitions. pipelineType is an arbitrary portable category; "
-                        + "registeredPipelineId inherits a default and executorId/processor selects execution. "
-                        + "modelBindings maps pipeline roles to pipelineRegistry.models or project model ids. "
-                        + "VLM, OCR, code, table, and keyword pipelines are built-in registrations, not a closed set.");
+        ObjectNode pipelines = props.putObject("pipelines");
+        pipelines.put("type", "array");
+        pipelines.put("description",
+                "Named ingest pipeline definitions. Start with pipelineId and pipelineType; use "
+                        + "registeredPipelineId to inherit a built-in/project default, then configure model "
+                        + "bindings and processor execution. VLM/OCR select the PDF compatibility adapter; "
+                        + "generic pipelines select UNIFIED_PIPELINE with a concrete pipelineDefinition.");
+        ObjectNode pipeline = pipelines.putObject("items");
+        pipeline.put("type", "object");
+        ObjectNode pipelineProperties = pipeline.putObject("properties");
+        pipelineProperties.putObject("pipelineId").put("type", "string")
+                .put("description", "Stable id referenced by documents[].pipelineId, routes, or defaultPipelineId.");
+        pipelineProperties.putObject("pipelineType").put("type", "string")
+                .put("description", "Portable category. Built-ins include STANDARD_TEXT, CODE, TABLE_AWARE, "
+                        + "KEYWORD_ONLY, VLM, and OCR; arbitrary categories are allowed when a processor is registered.");
+        pipelineProperties.putObject("registeredPipelineId").put("type", "string")
+                .put("description", "Optional built-in, project, or pipelineRegistry.defaults id to inherit.");
+        pipelineProperties.putObject("executorId").put("type", "string")
+                .put("description", "Optional pipelineRegistry.executors id; its processor contract is merged before execution.");
+        pipelineProperties.putObject("loaderName").put("type", "string");
+        pipelineProperties.putObject("chunkerName").put("type", "string");
+        pipelineProperties.putObject("chunkSize").put("type", "integer").put("minimum", 1);
+        pipelineProperties.putObject("chunkOverlap").put("type", "integer").put("minimum", 0);
+        pipelineProperties.putObject("modelId").put("type", "string")
+                .put("description", "Single model selection, commonly used by VLM/OCR or a generic model step.");
+        pipelineProperties.putObject("vlmModel").put("type", "string");
+        pipelineProperties.putObject("modelSetId").put("type", "string");
+        pipelineProperties.putObject("modelBindings").put("type", "object")
+                .put("description", "Role-to-model id map; values may reference pipelineRegistry.models or project models.")
+                .putObject("additionalProperties").put("type", "string");
+        pipelineProperties.putObject("modelRefs").put("type", "array")
+                .putObject("items").put("type", "string");
+        pipelineProperties.putObject("modelDefinitions").put("type", "object");
+        ObjectNode inlineDefinition = pipelineProperties.putObject("pipelineDefinition");
+        inlineDefinition.put("type", "object")
+                .put("description", "Inline UnifiedPipelineDefinition; generic execution requires pipelineSpec.@class.");
+        ObjectNode inlineDefinitionProperties = inlineDefinition.putObject("properties");
+        inlineDefinitionProperties.putObject("pipelineId").put("type", "string");
+        inlineDefinitionProperties.putObject("kind").put("type", "string");
+        inlineDefinitionProperties.putObject("topology").put("type", "string");
+        inlineDefinitionProperties.putObject("modelSetId").put("type", "string");
+        inlineDefinitionProperties.putObject("modelBindings").put("type", "object")
+                .putObject("additionalProperties").put("type", "string");
+        inlineDefinitionProperties.putObject("modelDefinitions").put("type", "object");
+        ObjectNode inlineSpec = inlineDefinitionProperties.putObject("pipelineSpec");
+        inlineSpec.put("type", "object")
+                .put("description", "Concrete SequencePipeline or GraphPipeline serialization.");
+        inlineSpec.putObject("properties").putObject("@class").put("type", "string")
+                .put("description", "Required concrete pipeline class discriminator.");
+        pipelineProperties.putObject("pipelineDefinitionPath").put("type", "string");
+        pipelineProperties.putObject("pipelineDefinitionId").put("type", "string");
+        pipelineProperties.putObject("options").put("type", "object")
+                .put("description", "Pipeline-specific options such as maxPages, pdfRenderDpi, outputFormat, or model bindings.");
+        pipelineProperties.putObject("chunkerOptions").put("type", "object");
+        ObjectNode processor = pipelineProperties.putObject("processor");
+        processor.put("type", "object");
+        processor.put("description",
+                "Execution contract. VLM/OCR use adapter=vlm-test; generic pipelines use "
+                        + "type=UNIFIED_PIPELINE plus a definition; custom subprocesses use KOMPILE_SUBPROCESS or EXECUTABLE.");
+        ObjectNode processorProperties = processor.putObject("properties");
+        processorProperties.putObject("type").put("type", "string");
+        processorProperties.putObject("adapter").put("type", "string")
+                .put("description", "Use vlm-test only for the built-in PDF VLM/OCR compatibility adapter.");
+        processorProperties.putObject("pipelineDefinition").put("type", "object");
+        processorProperties.putObject("pipelineDefinitionPath").put("type", "string");
+        processorProperties.putObject("pipelineDefinitionId").put("type", "string");
+        processorProperties.putObject("executable").put("type", "string");
+        processorProperties.putObject("executableMode").put("type", "string")
+                .putArray("enum").add("DEDICATED").add("UNIFIED");
+        processorProperties.putObject("componentId").put("type", "string");
+        processorProperties.putObject("arguments").put("type", "array")
+                .putObject("items").put("type", "string");
+        processorProperties.putObject("outputProtocol").put("type", "string");
+        processorProperties.putObject("outputField").put("type", "string");
+        processorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
+        processorProperties.putObject("environment").put("type", "object")
+                .putObject("additionalProperties").put("type", "string");
+        pipeline.putArray("required").add("pipelineId");
+        ObjectNode pipelineTypeGuide = schema.putObject("pipelineTypeGuide");
+        pipelineTypeGuide.put("VLM/OCR",
+                "pipelineType + modelId/modelBindings + optional processor.adapter=vlm-test; PDF compatibility worker.");
+        pipelineTypeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
+                "pipelineType + loaderName/chunkerName/options; no document-model worker required.");
+        pipelineTypeGuide.put("CUSTOM",
+                "processor.type=KOMPILE_SUBPROCESS|EXECUTABLE for a caller executable, or "
+                        + "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
         ObjectNode pipelineRegistry = props.putObject("pipelineRegistry");
         pipelineRegistry.put("type", "object");
         pipelineRegistry.put("description", "Request-scoped pipeline registrations shared by local routing and "
@@ -226,8 +313,34 @@ public final class CrawlDocumentsTool implements CliTool {
         ObjectNode registryProperties = pipelineRegistry.putObject("properties");
         addObjectArray(registryProperties, "defaults",
                 "Reusable ingest-pipeline defaults. A pipelines entry may inherit one with registeredPipelineId.");
-        addObjectArray(registryProperties, "definitions",
+        ObjectNode definitions = registryProperties.putObject("definitions");
+        definitions.put("type", "array");
+        definitions.put("description",
                 "Inline UnifiedPipelineDefinition objects addressable by pipelineDefinitionId.");
+        ObjectNode definition = definitions.putObject("items");
+        definition.put("type", "object");
+        ObjectNode definitionProperties = definition.putObject("properties");
+        definitionProperties.putObject("pipelineId").put("type", "string");
+        definitionProperties.putObject("displayName").put("type", "string");
+        definitionProperties.putObject("description").put("type", "string");
+        definitionProperties.putObject("kind").put("type", "string");
+        definitionProperties.putObject("topology").put("type", "string");
+        definitionProperties.putObject("modelSetId").put("type", "string");
+        definitionProperties.putObject("modelBindings").put("type", "object")
+                .putObject("additionalProperties").put("type", "string");
+        definitionProperties.putObject("modelDefinitions").put("type", "object");
+        ObjectNode definitionSpec = definitionProperties.putObject("pipelineSpec");
+        definitionSpec.put("type", "object")
+                .put("description", "Concrete serialized Pipeline; @class is required.");
+        ObjectNode definitionSpecProperties = definitionSpec.putObject("properties");
+        definitionSpecProperties.putObject("@class").put("type", "string")
+                .put("description", "SequencePipeline or GraphPipeline concrete class.");
+        definitionSpecProperties.putObject("id").put("type", "string");
+        definitionSpecProperties.putObject("steps").put("type", "array")
+                .putObject("items").put("type", "object");
+        definitionSpecProperties.putObject("nodes").put("type", "array")
+                .putObject("items").put("type", "object");
+        definition.putArray("required").add("pipelineId").add("pipelineSpec");
         ObjectNode models = registryProperties.putObject("models");
         models.put("type", "array");
         models.put("description", "Request-scoped model definitions. Pipelines bind these ids to named roles with modelBindings.");
@@ -436,7 +549,11 @@ public final class CrawlDocumentsTool implements CliTool {
         if (config != null && !config.isNull() && !config.isObject()) {
             return ToolResult.error("config must be an object.");
         }
-        if (!client.isAvailable() || requiresRequestScopedPipelineExecution(params)) {
+        // A dry-run must use the local backend even when an application client is reachable:
+        // the local path is the only one that guarantees no remote knowledge-base mutation and
+        // validates the same request-scoped pipeline that a real local crawl would execute.
+        if (params.path("dryRun").asBoolean(false)
+                || !client.isAvailable() || requiresRequestScopedPipelineExecution(params)) {
             return localBackend.crawlDocuments(params, context);
         }
 

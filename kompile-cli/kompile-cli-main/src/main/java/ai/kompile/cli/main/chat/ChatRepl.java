@@ -569,7 +569,7 @@ public class ChatRepl {
             KeyMap.ctrl('B')
         );
 
-        ((LineReaderImpl) reader).setVariable("background-task", new Widget() {
+        ((LineReaderImpl) reader).getWidgets().put("background-task", new Widget() {
             @Override
             public boolean apply() {
                 if (llmBusy && backgroundTaskManager.getCurrentTask() != null) {
@@ -597,28 +597,37 @@ public class ChatRepl {
         // ambiguity window so complete escape sequences still win without making a lone
         // Escape wait for JLine's one-second default.
         LineReaderImpl lineReader = (LineReaderImpl) reader;
-        lineReader.setVariable(LineReader.AMBIGUOUS_BINDING, 80L);
+        // The ambiguity variable is read while JLine builds its default maps; set the
+        // timeout on each existing map as well so a bare Escape is dispatched promptly.
+        for (KeyMap<Binding> keyMap : lineReader.getKeyMaps().values()) {
+            if (keyMap != null) {
+                keyMap.setAmbiguousTimeout(80L);
+            }
+        }
         String cancelKeyBinding = resolveCancelKeyBinding();
-        lineReader.getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("cancel-operation"),
-            cancelKeyBinding
-        );
+        // The active map can be selected by the user's JLine/inputrc setup. Bind
+        // every available map so Escape remains a cancellation key in both the
+        // default emacs map and vi/inputrc configurations.
+        bindCancelKey(lineReader.getKeyMaps(), cancelKeyBinding);
 
-        lineReader.setVariable("cancel-operation", new Widget() {
+        lineReader.getWidgets().put("cancel-operation", new Widget() {
             @Override
             public boolean apply() {
-                if (llmBusy) {
-                    if (messageHandler != null) {
-                        messageHandler.requestCancel();
-                    } else {
-                        cancelSignal.set(true);
-                    }
-                    BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
-                    ChatCompleter.printAbove("");
-                    ChatCompleter.printAbove(renderer.yellow("  ⊘ Cancelling...")
-                            + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
-                    ChatCompleter.printAbove(renderer.dim("    Interrupting the active operation"));
-                    ChatCompleter.printAbove("");
+                boolean cancelled = false;
+                if (messageHandler != null) {
+                    // The handler owns the active-turn thread; do not gate this on
+                    // llmBusy because tools/subagents may still be running while
+                    // the visible model state is between phases.
+                    cancelled = messageHandler.requestCancel();
+                } else if (llmBusy) {
+                    cancelSignal.set(true);
+                    cancelled = true;
+                }
+                if (cancelled) {
+                    // Keep this in the live status bar rather than printing a
+                    // permanent transcript line. Typing the next message clears it.
+                    ChatCompleter.markInterrupted();
+                    requestStatusRedraw();
                 }
                 return true;
             }
@@ -633,7 +642,7 @@ public class ChatRepl {
         bindModeSwitchingHotkeys(emacsKeyMap);
 
         // Ctrl+X P — Toggle planning mode
-        ((LineReaderImpl) reader).setVariable("toggle-plan-mode", new Widget() {
+        ((LineReaderImpl) reader).getWidgets().put("toggle-plan-mode", new Widget() {
             @Override
             public boolean apply() {
                 boolean newState = !agenticLoop.isPlanningMode();
@@ -655,7 +664,7 @@ public class ChatRepl {
         });
 
         // Ctrl+X T — Show todos / checklist
-        ((LineReaderImpl) reader).setVariable("show-todos", new Widget() {
+        ((LineReaderImpl) reader).getWidgets().put("show-todos", new Widget() {
             @Override
             public boolean apply() {
                 List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
@@ -672,7 +681,7 @@ public class ChatRepl {
         });
 
         // Ctrl+X A — Cycle primary agent (coder → planner → coder)
-        ((LineReaderImpl) reader).setVariable("cycle-agent", new Widget() {
+        ((LineReaderImpl) reader).getWidgets().put("cycle-agent", new Widget() {
             @Override
             public boolean apply() {
                 List<AgentConfig> primaries = agentRegistry.getPrimaryAgents();
@@ -704,7 +713,8 @@ public class ChatRepl {
 
         // Print welcome banner with mode options
         if (localMode) {
-            System.out.println(ascii.welcomePanelWithModes(sessionId, localAgentName, false, true));
+            System.out.println(ascii.welcomePanelWithModes(
+                    sessionId, localProviderDisplayName(), false, true));
             System.out.println();
             String provider = chatConfig != null ? chatConfig.getProvider() : "unknown";
             String model = chatConfig != null ? chatConfig.getModel() : "unknown";
@@ -751,7 +761,7 @@ public class ChatRepl {
         System.out.println();
 
         // Start the unified TUI: TopBar + scroll region + StatusBar
-        tui.setAgentName(localMode ? localAgentName : agentName);
+        tui.setAgentName(localMode ? localProviderDisplayName() : agentName);
         tui.setSessionId(sessionId);
         tui.setMode(localMode ? "local" : "server");
         tui.setPlanningMode(agenticLoop.isPlanningMode());
@@ -1370,6 +1380,7 @@ public class ChatRepl {
         Widget originalSelfInsert = reader.getWidgets().get(LineReader.SELF_INSERT);
         if (originalSelfInsert != null) {
             reader.getWidgets().put(LineReader.SELF_INSERT, () -> {
+                ChatCompleter.clearInterruptedOnInput();
                 if (activityPanel.isFocused()) {
                     activityPanel.clearSelection();
                 }
@@ -1385,6 +1396,7 @@ public class ChatRepl {
         Widget originalBackspace = reader.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
         if (originalBackspace != null) {
             reader.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
+                ChatCompleter.clearInterruptedOnInput();
                 if (activityPanel.isFocused()) {
                     activityPanel.clearSelection();
                 }
@@ -1439,6 +1451,15 @@ public class ChatRepl {
         );
     }
 
+    /** Bind the configured cancel sequence in every keymap JLine may activate. */
+    static void bindCancelKey(Map<String, KeyMap<Binding>> keyMaps, String keyBinding) {
+        for (KeyMap<Binding> keyMap : keyMaps.values()) {
+            if (keyMap != null) {
+                keyMap.bind(new Reference("cancel-operation"), keyBinding);
+            }
+        }
+    }
+
     /**
      * Resolves the cancel key binding string for JLine from the chat config.
      * Supports: ESCAPE (default), Ctrl+<letter> (e.g., "Ctrl+Q"), or raw key strings.
@@ -1464,6 +1485,19 @@ public class ChatRepl {
     }
 
     // ── Package-accessible state accessors (used by collaborator classes) ────
+
+    private String localProviderDisplayName() {
+        if (chatConfig == null || chatConfig.getProvider() == null
+                || chatConfig.getProvider().isBlank()) {
+            return "local";
+        }
+        String provider = chatConfig.getProvider().trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (provider) {
+            case "openai-codex" -> "OpenAI Codex";
+            case "openai" -> "OpenAI";
+            default -> ChatConfig.PROVIDERS.getOrDefault(provider, provider);
+        };
+    }
 
     String getAgentName() { return agentName; }
     void setAgentName(String name) { this.agentName = name; }

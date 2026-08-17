@@ -56,6 +56,33 @@ public final class OAuthProviderRegistry {
         return providerId != null && OAUTH_ONLY.contains(normalize(providerId));
     }
 
+    /**
+     * Resolve the provider used to store OAuth credentials for a user-facing vendor.
+     * OpenAI's API-key and ChatGPT subscription credentials intentionally use
+     * different wire providers while sharing one vendor in the CLI menus.
+     */
+    public Optional<String> oauthProviderForVendor(String vendorId) {
+        if (vendorId == null || vendorId.isBlank()) {
+            return Optional.empty();
+        }
+        String normalized = normalize(vendorId);
+        if ("openai".equals(normalized)) {
+            return find(OpenAiCodexOAuthFlow.PROVIDER_ID)
+                    .map(OAuthProviderFlow::providerId);
+        }
+        return find(normalized).map(OAuthProviderFlow::providerId);
+    }
+
+    /** Whether the user-facing provider accepts an API-key credential. */
+    public boolean supportsApiKey(String providerId) {
+        if (providerId == null || providerId.isBlank()
+                || "kompile".equalsIgnoreCase(providerId)
+                || "ollama".equalsIgnoreCase(providerId)) {
+            return false;
+        }
+        return !isOAuthOnly(providerId);
+    }
+
     private static Collection<OAuthProviderFlow> defaultFlows() {
         return java.util.List.of(
                 new OpenAiCodexOAuthFlow(),

@@ -137,8 +137,14 @@ public class EnforcerJudge implements EnforcerEvaluator {
         }
 
         long startNanos = System.nanoTime();
-        String response = backend.generate(buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context),
-                SYSTEM_PROMPT);
+        String response;
+        try {
+            response = backend.generate(buildJudgePrompt(userPrompt, agentOutput, policy, attempt, context),
+                    SYSTEM_PROMPT);
+        } catch (Exception failure) {
+            System.err.println("[enforcer] judge failure: " + failure.getMessage());
+            throw failure;
+        }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
         EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
         logJudgement("JUDGE_TURN", attempt, decision, response, latencyMs, userPrompt, agentOutput, null);
@@ -160,8 +166,14 @@ public class EnforcerJudge implements EnforcerEvaluator {
         }
 
         long startNanos = System.nanoTime();
-        String response = backend.generate(buildPartialJudgePrompt(userPrompt, partialOutput, policy, context),
-                SYSTEM_PROMPT);
+        String response;
+        try {
+            response = backend.generate(buildPartialJudgePrompt(userPrompt, partialOutput, policy, context),
+                    SYSTEM_PROMPT);
+        } catch (Exception failure) {
+            System.err.println("[enforcer] judge partial-evaluation failure: " + failure.getMessage());
+            throw failure;
+        }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
         EnforcerDecision decision = EnforcerDecision.parse(objectMapper, response);
         logJudgement("JUDGE_PARTIAL", 0, decision, response, latencyMs, userPrompt, partialOutput, null);
@@ -181,8 +193,14 @@ public class EnforcerJudge implements EnforcerEvaluator {
         }
 
         long startNanos = System.nanoTime();
-        String response = backend.generate(buildToolCallPrompt(toolName, toolInput, policy, context),
-                SYSTEM_PROMPT);
+        String response;
+        try {
+            response = backend.generate(buildToolCallPrompt(toolName, toolInput, policy, context),
+                    SYSTEM_PROMPT);
+        } catch (Exception failure) {
+            System.err.println("[enforcer] judge tool-evaluation failure: " + failure.getMessage());
+            throw failure;
+        }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
         EnforcerToolCallDecision decision = EnforcerToolCallDecision.parse(objectMapper, response);
         logToolJudgement(toolName, toolInput, decision, response, latencyMs);
@@ -197,6 +215,39 @@ public class EnforcerJudge implements EnforcerEvaluator {
     @Override
     public String describe() {
         return backend != null ? backend.describe() : "none";
+    }
+
+    /** Human-readable state for CLI/REST controls. */
+    public synchronized String judgeStatus() {
+        if (backend == null) return "failed · no judge backend";
+        String state = backend.isAvailable() ? "ready" : "failed";
+        String reason = backend.failureReason();
+        return state + " · " + backend.describe()
+                + (reason == null || reason.isBlank() ? "" : " · " + reason);
+    }
+
+    /** Stop the current judge process and retry using the selected agent. */
+    public synchronized String restartJudge() {
+        if (backend == null) return "Judge restart failed: no judge backend";
+        try {
+            backend.restart();
+            return "Judge restarted: " + judgeStatus();
+        } catch (Exception failure) {
+            return "Judge restart failed: " + failure.getMessage();
+        }
+    }
+
+    /** Switch the judge to a named local agent and reset its process/session. */
+    public synchronized String modifyJudge(String selection) {
+        if (backend == null) return "Judge modification failed: no judge backend";
+        try {
+            if (!backend.modify(selection)) {
+                return "Judge agent '" + selection + "' is unavailable; use /judge restart after installing it";
+            }
+            return "Judge modified: " + judgeStatus();
+        } catch (Exception failure) {
+            return "Judge modification failed: " + failure.getMessage();
+        }
     }
 
     public void close() {

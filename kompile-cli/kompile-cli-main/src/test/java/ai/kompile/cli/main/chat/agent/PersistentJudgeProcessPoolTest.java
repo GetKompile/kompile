@@ -127,6 +127,20 @@ class PersistentJudgeProcessPoolTest {
     }
 
     @Test
+    void abortDestroysProcessImmediately() throws Exception {
+        PersistentJudgeProcessPool.Lease lease = PersistentJudgeProcessPool.acquire(spec("P"));
+        FakeProcess process = created.get(0);
+
+        lease.abort();
+
+        assertTrue(process.closed, "aborting a failed judge must destroy it immediately");
+        assertFalse(process.isAlive());
+        PersistentJudgeProcessPool.Lease replacement = PersistentJudgeProcessPool.acquire(spec("P"));
+        assertEquals(2, creates.get(), "the next acquire must spawn a fresh judge");
+        replacement.close();
+    }
+
+    @Test
     void deadProcessIsReplacedOnAcquire() throws Exception {
         PersistentJudgeProcessPool.Lease a = PersistentJudgeProcessPool.acquire(spec("P"));
         created.get(0).alive = false; // simulate agent crash

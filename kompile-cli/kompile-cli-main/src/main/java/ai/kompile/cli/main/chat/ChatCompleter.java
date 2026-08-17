@@ -488,6 +488,9 @@ public class ChatCompleter implements Completer {
     /** Current standard-chat model activity rendered by the persistent status bar. */
     private static volatile String activityLabel;
 
+    /** Activity shown after Escape interrupts a turn until the next edit begins. */
+    private static final String INTERRUPTED_ACTIVITY = "Interrupted by user";
+
     /** DIM ANSI escape. */
     private static final String DIM = "\033[2m";
     /** ANSI reset. */
@@ -526,6 +529,20 @@ public class ChatCompleter implements Completer {
 
     public static String getActivity() {
         return activityLabel;
+    }
+
+    /** Mark the foreground turn as interrupted; the next input edit clears it. */
+    public static void markInterrupted() {
+        setActivity(INTERRUPTED_ACTIVITY);
+    }
+
+    /** Clear only the transient interruption marker, preserving normal activity state. */
+    public static boolean clearInterruptedOnInput() {
+        if (INTERRUPTED_ACTIVITY.equals(activityLabel)) {
+            activityLabel = null;
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -597,12 +614,14 @@ public class ChatCompleter implements Completer {
         Widget origBackDelete = impl.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
 
         impl.getWidgets().put(LineReader.SELF_INSERT, () -> {
+            clearInterruptedOnInput();
             origSelfInsert.apply();
             updatePostDisplay(impl);
             return true;
         });
 
         impl.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
+            clearInterruptedOnInput();
             origBackDelete.apply();
             updatePostDisplay(impl);
             return true;

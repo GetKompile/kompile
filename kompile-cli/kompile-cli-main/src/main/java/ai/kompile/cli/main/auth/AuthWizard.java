@@ -73,7 +73,24 @@ final class AuthWizard implements AutoCloseable {
             providerId = providerId.trim().toLowerCase(Locale.ROOT);
         }
 
-        List<CredentialStore.CredentialInfo> existing = store.list(providerId);
+        String oauthProviderId = registry.oauthProviderForVendor(providerId).orElse(null);
+        List<LoginKind> kinds = loginKinds(registry, providerId, oauthProviderId);
+        if (kinds.isEmpty()) {
+            prompter.message("No supported login method is available for " + providerId + ".");
+            return null;
+        }
+
+        List<String> kindLabels = kinds.stream()
+                .map(AuthWizard::loginKindLabel)
+                .toList();
+        int kindIndex = kinds.size() == 1 ? 0 : prompter.select("Select Login Method:", kindLabels);
+        if (kindIndex < 0) {
+            return null;
+        }
+        LoginKind kind = kinds.get(kindIndex);
+        String credentialProviderId = kind == LoginKind.OAUTH ? oauthProviderId : providerId;
+
+        List<CredentialStore.CredentialInfo> existing = store.list(credentialProviderId);
         String suggestedName = existing.isEmpty()
                 ? CredentialStore.DEFAULT_CREDENTIAL_NAME
                 : "account-" + (existing.size() + 1);
@@ -94,28 +111,6 @@ final class AuthWizard implements AutoCloseable {
             suggestedName = "account-" + (existing.size() + 1);
         }
 
-        List<LoginKind> kinds = new ArrayList<>();
-        List<String> kindLabels = new ArrayList<>();
-        if (registry.find(providerId).isPresent()) {
-            kinds.add(LoginKind.OAUTH);
-            kindLabels.add("OAuth / subscription sign-in");
-        }
-        if (!registry.isOAuthOnly(providerId)) {
-            kinds.add(LoginKind.API_KEY);
-            kindLabels.add("Paste an API key");
-            kinds.add(LoginKind.ENVIRONMENT);
-            kindLabels.add("Reference an environment variable");
-        }
-        if (kinds.isEmpty()) {
-            prompter.message("No supported login method is available for " + providerId + ".");
-            return null;
-        }
-
-        int kindIndex = kinds.size() == 1 ? 0 : prompter.select("Select Login Method:", kindLabels);
-        if (kindIndex < 0) {
-            return null;
-        }
-        LoginKind kind = kinds.get(kindIndex);
         String storedValue = null;
         String oauthMethod = null;
 
@@ -136,7 +131,7 @@ final class AuthWizard implements AutoCloseable {
             }
             storedValue = "$" + environmentName;
         } else {
-            OAuthProviderFlow flow = registry.require(providerId);
+            OAuthProviderFlow flow = registry.require(credentialProviderId);
             List<OAuthProviderFlow.LoginMethod> methods = flow.loginMethods();
             if (methods.size() <= 1) {
                 oauthMethod = methods.isEmpty() ? flow.defaultLoginMethod() : methods.get(0).id();
@@ -153,14 +148,37 @@ final class AuthWizard implements AutoCloseable {
         }
 
         boolean activate = existing.isEmpty()
-                || prompter.confirm("Use this credential now for " + providerId + "?", true);
+                || prompter.confirm("Use this credential now for " + providerLabel(providerId) + "?", true);
         return new LoginRequest(
-                providerId,
+                credentialProviderId,
                 credentialName,
                 kind,
                 storedValue,
                 oauthMethod,
                 activate);
+    }
+
+    private static List<LoginKind> loginKinds(
+            OAuthProviderRegistry registry,
+            String providerId,
+            String oauthProviderId) {
+        List<LoginKind> kinds = new ArrayList<>();
+        if (oauthProviderId != null) {
+            kinds.add(LoginKind.OAUTH);
+        }
+        if (registry.supportsApiKey(providerId)) {
+            kinds.add(LoginKind.API_KEY);
+            kinds.add(LoginKind.ENVIRONMENT);
+        }
+        return List.copyOf(kinds);
+    }
+
+    private static String loginKindLabel(LoginKind kind) {
+        return switch (kind) {
+            case OAUTH -> "OAuth / subscription sign-in";
+            case API_KEY -> "Paste an API key";
+            case ENVIRONMENT -> "Reference an environment variable";
+        };
     }
 
     SwitchRequest promptForSwitch(CredentialStore store) throws IOException {
@@ -282,6 +300,7 @@ final class AuthWizard implements AutoCloseable {
         }
         registry.flows().stream()
                 .sorted(java.util.Comparator.comparing(OAuthProviderFlow::providerId))
+                .filter(flow -> !providers.containsKey(vendorForOAuthProvider(flow.providerId())))
                 .forEach(flow -> providers.putIfAbsent(
                         flow.providerId(),
                         flow.displayName() + " — OAuth"));
@@ -290,16 +309,20 @@ final class AuthWizard implements AutoCloseable {
 
     private static String providerLabel(String providerId) {
         return switch (providerId) {
-            case "openai" -> "OpenAI — API key";
-            case "anthropic" -> "Anthropic — API key or OAuth";
-            case "gemini" -> "Google Gemini — API key";
-            case "openrouter" -> "OpenRouter — API key or OAuth";
-            case "xai" -> "xAI — API key or OAuth";
-            case "deepseek" -> "DeepSeek — API key";
-            case "groq" -> "Groq — API key";
-            case "radius" -> "Radius — API key or OAuth";
+            case "openai" -> "OpenAI";
+            case "anthropic" -> "Anthropic";
+            case "gemini" -> "Google Gemini";
+            case "openrouter" -> "OpenRouter";
+            case "xai" -> "xAI";
+            case "deepseek" -> "DeepSeek";
+            case "groq" -> "Groq";
+            case "radius" -> "Radius";
             default -> providerId;
         };
+    }
+
+    private static String vendorForOAuthProvider(String providerId) {
+        return "openai-codex".equalsIgnoreCase(providerId) ? "openai" : providerId;
     }
 
     private static String credentialLabel(CredentialStore.CredentialInfo info) {

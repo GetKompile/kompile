@@ -63,6 +63,13 @@ internal class AcceleratedChatModelAndroid(
     override fun generate(request: ChatRequest, opts: GenOptions): ChatResponse =
         requireSession().generate(request, opts, null)
 
+    override fun generateStreaming(
+        request: ChatRequest,
+        opts: GenOptions,
+        tokenConsumer: Consumer<String>
+    ): ChatResponse =
+        requireSession().generate(request, opts, tokenConsumer)
+
     override fun generate(messages: List<Message>, opts: GenOptions): String =
         requireSession().generate(messages, opts, null)
 

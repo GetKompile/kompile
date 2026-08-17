@@ -10,6 +10,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import ai.kompile.chat.local.ChatEngine
 import ai.kompile.chat.local.ChatException
+import ai.kompile.chat.local.ChatResponse
+import ai.kompile.chat.local.ChatStreamListener
 import ai.kompile.chat.local.GenOptions
 import ai.kompile.chat.local.GraphToolBackend
 import ai.kompile.chat.local.InferenceRouter
@@ -277,6 +279,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** True while a generate call is in-flight. */
     private val _thinking = MutableStateFlow(false)
     val thinking: StateFlow<Boolean> = _thinking.asStateFlow()
+
+    /** Live provider events for the assistant turn currently being generated. */
+    private val _streaming = MutableStateFlow<StreamingUiState?>(null)
+    val streaming: StateFlow<StreamingUiState?> = _streaming.asStateFlow()
 
     /** Non-null when the last operation produced an error banner. */
     private val _error = MutableStateFlow<String?>(null)
@@ -631,8 +637,83 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 appendUiMessage(UiMessage(role = "user", content = userText))
                 _thinking.value = true
+                _streaming.value = StreamingUiState()
                 _error.value = null
                 _errorStackTrace.value = null
+                val streamParser = StreamingTextParser()
+                val listener = object : ChatStreamListener {
+                    override fun onStatus(status: String) {
+                        mutateStreaming { it.copy(phase = status) }
+                    }
+
+                    override fun onText(text: String) {
+                        streamParser.append(text) { reasoning, content ->
+                            mutateStreaming {
+                                it.copy(reasoning = reasoning, content = content)
+                            }
+                        }
+                    }
+
+                    override fun onToolCall(tool: String, argsJson: String) {
+                        mutateStreaming {
+                            it.copy(
+                                phase = "running_tool",
+                                toolActivities = it.toolActivities +
+                                    ToolActivityUi(tool = tool, argsJson = argsJson)
+                            )
+                        }
+                    }
+
+                    override fun onToolResult(
+                        tool: String,
+                        argsJson: String,
+                        resultJson: String
+                    ) {
+                        mutateStreaming {
+                            val index = it.toolActivities.indexOfLast { activity ->
+                                activity.tool == tool &&
+                                    activity.argsJson == argsJson &&
+                                    activity.status == "running"
+                            }
+                            if (index < 0) {
+                                it.copy(toolActivities = it.toolActivities +
+                                    ToolActivityUi(tool, argsJson, resultJson, "complete"))
+                            } else {
+                                it.copy(toolActivities = it.toolActivities.toMutableList().also { activities ->
+                                    activities[index] = activities[index].copy(
+                                        resultJson = resultJson,
+                                        status = "complete"
+                                    )
+                                })
+                            }
+                        }
+                    }
+
+                    override fun onProtocolExchange(
+                        requestJson: String,
+                        rawResponse: String,
+                        protocolErrors: List<String>
+                    ) {
+                        mutateStreaming {
+                            it.copy(protocolExchangeCount = it.protocolExchangeCount + 1)
+                        }
+                    }
+
+                    override fun onResponse(response: ChatResponse) {
+                        streamParser.finish { reasoning, content ->
+                            mutateStreaming { it.copy(reasoning = reasoning, content = content) }
+                        }
+                        if (response.reasoningContent().isNotBlank()) {
+                            mutateStreaming { it.copy(reasoning = response.reasoningContent()) }
+                        }
+                        if (response.content().isNotBlank()) {
+                            mutateStreaming {
+                                if (it.content.isBlank()) it.copy(content = response.content())
+                                else it
+                            }
+                        }
+                    }
+                }
 
                 withContext(Dispatchers.IO) {
                     engineMutex.withLock {
@@ -655,11 +736,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     _error.value = message
                                     _errorStackTrace.value = stackTrace
                                 }
+                                _streaming.value = null
                                 return@withLock
                             }
 
                             val opts = currentGenOptions()
-                            val result = eng.chat(history, userText, opts)
+                            val result = eng.chatStreaming(history, userText, opts, listener)
                             val answer = result.answer().trim()
                             if (answer.isEmpty()) {
                                 throw ChatException("The local model returned no assistant text.")
@@ -681,6 +763,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
 
                             withContext(Dispatchers.Main.immediate) {
+                                _streaming.value = null
                                 appendUiMessage(
                                     UiMessage(
                                         role = "assistant",
@@ -710,6 +793,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             Log.e(TAG, "Chat failed", failure)
                             withContext(Dispatchers.Main.immediate) {
+                                mutateStreaming { it.copy(phase = "failed") }
                                 _error.value = summary
                                 _errorStackTrace.value = failure.stackTraceToString()
                             }
@@ -2635,11 +2719,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
                     huggingFaceProgress(
                         step = phase,
-                        message = if (candidate.tokenizerAssets.isEmpty()) {
-                            "No repository tokenizer sidecars were found; SDX will use the tokenizer and chat template embedded in the GGUF"
-                        } else {
-                            "Preparing ${candidate.tokenizerAssets.size} tokenizer/config assets pinned to the same commit"
-                        },
+                        message = "Preparing ${candidate.tokenizerAssets.size} canonical Hugging Face tokenizer/config assets pinned to the same commit",
                         retryWillResumeOrReuse = true
                     )
                 )
@@ -2659,11 +2739,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     "hugging face model",
                     HuggingFaceImportStep.TOKENIZER_ASSETS.label.lowercase(),
                     ImportDiagnosticSeverity.SUCCESS,
-                    if (tokenizerAssets.paths.isEmpty()) {
-                        "No external tokenizer assets were required; SDX will use GGUF metadata."
-                    } else {
-                        "Verified ${tokenizerAssets.paths.size} tokenizer/config asset(s) from the model's immutable revision."
-                    },
+                    "Verified ${tokenizerAssets.paths.size} canonical tokenizer/config asset(s) from the model's immutable revision.",
                     "SDX now has the tokenizer, special-token, generation, configuration, and chat-template metadata available for load."
                 )
                 persistHuggingFaceImportCheckpoint(
@@ -3292,9 +3368,65 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         firstFailure?.let { throw it }
     }
 
+    private val streamingStateLock = Any()
+
+    private fun mutateStreaming(transform: (StreamingUiState) -> StreamingUiState) {
+        synchronized(streamingStateLock) {
+            _streaming.value = _streaming.value?.let(transform)
+        }
+    }
+
+    /**
+     * Splits model-owned <think> blocks for presentation only. Tokenization and
+     * chat-template rendering remain entirely in the imported HF/native runtime.
+     */
+    private class StreamingTextParser {
+        private var inReasoning = false
+        private var pending = ""
+        private var reasoning = ""
+        private var content = ""
+
+        fun append(chunk: String, onUpdate: (String, String) -> Unit) {
+            if (chunk.isEmpty()) return
+            pending += chunk
+            drain(final = false)
+            onUpdate(reasoning, content)
+        }
+
+        fun finish(onUpdate: (String, String) -> Unit) {
+            drain(final = true)
+            onUpdate(reasoning, content)
+        }
+
+        private fun drain(final: Boolean) {
+            while (true) {
+                val marker = if (inReasoning) "</think>" else "<think>"
+                val index = pending.indexOf(marker)
+                if (index >= 0) {
+                    emit(pending.substring(0, index))
+                    pending = pending.substring(index + marker.length)
+                    inReasoning = !inReasoning
+                    continue
+                }
+                val keep = if (final) 0 else marker.length - 1
+                if (pending.length > keep) {
+                    emit(pending.substring(0, pending.length - keep))
+                    pending = pending.substring(pending.length - keep)
+                }
+                return
+            }
+        }
+
+        private fun emit(text: String) {
+            if (text.isEmpty()) return
+            if (inReasoning) reasoning += text else content += text
+        }
+    }
+
     private fun clearConversationLocked() {
         history.clear()
         _messages.value = emptyList()
+        _streaming.value = null
     }
 
     private fun currentGenOptions(): GenOptions =

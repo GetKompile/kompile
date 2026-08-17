@@ -255,6 +255,22 @@ class ChatCompleterTtyTest {
         ChatCompleter.setQueueSupplier(null);
     }
 
+    @Test
+    void interruptedActivityClearsWhenTheNextMessageStarts() throws Exception {
+        ChatCompleter.setTerminalRef(reader, terminal);
+        ChatCompleter.enableAutoTrigger(reader);
+        ChatCompleter.markInterrupted();
+        assertEquals("Interrupted by user", ChatCompleter.getActivity());
+
+        try {
+            assertEquals("h", readLineResult("h" + CR));
+            assertNull(ChatCompleter.getActivity(),
+                    "typing the next message should clear the transient interruption marker");
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+        }
+    }
+
     // ========================================================================
     // Autosuggestion widget verification
     // ========================================================================

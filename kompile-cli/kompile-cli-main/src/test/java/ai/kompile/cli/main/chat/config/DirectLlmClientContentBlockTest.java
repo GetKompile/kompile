@@ -249,6 +249,83 @@ class DirectLlmClientContentBlockTest {
     }
 
     @Test
+    void unmatchedResponsesFunctionCallIsDroppedBeforeNextTurn() throws Exception {
+        AtomicInteger turn = new AtomicInteger();
+        AtomicReference<String> nextRequest = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/codex/responses", exchange -> {
+            int currentTurn = turn.incrementAndGet();
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String body;
+            int status = 200;
+            if (currentTurn == 1) {
+                body = """
+                        data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_unanswered","call_id":"call_UNANSWERED","name":"write","arguments":"{}"}}
+
+                        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_unanswered","call_id":"call_UNANSWERED","name":"write","arguments":"{}"}}
+
+                        data: {"type":"response.completed","response":{"output":[],"usage":{}}}
+
+                        """;
+            } else {
+                nextRequest.set(request);
+                JsonNode input = mapper.readTree(request).path("input");
+                boolean hasUnansweredCall = false;
+                for (JsonNode item : input) {
+                    if ("function_call".equals(item.path("type").asText())
+                            && "call_UNANSWERED".equals(item.path("call_id").asText())) {
+                        hasUnansweredCall = true;
+                        break;
+                    }
+                }
+                if (hasUnansweredCall) {
+                    status = 400;
+                    body = "{\"error\":{\"message\":\"No tool output found for function call call_UNANSWERED\"}}";
+                } else {
+                    body = """
+                            data: {"type":"response.output_text.delta","delta":"next turn"}
+
+                            data: {"type":"response.completed","response":{"output":[],"usage":{}}}
+
+                            """;
+                }
+            }
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type",
+                    status == 200 ? "text/event-stream" : "application/json");
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream responseBody = exchange.getResponseBody()) {
+                responseBody.write(bytes);
+            }
+        });
+        server.start();
+
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai-codex", "test-token", "gpt-5.4",
+                    "http://127.0.0.1:" + server.getAddress().getPort());
+            DirectLlmClient responsesClient = new DirectLlmClient(config, mapper);
+            DirectLlmClient.StreamResult first =
+                    responsesClient.streamChat("use the write tool", "system", null, null);
+            assertEquals(1, first.toolCalls.size());
+
+            DirectLlmClient.StreamResult second =
+                    responsesClient.streamChat("next queued message", "system", null, null);
+
+            assertEquals("next turn", second.text);
+            assertNotNull(nextRequest.get());
+            JsonNode input = mapper.readTree(nextRequest.get()).path("input");
+            for (JsonNode item : input) {
+                assertFalse("function_call".equals(item.path("type").asText())
+                                && "call_UNANSWERED".equals(item.path("call_id").asText()),
+                        "an unanswered function call must not be sent on the next request");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void nullExceptionMessageUsesExceptionType() throws Exception {
         Method method = DirectLlmClient.class.getDeclaredMethod(
                 "formatExceptionMessage", Exception.class);

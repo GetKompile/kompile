@@ -1,24 +1,21 @@
 # Kompile local execution distribution
 
-`kompile-local-dist` is the native, folder-local subset of the full Kompile
-distribution. It is intended for the standard CLI chat wizard and MCP tools that
-orchestrate models, pipelines, document extraction, crawl, and knowledge work
-inside a project without starting `kompile-app`.
+`kompile-local-dist` is the folder-local subset of the full Kompile distribution.
+Its default Maven package is the JVM/JAR tier for the standard CLI chat wizard and
+MCP tools that orchestrate models, pipelines, crawl, and knowledge work inside a
+project without starting `kompile-app`. The native executable tier is an explicit
+`native` profile (`-Pnative`) over the same assembler.
 
-The archive contains:
+The local archive contains the CLI, model-serving and pipeline-serving
+artifacts, one backend's validated runtime closure, matching SDX packages, and the
+canonical Kompile build scripts. The JVM tier carries the runnable JARs; the
+native tier carries prebuilt native executables and side-loaded libraries when
+those artifacts have been staged.
 
-- `kompile`, including the hidden local-crawl child mode
-- `kompile-model-serving`
-- `kompile-pipeline-serving`
-- `kompile-vlm-test`
-- one backend's validated side-loaded native-library closure
-- matching SDX runtime packages and platform JARs
-- the canonical Kompile build scripts
-
-It intentionally excludes model provisioning/staging, the web/app server, persona
-and batch services, JVM fallback runtime and CLI JAR, C/Python bindings, and
-unrelated product CLIs. Staging remains an explicit build/distribution target for
-workflows that need to download, convert, validate, or promote new model assets.
+Both tiers intentionally exclude model provisioning/staging, the web/app server,
+persona and batch services, C/Python bindings, and unrelated product CLIs. Staging
+remains an explicit build/distribution target for workflows that need to download,
+convert, validate, or promote new model assets.
 
 ## End-to-end builds
 
@@ -49,7 +46,7 @@ canonical skip flags rather than using a separate packaging path:
 ./build-scripts/build-kompile-local-cuda.sh --skip-dl4j --skip-java --skip-native
 ```
 
-The default native target closure is
+The native source-build target closure is
 `cli,model-serving,pipeline-serving,vlm-test`. Override `NATIVE_TARGETS` only
 for incremental development; a release archive still fails closed if any
 required local execution executable is absent.
@@ -63,24 +60,31 @@ set:
 ./mvnw -Dkompile.local.dist=true -pl :kompile-local-dist validate
 ```
 
-Its package phase calls the canonical `build-dist.sh local` assembler and
+Its default package phase calls the canonical `build-dist.sh local --jars-only` assembler and
 attaches both the ZIP and Linux/macOS installer tarball under the same
-backend-qualified classifier. It assumes the native executables and SDX assets
-were already produced, so the source-build scripts above are the normal
-end-to-end entry points. An incremental Maven assembly can reuse those outputs:
+backend-qualified classifier. This JVM package does not require native images. The native tier is selected explicitly with the `native` profile and assumes its
+executables were already staged by the source-build scripts:
 
 ```bash
 KOMPILE_SDX_ASSETS_DIR=/path/to/cpu-sdk-assets \
-  ./mvnw -Dkompile.local.dist=true -pl :kompile-local-dist package
+  ./mvnw -Dkompile.local.dist=true -Dkompile.backend=cpu \
+  -pl :kompile-local-dist package
 
 KOMPILE_SDX_ASSETS_DIR=/path/to/cuda-sdk-assets \
   ./mvnw -Dkompile.local.dist=true -Dkompile.backend=cuda-12.9 \
-  -Dkompile.local.backend.profile=cuda-12.9 \
+  -pl :kompile-local-dist package
+
+# Native archive from staged native outputs:
+KOMPILE_SDX_ASSETS_DIR=/path/to/cuda-sdk-assets \
+  ./mvnw -Pnative -Dkompile.local.dist=true -Dkompile.backend=cuda-12.9 \
   -pl :kompile-local-dist package
 ```
 
+`-Dkompile.backend` selects the root backend profile for either tier. The optional
+`-Dkompile.local.backend.profile` property remains an explicit packager override.
+`-Dkompile.dist=true` activates the native profile without requiring `-Pnative`.
 The root backend profile supplies the SDK and release classifiers, so the CUDA
-command attaches `local-linux-x86_64-cuda-12.9` rather than an ambiguous base
+commands attach `local-linux-x86_64-cuda-12.9` rather than an ambiguous base
 platform artifact.
 
 ## Installation

@@ -125,6 +125,176 @@ public final class LocalModelPipelineRunner {
         return null;
     }
 
+    /**
+     * Validate the executable part of any composed unified pipeline before a crawl starts.
+     *
+     * <p>Project manifests frequently contain a high-level VLM compatibility description. That
+     * description is not a generic serving pipeline: generic execution requires a serialized
+     * Pipeline under {@code pipelineSpec} with a concrete {@code @class}. Keep this check here,
+     * beside the code that actually deserializes and launches the definition, so dry-run and real
+     * local crawls report the same contract.</p>
+     */
+    public static String validatePipelineDefinitions(Path projectRoot, JsonNode request) {
+        if (request == null || request.isNull()) return null;
+        Map<String, JsonNode> definitions = new LinkedHashMap<>();
+        collectPipelineDefinitions(definitions, request.get("pipelines"));
+        collectPipelineDefinitions(definitions, request.get("registeredPipelines"));
+        JsonNode registry = request.get("pipelineRegistry");
+        if (registry != null && registry.isObject()) {
+            collectPipelineDefinitions(definitions, registry.get("definitions"));
+            collectPipelineDefinitions(definitions, registry.get("defaults"));
+        }
+
+        Set<String> selected = new java.util.LinkedHashSet<>();
+        String defaultId = textValue(request.get("defaultPipelineId"));
+        if (defaultId != null) selected.add(defaultId);
+        JsonNode documents = request.get("documents");
+        if (documents != null && documents.isArray()) {
+            for (JsonNode document : documents) {
+                String id = textValue(document == null ? null : document.get("pipelineId"));
+                if (id != null) selected.add(id);
+            }
+        }
+        JsonNode routes = request.get("routeRules");
+        if (routes != null && routes.isArray()) {
+            for (JsonNode route : routes) {
+                String id = textValue(route == null ? null : route.get("pipelineId"));
+                if (id != null) selected.add(id);
+            }
+        }
+
+        // Explicit request definitions are always checked. Registered defaults are checked when
+        // the request selects them; this keeps an unrelated optional project pipeline from making
+        // a normal text crawl fail validation.
+        Set<JsonNode> toCheck = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        addDefinitionNodes(toCheck, request.get("pipelines"));
+        addDefinitionNodes(toCheck, request.get("registeredPipelines"));
+        if (registry != null && registry.isObject()) {
+            addDefinitionNodes(toCheck, registry.get("definitions"));
+        }
+        for (String id : selected) {
+            JsonNode selectedDefinition = definitions.get(id);
+            if (selectedDefinition != null) toCheck.add(selectedDefinition);
+        }
+        for (JsonNode definition : toCheck) {
+            String error = validatePipelineDefinition(projectRoot, definition, definitions, new java.util.HashSet<>());
+            if (error != null) return error;
+        }
+        return null;
+    }
+
+    private static void collectPipelineDefinitions(Map<String, JsonNode> target, JsonNode value) {
+        if (value == null || !value.isArray()) return;
+        for (JsonNode definition : value) {
+            String id = textValue(definition == null ? null : definition.get("pipelineId"));
+            if (id != null && definition != null && definition.isObject()) target.putIfAbsent(id, definition);
+        }
+    }
+
+    private static void addDefinitionNodes(Set<JsonNode> target, JsonNode value) {
+        if (value == null || !value.isArray()) return;
+        for (JsonNode definition : value) if (definition != null && definition.isObject()) target.add(definition);
+    }
+
+    private static String validatePipelineDefinition(Path projectRoot,
+                                                     JsonNode pipeline,
+                                                     Map<String, JsonNode> definitions,
+                                                     Set<String> visiting) {
+        if (pipeline == null || !pipeline.isObject()) return null;
+        JsonNode processor = pipeline.path("processor");
+        String type = textValue(processor.get("type"));
+        if (type == null) type = textValue(pipeline.get("type"));
+        String adapter = textValue(processor.get("adapter"));
+        boolean compatibility = "vlm-test".equalsIgnoreCase(adapter);
+        boolean hasDefinition = processor.has("pipelineDefinition")
+                || processor.has("pipelineDefinitionPath") || processor.has("pipelineDefinitionId")
+                || pipeline.has("pipelineDefinition") || pipeline.has("pipelineDefinitionPath")
+                || pipeline.has("pipelineDefinitionId");
+        if (compatibility && !"UNIFIED_PIPELINE".equalsIgnoreCase(type)) return null;
+        if (!"UNIFIED_PIPELINE".equalsIgnoreCase(type) && !hasDefinition) return null;
+
+        JsonNode inline = firstNode(processor, pipeline, "pipelineDefinition");
+        if (inline != null && !inline.isNull()) {
+            JsonNode definition = inline;
+            try {
+                if (inline.isTextual()) definition = MAPPER.readTree(inline.asText());
+            } catch (Exception e) {
+                return "Unified pipeline '" + pipelineId(pipeline) + "' has invalid pipelineDefinition JSON: " + e.getMessage();
+            }
+            return validateSerializedDefinition(definition, pipelineId(pipeline));
+        }
+
+        String pathValue = firstText(processor, pipeline, "pipelineDefinitionPath");
+        if (pathValue != null) {
+            try {
+                Path path = resolvePath(projectRoot, pathValue);
+                if (!Files.isRegularFile(path)) {
+                    return "Unified pipeline '" + pipelineId(pipeline)
+                            + "' definition path does not exist: " + path
+                            + ". A generic definition must provide an executable pipelineSpec.@class "
+                            + "(GraphPipeline or SequencePipeline); use the crawl compatibility VLM/OCR adapter "
+                            + "for a high-level document pipeline.";
+                }
+                return validateSerializedDefinition(MAPPER.readTree(path.toFile()), pipelineId(pipeline));
+            } catch (Exception e) {
+                return "Unified pipeline '" + pipelineId(pipeline) + "' definition could not be read: " + e.getMessage();
+            }
+        }
+
+        String definitionId = firstText(processor, pipeline, "pipelineDefinitionId");
+        if (definitionId != null) {
+            if (!visiting.add(definitionId)) return "Unified pipeline definition cycle detected at '" + definitionId + "'.";
+            JsonNode registered = definitions.get(definitionId);
+            if (registered == null) {
+                return "Unified pipeline '" + pipelineId(pipeline) + "' references unknown pipelineDefinitionId '" + definitionId + "'.";
+            }
+            return validatePipelineDefinition(projectRoot, registered, definitions, visiting);
+        }
+        if ("UNIFIED_PIPELINE".equalsIgnoreCase(type)) {
+            return "Unified pipeline '" + pipelineId(pipeline)
+                    + "' has no pipelineDefinition. Provide an inline UnifiedPipelineDefinition or pipelineDefinitionPath/Id.";
+        }
+        return null;
+    }
+
+    private static String validateSerializedDefinition(JsonNode definition, String id) {
+        if (definition == null || !definition.isObject()) {
+            return "Unified pipeline '" + id + "' definition must be a JSON object.";
+        }
+        JsonNode spec = definition.get("pipelineSpec");
+        if (spec == null || !spec.isObject() || spec.isEmpty()) {
+            return "Unified pipeline '" + id + "' has no executable pipelineSpec. "
+                    + "A high-level VLM/OCR configuration is not a generic serving pipeline; provide pipelineSpec.@class "
+                    + "(GraphPipeline or SequencePipeline), or select the crawl compatibility VLM/OCR adapter.";
+        }
+        String className = textValue(spec.get("@class"));
+        if (className == null) {
+            return "Unified pipeline '" + id + "' pipelineSpec is missing @class. "
+                    + "Use a concrete serialized Pipeline such as GraphPipeline or SequencePipeline.";
+        }
+        return null;
+    }
+
+    private static JsonNode firstNode(JsonNode first, JsonNode second, String field) {
+        JsonNode value = first == null ? null : first.get(field);
+        return value != null && !value.isNull() ? value : second == null ? null : second.get(field);
+    }
+
+    private static String firstText(JsonNode first, JsonNode second, String field) {
+        return textValue(firstNode(first, second, field));
+    }
+
+    private static String pipelineId(JsonNode pipeline) {
+        String id = textValue(pipeline == null ? null : pipeline.get("pipelineId"));
+        return id == null ? "<unnamed>" : id;
+    }
+
+    private static String textValue(JsonNode value) {
+        if (value == null || !value.isValueNode()) return null;
+        String text = value.asText();
+        return text == null || text.isBlank() ? null : text.trim();
+    }
+
     private static String runnableError(
             Path projectRoot, JsonNode executable, String field, boolean nativeParent) {
         if (!executable.isTextual() || executable.asText().isBlank()) {
@@ -269,8 +439,8 @@ public final class LocalModelPipelineRunner {
         if (!name.endsWith(".pdf")) {
             throw new IllegalArgumentException(
                     pipeline.pipelineType()
-                            + " local document processing currently requires a PDF or an explicit "
-                            + "pipelineDefinition.");
+                            + " local compatibility processing supports application/pdf only. "
+                            + "Use a generic UnifiedPipelineDefinition with an executable pipelineSpec for standalone images or other input types.");
         }
 
         Map<String, Object> workerOptions = new LinkedHashMap<>(pipeline.chunkerOptions());

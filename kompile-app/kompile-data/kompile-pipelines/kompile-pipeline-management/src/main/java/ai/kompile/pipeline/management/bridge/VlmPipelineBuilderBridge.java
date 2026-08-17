@@ -22,7 +22,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -40,28 +44,36 @@ public class VlmPipelineBuilderBridge {
      * Convert a VlmPipelineDefinition into a UnifiedPipelineDefinition.
      */
     public UnifiedPipelineDefinition toUnified(VlmPipelineDefinition vlmDef) {
+        VlmPipelineDefinition.PipelineType pipelineType = vlmDef.getPipelineType() == null
+                ? VlmPipelineDefinition.PipelineType.SEQUENCE : vlmDef.getPipelineType();
         UnifiedPipelineDefinition.ExecutionTopology topology =
-                vlmDef.getPipelineType() == VlmPipelineDefinition.PipelineType.GRAPH ?
-                        UnifiedPipelineDefinition.ExecutionTopology.GRAPH :
-                        UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE;
+                pipelineType == VlmPipelineDefinition.PipelineType.GRAPH
+                        ? UnifiedPipelineDefinition.ExecutionTopology.GRAPH
+                        : UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE;
 
-        // Build a pipelineSpec describing the VLM pipeline
+        // The serving framework deserializes pipelineSpec as Pipeline and dispatches on
+        // @class. The old @bridge-only envelope could be stored but could never be loaded by
+        // the generic serving child. Emit the concrete sequence/graph envelope while retaining
+        // the VLM metadata for callers that inspect the definition.
         Map<String, Object> pipelineSpec = new LinkedHashMap<>();
-        pipelineSpec.put("@bridge", "vlm");
-        pipelineSpec.put("pipelineId", vlmDef.getPipelineId());
-        pipelineSpec.put("pipelineType", vlmDef.getPipelineType().name());
+        pipelineSpec.put("@class", topology == UnifiedPipelineDefinition.ExecutionTopology.GRAPH
+                ? "ai.kompile.pipelines.framework.runtime.pipeline.graph.GraphPipeline"
+                : "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline");
+        pipelineSpec.put("id", vlmDef.getPipelineId());
+        pipelineSpec.put("pipelineType", pipelineType.name());
         pipelineSpec.put("modelSetId", vlmDef.getModelSetId());
-        if (vlmDef.getExtractionTypes() != null) {
-            pipelineSpec.put("extractionTypes", vlmDef.getExtractionTypes());
-        }
-        if (vlmDef.getStages() != null) {
-            pipelineSpec.put("stages", vlmDef.getStages());
-        }
-        if (vlmDef.getGraphNodes() != null && !vlmDef.getGraphNodes().isEmpty()) {
+        pipelineSpec.put("extractionTypes", vlmDef.getExtractionTypes());
+        pipelineSpec.put("defaultParameters", vlmDef.getDefaultParameters());
+        if (topology == UnifiedPipelineDefinition.ExecutionTopology.GRAPH) {
+            List<Map<String, Object>> nodes = graphNodes(vlmDef);
+            pipelineSpec.put("nodes", nodes);
+            pipelineSpec.put("inputNodeName", "pipeline_input");
+            pipelineSpec.put("outputNodeName", nodes.isEmpty()
+                    ? "pipeline_output" : nodes.get(nodes.size() - 1).get("name"));
             pipelineSpec.put("graphNodes", vlmDef.getGraphNodes());
-        }
-        if (vlmDef.getDefaultParameters() != null) {
-            pipelineSpec.put("defaultParameters", vlmDef.getDefaultParameters());
+        } else {
+            pipelineSpec.put("steps", sequenceSteps(vlmDef));
+            pipelineSpec.put("stages", vlmDef.getStages());
         }
 
         String createdAt = vlmDef.getCreatedAt() > 0 ?
@@ -86,5 +98,69 @@ public class VlmPipelineBuilderBridge {
                         .heapSize("12g")
                         .build())
                 .build();
+    }
+
+    private List<Map<String, Object>> sequenceSteps(VlmPipelineDefinition definition) {
+        if (definition.getStages() == null) return List.of();
+        List<Map<String, Object>> steps = new ArrayList<>();
+        definition.getSortedStages().stream()
+                .filter(stage -> stage != null && stage.isEnabled())
+                .forEach(stage -> steps.add(stepConfig(
+                        stage.getStageId(), stage.getParameters(), stage.getModelOverrideId(),
+                        definition.getModelSetId())));
+        return steps;
+    }
+
+    private List<Map<String, Object>> graphNodes(VlmPipelineDefinition definition) {
+        if (definition.getGraphNodes() == null || definition.getGraphNodes().isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        definition.getEnabledGraphNodes().forEach((key, node) -> {
+            Map<String, Object> graphNode = new LinkedHashMap<>();
+            graphNode.put("@graphNodeType", "STANDARD");
+            graphNode.put("name", node.getNodeId());
+            List<String> inputs = node.getInputs() == null ? List.of() : new ArrayList<>(node.getInputs());
+            if (inputs.isEmpty()) inputs = List.of("pipeline_input");
+            else inputs.replaceAll(input -> "input".equals(input) ? "pipeline_input" : input);
+            graphNode.put("inputs", inputs);
+            graphNode.put("stepConfig", stepConfig(
+                    node.getStageId(), node.getParameters(), node.getModelOverrideId(), definition.getModelSetId()));
+            nodes.add(graphNode);
+        });
+        return nodes;
+    }
+
+    private Map<String, Object> stepConfig(String stageId, Map<String, Object> parameters,
+                                           String modelOverrideId, String modelSetId) {
+        String runner = runnerClass(stageId);
+        if (runner == null) {
+            throw new IllegalArgumentException("VLM stage '" + stageId
+                    + "' has no generic pipeline runner mapping. Register a concrete executor or use the crawl compatibility adapter.");
+        }
+        Map<String, Object> config = new LinkedHashMap<>();
+        config.put("@class", "ai.kompile.pipelines.framework.core.config.GenericStepConfig");
+        config.put("runnerClassName", runner);
+        Map<String, Object> values = new LinkedHashMap<>();
+        if (parameters != null) values.putAll(parameters);
+        if (modelOverrideId != null && !modelOverrideId.isBlank()) values.put("modelId", modelOverrideId);
+        if (modelSetId != null && !modelSetId.isBlank()) values.putIfAbsent("modelSetId", modelSetId);
+        config.put("parameters", values);
+        return config;
+    }
+
+    private String runnerClass(String stageId) {
+        if (stageId == null || stageId.isBlank()) return null;
+        String id = stageId.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
+        return switch (id) {
+            case "IMAGE_PREPROCESSING", "IMAGE_PREPROCESS" -> "ai.kompile.pipelines.steps.vlm.ImagePreprocessingStepRunner";
+            case "VISION_ENCODING", "VISION_ENCODER" -> "ai.kompile.pipelines.steps.vlm.VisionEncoderStepRunner";
+            case "TEXT_TOKENIZATION", "TEXT_EMBEDDING" -> "ai.kompile.pipelines.steps.vlm.TextEmbeddingStepRunner";
+            case "VISION_TEXT_FUSION", "FUSION" -> "ai.kompile.pipelines.steps.vlm.VisionTextFusionStepRunner";
+            case "DECODING", "DECODER", "DECODER_BODY" -> "ai.kompile.pipelines.steps.vlm.VLMDecoderStepRunner";
+            case "TOKEN_SAMPLING", "SAMPLING" -> "ai.kompile.pipelines.steps.vlm.TokenSamplingStepRunner";
+            case "TOKEN_DECODING", "TOKEN_DECODE" -> "ai.kompile.pipelines.steps.vlm.TokenDecodingStepRunner";
+            default -> null;
+        };
     }
 }

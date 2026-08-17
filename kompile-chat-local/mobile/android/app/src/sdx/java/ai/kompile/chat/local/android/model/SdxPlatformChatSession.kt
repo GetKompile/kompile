@@ -398,6 +398,7 @@ internal object SdxPlatformRuntimeOwner {
                         if (text.isNotEmpty()) {
                             val count = chunkCount.incrementAndGet()
                             val chars = chunkChars.addAndGet(text.length.toLong())
+                            onChunk?.accept(text)
                             if (count == 1 || count % 16 == 0) {
                                 trace.record(
                                     "native_chunk",
@@ -518,7 +519,6 @@ internal object SdxPlatformRuntimeOwner {
                 readAndFree(native, runtime, parsedRef.value, "structured chat result")
             )
             val decoded = structured.optString("content").trim()
-            if (decoded.isNotEmpty()) onChunk?.accept(decoded)
             trace.record(
                 "native_output_ready",
                 attemptId,

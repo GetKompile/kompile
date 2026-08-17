@@ -1034,7 +1034,7 @@ public class AsciiRenderer {
     public String welcomePanelWithModes(String sessionId, String agent, boolean ragEnabled, boolean localMode) {
         StringBuilder body = new StringBuilder();
         body.append(term.dim("Session: ")).append(sessionId).append("\n");
-        body.append(term.dim("Agent:   ")).append(term.cyan(agent)).append("\n");
+        body.append(term.dim(localMode ? "Provider: " : "Agent:   ")).append(term.cyan(agent)).append("\n");
         if (!localMode) {
             body.append(term.dim("RAG:     ")).append(ragEnabled ? term.green("enabled") : term.dim("disabled")).append("\n");
         } else {

@@ -45,6 +45,16 @@ class LocalCrawlCapabilitiesTest {
                 .contains("LOCAL_MODEL/serving"));
         assertEquals("children stop before the MCP command returns",
                 catalog.path("modelProcessing").path("lifecycle").asText());
+        assertTrue(catalog.path("wiringRecipe").path("workflow").asText()
+                .contains("crawl_documents dryRun=true"));
+        assertEquals("VLM",
+                catalog.path("wiringRecipe").path("compatibilityVlm")
+                        .path("minimumRequest").path("pipelines").get(0)
+                        .path("pipelineType").asText());
+        assertTrue(catalog.path("wiringRecipe").path("genericUnified")
+                .path("definitionShape").asText().contains("pipelineSpec"));
+        assertTrue(catalog.path("pipelineTypeGuide").path("CUSTOM").asText()
+                .contains("UNIFIED_PIPELINE"));
     }
 
     @Test

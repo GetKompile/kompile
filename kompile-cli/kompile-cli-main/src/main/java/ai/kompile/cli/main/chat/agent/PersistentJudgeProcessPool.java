@@ -125,6 +125,19 @@ public final class PersistentJudgeProcessPool {
         public void close() {
             delegate.close();
         }
+
+        /**
+         * Immediately destroy a failed process instead of returning it to the idle pool.
+         * Other leases will observe an unhealthy resource and reacquire a fresh process.
+         */
+        public void abort() {
+            if (delegate.isClosed()) return;
+            try {
+                delegate.resource().close();
+            } finally {
+                delegate.close();
+            }
+        }
     }
 
     /** Idle keep-warm window; override for tests via {@link #setIdleMillisForTests}. */

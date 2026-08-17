@@ -1,6 +1,7 @@
 # Gradle state and build outputs.
 .gradle/
 build/
+.kompile-state/
 
 # Machine-specific SDK path. Set ANDROID_HOME instead, or write this file
 # locally; either way it must not be committed.

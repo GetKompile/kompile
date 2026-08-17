@@ -21,7 +21,7 @@ class AuthWizardTest {
         CredentialStore store = new CredentialStore(tempDir.resolve("login-auth.json"));
         store.putApiKey("openai", "personal", "personal-secret", true);
         ScriptedPrompter prompter = new ScriptedPrompter()
-                .selecting("OpenAI — API key", "Paste an API key")
+                .selecting("OpenAI", "Paste an API key")
                 .answering("work")
                 .secrets("work-secret")
                 .confirming(true);
@@ -38,6 +38,28 @@ class AuthWizardTest {
         assertEquals("work-secret", request.storedValue());
         assertTrue(request.activate());
         assertTrue(prompter.messages.stream().noneMatch(message -> message.contains("work-secret")));
+    }
+
+    @Test
+    void openAiOAuthSharesTheOpenAiVendorMenuEntryButUsesCodexCredentialProvider() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("openai-oauth-auth.json"));
+        ScriptedPrompter prompter = new ScriptedPrompter()
+                .selecting("OpenAI", "OAuth / subscription sign-in", "Device code login")
+                .answering("subscription")
+                .confirming(true);
+
+        AuthWizard.LoginRequest request;
+        try (AuthWizard wizard = AuthWizard.using(prompter)) {
+            request = wizard.promptForLogin(new OAuthProviderRegistry(), store);
+        }
+
+        assertNotNull(request);
+        assertEquals("openai-codex", request.providerId());
+        assertEquals("subscription", request.credentialName());
+        assertEquals(AuthWizard.LoginKind.OAUTH, request.kind());
+        assertEquals("device", request.oauthMethod());
+        assertTrue(request.activate());
+        assertTrue(prompter.messages.stream().noneMatch(message -> message.contains("openai-codex")));
     }
 
     @Test

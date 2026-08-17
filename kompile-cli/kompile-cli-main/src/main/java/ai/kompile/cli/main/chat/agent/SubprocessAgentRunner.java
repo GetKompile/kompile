@@ -127,6 +127,8 @@ public class SubprocessAgentRunner {
     private volatile Map<String, String> extraEnvironment = Map.of();
     private volatile String monitorInterruptReason;
     private volatile boolean monitorSoftInterrupt;
+    /** Human-readable reason when the selected agent is blocked, disabled, or out of quota. */
+    private volatile String blockingNotice;
 
     // Injected settings file path (for cleanup)
     private Path injectedSettingsFile;
@@ -235,6 +237,11 @@ public class SubprocessAgentRunner {
      */
     public String getCurrentToolName() {
         return currentToolName;
+    }
+
+    /** Returns the last detected fatal agent availability notice for the current turn. */
+    public String getBlockingNotice() {
+        return blockingNotice;
     }
 
     /**
@@ -358,6 +365,10 @@ public class SubprocessAgentRunner {
      * Remove injected MCP tools and skills from working directory.
      */
     public void cleanup() {
+        // Stop both the persistent TUI and any ordinary turn process before removing
+        // injected state. Previously cleanup only killed the persistent process, so a
+        // disabled/quota-exhausted agent could remain alive after the session ended.
+        cancel();
         // Kill persistent TUI process if running
         if (tuiProcess != null && tuiProcess.isAlive()) {
             killProcess(tuiProcess);
@@ -453,13 +464,15 @@ public class SubprocessAgentRunner {
         // and is handled by the standard subprocess pipeline below.
         String agentBinary = resolveAgentBinary(agent);
         if (agentBinary == null) {
-            emitLine(renderer.red("  Agent '" + agent + "' not found on PATH."));
+            blockingNotice = "agent '" + agent + "' is not installed or disabled";
+            emitLine(renderer.red("  Agent '" + agent + "' unavailable: " + blockingNotice));
             emitLine(renderer.dim("  Supported agents: " + String.join(", ",
                     ChatConfig.getPassthroughAgentOrder())));
             return "";
         }
 
         cancelSignal.set(false);
+        blockingNotice = null;
         monitorSoftInterrupt = false;
         monitorInterruptReason = null;
         currentToolName = null;
@@ -514,11 +527,13 @@ public class SubprocessAgentRunner {
                         for (int i = 0; i < n; i++) {
                             char c = buf[i];
                             if (c == '\n') {
+                                inspectBlockingNotice(lineBuffer.toString(), process);
                                 processOutputLine(lineBuffer.toString(), fullText, toolCalls,
                                         metrics, history, spinner, spinnerStopped, pendingText);
                                 lineBuffer.setLength(0);
                             } else if (c == '\r') {
                                 if (lineBuffer.length() > 0) {
+                                    inspectBlockingNotice(lineBuffer.toString(), process);
                                     processOutputLine(lineBuffer.toString(), fullText, toolCalls,
                                             metrics, history, spinner, spinnerStopped, pendingText);
                                     lineBuffer.setLength(0);
@@ -530,6 +545,7 @@ public class SubprocessAgentRunner {
                         }
                     }
                     if (lineBuffer.length() > 0) {
+                        inspectBlockingNotice(lineBuffer.toString(), process);
                         processOutputLine(lineBuffer.toString(), fullText, toolCalls,
                                 metrics, history, spinner, spinnerStopped, pendingText);
                     }
@@ -585,7 +601,11 @@ public class SubprocessAgentRunner {
 
         long turnDuration = System.currentTimeMillis() - turnStart;
 
-        if (cancelSignal.get() || monitorSoftInterrupt) {
+        if (blockingNotice != null) {
+            emitLine("");
+            emitLine(renderer.red("  Agent '" + agent + "' stopped: " + blockingNotice));
+            history.logSystem("Agent stopped because it is unavailable: " + blockingNotice);
+        } else if (cancelSignal.get() || monitorSoftInterrupt) {
             emitLine("");
             if (monitorInterruptReason != null && !monitorInterruptReason.isBlank()) {
                 emitLine(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
@@ -746,7 +766,11 @@ public class SubprocessAgentRunner {
 
         long turnDuration = System.currentTimeMillis() - turnStart;
 
-        if (cancelSignal.get() || monitorSoftInterrupt) {
+        if (blockingNotice != null) {
+            emitLine("");
+            emitLine(renderer.red("  Agent '" + agent + "' stopped: " + blockingNotice));
+            history.logSystem("Agent stopped because it is unavailable: " + blockingNotice);
+        } else if (cancelSignal.get() || monitorSoftInterrupt) {
             emitLine("");
             if (monitorInterruptReason != null && !monitorInterruptReason.isBlank()) {
                 emitLine(renderer.yellow("  Interrupted by enforcer: " + monitorInterruptReason));
@@ -1622,6 +1646,30 @@ public class SubprocessAgentRunner {
             return parser.parseOpenCodeLineMulti(line);
         }
         return List.of();
+    }
+
+    private void inspectBlockingNotice(String line, Process process) {
+        if (line == null || line.isBlank() || blockingNotice != null) return;
+        String lower = line.toLowerCase(Locale.ROOT)
+                .replaceAll("\\u001b\\[[;\\d]*m", "");
+        String notice = null;
+        if (lower.contains("usage limit") || lower.contains("weekly limit")
+                || lower.contains("monthly limit") || lower.contains("quota exceeded")
+                || lower.contains("rate limit") || lower.contains("out of credits")
+                || lower.contains("too many requests")) {
+            notice = "usage limit or quota reached";
+        } else if (lower.contains("not authenticated") || lower.contains("not logged in")
+                || lower.contains("authentication required") || lower.contains("login required")) {
+            notice = "agent authentication is required";
+        } else if (lower.contains("disabled") || lower.contains("unsupported")
+                || lower.contains("command not found") || lower.contains("permission denied")) {
+            notice = "agent is disabled or unavailable";
+        }
+        if (notice != null) {
+            blockingNotice = notice + " (" + line.trim() + ")";
+            cancelSignal.set(true);
+            killProcess(process);
+        }
     }
 
     private void killProcess(Process process) {

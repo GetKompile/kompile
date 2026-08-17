@@ -1519,10 +1519,25 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 "Enforcer · " + mode + " · " + ruleCount + " rule" + (ruleCount == 1 ? "" : "s"),
                 Map.of("mode", mode, "rules", String.valueOf(ruleCount), "backend", backend));
         if (llm) {
-            mgr.registerVirtual(
+            boolean available = true;
+            String failure = "";
+            if (evaluator instanceof EnforcerJudge judge) {
+                available = judge.isAvailable();
+                failure = judge.judgeStatus();
+            }
+            String description = "Judge · " + backend + (available ? " · ready" : " · FAILED");
+            if (!available && !failure.isBlank()) {
+                description += " · " + failure;
+            }
+            BackgroundProcessManager.ProcessEntry judgeEntry = mgr.registerVirtual(
                     BackgroundProcessManager.ProcessKind.JUDGE, "judge",
-                    "Judge · " + backend,
-                    Map.of("backend", backend, "mode", mode));
+                    description,
+                    Map.of("backend", backend, "mode", mode,
+                            "status", available ? "ready" : "failed",
+                            "failure", failure));
+            if (!available) {
+                mgr.fail(judgeEntry.getId(), 1);
+            }
         }
     }
 

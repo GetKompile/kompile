@@ -734,8 +734,11 @@ class AsciiRendererTest {
 
         @Test
         void welcomePanelLocalMode() {
-            String panel = renderer.welcomePanelWithModes("s1", "coder", false, true);
+            String panel = renderer.welcomePanelWithModes("s1", "OpenAI Codex", false, true);
             assertTrue(panel.contains("local"), "Should show local mode");
+            assertTrue(panel.contains("Provider"), "Local mode should show the provider");
+            assertTrue(panel.contains("OpenAI Codex"), "Local mode should show the selected provider");
+            assertFalse(panel.contains("Agent:"), "Local provider context should not be labelled as an agent");
             assertFalse(panel.contains("RAG"), "Local mode should not show RAG");
         }
     }

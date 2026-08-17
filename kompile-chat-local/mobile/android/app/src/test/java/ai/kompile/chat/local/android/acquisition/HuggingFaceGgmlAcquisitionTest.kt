@@ -26,24 +26,38 @@ class HuggingFaceGgmlAcquisitionTest {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     @Test
-    fun canonicalizesBlobPageWithoutRepositoryRequest() {
+    fun exactBlobPageUsesRepositoryMetadataAndCanonicalAssets() {
         val loaderCalled = AtomicBoolean(false)
         val discovery = HuggingFaceGgmlAcquisition.discover(
             " https://www.huggingface.co/acme/tiny-chat/blob/main/model-Q4_K_M.gguf "
-        ) {
+        ) { uri ->
             loaderCalled.set(true)
-            error("exact files must not query the repository API")
+            assertEquals("/api/models/acme/tiny-chat/revision/main", uri.path)
+            assertEquals("blobs=true", uri.rawQuery)
+            """{
+              "sha":"$sha",
+              "siblings":[
+                {"rfilename":"config.json","size":42},
+                {"rfilename":"tokenizer.json","size":100},
+                {"rfilename":"tokenizer_config.json","size":20},
+                {"rfilename":"model-Q4_K_M.gguf","lfs":{"size":1234,"sha256":"$contentSha"}}
+              ]
+            }"""
         }
-        val uri = discovery.selectedCandidate().orElseThrow().downloadUri
+        val candidate = discovery.selectedCandidate().orElseThrow()
+        val uri = candidate.downloadUri
 
-        assertFalse(loaderCalled.get())
+        assertTrue(loaderCalled.get())
         assertEquals("https", uri.scheme)
         assertEquals("huggingface.co", uri.host)
-        assertEquals("/acme/tiny-chat/resolve/main/model-Q4_K_M.gguf", uri.path)
+        assertEquals("/acme/tiny-chat/resolve/$sha/model-Q4_K_M.gguf", uri.path)
         assertEquals("download=true", uri.query)
         assertNull(uri.fragment)
-        assertFalse(discovery.selectedCandidate().orElseThrow().isCommitPinned)
-        assertTrue(discovery.selectedCandidate().orElseThrow().tokenizerAssets.isEmpty())
+        assertTrue(candidate.isCommitPinned)
+        assertEquals(
+            listOf("tokenizer.json", "tokenizer_config.json", "config.json"),
+            candidate.tokenizerAssets.map { it.name }
+        )
         assertNull(HuggingFaceGgmlAcquisition.problem(uri.toASCIIString()))
     }
 
@@ -558,14 +572,16 @@ class HuggingFaceGgmlAcquisitionTest {
     @Test
     fun tokenizerAssetsDownloadWithAggregateProgressAndAreReusedIndividually() {
         val tokenizerBytes = "tok".toByteArray()
-        val configBytes = "{}".toByteArray()
+        val tokenizerConfigBytes = "{}".toByteArray()
+        val modelConfigBytes = "{}".toByteArray()
         val candidate = HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
             """{
               "sha":"$sha",
               "siblings":[
                 {"rfilename":"model.gguf","size":4},
                 {"rfilename":"tokenizer.json","size":${tokenizerBytes.size}},
-                {"rfilename":"tokenizer_config.json","size":${configBytes.size}}
+                {"rfilename":"tokenizer_config.json","size":${tokenizerConfigBytes.size}},
+                {"rfilename":"config.json","size":${modelConfigBytes.size}}
               ]
             }"""
         }.selectedCandidate().orElseThrow()
@@ -577,7 +593,8 @@ class HuggingFaceGgmlAcquisitionTest {
             { uri ->
                 val body = when {
                     uri.path.endsWith("/tokenizer.json") -> tokenizerBytes
-                    uri.path.endsWith("/tokenizer_config.json") -> configBytes
+                    uri.path.endsWith("/tokenizer_config.json") -> tokenizerConfigBytes
+                    uri.path.endsWith("/config.json") -> modelConfigBytes
                     else -> error("Unexpected asset URI: $uri")
                 }
                 FakeConnection(uri, 200, body, body.size.toLong(), mapOf("ETag" to "\"asset\""))
@@ -598,11 +615,21 @@ class HuggingFaceGgmlAcquisitionTest {
                 downloader
             )
 
-            assertEquals(2, first.paths.size)
+            assertEquals(3, first.paths.size)
             assertEquals(0, first.reusedCount)
             assertEquals(tokenizerBytes.toList(), Files.readAllBytes(first.paths.getValue("tokenizer.json")).toList())
-            assertEquals(configBytes.toList(), Files.readAllBytes(first.paths.getValue("tokenizer_config.json")).toList())
-            assertEquals((tokenizerBytes.size + configBytes.size).toLong(), progress.last().expectedBytes)
+            assertEquals(
+                tokenizerConfigBytes.toList(),
+                Files.readAllBytes(first.paths.getValue("tokenizer_config.json")).toList()
+            )
+            assertEquals(
+                modelConfigBytes.toList(),
+                Files.readAllBytes(first.paths.getValue("config.json")).toList()
+            )
+            assertEquals(
+                (tokenizerBytes.size + tokenizerConfigBytes.size + modelConfigBytes.size).toLong(),
+                progress.last().expectedBytes
+            )
             assertEquals(progress.last().expectedBytes, progress.last().downloadedBytes)
             assertTrue(progress.zipWithNext().all { (left, right) ->
                 right.downloadedBytes >= left.downloadedBytes
@@ -623,7 +650,7 @@ class HuggingFaceGgmlAcquisitionTest {
                     { delay, _ -> delay }
                 )
             )
-            assertEquals(2, reused.reusedCount)
+            assertEquals(3, reused.reusedCount)
         } finally {
             HuggingFaceGgmlAcquisition.tokenizerAssetPathsForModel(model).forEach { asset ->
                 Files.deleteIfExists(asset)
@@ -1066,7 +1093,12 @@ class HuggingFaceGgmlAcquisitionTest {
             val lfs = contentSha256?.let {
                 ",\"lfs\":{\"size\":$size,\"sha256\":\"$it\"}"
             }.orEmpty()
-            """{"sha":"$sha","siblings":[{"rfilename":"$path","size":$size$lfs}]}"""
+            """{"sha":"$sha","siblings":[
+              {"rfilename":"$path","size":$size$lfs},
+              {"rfilename":"tokenizer.json","size":1},
+              {"rfilename":"tokenizer_config.json","size":1},
+              {"rfilename":"config.json","size":1}
+            ]}"""
         }.selectedCandidate().orElseThrow()
 
     private fun sha256(bytes: ByteArray): String =

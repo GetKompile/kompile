@@ -32,6 +32,23 @@ data class ProtocolExchangeUi(
     val protocolErrors: List<String>
 )
 
+/** One live tool invocation, shown before the final assistant message exists. */
+data class ToolActivityUi(
+    val tool: String,
+    val argsJson: String,
+    val resultJson: String = "",
+    val status: String = "running"
+)
+
+/** Incremental assistant turn state; this is separate from committed conversation history. */
+data class StreamingUiState(
+    val phase: String = "starting",
+    val reasoning: String = "",
+    val content: String = "",
+    val toolActivities: List<ToolActivityUi> = emptyList(),
+    val protocolExchangeCount: Int = 0
+)
+
 /** Explicit local-model lifecycle state; expected first-run setup is not an error. */
 sealed interface ModelUiState {
     data object Checking : ModelUiState

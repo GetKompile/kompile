@@ -20,9 +20,10 @@ import java.util.Properties
 import java.util.Locale
 
 /**
- * Direct public Hugging Face GGUF/GGML acquisition. Repository IDs and canonical
- * repository/tree URLs are resolved through the Hugging Face model API; exact blob or
- * resolve URLs remain a zero-discovery fast path. Kompile staging is never consulted.
+ * Direct public Hugging Face GGUF/GGML acquisition. Every reference, including an
+ * exact blob/resolve URL, is resolved through the Hugging Face model API so the model
+ * uses the repository's canonical tokenizer and configuration assets. Kompile staging
+ * is never consulted.
  */
 object HuggingFaceGgmlAcquisition {
     private const val CONNECT_TIMEOUT_MS = 30_000
@@ -30,6 +31,9 @@ object HuggingFaceGgmlAcquisition {
     private const val MAX_RESPONSE_CHARS = 4 * 1024 * 1024
     private const val MAX_MODEL_CANDIDATES = 256
     private const val MAX_TOKENIZER_ASSET_BYTES = 256L * 1024L * 1024L
+    private val REQUIRED_HUGGINGFACE_ASSETS = setOf(
+        "tokenizer.json", "tokenizer_config.json", "config.json"
+    )
     private const val MAX_REDIRECTS = 4
     const val DEFAULT_MAX_DOWNLOAD_BYTES = 20L * 1024L * 1024L * 1024L
     const val DEFAULT_MAX_ATTEMPTS = 4
@@ -111,10 +115,9 @@ object HuggingFaceGgmlAcquisition {
         repositoryJson: (URI) -> String = ::fetchRepositoryJson
     ): HuggingFaceGgmlResolver.Discovery {
         val parsed = reference(raw)
-        if (parsed.isExactModel) {
-            return HuggingFaceGgmlResolver.exact(parsed)
-        }
-
+        // Even exact blob/resolve URLs must use the repository API. The GGUF is only
+        // the weight artifact; tokenizer.json, tokenizer_config.json, config.json, and
+        // the chat template are authoritative Hugging Face siblings.
         val document = repositoryJson(HuggingFaceGgmlResolver.apiUri(parsed))
         val root = try {
             MiniJson.parseObject(document)
@@ -323,7 +326,13 @@ object HuggingFaceGgmlAcquisition {
             "Verified model is unavailable while preparing tokenizer assets: $model"
         }
         val assets = candidate.tokenizerAssets
-        if (assets.isEmpty()) return TokenizerAssetsMetadata(emptyMap(), 0)
+        val availableNames = assets.map { it.name }.toSet()
+        val missingNames = REQUIRED_HUGGINGFACE_ASSETS - availableNames
+        require(missingNames.isEmpty()) {
+            "Hugging Face model ${candidate.path} is missing canonical assets: " +
+                missingNames.sorted().joinToString(", ") +
+                ". GGUF-embedded tokenizer reconstruction is disabled."
+        }
 
         val paths = linkedMapOf<String, Path>()
         var reused = 0

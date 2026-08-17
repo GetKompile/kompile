@@ -60,6 +60,8 @@ public class TerminalRenderer {
     // Braille spinner frames (like OpenCode's)
     private static final String[] SPINNER_FRAMES = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
     private static final int MAX_CONTEXT_TOOL_BUCKETS = 4;
+    private static final int MAX_SUBAGENT_TOOL_OUTPUT_CHARS = 8_000;
+    private static final int MAX_SUBAGENT_EDIT_DIFF_CHARS = 8_000;
 
     // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
@@ -289,10 +291,158 @@ public class TerminalRenderer {
         return "  " + magenta("│") + "  " + icon + " " + cyan(displayName) + " " + status;
     }
 
-    /** Render a complete, informative tool row inside a subagent transcript. */
+    /**
+     * Render a complete tool row and its bounded result inside a subagent transcript.
+     *
+     * The regular tool row intentionally stays compact for the main activity stream.
+     * A subagent transcript is the place where the operator needs to see what the
+     * nested call actually returned, so keep the summary and add the result below it.
+     */
     public String renderSubagentToolCall(String toolName, String rawInput, ToolResult result) {
         String rendered = renderToolCallComplete(toolName, rawInput, result).stripLeading();
-        return "  " + magenta("│") + "  " + rendered.replace("\n", "\n  │  ");
+        StringBuilder detailed = new StringBuilder("  ").append(magenta("│")).append("  ")
+                .append(rendered.replace("\n", "\n  │  "));
+
+        List<String> changeLines = renderEditDiffLines(toolName, rawInput);
+        if (!changeLines.isEmpty()) {
+            detailed.append("\n  ").append(magenta("│")).append("  ").append(dim("↳ changes:"));
+            int shownChars = 0;
+            boolean truncated = false;
+            for (String changeLine : changeLines) {
+                if (shownChars >= MAX_SUBAGENT_EDIT_DIFF_CHARS) {
+                    truncated = true;
+                    break;
+                }
+                int remaining = MAX_SUBAGENT_EDIT_DIFF_CHARS - shownChars;
+                String visibleLine = changeLine;
+                if (visibleLine.length() > remaining) {
+                    visibleLine = visibleLine.substring(0, remaining);
+                    truncated = true;
+                }
+                detailed.append("\n  ").append(magenta("│")).append("    ")
+                        .append(colorDiffLine(visibleLine));
+                shownChars += visibleLine.length();
+                if (truncated) break;
+            }
+            if (truncated) {
+                detailed.append("\n  ").append(magenta("│")).append("    ")
+                        .append(dim("… (change preview truncated at "
+                                + MAX_SUBAGENT_EDIT_DIFF_CHARS + " chars)"));
+            }
+        }
+
+        String output = result.getOutput();
+        if (output == null || output.isBlank()) {
+            return detailed.toString();
+        }
+
+        String visibleOutput = output.stripTrailing();
+        boolean truncated = visibleOutput.length() > MAX_SUBAGENT_TOOL_OUTPUT_CHARS;
+        if (truncated) {
+            visibleOutput = visibleOutput.substring(0, MAX_SUBAGENT_TOOL_OUTPUT_CHARS);
+        }
+
+        detailed.append("\n  ").append(magenta("│")).append("  ").append(dim("↳ output:"));
+        for (String line : visibleOutput.split("\\R", -1)) {
+            detailed.append("\n  ").append(magenta("│")).append("    ").append(line);
+        }
+        if (truncated) {
+            detailed.append("\n  ").append(magenta("│")).append("    ")
+                    .append(dim("… (tool output truncated at " + MAX_SUBAGENT_TOOL_OUTPUT_CHARS + " chars)"));
+        }
+        return detailed.toString();
+    }
+
+    /** Extract edit/patch input into diff-like lines for the detailed transcript. */
+    private List<String> renderEditDiffLines(String toolName, String rawInput) {
+        String cleanName = stripMcpPrefix(toolName);
+        if (!Set.of("edit", "edit_batch", "edit_patch", "patch").contains(cleanName)
+                || rawInput == null || rawInput.isBlank()) {
+            return List.of();
+        }
+
+        String trimmed = rawInput.trim();
+        try {
+            if (!trimmed.startsWith("{")) {
+                return "patch".equals(cleanName) ? patchLines(trimmed) : List.of();
+            }
+            JsonNode input = JSON.readTree(trimmed);
+            List<String> lines = new ArrayList<>();
+            switch (cleanName) {
+                case "edit" -> appendReplacementDiff(lines, input);
+                case "edit_batch" -> {
+                    JsonNode edits = input.path("edits");
+                    if (edits.isArray()) {
+                        for (JsonNode edit : edits) appendReplacementDiff(lines, edit);
+                    }
+                }
+                case "edit_patch" -> {
+                    JsonNode patches = input.path("patches");
+                    if (patches.isArray()) {
+                        for (JsonNode patch : patches) {
+                            String path = textValue(patch, "file_path");
+                            if (!path.isBlank()) lines.add("  " + path);
+                            appendPatchLines(lines, textValue(patch, "patch"));
+                        }
+                    }
+                }
+                case "patch" -> {
+                    String path = firstTextValue(input, "file_path", "path", "file");
+                    if (!path.isBlank()) lines.add("  " + path);
+                    appendPatchLines(lines, firstTextValue(input, "patch", "diff", "unified_diff"));
+                }
+                default -> { }
+            }
+            return lines;
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private static void appendReplacementDiff(List<String> lines, JsonNode edit) {
+        String path = textValue(edit, "file_path");
+        if (!path.isBlank()) lines.add("  " + path);
+        appendPrefixedLines(lines, "- ", textValue(edit, "old_string"));
+        appendPrefixedLines(lines, "+ ", textValue(edit, "new_string"));
+    }
+
+    private static void appendPatchLines(List<String> lines, String patch) {
+        if (patch == null || patch.isBlank()) return;
+        lines.addAll(patchLines(patch));
+    }
+
+    private static List<String> patchLines(String patch) {
+        return List.of(patch.split("\\R", -1));
+    }
+
+    private static void appendPrefixedLines(List<String> lines, String prefix, String text) {
+        if (text == null || text.isBlank()) return;
+        for (String line : text.stripTrailing().split("\\R", -1)) {
+            lines.add(prefix + line);
+        }
+    }
+
+    private static String textValue(JsonNode node, String key) {
+        if (node == null || !node.has(key) || node.get(key).isNull()) return "";
+        return node.get(key).asText("");
+    }
+
+    private static String firstTextValue(JsonNode node, String... keys) {
+        for (String key : keys) {
+            String value = textValue(node, key);
+            if (!value.isBlank()) return value;
+        }
+        return "";
+    }
+
+    private String colorDiffLine(String line) {
+        if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")
+                || line.startsWith("***")) {
+            return cyan(line);
+        }
+        if (line.startsWith("+")) return green(line);
+        if (line.startsWith("-")) return red(line);
+        return dim(line);
     }
 
     /**

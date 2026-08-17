@@ -71,6 +71,10 @@ public class PersistentAgentProcess implements AutoCloseable {
     private volatile OutputStream stdin;
     private volatile String sessionId;
     private volatile boolean ready;
+    /** Bounded diagnostics captured from stderr/error events for visible judge failures. */
+    private final StringBuilder diagnostics = new StringBuilder();
+    private volatile String failureReason;
+    private static final int MAX_DIAGNOSTICS_CHARS = 4_000;
 
     private final ReentrantLock sendLock = new ReentrantLock();
     private final AtomicReference<StringBuilder> currentTurnOutput = new AtomicReference<>();
@@ -93,9 +97,13 @@ public class PersistentAgentProcess implements AutoCloseable {
      * @param timeoutSeconds max seconds to wait for the process to initialize
      * @throws IOException if the process fails to start
      */
-    public void start(int timeoutSeconds) throws IOException, InterruptedException {
-        if (process != null && process.isAlive()) return;
+    public synchronized void start(int timeoutSeconds) throws IOException, InterruptedException {
+        if (process != null && process.isAlive() && ready) return;
 
+        failureReason = null;
+        synchronized (diagnostics) {
+            diagnostics.setLength(0);
+        }
         List<String> cmd = buildCommand();
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -115,12 +123,24 @@ public class PersistentAgentProcess implements AutoCloseable {
         stdin = process.getOutputStream();
 
         // Send stream-json initialization control_request
-        sendInitMessage();
+        try {
+            sendInitMessage();
+        } catch (IOException failure) {
+            failureReason = "Could not initialize judge agent: " + failure.getMessage();
+            close();
+            throw failure;
+        }
 
-        // Drain stderr
+        // Drain stderr, but retain a bounded diagnostic excerpt. The previous null sink made
+        // quota/auth/disabled-agent failures indistinguishable from a healthy idle process.
         Thread errDrain = new Thread(() -> {
-            try { process.getErrorStream().transferTo(OutputStream.nullOutputStream()); }
-            catch (IOException ignored) {}
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    recordDiagnostic(line);
+                }
+            } catch (IOException ignored) {}
         }, "agent-proc-err-drain");
         errDrain.setDaemon(true);
         errDrain.start();
@@ -130,11 +150,16 @@ public class PersistentAgentProcess implements AutoCloseable {
         outputReader.setDaemon(true);
         outputReader.start();
 
-        // Wait for ready signal
+        // Wait for ready signal. A disabled/exhausted CLI may leave a shell process alive
+        // without ever producing the protocol handshake; that is a failed judge, not "working".
         boolean gotReady = processReady.await(timeoutSeconds, TimeUnit.SECONDS);
         ready = gotReady;
-        if (!gotReady && !process.isAlive()) {
-            throw new IOException("Agent process exited during initialization");
+        if (!gotReady) {
+            String detail = diagnosticText();
+            failureReason = "Judge agent did not become ready within " + timeoutSeconds + "s"
+                    + (detail.isBlank() ? "" : ": " + detail);
+            close();
+            throw new IOException(failureReason);
         }
     }
 
@@ -154,8 +179,13 @@ public class PersistentAgentProcess implements AutoCloseable {
         private final String partialOutput;
 
         public TimedOutException(String partialOutput, int timeoutSeconds) {
+            this(partialOutput, timeoutSeconds, "");
+        }
+
+        public TimedOutException(String partialOutput, int timeoutSeconds, String diagnostic) {
             super("Agent turn timed out after " + timeoutSeconds + "s with partial output ("
-                    + partialOutput.length() + " chars)");
+                    + partialOutput.length() + " chars)"
+                    + (diagnostic == null || diagnostic.isBlank() ? "" : ": " + diagnostic));
             this.partialOutput = partialOutput;
         }
 
@@ -192,10 +222,19 @@ public class PersistentAgentProcess implements AutoCloseable {
             String result = turnOutput.toString().trim();
 
             if (!completed) {
-                // Timeout — throw regardless of whether partial output exists.
-                // Empty buffer → plain IOException; non-empty → TimedOutException with
-                // the partial text so callers can report it distinctly.
-                throw new TimedOutException(result, timeoutSeconds);
+                // A timed-out judge must not remain pooled and appear healthy. Tear it down
+                // before reporting the timeout so the next request can explicitly restart it.
+                String detail = diagnosticText();
+                failureReason = "Agent turn timed out after " + timeoutSeconds + "s"
+                        + (detail.isBlank() ? "" : ": " + detail);
+                close();
+                throw new TimedOutException(result, timeoutSeconds, detail);
+            }
+            if (result.isBlank() && (process == null || !process.isAlive())) {
+                String detail = diagnosticText();
+                failureReason = "Agent process exited before returning a response"
+                        + (detail.isBlank() ? "" : ": " + detail);
+                throw new IOException(failureReason);
             }
             return result;
         } finally {
@@ -225,7 +264,11 @@ public class PersistentAgentProcess implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
+        CountDownLatch readyLatch = processReady;
+        if (readyLatch != null) readyLatch.countDown();
+        CountDownLatch turnLatch = turnComplete;
+        if (turnLatch != null) turnLatch.countDown();
         Process p = process;
         if (p != null) {
             try { if (stdin != null) stdin.close(); } catch (IOException ignored) {}
@@ -238,6 +281,28 @@ public class PersistentAgentProcess implements AutoCloseable {
         stdin = null;
         sessionId = null;
         ready = false;
+    }
+
+    /** Last bounded stderr/protocol diagnostic, suitable for a user-facing failure. */
+    public String failureReason() {
+        String explicit = failureReason;
+        return explicit != null && !explicit.isBlank() ? explicit : diagnosticText();
+    }
+
+    private void recordDiagnostic(String line) {
+        if (line == null || line.isBlank()) return;
+        synchronized (diagnostics) {
+            if (diagnostics.length() >= MAX_DIAGNOSTICS_CHARS) return;
+            if (diagnostics.length() > 0) diagnostics.append(" | ");
+            int remaining = MAX_DIAGNOSTICS_CHARS - diagnostics.length();
+            diagnostics.append(line, 0, Math.min(line.length(), remaining));
+        }
+    }
+
+    private String diagnosticText() {
+        synchronized (diagnostics) {
+            return diagnostics.toString().trim();
+        }
     }
 
     // ── Internal ─────────────────────────────────────────────────────────────
@@ -296,7 +361,16 @@ public class PersistentAgentProcess implements AutoCloseable {
             String line;
             while ((line = br.readLine()) != null) {
                 String trimmed = line.trim();
-                if (trimmed.isEmpty() || !trimmed.startsWith("{")) continue;
+                if (trimmed.isEmpty()) continue;
+                // Preserve provider errors (including quota/auth/disabled messages) even when
+                // they arrive on stdout as a non-protocol line or an error JSON event.
+                String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+                if (!trimmed.startsWith("{") || lower.contains("error") || lower.contains("quota")
+                        || lower.contains("rate limit") || lower.contains("usage limit")
+                        || lower.contains("not authenticated") || lower.contains("disabled")) {
+                    recordDiagnostic(trimmed);
+                }
+                if (!trimmed.startsWith("{")) continue;
 
                 // Capture session ID
                 if (sessionId == null && trimmed.contains("\"session_id\"")) {

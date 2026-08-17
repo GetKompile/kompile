@@ -76,6 +76,14 @@ public final class InferenceRouter {
         return active().generate(request, opts);
     }
 
+    /** Route a structured request while forwarding provider token chunks. */
+    public ChatResponse generateStreaming(
+            ChatRequest request,
+            GenOptions opts,
+            java.util.function.Consumer<String> tokenConsumer) throws ChatException {
+        return active().generateStreaming(request, opts, tokenConsumer);
+    }
+
     /**
      * Return {@code true} if the local SDX model is the active backend.
      *

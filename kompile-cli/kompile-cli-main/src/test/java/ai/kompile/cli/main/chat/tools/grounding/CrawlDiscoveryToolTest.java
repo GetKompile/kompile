@@ -79,32 +79,27 @@ class CrawlDiscoveryToolTest {
     }
 
     @Test
-    void pipelineDiscoveryCombinesStaticKindsWithLiveComponents() throws Exception {
+    void pipelineDiscoveryUsesFolderLocalWorkerAndPipelineContracts() throws Exception {
         RestTemplate restTemplate = new RestTemplate();
-        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
         CrawlDiscoveryTool tool = new CrawlDiscoveryTool(
                 new GroundingBackendClient("http://crawl", restTemplate), mapper);
-
-        expect(server, "/api/unified-crawl/steps",
-                "[{\"id\":\"GRAPH_EXTRACTION\",\"dependencies\":[\"CHUNKING\"]}]");
-        expect(server, "/api/documents/loaders", "[{\"name\":\"pdf\"}]");
-        expect(server, "/api/documents/chunkers", "[{\"name\":\"table-aware\"}]");
-        expect(server, "/api/unified-crawl/processing-route", "{\"pdfRoutingMode\":\"AUTO\"}");
-        expect(server, "/api/unified-crawl/pdf-routing-modes", "[{\"value\":\"AUTO\"}]");
-        expect(server, "/api/unified-crawl/processing-backend-types",
-                "[{\"value\":\"CLI_AGENT\"}]");
 
         ToolResult result = tool.execute(
                 mapper.createObjectNode().put("section", "pipelines"), context);
 
         assertFalse(result.isError(), result.getOutput());
-        assertTrue(result.getOutput().contains("STANDARD_TEXT"));
-        assertTrue(result.getOutput().contains("TABLE_AWARE"));
-        assertTrue(result.getOutput().contains("GRAPH_EXTRACTION"));
-        assertTrue(result.getOutput().contains("table-aware"));
-        assertTrue(result.getOutput().contains("crawl_documents"));
-        assertEquals(6, result.getMetadata().get("endpointsSucceeded"));
-        server.verify();
+        assertEquals("project-local", result.getMetadata().get("backend"));
+        assertTrue(result.getOutput().contains("\"pipelineSystems\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"wiringRecipe\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"pipelineTypeGuide\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"compatibilityVlm\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"genericUnified\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"documentModelWorker\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"supportedInputTypes\""), result.getOutput());
+        assertTrue(result.getOutput().contains("STANDARD_TEXT"), result.getOutput());
+        assertTrue(result.getOutput().contains("TABLE_AWARE"), result.getOutput());
+        assertTrue(result.getOutput().contains("GRAPH_EXTRACTION"), result.getOutput());
+        assertTrue(result.getOutput().contains("crawl_documents"), result.getOutput());
     }
 
     @Test

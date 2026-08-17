@@ -18,14 +18,19 @@
     <packaging>pom</packaging>
     <name>Kompile :: Local Execution Distribution</name>
     <description>
-        Lean native distribution for standard CLI chat and folder-local MCP execution.
-        It contains the CLI, model serving, pipeline serving, the document-model
-        worker, and one validated side-loaded backend. It deliberately excludes model
-        provisioning/staging, web, persona, batch, JVM fallback, C/Python, and app-server tiers.
+        Local distribution for standard CLI chat and folder-local MCP execution.
+        The default package is the JVM/JAR tier; the native archive is selected with
+        -Pnative. Both tiers contain the CLI, model serving, pipeline serving, and one
+        validated backend, while excluding provisioning/staging, web, persona, batch,
+        C/Python, and app-server tiers.
     </description>
 
     <properties>
-        <kompile.local.backend.profile>cpu</kompile.local.backend.profile>
+        <!-- -Dkompile.backend selects the same root backend profile used by every
+             serving module. The local packager forwards it without requiring a second
+             local-only property; -Dkompile.local.backend.profile remains an override. -->
+        <kompile.backend>cpu</kompile.backend>
+        <kompile.local.backend.profile>${kompile.backend}</kompile.local.backend.profile>
         <kompile.local.cuda.version>12.9</kompile.local.cuda.version>
         <kompile.local.sdk.classifier>${javacpp.platform}${javacpp.platform.extension}</kompile.local.sdk.classifier>
         <kompile.local.distribution.classifier>local-${kompile.distribution.platform.classifier}</kompile.local.distribution.classifier>
@@ -65,48 +70,6 @@
 
     <build>
         <plugins>
-            <!-- Reuse the canonical packager so full and local archives share the
-                 exact classifier, portability, side-load, SDK, checksum, and
-                 installer contracts. Native images must already be built; use
-                 build-scripts/build-kompile-local.sh for end-to-end builds. -->
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.1.0</version>
-                <executions>
-                    <execution>
-                        <id>package-local-distribution</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <configuration>
-                            <executable>bash</executable>
-                            <workingDirectory>${project.parent.basedir}</workingDirectory>
-                            <arguments>
-                                <argument>${project.parent.basedir}/build-dist.sh</argument>
-                                <argument>local</argument>
-                                <argument>--skip-java-build</argument>
-                                <argument>--skip-native</argument>
-                                <argument>--skip-maven-install</argument>
-                                <argument>--output-dir</argument>
-                                <argument>${kompile.local.output.dir}</argument>
-                                <argument>--platform</argument>
-                                <argument>${javacpp.platform}</argument>
-                                <argument>--backend-profile</argument>
-                                <argument>${kompile.local.backend.profile}</argument>
-                                <argument>--sdk-classifier</argument>
-                                <argument>${kompile.local.sdk.classifier}</argument>
-                                <argument>--distribution-classifier</argument>
-                                <argument>${kompile.local.distribution.classifier}</argument>
-                                <argument>--cuda-version</argument>
-                                <argument>${kompile.local.cuda.version}</argument>
-                            </arguments>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>build-helper-maven-plugin</artifactId>
@@ -137,4 +100,111 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- The JVM/JAR tier is the default package. Maven deactivates this
+             profile automatically when the explicit native profile is selected,
+             so exactly one assembler execution runs for each package. -->
+        <profile>
+            <id>local-jvm</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>package-local-jvm-distribution</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <workingDirectory>${project.parent.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>${project.parent.basedir}/build-dist.sh</argument>
+                                        <argument>local</argument>
+                                        <argument>--jars-only</argument>
+                                        <argument>--skip-java-build</argument>
+                                        <argument>--skip-native</argument>
+                                        <argument>--skip-maven-install</argument>
+                                        <argument>--output-dir</argument>
+                                        <argument>${kompile.local.output.dir}</argument>
+                                        <argument>--platform</argument>
+                                        <argument>${javacpp.platform}</argument>
+                                        <argument>--backend-profile</argument>
+                                        <argument>${kompile.local.backend.profile}</argument>
+                                        <argument>--sdk-classifier</argument>
+                                        <argument>${kompile.local.sdk.classifier}</argument>
+                                        <argument>--distribution-classifier</argument>
+                                        <argument>${kompile.local.distribution.classifier}</argument>
+                                        <argument>--cuda-version</argument>
+                                        <argument>${kompile.local.cuda.version}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Native images are packaged only when explicitly requested with
+             -Pnative. The distribution property follows the same convention as
+             the other native-serving modules and activates this profile too. -->
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>package-local-native-distribution</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>bash</executable>
+                                    <workingDirectory>${project.parent.basedir}</workingDirectory>
+                                    <arguments>
+                                        <argument>${project.parent.basedir}/build-dist.sh</argument>
+                                        <argument>local</argument>
+                                        <argument>--skip-java-build</argument>
+                                        <argument>--skip-native</argument>
+                                        <argument>--skip-maven-install</argument>
+                                        <argument>--output-dir</argument>
+                                        <argument>${kompile.local.output.dir}</argument>
+                                        <argument>--platform</argument>
+                                        <argument>${javacpp.platform}</argument>
+                                        <argument>--backend-profile</argument>
+                                        <argument>${kompile.local.backend.profile}</argument>
+                                        <argument>--sdk-classifier</argument>
+                                        <argument>${kompile.local.sdk.classifier}</argument>
+                                        <argument>--distribution-classifier</argument>
+                                        <argument>${kompile.local.distribution.classifier}</argument>
+                                        <argument>--cuda-version</argument>
+                                        <argument>${kompile.local.cuda.version}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

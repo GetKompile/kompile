@@ -45,8 +45,10 @@ public class CliJudgeBackend implements JudgeBackend {
     private static final int JUDGE_TIMEOUT_SECONDS = 120;
     private static final int TURN_TIMEOUT_SECONDS = 60;
 
-    private final String agentName;
-    private final String agentBinary;
+    private volatile String agentName;
+    private volatile String agentBinary;
+    private volatile boolean failed;
+    private volatile String failureReason;
 
     /** Lease on the shared judge process pool (persistent mode). */
     private volatile PersistentJudgeProcessPool.Lease judgeLease;
@@ -75,12 +77,16 @@ public class CliJudgeBackend implements JudgeBackend {
 
     @Override
     public void warmUp(String systemPrompt) {
-        if (agentBinary == null) return;
+        if (agentBinary == null) {
+            markFailure("No CLI agent is available for judge backend");
+            return;
+        }
         if (supportsPersistentMode()) {
             try {
                 ensurePersistentProcess(systemPrompt);
             } catch (IOException | InterruptedException e) {
-                // Will retry on first generate() call
+                markFailure(e.getMessage());
+                System.err.println("[enforcer] judge unavailable: " + failureReason);
             }
         }
     }
@@ -88,12 +94,22 @@ public class CliJudgeBackend implements JudgeBackend {
     @Override
     public String generate(String userPrompt, String systemPrompt) throws Exception {
         if (agentBinary == null) {
-            throw new IllegalStateException("No CLI agent available for judge backend");
+            markFailure("No CLI agent available for judge backend");
+            throw new IllegalStateException(failureReason);
+        }
+        if (failed) {
+            throw new IllegalStateException("Judge backend is unavailable: " + failureReason
+                    + ". Use /judge restart after fixing the agent or /judge agent <name>.");
         }
         if (supportsPersistentMode()) {
             return generatePersistent(userPrompt, systemPrompt);
         }
-        return generateSingleShot(userPrompt, systemPrompt);
+        try {
+            return generateSingleShot(userPrompt, systemPrompt);
+        } catch (Exception failure) {
+            markFailure(failure.getMessage());
+            throw failure;
+        }
     }
 
     // ========================================================================
@@ -105,8 +121,24 @@ public class CliJudgeBackend implements JudgeBackend {
     }
 
     private String generatePersistent(String userPrompt, String systemPrompt) throws Exception {
-        ensurePersistentProcess(systemPrompt);
-        return judgeLease.sendMessage(userPrompt, TURN_TIMEOUT_SECONDS);
+        try {
+            ensurePersistentProcess(systemPrompt);
+            String response = judgeLease.sendMessage(userPrompt, TURN_TIMEOUT_SECONDS);
+            if (response == null || response.isBlank()) {
+                throw new IOException("Judge agent returned an empty response");
+            }
+            return response;
+        } catch (Exception failure) {
+            invalidatePersistentProcess();
+            markFailure(failure.getMessage());
+            String message = "Judge agent '" + agentName + "' failed"
+                    + (failureReason == null || failureReason.isBlank() ? "" : ": " + failureReason);
+            System.err.println("[enforcer] " + message);
+            if (failure instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new IOException(message, failure);
+        }
     }
 
     // synchronized: the async constructor warm-up and the first generate() may race here;
@@ -114,7 +146,7 @@ public class CliJudgeBackend implements JudgeBackend {
     private synchronized void ensurePersistentProcess(String systemPrompt) throws IOException, InterruptedException {
         if (judgeLease != null && judgeLease.isAlive()) return;
         if (judgeLease != null) {
-            judgeLease.close();
+            judgeLease.abort();
             judgeLease = null;
         }
 
@@ -137,6 +169,21 @@ public class CliJudgeBackend implements JudgeBackend {
                 List.of("KOMPILE_ENFORCER_"),
                 systemPrompt,
                 30));
+        if (judgeLease == null || !judgeLease.isAlive()) {
+            invalidatePersistentProcess();
+            throw new IOException("Judge agent did not become ready");
+        }
+    }
+
+    private synchronized void invalidatePersistentProcess() {
+        if (judgeLease != null) {
+            try {
+                judgeLease.abort();
+            } catch (RuntimeException ignored) {
+                // Best effort; the process is already considered failed.
+            }
+            judgeLease = null;
+        }
     }
 
     // ========================================================================
@@ -155,6 +202,7 @@ public class CliJudgeBackend implements JudgeBackend {
         process.getOutputStream().close();
 
         StringBuilder output = new StringBuilder();
+        StringBuilder diagnostics = new StringBuilder();
         Thread reader = new Thread(() -> {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -173,8 +221,17 @@ public class CliJudgeBackend implements JudgeBackend {
         reader.start();
 
         Thread errDrain = new Thread(() -> {
-            try { process.getErrorStream().transferTo(OutputStream.nullOutputStream()); }
-            catch (IOException ignored) {}
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    synchronized (diagnostics) {
+                        if (diagnostics.length() < 4_000) {
+                            diagnostics.append(line).append('\n');
+                        }
+                    }
+                }
+            } catch (IOException ignored) {}
         }, "cli-judge-err-drain");
         errDrain.setDaemon(true);
         errDrain.start();
@@ -182,10 +239,20 @@ public class CliJudgeBackend implements JudgeBackend {
         boolean finished = process.waitFor(JUDGE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         if (!finished) {
             process.destroyForcibly();
-            throw new IOException("Judge agent timed out after " + JUDGE_TIMEOUT_SECONDS + "s");
+            throw new IOException("Judge agent timed out after " + JUDGE_TIMEOUT_SECONDS + "s"
+                    + diagnosticSuffix(diagnostics));
         }
         reader.join(3000);
-        return output.toString().trim();
+        errDrain.join(1000);
+        int exitCode = process.exitValue();
+        String response = output.toString().trim();
+        if (exitCode != 0) {
+            throw new IOException("Judge agent exited with code " + exitCode + diagnosticSuffix(diagnostics));
+        }
+        if (response.isBlank()) {
+            throw new IOException("Judge agent returned no response" + diagnosticSuffix(diagnostics));
+        }
+        return response;
     }
 
     private List<String> buildSingleShotCommand(String binary, String userPrompt, String systemPrompt) {
@@ -239,14 +306,53 @@ public class CliJudgeBackend implements JudgeBackend {
 
     @Override
     public boolean isAvailable() {
-        return agentBinary != null;
+        return agentBinary != null && !failed;
+    }
+
+    @Override
+    public synchronized void restart() {
+        invalidatePersistentProcess();
+        sessionId = null;
+        failed = false;
+        failureReason = null;
+        agentBinary = agentName == null ? null : SubprocessAgentRunner.resolveAgentBinary(agentName);
+        if (agentBinary == null) {
+            markFailure("Agent '" + agentName + "' is not available on PATH");
+            System.err.println("[enforcer] judge restart failed: " + failureReason);
+        }
+    }
+
+    @Override
+    public synchronized boolean modify(String selection) {
+        if (selection == null || selection.isBlank()) return false;
+        String next = selection.trim();
+        invalidatePersistentProcess();
+        sessionId = null;
+        agentName = next;
+        agentBinary = SubprocessAgentRunner.resolveAgentBinary(next);
+        failed = false;
+        failureReason = null;
+        if (agentBinary == null) {
+            markFailure("Agent '" + next + "' is not available on PATH");
+            System.err.println("[enforcer] judge agent unavailable: " + failureReason);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public String failureReason() {
+        return failureReason == null ? "" : failureReason;
     }
 
     @Override
     public synchronized void close() {
-        // Releases the pool lease — the shared process stays warm for the pool's idle
-        // window so the next judge consumer skips the agent boot entirely.
-        if (judgeLease != null) {
+        // A failed lease must be destroyed, not returned to the warm pool.
+        if (failed) {
+            invalidatePersistentProcess();
+        } else if (judgeLease != null) {
+            // Releases the pool lease — the shared process stays warm for the pool's idle
+            // window so the next judge consumer skips the agent boot entirely.
             judgeLease.close();
             judgeLease = null;
         }
@@ -256,6 +362,18 @@ public class CliJudgeBackend implements JudgeBackend {
     public String describe() {
         return "cli(" + (agentName != null ? agentName : "none")
                 + (supportsPersistentMode() ? ",persistent-stream-json" : "") + ")";
+    }
+
+    private void markFailure(String reason) {
+        failed = true;
+        failureReason = reason == null || reason.isBlank() ? "unknown judge failure" : reason;
+    }
+
+    private String diagnosticSuffix(StringBuilder diagnostics) {
+        synchronized (diagnostics) {
+            String detail = diagnostics.toString().trim();
+            return detail.isBlank() ? "" : ": " + detail;
+        }
     }
 
     public static boolean anyAgentAvailable() {

@@ -10,7 +10,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -145,9 +148,79 @@ class ChatMessageHandlerQueueTest {
             assertFalse(repl.isLlmBusy(), "Escape cancellation must release the prompt promptly");
             assertTrue(Duration.ofNanos(System.nanoTime() - cancelStarted).toMillis() < 3000,
                     "blocking HTTP send was not interrupted");
+            assertEquals("Interrupted by user", ChatCompleter.getActivity(),
+                    "an interrupted turn should leave a transient status message");
         } finally {
             releaseResponse.countDown();
             server.stop(0);
+            processes.close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
+    void serverAskTurnIsInterruptibleAndCancelsRemoteProcess() throws Exception {
+        CountDownLatch startEventSent = new CountDownLatch(1);
+        CountDownLatch cancelCalled = new CountDownLatch(1);
+        CountDownLatch releaseStream = new CountDownLatch(1);
+        ExecutorService serverExecutor = Executors.newCachedThreadPool();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.setExecutor(serverExecutor);
+        server.createContext("/api/agents/chat/stream", exchange -> {
+            try {
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                exchange.sendResponseHeaders(200, 0);
+                byte[] start = ("event: start\n"
+                        + "data: {\"agent\":\"test-agent\",\"processId\":\"remote-123\"}\n\n")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseBody().write(start);
+                exchange.getResponseBody().flush();
+                startEventSent.countDown();
+                // Keep the stream open until Escape closes it or test cleanup runs.
+                releaseStream.await(30, TimeUnit.SECONDS);
+            } catch (Exception ignored) {
+                // Client cancellation closes the exchange.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.createContext("/api/agents/chat/cancel/remote-123", exchange -> {
+            cancelCalled.countDown();
+            exchange.sendResponseHeaders(200, 0);
+            exchange.close();
+        });
+        server.start();
+
+        ChatConfig config = new ChatConfig(
+                "custom", null, "server-cancel-test",
+                "http://127.0.0.1:" + server.getAddress().getPort());
+        ChatRepl repl = new ChatRepl(
+                null, "http://127.0.0.1:" + server.getAddress().getPort(),
+                "server-cancel-test", false, "default", false, config);
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        BackgroundProcessManager processes =
+                field(repl, "processManager", BackgroundProcessManager.class);
+
+        try {
+            long started = System.nanoTime();
+            handler.streamAgentChat("interrupt remote stream");
+            assertTrue(Duration.ofNanos(System.nanoTime() - started).toMillis() < 500,
+                    "server slash command must return control to readline");
+            assertTrue(startEventSent.await(5, TimeUnit.SECONDS), "server stream did not start");
+            AtomicReference<String> remoteProcess = field(handler, "activeRemoteProcessId", AtomicReference.class);
+            long processDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (remoteProcess.get() == null && System.nanoTime() < processDeadline) {
+                Thread.sleep(10);
+            }
+            assertEquals("remote-123", remoteProcess.get(), "SSE start must register the remote process ID");
+            assertTrue(handler.requestCancel(), "server stream should have an active owner thread");
+            assertTrue(cancelCalled.await(5, TimeUnit.SECONDS),
+                    "Escape must cancel the remote agent process");
+        } finally {
+            releaseStream.countDown();
+            server.stop(0);
+            serverExecutor.shutdownNow();
             processes.close();
             ChatCompleter.setActivity(null);
         }

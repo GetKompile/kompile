@@ -228,6 +228,11 @@ public final class LocalProjectCrawlBackend {
             if (validationError != null) {
                 return ToolResult.error(validationError);
             }
+            String pipelineValidationError =
+                    LocalModelPipelineRunner.validatePipelineDefinitions(project.root(), executionRequest);
+            if (pipelineValidationError != null) {
+                return ToolResult.error(pipelineValidationError);
+            }
             String workerValidationError =
                     LocalModelPipelineRunner.validateWorkerConfiguration(project.root(), executionRequest);
             if (workerValidationError != null) {
@@ -496,6 +501,14 @@ public final class LocalProjectCrawlBackend {
                     LocalModelPipelineRunner.documentModelWorkerStatus(project.root(), null);
             ObjectNode catalog = mapper.createObjectNode();
             catalog.put("section", section);
+            ObjectNode workerNode = catalog.putObject("documentModelWorker")
+                    .put("available", documentWorker.available())
+                    .put("source", documentWorker.source())
+                    .put("unifiedExecutable", documentWorker.unifiedExecutable());
+            if (documentWorker.executable() != null && !documentWorker.executable().isBlank()) {
+                workerNode.put("executable", documentWorker.executable());
+            }
+            catalog.put("vlmExecutionReady", documentWorker.available());
             ObjectNode backend = catalog.putObject("backend")
                     .put("mode", "project-local")
                     .put("projectRoot", project.root().toString())
@@ -533,6 +546,20 @@ public final class LocalProjectCrawlBackend {
                 localPipeline(pipelines, "*", true,
                         "Arbitrary portable pipeline type; execution is selected by its registered processor.");
                 ArrayNode projectPipelines = projectPipelineDefaults(project);
+                for (JsonNode registered : projectPipelines) {
+                    if (registered.isObject()
+                            && ("VLM".equalsIgnoreCase(registered.path("pipelineType").asText())
+                            || "OCR".equalsIgnoreCase(registered.path("pipelineType").asText()))) {
+                        ObjectNode pipelineNode = (ObjectNode) registered;
+                        pipelineNode.put("workerReady", documentWorker.available());
+                        pipelineNode.put("status", documentWorker.available() ? "READY" : "WORKER_UNAVAILABLE");
+                        if (!documentWorker.available()) {
+                            pipelineNode.put("unavailableReason",
+                                    "The crawl compatibility worker is not configured; "
+                                            + documentWorker.source());
+                        }
+                    }
+                }
                 catalog.set("projectRegisteredPipelines", projectPipelines);
                 for (JsonNode registered : projectPipelines) {
                     String type = registered.path("pipelineType").asText("CUSTOM");
@@ -569,6 +596,9 @@ public final class LocalProjectCrawlBackend {
                 catalog.set("chunkers", capabilities.remove("chunkers"));
                 catalog.set("routing", capabilities.remove("routing"));
                 catalog.set("modelProcessing", capabilities.remove("modelProcessing"));
+                catalog.put("pipelineSystems", capabilities.remove("pipelineSystems"));
+                catalog.set("wiringRecipe", capabilities.remove("wiringRecipe"));
+                catalog.set("pipelineTypeGuide", capabilities.remove("pipelineTypeGuide"));
                 catalog.put("executionMode", LocalCrawlSubprocessRunner.executionMode());
                 catalog.set("requestShape", localRequestShape());
             }
@@ -598,7 +628,7 @@ public final class LocalProjectCrawlBackend {
                         LocalProjectModelBootstrap.inventory(project.root());
                 catalog.set("models", mapper.valueToTree(modelInventory));
                 catalog.set("pipelineModelReadiness",
-                        projectPipelineModelReadiness(project, modelInventory));
+                        projectPipelineModelReadiness(project, modelInventory, documentWorker));
                 boolean nativeChildren = CliProcessLauncher.requiresNativeChildren();
                 catalog.putObject("modelRuntime")
                         .put("tool", "model_runtime")
@@ -1557,7 +1587,21 @@ public final class LocalProjectCrawlBackend {
             String pipelineType = pipeline.getMetadata() == null ? null
                     : firstNonBlank(pipeline.getMetadata().get("pipelineType"),
                     pipeline.getMetadata().get("type"));
-            registered.put("pipelineType", firstNonBlank(pipelineType, "CUSTOM"));
+            String role = pipeline.getRole() == null ? "" : pipeline.getRole().toUpperCase(Locale.ROOT);
+            if (pipelineType == null && (role.contains("VLM") || role.contains("OCR"))) {
+                // Project manifests may reference the high-level compatibility JSON without copying
+                // its pipelineType into metadata. Preserve the established crawl adapter contract.
+                pipelineType = "VLM";
+            }
+            pipelineType = firstNonBlank(pipelineType, "CUSTOM");
+            registered.put("pipelineType", pipelineType);
+            boolean compatibility = "VLM".equalsIgnoreCase(pipelineType)
+                    || "OCR".equalsIgnoreCase(pipelineType);
+            if (compatibility) {
+                registered.put("executionModel", "crawl-compatibility");
+                registered.put("supportedInputTypes", "application/pdf");
+                registered.put("workerRequired", true);
+            }
             ObjectNode options = registered.putObject("options");
             options.put("projectRegistered", true);
             if (pipeline.getRole() != null) options.put("role", pipeline.getRole());
@@ -1573,14 +1617,23 @@ public final class LocalProjectCrawlBackend {
                 copyMetadataField(pipeline, registered, "chunkerName");
             }
             ObjectNode processor = registered.putObject("processor");
-            processor.put("type", "UNIFIED_PIPELINE");
-            if (firstNonBlank(pipeline.getDefinitionPath()) != null) {
-                processor.put("pipelineDefinitionPath", pipeline.getDefinitionPath());
-            } else if (firstNonBlank(pipeline.getRegistryPath()) != null
-                    && pipeline.getRegistryPath().endsWith(".json")) {
-                processor.put("pipelineDefinitionPath", pipeline.getRegistryPath());
+            if (compatibility) {
+                // Project metadata points at the high-level crawl compatibility config. It is
+                // intentionally not a UnifiedPipelineDefinition; the local runner supplies the
+                // managed VLM worker and consumes this as the crawl adapter contract.
+                processor.put("type", pipelineType.toUpperCase(Locale.ROOT));
+                processor.put("adapter", "vlm-test");
+                processor.put("definitionFormat", "crawl-compatibility");
             } else {
-                processor.put("pipelineDefinitionId", id);
+                processor.put("type", "UNIFIED_PIPELINE");
+                if (firstNonBlank(pipeline.getDefinitionPath()) != null) {
+                    processor.put("pipelineDefinitionPath", pipeline.getDefinitionPath());
+                } else if (firstNonBlank(pipeline.getRegistryPath()) != null
+                        && pipeline.getRegistryPath().endsWith(".json")) {
+                    processor.put("pipelineDefinitionPath", pipeline.getRegistryPath());
+                } else {
+                    processor.put("pipelineDefinitionId", id);
+                }
             }
             processor.put("registeredBy", "kompile.project.json");
         }
@@ -1588,7 +1641,8 @@ public final class LocalProjectCrawlBackend {
     }
 
     private ArrayNode projectPipelineModelReadiness(
-            ProjectState project, List<Map<String, Object>> models) {
+            ProjectState project, List<Map<String, Object>> models,
+            LocalModelPipelineRunner.DocumentModelWorkerStatus documentWorker) {
         ArrayNode result = mapper.createArrayNode();
         if (project == null || project.manifest() == null
                 || project.manifest().getPipelines() == null) {
@@ -1601,6 +1655,28 @@ public final class LocalProjectCrawlBackend {
             item.put("pipelineId", pipelineId == null ? "unknown" : pipelineId);
             ArrayNode bindings = item.putArray("models");
             ArrayNode errors = item.putArray("errors");
+            String pipelineType = pipeline.getMetadata() == null ? null
+                    : firstNonBlank(pipeline.getMetadata().get("pipelineType"),
+                    pipeline.getMetadata().get("type"));
+            String role = pipeline.getRole() == null ? "" : pipeline.getRole().toUpperCase(Locale.ROOT);
+            if (pipelineType == null && (role.contains("VLM") || role.contains("OCR"))) {
+                // Match projectPipelineDefaults: a manifest role may point at the high-level
+                // compatibility config without duplicating pipelineType in metadata.
+                pipelineType = "VLM";
+            }
+            boolean compatibility = "VLM".equalsIgnoreCase(pipelineType)
+                    || "OCR".equalsIgnoreCase(pipelineType);
+            item.put("pipelineType", firstNonBlank(pipelineType, "CUSTOM"));
+            item.put("executionModel", compatibility ? "crawl-compatibility" : "generic-unified");
+            item.put("workerRequired", compatibility);
+            if (compatibility) {
+                item.put("supportedInputTypes", "application/pdf");
+                item.put("workerReady", documentWorker != null && documentWorker.available());
+                if (documentWorker == null || !documentWorker.available()) {
+                    errors.add("Crawl compatibility worker is unavailable: "
+                            + (documentWorker == null ? "status unavailable" : documentWorker.source()));
+                }
+            }
             List<String> refs = pipeline.getModelRefs() == null
                     ? List.of() : pipeline.getModelRefs();
             for (String ref : refs) {
@@ -1625,7 +1701,11 @@ public final class LocalProjectCrawlBackend {
             }
             item.put("modelCount", refs.size());
             item.put("ready", errors.isEmpty());
-            item.put("status", refs.isEmpty() ? "UNBOUND" : errors.isEmpty() ? "READY" : "NOT_READY");
+            String status = errors.isEmpty()
+                    ? (refs.isEmpty() ? "UNBOUND" : "READY")
+                    : (compatibility && (documentWorker == null || !documentWorker.available())
+                    ? "WORKER_UNAVAILABLE" : "NOT_READY");
+            item.put("status", status);
         }
         return result;
     }
@@ -1645,10 +1725,10 @@ public final class LocalProjectCrawlBackend {
         ObjectNode shape = mapper.createObjectNode();
         shape.put("startTool", "crawl_documents");
         shape.put("documents", "documents=[{path|url, pipelineId?, loaderName?, chunkerName?, chunkSize?, chunkOverlap?, chunkerOptions?, includePatterns?, excludePatterns?}]");
-        shape.put("pipelines", "pipelines=[{pipelineId,pipelineType:any-portable-id,registeredPipelineId?,executorId?,processor?,loaderName?,chunkerName?,options?}]");
-        shape.put("pipelineRegistry", "pipelineRegistry={models:[{id,modelId?,role?,source?,repository?,revision?,runtime?}], defaults:[ingest pipeline defaults with modelBindings?], definitions:[UnifiedPipelineDefinition], executors:[{executorId,type:UNIFIED_PIPELINE|KOMPILE_SUBPROCESS|EXECUTABLE,...}]} ; active kompile.project.json pipelines and modelRefs are registered automatically");
-        shape.put("pipelineExecution", "processor definitions select request-scoped one-shot unified pipeline serving, a Kompile --subprocess mode, or another executable; VLM/OCR are compatibility presets, not privileged executor types");
-        shape.put("runtimeConfig", "generic crawl/runtime tuning; legacy documentModelExecutable aliases remain accepted for the registered vlm-test preset");
+        shape.put("pipelines", "pipelines=[{pipelineId(required),pipelineType,registeredPipelineId?,executorId?,loaderName?,chunkerName?,modelId?,vlmModel?,modelSetId?,modelBindings?,modelRefs?,options?,processor?,pipelineDefinition|pipelineDefinitionPath|pipelineDefinitionId?}]");
+        shape.put("pipelineRegistry", "pipelineRegistry={models:[{id,modelId?,role?,source?,repository?,revision?,runtime?}], defaults:[ingest pipeline defaults with modelBindings?], definitions:[{pipelineId,pipelineSpec:{@class,...}}], executors:[{executorId,type:UNIFIED_PIPELINE|KOMPILE_SUBPROCESS|EXECUTABLE,...}]} ; active kompile.project.json pipelines and modelRefs are registered automatically");
+        shape.put("pipelineExecution", "processor definitions select request-scoped one-shot unified pipeline serving, a Kompile --subprocess mode, or another executable; pipelineType=VLM/OCR with adapter=vlm-test selects the managed PDF compatibility worker, while generic UNIFIED_PIPELINE requires UnifiedPipelineDefinition.pipelineSpec.@class");
+        shape.put("runtimeConfig", "generic crawl/runtime tuning; documentModelExecutable aliases remain accepted for the registered vlm-test preset; use dryRun=true to validate composed pipelines without writing a knowledge base");
         shape.put("modelRuntime", "modelRuntime={autoBootstrap?,localPath?,source?,repository?,revision?,format?,type?,stagingExecutable?,stagingJar?,servingExecutable?,servingJar?,javaExecutable?,heapSize?,timeoutMinutes?,environment?}; native parents require native staging/serving children; executable JARs are JVM-development-only");
         shape.put("routing", "document.pipelineId > routeRules > defaultPipelineId > automatic file routing");
         shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");

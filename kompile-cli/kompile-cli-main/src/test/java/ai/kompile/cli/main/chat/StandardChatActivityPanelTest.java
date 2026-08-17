@@ -105,14 +105,16 @@ class StandardChatActivityPanelTest {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("standard-activity-subagent-test");
         try {
-            StatusBar bar = new StatusBar(
-                    tasks, processes, null, new TerminalRenderer(true));
+            TerminalRenderer renderer = new TerminalRenderer(true);
+            StatusBar bar = new StatusBar(tasks, processes, null, renderer);
             StandardChatActivityPanel panel = new StandardChatActivityPanel(
                     tasks, processes, bar, () -> 3);
 
             bar.registerSubagent("explore-1", "explore", "Trace process management");
-            bar.appendSubagentActivity("explore-1", "Read AGENTS.md ✓ 252 lines",
-                    "  ▸ Read AGENTS.md ✓ totalLines=252");
+            String toolTranscript = renderer.renderSubagentToolCall(
+                    "read", "{\"file_path\":\"AGENTS.md\"}",
+                    ToolResult.success("AGENTS.md", "line one\nline two", Map.of("totalLines", 2)));
+            bar.appendSubagentActivity("explore-1", "Read AGENTS.md ✓ 2 lines", toolTranscript);
             bar.unregisterSubagent("explore-1");
             panel.refresh();
 
@@ -130,7 +132,9 @@ class StandardChatActivityPanelTest {
             StandardChatActivityPanel.ActivityView view = panel.openSelectedView();
             assertNotNull(view);
             assertTrue(view.content().contains("Read AGENTS.md"));
-            assertTrue(view.content().contains("totalLines=252"));
+            assertTrue(view.content().contains("line one"));
+            assertTrue(view.content().contains("line two"));
+            assertTrue(view.content().contains("totalLines=2"));
             assertEquals("explore-1", panel.viewedSubagentId());
         } finally {
             processes.close();

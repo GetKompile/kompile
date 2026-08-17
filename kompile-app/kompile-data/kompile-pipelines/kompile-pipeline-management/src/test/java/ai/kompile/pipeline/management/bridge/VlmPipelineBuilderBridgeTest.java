@@ -81,7 +81,7 @@ class VlmPipelineBuilderBridgeTest {
     }
 
     @Test
-    void testPipelineSpecContainsVlmBridgeMarker() {
+    void testPipelineSpecUsesConcreteServingPipelineType() {
         VlmPipelineDefinition vlmDef = VlmPipelineDefinition.builder()
                 .pipelineId("vlm-bridge-marker")
                 .displayName("VLM Bridge Marker")
@@ -93,10 +93,12 @@ class VlmPipelineBuilderBridgeTest {
 
         Map<String, Object> spec = unified.getPipelineSpec();
         assertNotNull(spec);
-        assertEquals("vlm", spec.get("@bridge"));
-        assertEquals("vlm-bridge-marker", spec.get("pipelineId"));
+        assertEquals("ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline", spec.get("@class"));
+        assertEquals("vlm-bridge-marker", spec.get("id"));
         assertEquals("SEQUENCE", spec.get("pipelineType"));
         assertEquals("test-model", spec.get("modelSetId"));
+        assertTrue(spec.containsKey("steps"));
+        assertFalse(spec.containsKey("@bridge"));
     }
 
     @Test

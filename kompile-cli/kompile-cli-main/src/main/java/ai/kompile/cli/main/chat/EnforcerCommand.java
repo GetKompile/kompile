@@ -362,7 +362,7 @@ public class EnforcerCommand implements Callable<Integer> {
                     String trimmed = line.trim();
                     if (trimmed.startsWith("/")) {
                         String action = handleSlashCommand(trimmed, reader, ascii, renderer,
-                                policy, runner, sessionId, evaluator.describe(), archive);
+                                policy, runner, judge, sessionId, evaluator.describe(), archive);
                         if ("quit".equals(action)) {
                             break;
                         }
@@ -600,7 +600,7 @@ public class EnforcerCommand implements Callable<Integer> {
 
                 @Override
                 public String command(String command, String arg) {
-                    return runControlCommand(command, arg, policy, fArchive);
+                    return runControlCommand(command, arg, policy, fArchive, fjudge);
                 }
 
                 @Override
@@ -610,6 +610,7 @@ public class EnforcerCommand implements Callable<Integer> {
                     m.put("agent", agent);
                     m.put("mode", "enforcer-rest");
                     m.put("backend", evaluator.describe());
+                    m.put("judgeStatus", fjudge != null ? fjudge.judgeStatus() : "disabled");
                     m.put("maxCorrections", policy.getMaxCorrections());
                     m.put("archiveEnabled", fArchive != null);
                     m.put("fallbackPolicy", enforcerFallbackPolicy.configValue());
@@ -661,7 +662,7 @@ public class EnforcerCommand implements Callable<Integer> {
     }
 
     private String runControlCommand(String command, String arg, EnforcerPolicy policy,
-                                     EnforcerDiffArchive diffArchive) {
+                                     EnforcerDiffArchive diffArchive, EnforcerJudge judge) {
         String c = command.toLowerCase(Locale.ROOT);
         try {
             switch (c) {
@@ -670,6 +671,15 @@ public class EnforcerCommand implements Callable<Integer> {
                             + " · archive=" + (diffArchive != null);
                 case "/rules":
                     return policy.getRules();
+                case "/judge":
+                    if (judge == null) return "judge disabled (keyword mode)";
+                    if (arg == null || arg.isBlank()) return judge.judgeStatus();
+                    if ("restart".equalsIgnoreCase(arg.trim())) return judge.restartJudge();
+                    if (arg.toLowerCase(Locale.ROOT).startsWith("agent ")
+                            || arg.toLowerCase(Locale.ROOT).startsWith("modify ")) {
+                        return judge.modifyJudge(arg.substring(arg.indexOf(' ') + 1).trim());
+                    }
+                    return "usage: /judge, /judge restart, /judge agent <name>";
                 case "/archive": {
                     if (diffArchive == null) {
                         return "archiving disabled";
@@ -767,6 +777,11 @@ public class EnforcerCommand implements Callable<Integer> {
                                             + attemptCounter[0] + ")"));
                         }
                         String output = runner.runMessage(agentPrompt, history, metrics);
+                        String blockingNotice = runner.getBlockingNotice();
+                        if (blockingNotice != null) {
+                            throw new IllegalStateException("Subordinate agent unavailable: " + blockingNotice
+                                    + ". Fix the agent or use /agent to select another one.");
+                        }
                         if (conversationWindow != null) {
                             conversationWindow.finishAssistantMessage(output);
                         }
@@ -930,8 +945,9 @@ public class EnforcerCommand implements Callable<Integer> {
 
     private String handleSlashCommand(String command, LineReader reader, AsciiRenderer ascii,
                                       TerminalRenderer renderer, EnforcerPolicy policy,
-                                      SubprocessAgentRunner runner, String sessionId,
-                                      String backend, EnforcerDiffArchive diffArchive) {
+                                      SubprocessAgentRunner runner, EnforcerJudge judge,
+                                      String sessionId, String backend,
+                                      EnforcerDiffArchive diffArchive) {
         String lower = command.toLowerCase(Locale.ROOT);
         if (lower.equals("/quit") || lower.equals("/exit")) {
             return "quit";
@@ -939,6 +955,9 @@ public class EnforcerCommand implements Callable<Integer> {
         if (lower.equals("/help")) {
             String body = "/rules      Show active enforcer rules\n"
                     + "/agent      Switch subordinate agent for the next turn\n"
+                    + "/judge      Show judge status\n"
+                    + "/judge restart  Stop and restart the judge process\n"
+                    + "/judge agent <name>  Switch and restart the judge agent\n"
                     + "/status     Show current agent, judge, and correction limit\n"
                     + "/processes  Show the live judge + enforcer watcher processes\n"
                     + "/archive    List archived turns with violation status\n"
@@ -1064,6 +1083,30 @@ public class EnforcerCommand implements Callable<Integer> {
             } catch (IOException e) {
                 System.out.println(renderer.red("Purge failed: " + e.getMessage()));
             }
+            return "continue";
+        }
+        if (lower.equals("/judge") || lower.startsWith("/judge ")) {
+            if (judge == null) {
+                System.out.println(renderer.yellow("Judge is disabled; keyword mode is active."));
+                return "continue";
+            }
+            String arg = command.length() > 6 ? command.substring(6).trim() : "";
+            if (arg.isBlank()) {
+                System.out.println(ascii.panel("Judge Status", judge.judgeStatus()));
+                return "continue";
+            }
+            String argLower = arg.toLowerCase(Locale.ROOT);
+            if ("restart".equals(argLower)) {
+                System.out.println(renderer.dim(judge.restartJudge()));
+                return "continue";
+            }
+            if (argLower.startsWith("agent ") || argLower.startsWith("modify ")) {
+                String selection = arg.substring(arg.indexOf(' ') + 1).trim();
+                if (selection.isBlank()) selection = reader.readLine("judge-agent> ");
+                System.out.println(renderer.dim(judge.modifyJudge(selection)));
+                return "continue";
+            }
+            System.out.println(renderer.yellow("Usage: /judge | /judge restart | /judge agent <name>"));
             return "continue";
         }
         if (lower.equals("/agent") || lower.startsWith("/agent ")) {

@@ -15,6 +15,13 @@ class CrawlDocumentsToolSchemaTest {
                 .parameterSchema();
 
         JsonNode properties = schema.path("properties");
+        JsonNode pipelineProperties = properties.path("pipelines").path("items").path("properties");
+        assertEquals("string", pipelineProperties.path("pipelineId").path("type").asText());
+        assertEquals("string", pipelineProperties.path("pipelineType").path("type").asText());
+        assertTrue(pipelineProperties.has("processor"));
+        assertTrue(pipelineProperties.has("modelBindings"));
+        assertTrue(schema.path("pipelineTypeGuide").path("VLM/OCR").asText()
+                .contains("PDF compatibility worker"));
         JsonNode models = properties.path("pipelineRegistry")
                 .path("properties").path("models");
         assertEquals("array", models.path("type").asText());

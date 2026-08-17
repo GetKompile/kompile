@@ -32,7 +32,7 @@ Options:
   --sdx-release-artifact-root <dir>  Directory containing its exact fileName artifacts
   --output <dir>                     Output directory (default: build/offline-dist)
   --build-id <id>                    Visible APK/build filename identity (default: UTC timestamp)
-  --version-code <number>            Android update identity (default: Unix timestamp)
+  --version-code <number>            Reproduce a historical build only when explicitly enabled
   --ram-gradle-build                 Put all disposable Gradle output under the RAM staging root
   --retain-staging                   Keep generated JNI/Gradle state for diagnosis
   --cleanup-only                     Remove canonical disposable staging and exit
@@ -120,7 +120,8 @@ RELEASE_CONSUMER=0
 AAR_OVERRIDE=0
 RETAIN_STAGING="${KOMPILE_ANDROID_RETAIN_STAGING:-0}"
 APK_BUILD_ID="${KOMPILE_ANDROID_BUILD_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-APK_VERSION_CODE="${KOMPILE_ANDROID_VERSION_CODE:-$(date -u +%s)}"
+APK_VERSION_CODE=""
+APK_VERSION_CODE_OVERRIDE=0
 if [[ -n "${KOMPILE_APK_STAGING_ROOT:-}" ]]; then
   APK_STAGING_ROOT="$KOMPILE_APK_STAGING_ROOT"
   APK_STAGING_EXPLICIT=1
@@ -1287,7 +1288,7 @@ while [[ $# -gt 0 ]]; do
     --sdx-release-artifact-root) SDX_RELEASE_ARTIFACT_ROOT="${2:?missing value for --sdx-release-artifact-root}"; shift 2 ;;
     --output) OUTPUT_DIR="${2:?missing value for --output}"; OUTPUT_EXPLICIT=1; shift 2 ;;
     --build-id) APK_BUILD_ID="${2:?missing value for --build-id}"; shift 2 ;;
-    --version-code) APK_VERSION_CODE="${2:?missing value for --version-code}"; shift 2 ;;
+    --version-code) APK_VERSION_CODE="${2:?missing value for --version-code}"; APK_VERSION_CODE_OVERRIDE=1; shift 2 ;;
     --ram-gradle-build) RAM_GRADLE_BUILD=1; shift ;;
     --retain-staging) RETAIN_STAGING=1; shift ;;
     --cleanup-only) CLEANUP_ONLY=1; shift ;;
@@ -1297,6 +1298,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 configure_work_root || exit 2
+
+if [[ "$APK_VERSION_CODE_OVERRIDE" == "1" ]]; then
+  [[ "${KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE:-0}" == "1" ]] || {
+    echo "--version-code is reserved for historical reproduction; normal builds allocate it automatically" >&2
+    echo "Set KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE=1 only for an intentional reproduction" >&2
+    exit 2
+  }
+else
+  APK_VERSION_CODE="$("$SCRIPT_DIR/tools/allocate-apk-version-code.sh" --scan-root "$OUTPUT_DIR")"
+fi
 
 case "$RETAIN_STAGING" in
   0|1) ;;

@@ -473,54 +473,31 @@ class LocalProjectCrawlBackendTest {
     }
 
     @Test
-    void surfacesPartialAndTotalDocumentExtractionFailures() throws Exception {
-        Files.writeString(projectRoot.resolve("good.md"), "The good local document is indexed.\n",
-                StandardCharsets.UTF_8);
-        Files.writeString(projectRoot.resolve("bad.md"), "This document selects a broken pipeline.\n",
+    void rejectsNonExecutableComposedPipelineBeforePersisting() throws Exception {
+        Files.writeString(projectRoot.resolve("bad.md"),
+                "This document selects a pipeline that has no executable definition.\n",
                 StandardCharsets.UTF_8);
 
-        ObjectNode partialRequest = mapper.createObjectNode();
-        partialRequest.putObject("knowledgeBase").put("name", "partial-failure");
-        partialRequest.putArray("documents").addObject().put("path", "good.md");
-        partialRequest.withArray("documents").addObject()
+        ObjectNode request = mapper.createObjectNode();
+        request.putObject("knowledgeBase").put("name", "non-executable-pipeline");
+        request.put("dryRun", true);
+        request.putArray("documents").addObject()
                 .put("path", "bad.md").put("pipelineId", "broken");
-        partialRequest.putArray("pipelines").addObject()
+        request.putArray("pipelines").addObject()
                 .put("pipelineId", "broken")
                 .put("pipelineType", "CUSTOM")
                 .put("loaderName", "markdown")
                 .put("chunkerName", "no-op")
                 .put("pipelineDefinitionPath", "missing-pipeline.json");
 
-        ToolResult partial = new CrawlDocumentsTool((String) null, mapper)
-                .execute(partialRequest, context);
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper)
+                .execute(request, context);
 
-        assertFalse(partial.isError(), partial.getOutput());
-        assertEquals("COMPLETED_WITH_ERRORS", partial.getMetadata().get("status"));
-        assertEquals(1, ((Number) partial.getMetadata().get("failedDocumentCount")).intValue());
-        assertTrue(partial.getOutput().contains("bad.md"), partial.getOutput());
-        assertTrue(partial.getOutput().contains("missing-pipeline.json"), partial.getOutput());
-        String partialSummary = Files.readString(
-                projectRoot.resolve("data/crawls/partial-failure/crawl-result.json"));
-        assertTrue(partialSummary.contains("\"status\" : \"COMPLETED_WITH_ERRORS\""), partialSummary);
-        assertTrue(partialSummary.contains("\"failedDocumentCount\" : 1"), partialSummary);
-        assertTrue(partialSummary.contains("\"documentFailures\""), partialSummary);
-
-        ObjectNode failedRequest = mapper.createObjectNode();
-        failedRequest.putObject("knowledgeBase").put("name", "total-failure");
-        failedRequest.putArray("documents")
-                .addObject().put("path", "bad.md").put("pipelineId", "broken");
-        failedRequest.set("pipelines", partialRequest.path("pipelines").deepCopy());
-
-        ToolResult failed = new CrawlDocumentsTool((String) null, mapper)
-                .execute(failedRequest, context);
-
-        assertTrue(failed.isError(), failed.getOutput());
-        assertEquals("FAILED", failed.getMetadata().get("status"));
-        assertEquals(1, ((Number) failed.getMetadata().get("failedDocumentCount")).intValue());
-        assertTrue(failed.getOutput().contains("bad.md"), failed.getOutput());
-        String failedSummary = Files.readString(
-                projectRoot.resolve("data/crawls/total-failure/crawl-result.json"));
-        assertTrue(failedSummary.contains("\"status\" : \"FAILED\""), failedSummary);
+        assertTrue(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("missing-pipeline.json"), result.getOutput());
+        assertTrue(result.getOutput().contains("pipelineSpec"), result.getOutput());
+        assertFalse(Files.exists(
+                projectRoot.resolve("data/crawls/non-executable-pipeline/crawl-result.json")));
     }
 
     private ObjectNode documentRequest(String path, String knowledgeBase) {
