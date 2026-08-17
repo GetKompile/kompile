@@ -89,6 +89,10 @@ jobs:
         with:
           access_token: ${{ github.token }}
 
+      - name: Enable Git long paths
+        shell: powershell
+        run: git config --global core.longpaths true
+
       - name: Checkout DL4J
         uses: actions/checkout@v4
         with:
@@ -335,6 +339,10 @@ jobs:
               docker image prune -a -f 2>$null
             }
           } catch {}
+
+      - name: Enable Git long paths
+        shell: powershell
+        run: git config --global core.longpaths true
 
       - name: Checkout kompile
         uses: actions/checkout@v4
