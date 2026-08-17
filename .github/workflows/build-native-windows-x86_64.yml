@@ -494,6 +494,26 @@ jobs:
           echo "=== Native images built ==="
           ls -lh kompile-cli/kompile-*/target/kompile-*.exe 2>/dev/null || true
 
+      - name: Verify durable Azure AOT cache activity
+        if: env.KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -Eq 'REMOTE CACHE HIT|Published native image' /tmp/kompile-native.log; then
+            echo "::error::Native build produced no durable Azure cache hit or publish receipt"
+            exit 1
+          fi
+          cache_count="$(az storage blob list \
+            --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
+            --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
+            --prefix "${KOMPILE_NATIVE_CACHE_REMOTE_ROOT%/}/" \
+            --num-results 1000 --query 'length(@)' -o tsv)"
+          if [ "${cache_count:-0}" -lt 1 ]; then
+            echo "::error::Durable Azure AOT cache prefix is empty"
+            exit 1
+          fi
+          echo "Durable Azure AOT cache objects: ${cache_count}"
+
       - name: Collect native binaries
         shell: bash
         run: |
