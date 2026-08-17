@@ -1010,20 +1010,26 @@ kompile_native_remote_copy() {
       # Preserve it in the blob name; stripping it would flatten entries into
       # unrelated container-root paths.
       remote_name="${destination}"
-      az storage blob upload \
+      if ! az storage blob upload \
         --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
         --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
         --name "${remote_name}" --file "${source}" --overwrite true \
-        --only-show-errors >/dev/null 2>&1
+        --only-show-errors >/dev/null 2>&1; then
+        log "WARNING: Azure cache upload failed for ${remote_name}"
+        return 1
+      fi
     else
       mkdir -p "${destination}" || return 1
       local_destination="${destination}/$(basename "${source}")"
-      az storage blob download \
+      if ! az storage blob download \
         --connection-string "${KOMPILE_NATIVE_CACHE_REMOTE_CONNECTION_STRING}" \
         --container-name "${KOMPILE_NATIVE_CACHE_REMOTE_CONTAINER}" \
         --name "${source}" \
         --file "${local_destination}" --overwrite true \
-        --only-show-errors >/dev/null 2>&1
+        --only-show-errors >/dev/null 2>&1; then
+        log "WARNING: Azure cache download failed for ${source}"
+        return 1
+      fi
     fi
     return
   fi
@@ -1322,7 +1328,11 @@ kompile_build_native_image() {
       extra_args+=("-Dkompile.native.side-load=true")
       ;;
   esac
-  image_path="${module_dir}/target/${image_name}"
+  if kompile_windows_shell; then
+    image_path="${module_dir}/target/${image_name}.exe"
+  else
+    image_path="${module_dir}/target/${image_name}"
+  fi
   mkdir -p "${KOMPILE_OUTPUT_DIR}"
   log_file="${KOMPILE_OUTPUT_DIR}/native-${target}.log"
 

@@ -18,7 +18,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>ai.kompile</groupId>
+  <groupId>org.eclipse.deeplearning4j</groupId>
   <artifactId>kompile</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -156,37 +156,37 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-utils</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-model-manager</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-cli-common</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-project-contract</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-project-store</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-cli-main</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-cli-plugin-api</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -230,22 +230,22 @@
       </dependency>
 
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-postgres-common</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-pipelines-framework-api</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-pipelines-framework-core</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>ai.kompile</groupId>
+        <groupId>org.eclipse.deeplearning4j</groupId>
         <artifactId>kompile-pipelines-framework-runtime</artifactId>
         <version>${project.version}</version>
       </dependency>

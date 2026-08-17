@@ -498,7 +498,7 @@ jobs:
             TARGETS="${REQUESTED_TARGETS}"
           fi
           NATIVE_TARGETS="${TARGETS}" ./build-scripts/build-kompile-native-only.sh \
-            2>&1 | tee /tmp/kompile-native.log
+            2>&1 | tee kompile-native.log
           echo "=== Native images built ==="
           ls -lh kompile-cli/kompile-*/target/kompile-*.exe 2>/dev/null || true
 
@@ -507,7 +507,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -Eq 'REMOTE CACHE HIT|Published native image' /tmp/kompile-native.log; then
+          if ! grep -Eq 'REMOTE CACHE HIT|Published native image' kompile-native.log; then
             echo "::error::Native build produced no durable Azure cache hit or publish receipt"
             exit 1
           fi
@@ -549,7 +549,7 @@ jobs:
         with:
           name: kompile-native-build-logs-windows-x86_64
           path: |
-            /tmp/kompile-native.log
+            kompile-native.log
             dist/native-*.log
             kompile-cli/kompile-cli-main/target/*.log
             kompile-cli/kompile-agent-cli/target/*.log
