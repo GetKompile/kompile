@@ -23,7 +23,6 @@ import ai.kompile.app.runtime.SubprocessDispatcher;
 import ai.kompile.app.subprocess.ServingSubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessArgs;
 import ai.kompile.app.subprocess.VectorPopulationSubprocessArgs;
-import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessArgs;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -54,7 +53,6 @@ class NativeSubprocessDispatchInventoryTest {
             "vector-population",
             "embedding",
             "model-init",
-            "vlm-test",
             "graph-matrix",
             "serving",
             "learning",
@@ -68,7 +66,6 @@ class NativeSubprocessDispatchInventoryTest {
             SubprocessArgs.class,
             VectorPopulationSubprocessArgs.class,
             ModelInitSubprocessArgs.class,
-            VlmTestSubprocessArgs.class,
             ServingSubprocessArgs.class,
             LearningSubprocessArgs.class,
             ReasoningLearningSubprocessArgs.class,
@@ -103,7 +100,7 @@ class NativeSubprocessDispatchInventoryTest {
     }
 
     @Test
-    void everyNativeFileArgsRecordHasOneInvokableCanonicalConstructor() throws Exception {
+    void everyNativeFileArgsRecordHasInvokableConstructorsAndAccessors() throws Exception {
         Map<String, List<JsonNode>> registrations = reflectionRegistrations();
         Set<Class<?>> argsTypes = new LinkedHashSet<>();
         FILE_ARGS_BY_MODE.values().forEach(argsTypes::addAll);
@@ -116,38 +113,32 @@ class NativeSubprocessDispatchInventoryTest {
             assertEquals(1, entries.size(),
                     () -> argsType.getName() + " must have exactly one focused agent registration");
 
-            JsonNode methods = entries.get(0).path("methods");
-            assertTrue(methods.isArray(),
-                    () -> argsType.getName() + " needs invoked methods, not query-only constructor metadata");
-
+            JsonNode entry = entries.get(0);
+            JsonNode methods = entry.path("methods");
             List<String> expectedConstructor = Arrays.stream(argsType.getRecordComponents())
-                    .map(RecordComponent::getType)
-                    .map(Class::getName)
-                    .toList();
-            int canonicalConstructorCount = 0;
+                    .map(RecordComponent::getType).map(Class::getName).toList();
+            boolean constructorRegistered = entry.path("allDeclaredConstructors").asBoolean();
             Set<String> registeredAccessors = new TreeSet<>();
-            for (JsonNode method : methods) {
-                String name = method.path("name").asText();
-                List<String> parameterTypes = StreamSupport.stream(
-                                method.path("parameterTypes").spliterator(), false)
-                        .map(JsonNode::asText)
-                        .toList();
-                if ("<init>".equals(name) && expectedConstructor.equals(parameterTypes)) {
-                    canonicalConstructorCount++;
-                } else if (parameterTypes.isEmpty()) {
-                    registeredAccessors.add(name);
+            if (methods.isArray()) {
+                for (JsonNode method : methods) {
+                    List<String> parameterTypes = StreamSupport.stream(
+                                    method.path("parameterTypes").spliterator(), false)
+                            .map(JsonNode::asText).toList();
+                    if ("<init>".equals(method.path("name").asText())
+                            && expectedConstructor.equals(parameterTypes)) {
+                        constructorRegistered = true;
+                    } else if (parameterTypes.isEmpty()) {
+                        registeredAccessors.add(method.path("name").asText());
+                    }
                 }
             }
-            assertEquals(1, canonicalConstructorCount,
-                    () -> argsType.getName() + " needs exactly one invokable canonical constructor");
-
-            Set<String> expectedAccessors = new TreeSet<>();
-            Arrays.stream(argsType.getRecordComponents())
-                    .map(RecordComponent::getName)
-                    .forEach(expectedAccessors::add);
-            assertTrue(registeredAccessors.containsAll(expectedAccessors),
-                    () -> argsType.getName() + " is missing traced record accessors: "
-                            + difference(expectedAccessors, registeredAccessors));
+            assertTrue(constructorRegistered,
+                    () -> argsType.getName() + " needs an invokable canonical constructor");
+            Set<String> expectedAccessors = Arrays.stream(argsType.getRecordComponents())
+                    .map(RecordComponent::getName).collect(java.util.stream.Collectors.toSet());
+            assertTrue(entry.path("allDeclaredMethods").asBoolean()
+                            || registeredAccessors.containsAll(expectedAccessors),
+                    () -> argsType.getName() + " needs invokable record accessors");
         }
     }
 
@@ -156,8 +147,7 @@ class NativeSubprocessDispatchInventoryTest {
         Set<String> expectedShared = Set.of(
                 SubprocessArgs.class.getName(),
                 VectorPopulationSubprocessArgs.class.getName(),
-                ModelInitSubprocessArgs.class.getName(),
-                VlmTestSubprocessArgs.class.getName());
+                ModelInitSubprocessArgs.class.getName());
         Set<String> expectedMain = Set.of(
                 ServingSubprocessArgs.class.getName(),
                 LearningSubprocessArgs.class.getName(),
@@ -211,7 +201,6 @@ class NativeSubprocessDispatchInventoryTest {
         modes.put("ingest", List.of(SubprocessArgs.class));
         modes.put("vector-population", List.of(VectorPopulationSubprocessArgs.class));
         modes.put("model-init", List.of(ModelInitSubprocessArgs.class));
-        modes.put("vlm-test", List.of(VlmTestSubprocessArgs.class));
         modes.put("serving", List.of(ServingSubprocessArgs.class));
         modes.put("learning", List.of(LearningSubprocessArgs.class, ReasoningLearningSubprocessArgs.class));
         modes.put("pipeline-serving", List.of(PipelineServingSubprocessArgs.class));

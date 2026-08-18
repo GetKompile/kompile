@@ -36,7 +36,6 @@ class SubprocessDispatcherTest {
                 "vector-population",
                 "embedding",
                 "model-init",
-                "vlm-test",
                 "graph-matrix")));
     }
 

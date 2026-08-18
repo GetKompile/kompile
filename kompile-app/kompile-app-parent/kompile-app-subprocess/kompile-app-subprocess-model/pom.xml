@@ -26,11 +26,10 @@
     </parent>
 
     <artifactId>kompile-app-subprocess-model</artifactId>
-    <name>Kompile App - Subprocess: Model Init + VLM Test</name>
+    <name>Kompile App - Subprocess: Model Init</name>
     <description>
-        ModelInitSubprocessMain (warms/initializes embedding + OCR models off the main heap) and
-        VlmTestSubprocessMain (isolated VLM extraction test harness). Bundled into the app-main
-        uber jar; launched by app-main's ModelInit / VlmTest launchers.
+        ModelInitSubprocessMain warms and initializes embedding and OCR models off the main heap.
+        Executable model pipelines run through kompile-pipeline-serving.
     </description>
 
     <dependencies>
@@ -52,26 +51,6 @@
                     <artifactId>slf4j-simple</artifactId>
                 </exclusion>
             </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-model-manager</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-ocr-models</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-ocr-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-ocr-integration</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-kvcache</artifactId>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

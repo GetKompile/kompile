@@ -12,7 +12,7 @@ class AgentRunControllerTest {
     @Test
     void supervisedRequiresApprovalForCrawlMutations() {
         AgentRunController controller = new AgentRunController(
-                AgentRunController.Mode.SUPERVISED, 3, 8);
+                AgentRunController.Mode.SUPERVISED);
         ObjectNode start = mapper.createObjectNode().put("operation", "start");
 
         assertFalse(controller.beforeTool("crawl_control", start).allowed());
@@ -31,7 +31,7 @@ class AgentRunControllerTest {
     @Test
     void pauseResumeAndSingleStepAreSafePointControls() {
         AgentRunController controller = new AgentRunController(
-                AgentRunController.Mode.SINGLE_STEP, 3, 4);
+                AgentRunController.Mode.SINGLE_STEP);
         assertEquals(AgentRunController.State.PAUSED, controller.state());
         assertFalse(controller.beforeStep(1));
 
@@ -47,13 +47,14 @@ class AgentRunControllerTest {
     }
 
     @Test
-    void budgetsStopTheRun() {
-        AgentRunController controller = new AgentRunController(
-                AgentRunController.Mode.AUTO, 1, 1);
-        assertTrue(controller.beforeStep(1));
-        controller.afterStep();
-        assertEquals(AgentRunController.State.STOPPED, controller.state());
-        assertFalse(controller.beforeTool("crawl_control",
+    void runDoesNotStopAtAnArbitraryExecutionBudget() {
+        AgentRunController controller = new AgentRunController(AgentRunController.Mode.AUTO);
+        for (int step = 1; step <= 128; step++) {
+            assertTrue(controller.beforeStep(step));
+            controller.afterStep();
+        }
+        assertEquals(AgentRunController.State.RUNNING, controller.state());
+        assertTrue(controller.beforeTool("crawl_control",
                 mapper.createObjectNode().put("operation", "status")).allowed());
     }
 }

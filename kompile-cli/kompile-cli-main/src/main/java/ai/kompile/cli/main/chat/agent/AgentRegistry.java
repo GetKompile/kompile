@@ -47,14 +47,13 @@ public class AgentRegistry {
                 .systemPrompt(CODER_SYSTEM_PROMPT)
                 .enabledTools(Set.of("*"))
                 .canSpawnSubagents(true)
-                .maxSteps(50)
                 .build());
 
         register(AgentConfig.builder("crawler")
                 .displayName("Crawler")
                 .description("Production crawl, code-index, graph-learning, and reasoning operator")
                 .systemPrompt("You operate a project-owned, crawl-backed knowledge graph. Start with crawl_discover. "
-                        + "Use model_runtime to inspect, bootstrap, or import folder-owned models before a crawl when needed. "
+                        + "Use model_runtime for folder-owned models and pipeline to create, validate, version, test, promote, or roll back executable definitions. "
                         + "For ACTIVE Kompile code projects, refresh or reuse local_code_index and code_graph so AST "
                         + "symbols and dependencies are projected into the same fact sheet as crawled semantic evidence. "
                         + "Use crawl_documents or crawl_source for content-hash incremental updates and crawl_control "
@@ -69,7 +68,7 @@ public class AgentRegistry {
                         + "Prefer incremental updates; request destructive clear/full recrawls only with operator "
                         + "approval. Report project ids, fact-sheet ids, job/model ids, changed/deleted evidence, "
                         + "step state, and reasoning traces.")
-                .enabledTools(Set.of("crawl_discover", "model_runtime", "crawl_documents", "crawl_source", "crawl_control",
+                .enabledTools(Set.of("crawl_discover", "model_runtime", "pipeline", "crawl_documents", "crawl_source", "crawl_control",
                         "crawl_result", "knowledge_status", "knowledge_search",
                         "local_code_index", "code_graph", "knowledge_graph", "graph_embeddings",
                         "graph_reason", "graph_reasoning_query", "graph_import", "graph_export",
@@ -81,7 +80,6 @@ public class AgentRegistry {
                         "transcript_search", "rag_search",
                         "todowrite", "todoread", "exit_plan_mode"))
                 .canSpawnSubagents(false)
-                .maxSteps(30)
                 .build());
 
         register(AgentConfig.builder("crawl-worker")
@@ -100,7 +98,6 @@ public class AgentRegistry {
                         + "service reports completion; preserve diagnostics on failure.")
                 .enabledTools(Set.of("*"))
                 .canSpawnSubagents(true)
-                .maxSteps(50)
                 .build());
 
         register(AgentConfig.builder("planner")
@@ -116,7 +113,6 @@ public class AgentRegistry {
                         "patch", PermissionService.PermissionLevel.DENY
                 ))
                 .canSpawnSubagents(true)
-                .maxSteps(30)
                 .build());
 
         // ====================================================================
@@ -130,7 +126,6 @@ public class AgentRegistry {
                 .systemPrompt(GENERAL_SUBAGENT_PROMPT)
                 .enabledTools(Set.of("*"))
                 .isSubagent(true)
-                .maxSteps(30)
                 .build());
 
         // -- Quick explorer: fast file/code lookups (like Claude Code's Explore "quick") --
@@ -142,7 +137,6 @@ public class AgentRegistry {
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(10)
                 .build());
 
         // -- Deep explorer: thorough codebase analysis (like Claude Code's Explore "very thorough") --
@@ -154,7 +148,6 @@ public class AgentRegistry {
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(30)
                 .build());
 
         // -- Legacy "explorer" alias maps to explore-deep for backward compat --
@@ -165,7 +158,6 @@ public class AgentRegistry {
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(20)
                 .build());
 
         // -- Code reviewer: analyzes diffs, finds issues --
@@ -177,7 +169,6 @@ public class AgentRegistry {
                 .enabledTools(READ_ONLY_EXPLORE_TOOLS)
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(20)
                 .build());
 
         // -- Architect: designs solutions and documents patterns --
@@ -190,7 +181,6 @@ public class AgentRegistry {
                         "todowrite", "todoread", "transcript_search", "rag_search", "graph_search"))
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(25)
                 .build());
 
         // -- Research agent: web search and documentation lookup --
@@ -203,7 +193,6 @@ public class AgentRegistry {
                         "rag_search", "graph_search"))
                 .isSubagent(true)
                 .permissionOverrides(EXPLORE_PERMISSION_OVERRIDES)
-                .maxSteps(15)
                 .build());
     }
 

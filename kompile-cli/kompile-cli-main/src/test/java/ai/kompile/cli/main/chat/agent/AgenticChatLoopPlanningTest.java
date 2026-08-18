@@ -230,6 +230,14 @@ class AgenticChatLoopPlanningTest {
     }
 
     @Test
+    void chatAgentConfigHasNoExecutionLimitSurface() {
+        assertThrows(NoSuchFieldException.class,
+                () -> AgentConfig.class.getDeclaredField("maxSteps"));
+        assertThrows(NoSuchMethodException.class,
+                () -> AgentConfig.class.getMethod("getMaxSteps"));
+    }
+
+    @Test
     void testSetAgentConfig() {
         AgentConfig planner = agentRegistry.get("planner");
         loop.setAgentConfig(planner);

@@ -216,18 +216,6 @@ class TerminalRendererTest {
     // ========================================================================
 
     @Test
-    void testRenderAgentTurnStart() {
-        String output = renderer.renderAgentTurnStart(3, 50);
-        assertTrue(output.contains("3/50"));
-    }
-
-    @Test
-    void testRenderMaxStepsWarning() {
-        String output = renderer.renderMaxStepsWarning(50);
-        assertTrue(output.contains("50"));
-    }
-
-    @Test
     void testRenderContextGroup() {
         Map<String, Integer> counts = Map.of("read", 3, "grep", 2);
         String output = renderer.renderContextGroup(counts);

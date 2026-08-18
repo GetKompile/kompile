@@ -60,7 +60,7 @@
         <!-- ============ kompile-app-main: unified server binary ============
              The `kompile-server` binary handles both the main RAG server and all
              subprocess types (ingest, vector-population, embedding, model-init,
-             vlm-test, training) via the subprocess-type flag. See
+             pipeline-serving, training) via the subprocess-type flag. See
              MainApplication.main() for the routing logic. -->
         <file>
             <source>${project.build.directory}/portable-bin/kompile-server</source>
@@ -186,14 +186,13 @@
             <fileMode>0644</fileMode>
         </fileSet>
 
-        <!-- ============ Native local MCP workers ============
-             prepare-package fails before assembly if any required worker is absent.
+        <!-- ============ Native local MCP runtimes ============
+             prepare-package fails before assembly if any required runtime is absent.
              They execute directly and side-load every native payload from lib/. -->
         <fileSet>
             <directory>${project.build.directory}/portable-bin</directory>
             <outputDirectory>bin</outputDirectory>
             <includes>
-                <include>kompile-vlm-test</include>
                 <include>kompile-model-staging</include>
                 <include>kompile-model-serving</include>
                 <include>kompile-pipeline-serving</include>

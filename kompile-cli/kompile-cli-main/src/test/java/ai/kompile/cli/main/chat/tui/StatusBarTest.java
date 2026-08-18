@@ -60,6 +60,22 @@ class StatusBarTest {
     }
 
     @Test
+    void rendersInterruptedActivityAsTerminalWithoutSpinner() {
+        BackgroundProcessManager processes = new BackgroundProcessManager("status-bar-interrupted-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    new BackgroundTaskManager(), processes, null, new TerminalRenderer(true));
+            ChatCompleter.markInterrupted();
+
+            String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent());
+            assertTrue(rendered.contains("Interrupted by user"), rendered);
+            assertTrue(ChatCompleter.isActivityTerminal());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void retainsCompletedSubagentsForProcessManagement() {
         BackgroundTaskManager tasks = new BackgroundTaskManager();
         BackgroundProcessManager processes = new BackgroundProcessManager("status-bar-subagent-test");
@@ -76,6 +92,24 @@ class StatusBarTest {
             assertEquals("completed", bar.getRecentSubagents().get(0).getStatus());
             assertTrue(AnsiConstants.stripAnsi(bar.renderProcessPanel())
                     .contains("Recent Subagents"));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void showsSubagentNameTaskAndThinkingStateTogether() {
+        BackgroundProcessManager processes = new BackgroundProcessManager("status-bar-subagent-details-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    new BackgroundTaskManager(), processes, null, new TerminalRenderer(true));
+            bar.registerSubagent("agent-details", "codex", "Inspect cancellation");
+            bar.updateSubagentStatus("agent-details", "thinking");
+
+            String rendered = AnsiConstants.stripAnsi(bar.buildStatusContent());
+            assertTrue(rendered.contains("codex"), rendered);
+            assertTrue(rendered.contains("Inspect cancellation"), rendered);
+            assertTrue(rendered.contains("thinking"), rendered);
         } finally {
             processes.close();
         }

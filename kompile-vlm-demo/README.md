@@ -6,9 +6,9 @@ A self-contained, end-to-end demo of Kompile's RAG-over-PDF flow using
 This is the VLM variant of `kompile-demo/`. The generated app, staging server,
 vector store, LLM load endpoint, RAG query path — all of those are identical.
 The only difference is how the input documents get turned into text: instead of
-hand-written markdown, each PDF under `sample-pdfs/` is fed to the
-`/api/vlm/test/run` endpoint, SmolDocling runs the full vision-encoder →
-embed → decoder pipeline on GPU, and the extracted markdown is then uploaded
+hand-written markdown, each PDF under `sample-pdfs/` is sent through the
+project-local `crawl_documents` MCP tool, SmolDocling runs as a reusable unified
+pipeline on GPU, and the extracted markdown is then uploaded
 through the normal `/api/documents/upload` path for chunking + embedding +
 indexing.
 
@@ -20,17 +20,16 @@ indexing.
    for answering the RAG question.
 3. Boot `kompile-app-main` on port 8080 with a demo-local `kompile.data.dir`.
 4. Load the staged Qwen model as the active `LanguageModel`.
-5. **VLM extraction** — for each PDF in `sample-pdfs/`, POST to
-   `/api/vlm/test/run`, poll `/api/vlm/test/status/{taskId}`, fetch
-   `/api/vlm/test/results/{taskId}`, and write one markdown file per PDF to
-   `var/extracted/`.
+5. **VLM extraction** — start the stdio MCP host, bootstrap the model through
+   `model_runtime`, and call `crawl_documents` with the unified VLM pipeline.
+   The MCP host writes markdown artifacts and reuses the model runtime.
 6. Upload the extracted markdown via `/api/documents/upload`.
 7. Ask a question and print the RAG-augmented answer.
 
 ## Prerequisites
 
 - Java 17 on `PATH` (or `JAVA_HOME` set).
-- `jq` and `curl` on `PATH`.
+- `python3` and `curl` on `PATH`.
 - A built `kompile-cli` shaded jar:
   ```bash
   (cd kompile-cli && mvn -o -DskipTests install)
@@ -101,22 +100,15 @@ everything when you're done:
 
 - **`scripts/05-extract-pdfs.sh`** — **The VLM-specific step.** For each PDF
   under `sample-pdfs/`:
-  1. `POST /api/vlm/test/run` multipart with
-     `file=@<pdf>`, `modelId=smoldocling-256m`, `outputFormat=MARKDOWN`,
-     `maxPages=<KOMPILE_VLM_MAX_PAGES>` (default 3), `pdfRenderDpi=150`,
-     `maxNewTokens=2048`.
-  2. Polls `GET /api/vlm/test/status/{taskId}` every few seconds until
-     `COMPLETED` (or `FAILED`).
-  3. `GET /api/vlm/test/results/{taskId}`, pulls `.pages[].text` with `jq`,
-     and writes one markdown file per PDF to `var/extracted/<stem>.md`.
-  4. Also keeps the raw result JSON at `var/extracted/<stem>.result.json` for
-     inspection.
+  1. Starts `kompile mcp-stdio` as a local JSON-RPC client process.
+  2. Calls `model_runtime` to ensure `smoldocling-256m` is available.
+  3. Calls `crawl_documents` with one canonical `UnifiedPipelineDefinition`-backed
+     VLM pipeline and all PDF sources.
+  4. Copies the resulting project markdown artifacts to `var/extracted/`.
 
-  VLM extraction runs in an isolated subprocess (`VlmTestSubprocessMain`)
-  launched by `VlmTestSubprocessLauncher` — that process is the one actually
-  loading the vision encoder + decoder + embed_tokens ONNX models and running
-  the end-to-end pipeline on GPU. The parent kompile-app-main JVM is kept free
-  of the large VLM graphs.
+  The long-lived MCP host owns a pooled `kompile-pipeline-serving` child. Model
+  state is reused across PDFs and released through a bounded runtime lease; no
+  executable path, port, or subprocess mode is configured by the caller.
 
 - **`scripts/06-ingest-extracted.sh`** — Uploads every file under
   `var/extracted/*.md` via `POST /api/documents/upload`. Identical flow to the
@@ -138,7 +130,6 @@ everything when you're done:
 | `KOMPILE_VLM_MAX_PAGES`      | `3`                                 | 05 |
 | `KOMPILE_VLM_PDF_DPI`        | `150`                               | 05 |
 | `KOMPILE_VLM_MAX_NEW_TOKENS` | `2048`                              | 05 |
-| `KOMPILE_VLM_POLL_SECONDS`   | `3`                                 | 05 |
 | `JAVA_HOME`                  | unset (uses `java` on PATH)         | 01, 03 |
 
 The two config files under `conf/` are the only place you need to edit if you
@@ -151,16 +142,14 @@ Stage it through the model-staging UI at `http://localhost:8090/`, or set
 `KOMPILE_VLM_MODEL_DIR` to a directory that already contains all five
 component files.
 
-**`05` fails with HTTP 500 from `/api/vlm/test/run`**
-Check `logs/app.log` for subprocess errors. The VLM subprocess is launched via
-`VlmTestSubprocessLauncher.launchTest` — look for lines starting with
-`Launching VLM test subprocess for task`. A common cause is insufficient GPU
-memory; lower `KOMPILE_VLM_PDF_DPI` (e.g. 96) or `KOMPILE_VLM_MAX_NEW_TOKENS`.
+**`05` reports a pipeline runtime failure**
+Inspect the MCP error and pipeline-runtime logs. A common cause is insufficient
+GPU memory; lower `KOMPILE_VLM_PDF_DPI` (for example 96) or
+`KOMPILE_VLM_MAX_NEW_TOKENS`.
 
 **`05` completes but `var/extracted/*.md` is empty**
-One or more pages failed inside SmolDocling. Inspect the raw result at
-`var/extracted/<stem>.result.json` — each entry in `.pages` has `success` and
-`error` fields. Re-running with `KOMPILE_VLM_MAX_PAGES=1` often isolates the
+One or more pages failed inside SmolDocling. Inspect the MCP crawl result and
+pipeline-runtime logs. Re-running with `KOMPILE_VLM_MAX_PAGES=1` often isolates the
 failing page.
 
 **`07` returns only retrieved chunks, no LLM answer**

@@ -126,8 +126,7 @@ re-launched with `--subprocess=TYPE`. This provides:
 
 - **Memory isolation**: A subprocess OOM doesn't crash the web server
 - **Responsiveness**: The web server stays fast while embedding runs
-- **Resource control**: Each subprocess has its own heap size, timeout, and
-  worker count
+- **Resource control**: Each subprocess has its own heap size and timeout
 
 | Subprocess type | What it does |
 |----------------|-------------|
@@ -135,7 +134,7 @@ re-launched with `--subprocess=TYPE`. This provides:
 | `vector-population` | Embed chunks and write to vector store |
 | `embedding` | Standalone embedding computation |
 | `model-init` | Model download and initialization |
-| `vlm-test` | VLM OCR processing |
+| `pipeline-serving` | Reusable stdio runtime for all model-backed pipeline steps, including VLM/OCR |
 | `training` | Model training jobs |
 
 Subprocesses are launched with `--subprocess=TYPE`. Configuration lives in

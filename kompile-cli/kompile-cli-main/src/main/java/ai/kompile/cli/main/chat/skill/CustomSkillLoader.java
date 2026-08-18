@@ -41,7 +41,6 @@ import java.util.stream.Stream;
  * description: Deploy the current branch to staging
  * category: devops
  * tools: bash, read, grep, glob
- * max_steps: 30
  * model: default
  * ---
  * Deploy the current branch to staging. {{args}}
@@ -139,7 +138,6 @@ public class CustomSkillLoader {
         String description = fields.getOrDefault("description", "Custom skill: " + name);
         String category = fields.getOrDefault("category", "custom");
         String modelHint = fields.getOrDefault("model", null);
-        int maxSteps = parseIntOrDefault(fields.get("max_steps"), 0);
 
         // Parse tools
         Set<String> allowedTools = null;
@@ -162,7 +160,6 @@ public class CustomSkillLoader {
                 .promptTemplate(body)
                 .category(category)
                 .modelHint(modelHint)
-                .maxSteps(maxSteps)
                 .allowedTools(allowedTools)
                 .builtIn(false)
                 .build();
@@ -181,12 +178,4 @@ public class CustomSkillLoader {
         return fields;
     }
 
-    private int parseIntOrDefault(String value, int defaultValue) {
-        if (value == null || value.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
 }

@@ -1427,14 +1427,6 @@
   }, {
     "pattern":"\\Qai/kompile/app/services/subprocess/VectorPopulationSubprocessLauncher.class\\E"
   }, {
-    "pattern":"\\Qai/kompile/app/services/subprocess/VlmTestSubprocessLauncher$VlmTestHandle.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/services/subprocess/VlmTestSubprocessLauncher$VlmTestResult.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/services/subprocess/VlmTestSubprocessLauncher$VlmTestStatus.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/services/subprocess/VlmTestSubprocessLauncher.class\\E"
-  }, {
     "pattern":"\\Qai/kompile/app/source/providers/FileUploadSourceProvider.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/source/providers/ServerPathSourceProvider.class\\E"
@@ -2275,18 +2267,6 @@
   }, {
     "pattern":"\\Qai/kompile/app/tools/OrchestratorTool.class\\E"
   }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool$DeletePipelineInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool$ExecutePipelineInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool$GetAsyncResultInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool$GetPipelineInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool$ListPipelinesInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/PipelineTool.class\\E"
-  }, {
     "pattern":"\\Qai/kompile/app/tools/PromptTemplateTool$DeletePromptTemplateInput.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/tools/PromptTemplateTool$GetPromptTemplateInput.class\\E"
@@ -2630,22 +2610,6 @@
     "pattern":"\\Qai/kompile/app/tools/VlmPipelineTool$ListVlmStagesInput.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/tools/VlmPipelineTool.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$CancelVlmTestInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$GetVlmTestConfigInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$GetVlmTestResultsInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$GetVlmTestStatusInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$RunVlmTestInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$UpdateVlmTestConfigInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool$WaitVlmTestInput.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/tools/VlmTestTool.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/web/GlobalExceptionHandler.class\\E"
   }, {
@@ -3322,8 +3286,6 @@
     "pattern":"\\Qai/kompile/app/web/controllers/VlmPipelineConfigController$StageListItem.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/web/controllers/VlmPipelineConfigController.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/app/web/controllers/VlmTestWorkflowController.class\\E"
   }, {
     "pattern":"\\Qai/kompile/app/web/controllers/explain/ExplainController.class\\E"
   }, {
@@ -5392,8 +5354,6 @@
     "pattern":"\\Qai/kompile/rag/pipeline/controller/RagPipelineController.class\\E"
   }, {
     "pattern":"\\Qai/kompile/rag/pipeline/service/RagPipelineService$PipelineModelStatus.class\\E"
-  }, {
-    "pattern":"\\Qai/kompile/rag/pipeline/service/RagPipelineService$RagPipelineResult.class\\E"
   }, {
     "pattern":"\\Qai/kompile/rag/pipeline/service/RagPipelineService.class\\E"
   }, {

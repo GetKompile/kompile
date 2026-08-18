@@ -264,7 +264,6 @@ does not ship in an end-user bundle.
 | `VlmManagementComponent` | `developer-hub/vlm-management` | `app-vlm-management` | no | `admin-app` | admin |
 | `VlmModelsComponent` | `vlm-models` | `app-vlm-models` | no | `admin-app` | admin |
 | `VlmOrchestrationComponent` | `vlm-orchestration` | `app-vlm-orchestration` | yes | `admin-app` | admin |
-| `VlmTestWorkflowComponent` | `vlm-test-workflow` | `app-vlm-test-workflow` | no | `admin-app` | admin |
 | `WorkflowsHubComponent` | `workflows-hub` | `app-workflows-hub` | yes | `crawl-app` | crawl |
 
 ## Unreachable from any route root

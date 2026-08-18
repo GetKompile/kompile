@@ -177,17 +177,15 @@ public final class CrawlDiscoveryTool implements CliTool {
         ArrayNode types = mapper.createArrayNode();
         addPipeline(types, "STANDARD_TEXT", "Normal extracted text, chunking, and embeddings.");
         types.addObject().put("id", "VLM")
-                .put("useWhen", "PDF document extraction through the crawl compatibility adapter.")
-                .put("executionModel", "crawl-compatibility")
-                .put("supportedInputTypes", "application/pdf")
-                .put("workerRequired", true)
-                .put("genericAlternative", "Provide a UnifiedPipelineDefinition with pipelineSpec.@class for other input types or custom VLM graphs.");
+                .put("useWhen", "Document and image understanding through a UnifiedPipelineDefinition.")
+                .put("executionModel", "managed-unified-runtime")
+                .put("supportedInputTypes", "application/pdf,image/*")
+                .put("definition", "pipelineSpec with a VLM step runner");
         types.addObject().put("id", "OCR")
-                .put("useWhen", "PDF OCR/extraction through the crawl compatibility adapter.")
-                .put("executionModel", "crawl-compatibility")
-                .put("supportedInputTypes", "application/pdf")
-                .put("workerRequired", true)
-                .put("genericAlternative", "Provide a UnifiedPipelineDefinition with pipelineSpec.@class for custom OCR/VLM processing.");
+                .put("useWhen", "OCR and structured document extraction through a UnifiedPipelineDefinition.")
+                .put("executionModel", "managed-unified-runtime")
+                .put("supportedInputTypes", "application/pdf,image/*")
+                .put("definition", "pipelineSpec with an OCR or document-understanding step runner");
         addPipeline(types, "CODE", "Code-aware loading and chunking.");
         addPipeline(types, "TABLE_AWARE", "Preserve tabular structure during extraction and chunking.");
         addPipeline(types, "KEYWORD_ONLY", "Keyword indexing without embeddings.");
@@ -225,16 +223,14 @@ public final class CrawlDiscoveryTool implements CliTool {
                 "Use per-document loaderName/chunkerName for exceptions; use pipelines plus routeRules "
                         + "for reusable content classes; use steps to limit crawl phases. Set dryRun=true on "
                         + "crawl_documents to validate the composed request without creating a knowledge base. "
-                        + "The built-in VLM/OCR entries are crawl-compatibility adapters (PDF + vlm-test worker); "
-                        + "generic UnifiedPipelineDefinition entries require an executable pipelineSpec with @class.");
+                        + "All model-backed pipelines use UnifiedPipelineDefinition and an MCP-owned reusable stdio runtime.");
         ObjectNode typeGuide = shape.putObject("pipelineTypeGuide");
         typeGuide.put("VLM/OCR",
-                "pipelineType + modelId/modelBindings + optional processor.adapter=vlm-test; PDF compatibility worker.");
+                "pipelineType + modelId/modelBindings compiled to the canonical unified definition.");
         typeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
-                "pipelineType + loaderName/chunkerName/options; no document-model worker required.");
+                "pipelineType + loaderName/chunkerName/options; model steps use the same runtime contract.");
         typeGuide.put("CUSTOM",
-                "processor.type=KOMPILE_SUBPROCESS|EXECUTABLE for a caller executable, or "
-                        + "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
+                "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
         return shape;
     }
 

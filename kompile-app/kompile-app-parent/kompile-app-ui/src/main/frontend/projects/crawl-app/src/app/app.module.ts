@@ -76,7 +76,6 @@ import { McpToolUseLogComponent } from './components/mcp-tool-use-log/mcp-tool-u
 import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools-viewer.component';
 import { OrchestratorHubComponent } from './components/orchestrator-hub/orchestrator-hub.component';
 import { OutputClassifierConfigComponent } from './components/orchestrator-hub/components/output-classifier-config/output-classifier-config.component';
-import { PipelineHubComponent } from './components/pipeline-hub/pipeline-hub.component';
 import { PromptManagerComponent } from './components/prompt-manager/prompt-manager.component';
 import { PromptTemplateManagerComponent } from './components/prompt-template-manager/prompt-template-manager.component';
 import { RestMcpBridgeComponent } from './components/rest-mcp-bridge/rest-mcp-bridge.component';
@@ -127,7 +126,6 @@ import { WorkflowsHubComponent } from './components/workflows-hub/workflows-hub.
     McpToolsViewerComponent,
     OrchestratorHubComponent,
     OutputClassifierConfigComponent,
-    PipelineHubComponent,
     PromptManagerComponent,
     PromptTemplateManagerComponent,
     RestMcpBridgeComponent,

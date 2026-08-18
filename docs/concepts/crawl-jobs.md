@@ -293,7 +293,7 @@ Subprocesses are the same binary re-launched with `--subprocess=TYPE`:
 | `vector-population` | Embedding generation and vector indexing |
 | `embedding` | Standalone embedding computation |
 | `model-init` | Model download and initialization |
-| `vlm-test` | VLM pipeline testing |
+| `pipeline-serving` | Reusable execution for all model-backed pipeline steps |
 | `training` | Model training jobs |
 
 ## Adaptive batching

@@ -89,16 +89,12 @@ class ChatSessionMetricsOutcomeTest {
 
         ObjectNode json = metrics.toJson(mapper);
         JsonNode agentic = json.get("agentic");
-        // agentic section is always present, but judgeCalls only when > 0
-        // However, agentic section requires steps > 0 to appear... let me check
-        // Actually, looking at the code, agentic is always serialized
-        assertTrue(agentic.has("judgeCalls") || !agentic.has("judgeCalls"));
-        // Since we didn't record agentic steps, the value depends on impl
+        assertNotNull(agentic);
+        assertEquals(2, agentic.path("judgeCalls").asInt());
     }
 
     @Test
     void escapeTrackingSerialized() {
-        metrics.recordAgenticStep(); // ensure agentic section exists
         metrics.recordEscape("EXPLICIT_REFUSAL");
         metrics.recordEscape("EXPLICIT_REFUSAL");
         metrics.recordEscape("EMPTY_OUTPUT");
@@ -142,7 +138,6 @@ class ChatSessionMetricsOutcomeTest {
 
     @Test
     void modelSwapsSerialized() {
-        metrics.recordAgenticStep();
         metrics.recordModelSwap();
         metrics.recordModelSwap();
 
@@ -153,7 +148,6 @@ class ChatSessionMetricsOutcomeTest {
 
     @Test
     void thinkingTokensSerialized() {
-        metrics.recordAgenticStep();
         metrics.recordThinkingTokens(5000);
         metrics.recordThinkingTokens(3000);
 

@@ -596,22 +596,16 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                                      boolean dryRun) throws IOException, InterruptedException {
         KompileProjectScript script = store.findScript(manifest, step.getRef())
                 .orElseThrow(() -> new IllegalArgumentException("Unknown workflow script ref: " + step.getRef()));
+        if ("start-serving".equals(normalizeScriptId(script))) {
+            System.out.println("  Pipeline runtimes are MCP-managed and start on demand — no standalone service started.");
+            return 0;
+        }
         String command = firstNonBlank(script.getCommand(), script.getPath());
         KompileProjectWorkflowStep commandStep = new KompileProjectWorkflowStep();
         commandStep.setCommand(command);
         commandStep.setWorkingDirectory(firstNonBlank(script.getWorkingDirectory(), step.getWorkingDirectory(), "."));
         Map<String, String> environment = new LinkedHashMap<>(defaultServeEnvironment(manifest, script, projectRoot));
         environment.putAll(step.getEnvironment());
-        if ("start-serving".equals(normalizeScriptId(script))
-                && firstNonBlank(environment.get("KOMPILE_SERVING_COMMAND"),
-                System.getenv("KOMPILE_SERVING_COMMAND")) == null) {
-            Optional<String> servingCommand = defaultServingCommand(manifest, projectRoot);
-            if (servingCommand.isEmpty()) {
-                System.out.println("  Pipeline serving is app-managed for this project — no standalone service started.");
-                return 0;
-            }
-            environment.put("KOMPILE_SERVING_COMMAND", servingCommand.get());
-        }
         commandStep.setEnvironment(environment);
         return runCommandStep(commandStep, projectRoot, dryRun);
     }
@@ -892,70 +886,6 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 "--spring.main.banner-mode=off")));
     }
 
-    private static Optional<String> defaultServingCommand(KompileProjectManifest manifest,
-                                                          Path projectRoot) throws IOException {
-        boolean standaloneServingRequired = manifest.getPipelines().stream()
-                .filter(KompileProjectPipeline::isActive)
-                .anyMatch(pipeline -> "SERVING".equals(normalizeEnum(pipeline.getRole()))
-                        || hasTag(pipeline.getTags(), "serving"));
-        if (!standaloneServingRequired) {
-            return Optional.empty();
-        }
-        String servingPort = firstNonBlank(System.getenv("KOMPILE_SERVING_PORT"),
-                System.getProperty("kompile.serving.port"), "8091");
-        if (isPortInUse(Integer.parseInt(servingPort))) {
-            System.out.println("Pipeline serving already running on port " + servingPort + " — skipping.");
-            return Optional.of("echo 'Pipeline serving already running on port " + servingPort + " — skipping.'");
-        }
-        Path argsPath = resolveServingArgsPath(manifest, projectRoot);
-        String configuredCommand = firstNonBlank(System.getenv("KOMPILE_PIPELINE_SERVING_COMMAND"),
-                System.getProperty("kompile.pipelineServing.command"));
-        if (configuredCommand != null) {
-            return Optional.of(configuredCommand.replace("{args}", shellQuote(argsPath.toString())));
-        }
-        ComponentRegistry registry = new ComponentRegistry();
-        Optional<Path> runtime = configuredPath(
-                "KOMPILE_PIPELINE_SERVING_EXECUTABLE",
-                "kompile.pipeline.serving.executable")
-                .filter(path -> Files.isRegularFile(path) && Files.isExecutable(path))
-                .or(() -> {
-                    File binary = registry.getDistributionBinaryPath(
-                            ComponentRegistry.KOMPILE_PIPELINE_SERVING);
-                    Path path = binary == null ? null : binary.toPath().toAbsolutePath().normalize();
-                    return path != null && Files.isRegularFile(path) && Files.isExecutable(path)
-                            ? Optional.of(path) : Optional.empty();
-                });
-        if (runtime.isEmpty() && CliProcessLauncher.requiresNativeChildren()) {
-            System.err.println("Native Kompile execution requires bin/kompile-pipeline-serving; "
-                    + "the executable-JAR fallback is disabled.");
-            return Optional.empty();
-        }
-        if (runtime.isEmpty()) {
-            runtime = configuredPath(
-                    "KOMPILE_PIPELINE_SERVING_JAR",
-                    "kompile.pipeline.serving.jar")
-                    .filter(Files::isRegularFile)
-                    .or(() -> {
-                    File installed = registry.findInstalledJar(
-                            ComponentRegistry.KOMPILE_PIPELINE_SERVING);
-                    return installed != null && installed.isFile()
-                            ? Optional.of(installed.toPath().toAbsolutePath().normalize())
-                            : Optional.empty();
-                    })
-                    .or(() -> findSourceRoot(projectRoot)
-                            .flatMap(root -> findModuleExecutableJar(
-                                    root, ComponentRegistry.KOMPILE_PIPELINE_SERVING)));
-        }
-        if (runtime.isEmpty()) {
-            System.err.println("No standalone pipeline-serving binary or executable JAR found. "
-                    + "Install kompile-pipeline-serving or set "
-                    + "KOMPILE_PIPELINE_SERVING_EXECUTABLE / KOMPILE_PIPELINE_SERVING_JAR.");
-            return Optional.empty();
-        }
-        return Optional.of(artifactLaunchCommand(
-                runtime.get(), List.of(argsPath.toAbsolutePath().normalize().toString())));
-    }
-
     /**
      * How one persona's launcher is discovered. Kept next to the launch code rather than on
      * {@link KompileService}, which describes routing — where a request goes — not where a jar
@@ -1084,105 +1014,6 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             }
         }
         return KompileServiceEndpoints.resolve(service).port();
-    }
-
-    private static Path resolveServingArgsPath(KompileProjectManifest manifest, Path projectRoot) throws IOException {
-        Optional<Path> configuredArgs = configuredPath("KOMPILE_PIPELINE_SERVING_ARGS", "kompile.pipelineServing.args");
-        if (configuredArgs.isPresent()) {
-            return configuredArgs.get();
-        }
-        Optional<KompileProjectPipeline> servingPipeline = manifest.getPipelines().stream()
-                .filter(KompileProjectPipeline::isActive)
-                .filter(pipeline -> "SERVING".equals(normalizeEnum(pipeline.getRole()))
-                        || hasTag(pipeline.getTags(), "serving"))
-                .findFirst();
-        if (servingPipeline.isPresent() && firstNonBlank(servingPipeline.get().getDefinitionPath()) != null) {
-            Path definition = projectRoot.resolve(servingPipeline.get().getDefinitionPath()).normalize();
-            if (!definition.startsWith(projectRoot)) {
-                throw new IllegalArgumentException("Serving pipeline definition escapes project root: " + definition);
-            }
-            if (Files.isRegularFile(definition)) {
-                String definitionJson = Files.readString(definition, StandardCharsets.UTF_8);
-                if (definitionJson.contains("\"pipelineDefinitionJson\"")) {
-                    return definition;
-                }
-                return writeServingArgs(projectRoot, servingPipeline.get(), definitionJson);
-            }
-        }
-        return writeServingArgs(projectRoot, servingPipeline.orElse(null), defaultCpuPipelineDefinition(manifest, servingPipeline.orElse(null)));
-    }
-
-    private static Path writeServingArgs(Path projectRoot, KompileProjectPipeline pipeline,
-                                         String pipelineDefinitionJson) throws IOException {
-        Path argsPath = projectRoot.resolve(".kompile/state/project-serving-args.json").normalize();
-        if (!argsPath.startsWith(projectRoot)) {
-            throw new IllegalArgumentException("Serving args path escapes project root: " + argsPath);
-        }
-        Files.createDirectories(argsPath.getParent());
-        String pipelineId = pipeline == null ? "project-cpu-noop" : firstNonBlank(pipeline.getPipelineId(), pipeline.getId(), "project-cpu-noop");
-        String port = firstNonBlank(System.getenv("KOMPILE_SERVING_PORT"),
-                System.getProperty("kompile.serving.port"), "9090");
-        String argsJson = "{\n"
-                + "  \"taskId\" : " + jsonString(pipelineId) + ",\n"
-                + "  \"pipelineDefinitionJson\" : " + jsonString(pipelineDefinitionJson) + ",\n"
-                + "  \"executionMode\" : \"PERSISTENT_SERVING\",\n"
-                + "  \"requestDataJson\" : null,\n"
-                + "  \"servingPort\" : " + port + ",\n"
-                + "  \"nd4jConfigJson\" : \"{\\\"backend\\\":\\\"cpu\\\"}\",\n"
-                + "  \"memoryStopPercent\" : 80,\n"
-                + "  \"memoryCriticalPercent\" : 90,\n"
-                + "  \"memoryKillPercent\" : 95,\n"
-                + "  \"memoryCheckIntervalMs\" : 1000,\n"
-                + "  \"gpuMemoryStopPercent\" : 100,\n"
-                + "  \"gpuMemoryCriticalPercent\" : 100,\n"
-                + "  \"gpuMemoryKillPercent\" : 100,\n"
-                + "  \"heartbeatIntervalMs\" : 3000,\n"
-                + "  \"callbackBaseUrl\" : null\n"
-                + "}\n";
-        Files.writeString(argsPath, argsJson, StandardCharsets.UTF_8);
-        return argsPath;
-    }
-
-    private static String defaultCpuPipelineDefinition(KompileProjectManifest manifest, KompileProjectPipeline pipeline) {
-        String pipelineId = pipeline == null ? "project-cpu-noop" : firstNonBlank(pipeline.getPipelineId(), pipeline.getId(), "project-cpu-noop");
-        String displayName = pipeline == null ? "Project CPU no-op" : firstNonBlank(pipeline.getName(), pipelineId);
-        String modelSetId = manifest.getModels().stream()
-                .filter(KompileProjectModel::isRequired)
-                .findFirst()
-                .or(() -> manifest.getModels().stream().findFirst())
-                .map(model -> firstNonBlank(model.getRegistryModelId(), model.getModelId(), model.getId()))
-                .orElse("project-default");
-        String port = firstNonBlank(System.getenv("KOMPILE_SERVING_PORT"),
-                System.getProperty("kompile.serving.port"), "9090");
-        return "{"
-                + "\"pipelineId\":" + jsonString(pipelineId) + ","
-                + "\"displayName\":" + jsonString(displayName) + ","
-                + "\"description\":\"Generated CPU no-op pipeline for Kompile project serve.\","
-                + "\"kind\":\"GENERIC\","
-                + "\"topology\":\"SEQUENCE\","
-                + "\"pipelineSpec\":{"
-                + "\"@class\":\"ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline\","
-                + "\"id\":" + jsonString(pipelineId) + ","
-                + "\"steps\":[]"
-                + "},"
-                + "\"modelSetId\":" + jsonString(modelSetId) + ","
-                + "\"serving\":{"
-                + "\"heapSize\":\"512m\","
-                + "\"port\":" + port + ","
-                + "\"replicas\":1,"
-                + "\"gpuDeviceId\":\"cpu\","
-                + "\"memoryStopPercent\":80,"
-                + "\"memoryCriticalPercent\":90,"
-                + "\"memoryKillPercent\":95,"
-                + "\"gpuStopPercent\":100,"
-                + "\"gpuCriticalPercent\":100,"
-                + "\"gpuKillPercent\":100,"
-                + "\"heartbeatIntervalMs\":3000"
-                + "},"
-                + "\"builtin\":false,"
-                + "\"enabled\":true,"
-                + "\"tags\":{\"generated\":true,\"cpu\":true,\"projectServe\":true}"
-                + "}";
     }
 
     private static Optional<Path> configuredPath(String envName, String propertyName) {
@@ -1503,9 +1334,8 @@ public class ProjectCrawlCommand implements Callable<Integer> {
      * Executes the model-backed processor selected for one resolved document pipeline.
      *
      * <p>The default implementation is {@link LocalModelPipelineRunner#extract(Path, Path,
-     * LocalCrawlCapabilities.ResolvedPipeline, String)}. Embedders may supply the same boundary
-     * when exercising the complete crawl lifecycle in one JVM; normal CLI and MCP execution keeps
-     * the request-scoped subprocess implementation.</p>
+     * LocalCrawlCapabilities.ResolvedPipeline, String)}. Embedders may replace this boundary in
+     * tests; production CLI and MCP execution uses the pooled unified runtime supervisor.</p>
      */
     @FunctionalInterface
     public interface ModelPipelineExecutor {
@@ -1540,7 +1370,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
      * Execute a local crawl with an explicit model-pipeline boundary.
      *
      * <p>This overload exists for JVM embedding and integration harnesses. Production callers use
-     * the four-argument overload and therefore retain the standalone subprocess contract.</p>
+     * the same boundary with the MCP-hosted pooled runtime implementation.</p>
      */
     public static LocalCrawlExecution executeLocalCrawl(
             KompileProjectCrawlProfile profile,
@@ -1811,7 +1641,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             try (Writer fileWriter = Files.newBufferedWriter(bodyPath, StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING);
                  NormalizedTextWriter bodyWriter = new NormalizedTextWriter(fileWriter)) {
-                if (LocalCrawlCapabilities.usesProcessingSubprocess(pipeline)) {
+                if (LocalCrawlCapabilities.usesModelPipeline(pipeline)) {
                     String extracted = modelPipelineExecutor.extract(projectRoot, file, pipeline, "");
                     bodyWriter.write(extracted);
                     title = file.getFileName().toString();
@@ -2448,7 +2278,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 + "  \"chunker\" : " + jsonString(firstNonBlank(profile.getChunker(), "local-fixed")) + ",\n"
                 + "  \"collection\" : " + jsonString(firstNonBlank(profile.getCollection(), profile.getId())) + ",\n"
                 + "  \"factSheetName\" : " + jsonString(profile.getFactSheetName()) + ",\n"
-                + "  \"executionMode\" : " + jsonString(LocalCrawlSubprocessRunner.executionMode()) + ",\n"
+                + "  \"executionMode\" : " + jsonString(LocalCrawlRunner.executionMode()) + ",\n"
                 + "  \"markdownPath\" : " + jsonString(projectRelativePath(projectRoot, markdownDir)) + ",\n"
                 + "  \"analysisPath\" : " + jsonString(projectRelativePath(projectRoot, analysisPath)) + ",\n"
                 + "  \"documentCount\" : " + result.documents().size() + ",\n"

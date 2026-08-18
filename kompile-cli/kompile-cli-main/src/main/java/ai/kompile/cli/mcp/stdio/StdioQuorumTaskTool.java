@@ -214,7 +214,7 @@ public class StdioQuorumTaskTool {
             AgentConfig agentConfig = AgentConfig.builder(agentName)
                 .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
                 .description("External " + agentName + " agent")
-                .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
+                .systemPrompt(prompt).isSubagent(true).canSpawnSubagents(false)
                 .roleName(roleName)
                 .modelOverride(model)
                 .thinkingOverride(thinking)

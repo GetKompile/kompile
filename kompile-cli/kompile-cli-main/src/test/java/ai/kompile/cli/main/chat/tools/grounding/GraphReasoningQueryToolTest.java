@@ -18,7 +18,6 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -63,30 +62,18 @@ class GraphReasoningQueryToolTest {
 
     private ObjectMapper om;
     private ToolContext ctx;
-    private String previousLocalCrawlExecution;
 
     @TempDir
     Path tempDir;
 
     @BeforeEach
     void setUp() {
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
         om = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("coder").enabledTools(Set.of("*")).build();
         PermissionService perms = new PermissionService();
         perms.setUserOverride("graph_reasoning_query", PermissionService.PermissionLevel.ALLOW);
         ToolRegistry registry = new ToolRegistry(om);
         ctx = new ToolContext("test-session", agent, perms, tempDir, registry);
-    }
-
-    @AfterEach
-    void restoreLocalCrawlExecution() {
-        if (previousLocalCrawlExecution == null) {
-            System.clearProperty("kompile.local.crawl.execution");
-        } else {
-            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
-        }
     }
 
     @Test

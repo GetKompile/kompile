@@ -244,7 +244,6 @@ public class RoleManagerTool implements CliTool {
         sb.append("Display Name: ").append(role.getDisplayName()).append("\n");
         sb.append("Category: ").append(role.getCategory()).append("\n");
         sb.append("Description: ").append(role.getDescription()).append("\n");
-        sb.append("Max Steps: ").append(role.getMaxSteps()).append("\n");
         sb.append("Can Spawn Subagents: ").append(role.isCanSpawnSubagents()).append("\n");
         sb.append("Model Hint: ").append(role.getModelHint()).append("\n");
         sb.append("Agent Defaults: ").append(formatAgentDefaults(role.getAgentDefaults())).append("\n");

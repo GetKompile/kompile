@@ -500,7 +500,6 @@ public class RoleWizard {
         System.out.println(BOLD + "  Display Name: " + RESET + selectedRole.getDisplayName());
         System.out.println(BOLD + "  Category: " + RESET + selectedRole.getCategory());
         System.out.println(BOLD + "  Description: " + RESET + selectedRole.getDescription());
-        System.out.println(BOLD + "  Max Steps: " + RESET + selectedRole.getMaxSteps());
         System.out.println(BOLD + "  Can Spawn Subagents: " + RESET + selectedRole.isCanSpawnSubagents());
         System.out.println(BOLD + "  Model Hint: " + RESET + selectedRole.getModelHint());
         System.out.println(BOLD + "  Agent Defaults: " + RESET);

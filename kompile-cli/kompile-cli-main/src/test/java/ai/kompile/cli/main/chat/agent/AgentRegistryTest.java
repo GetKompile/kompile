@@ -252,16 +252,12 @@ class AgentRegistryTest {
     void testExploreQuickHasFastModelHint() {
         AgentConfig quick = registry.get("explore-quick");
         assertEquals("fast", quick.getModelHint());
-        assertTrue(quick.getMaxSteps() <= 10,
-                "Quick explorer should have low max steps");
     }
 
     @Test
     void testExploreDeepHasDefaultModelHint() {
         AgentConfig deep = registry.get("explore-deep");
         assertEquals("default", deep.getModelHint());
-        assertTrue(deep.getMaxSteps() >= 20,
-                "Deep explorer should have higher max steps");
     }
 
     @Test

@@ -119,7 +119,7 @@ SDX_RELEASE_ARTIFACT_ROOT="${SDX_RELEASE_ARTIFACT_ROOT:-}"
 RELEASE_CONSUMER=0
 AAR_OVERRIDE=0
 RETAIN_STAGING="${KOMPILE_ANDROID_RETAIN_STAGING:-0}"
-APK_BUILD_ID="${KOMPILE_ANDROID_BUILD_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+APK_BUILD_ID=""
 APK_VERSION_CODE=""
 APK_VERSION_CODE_OVERRIDE=0
 if [[ -n "${KOMPILE_APK_STAGING_ROOT:-}" ]]; then
@@ -283,6 +283,9 @@ dl4j_aot_source_manifest_sha256() {
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native-preset
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-cpu-backend-common
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native
+    nd4j/nd4j-tokenizers/tokenizers-native-preset
+    nd4j/nd4j-tokenizers/tokenizers-native
+    nd4j/samediff-llm
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-model
     nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-preset
@@ -345,7 +348,7 @@ load_sdx_aot_receipt() {
       return 1
     }
     case "$key" in
-      format|stage|native_image_build_mode|native_image_optimization|javacpp_reachability_generator|base_sdk|process_blas_symbols_abi|process_blas_symbols_capability|build_script|object_builder|svm_support|maven|java_home|javacpp_jar|android_api|android_abi|native_library_count|*_sha256) ;;
+      format|stage|cache_schema|native_image_build_mode|native_image_optimization|javacpp_reachability_generator|base_sdk|process_blas_symbols_abi|process_blas_symbols_capability|build_script|object_builder|svm_support|maven|java_home|javacpp_jar|android_api|android_abi|native_library_count|native_stage_key|managed_stage_key|producer|native_packaging|standalone_sdx_cpu_included|*_sha256) ;;
       *) echo "Unknown non-digest SDX AOT SDK receipt field: $key" >&2; return 1 ;;
     esac
     case "$key" in
@@ -510,6 +513,9 @@ verify_sdx_aot_sdk_receipt() {
     [nd4j-native-preset]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native-preset"
     [nd4j-cpu-backend-common]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-cpu-backend-common"
     [nd4j-native]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-native"
+    [tokenizers-native-preset]="nd4j/nd4j-tokenizers/tokenizers-native-preset"
+    [tokenizers-native]="nd4j/nd4j-tokenizers/tokenizers-native"
+    [samediff-llm]="nd4j/samediff-llm"
     [nd4j-sdx]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx"
     [nd4j-sdx-model]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-model"
     [nd4j-sdx-preset]="nd4j/nd4j-backends/nd4j-backend-impls/nd4j-sdx-preset"
@@ -1299,16 +1305,6 @@ done
 
 configure_work_root || exit 2
 
-if [[ "$APK_VERSION_CODE_OVERRIDE" == "1" ]]; then
-  [[ "${KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE:-0}" == "1" ]] || {
-    echo "--version-code is reserved for historical reproduction; normal builds allocate it automatically" >&2
-    echo "Set KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE=1 only for an intentional reproduction" >&2
-    exit 2
-  }
-else
-  APK_VERSION_CODE="$("$SCRIPT_DIR/tools/allocate-apk-version-code.sh" --scan-root "$OUTPUT_DIR")"
-fi
-
 case "$RETAIN_STAGING" in
   0|1) ;;
   *) echo "KOMPILE_ANDROID_RETAIN_STAGING must be 0 or 1" >&2; exit 2 ;;
@@ -1317,16 +1313,28 @@ case "$RAM_GRADLE_BUILD" in
   0|1) ;;
   *) echo "KOMPILE_ANDROID_RAM_GRADLE_BUILD must be 0 or 1" >&2; exit 2 ;;
 esac
-[[ "$APK_BUILD_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
-  echo "APK build ID must contain only letters, digits, dot, underscore, and hyphen" >&2
-  exit 2
-}
-[[ "$APK_VERSION_CODE" =~ ^[0-9]+$ ]] && (( APK_VERSION_CODE >= 1 && APK_VERSION_CODE <= 2100000000 )) || {
-  echo "APK version code must be an integer from 1 through 2100000000" >&2
-  exit 2
-}
 prepare_work_root || exit 2
 if [[ "$CLEANUP_ONLY" != "1" ]]; then
+  if [[ "$APK_VERSION_CODE_OVERRIDE" == "1" ]]; then
+    [[ "${KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE:-0}" == "1" ]] || {
+      echo "--version-code is reserved for historical reproduction; normal builds allocate it automatically" >&2
+      echo "Set KOMPILE_ANDROID_ALLOW_MANUAL_VERSION_CODE=1 only for an intentional reproduction" >&2
+      exit 2
+    }
+  else
+    APK_VERSION_CODE="$("$SCRIPT_DIR/tools/allocate-apk-version-code.sh" --scan-root "$OUTPUT_DIR")"
+  fi
+  if [[ -z "$APK_BUILD_ID" ]]; then
+    APK_BUILD_ID="v$APK_VERSION_CODE"
+  fi
+  [[ "$APK_BUILD_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
+    echo "APK build ID must contain only letters, digits, dot, underscore, and hyphen" >&2
+    exit 2
+  }
+  [[ "$APK_VERSION_CODE" =~ ^[0-9]+$ ]] && (( APK_VERSION_CODE >= 1 && APK_VERSION_CODE <= 2100000000 )) || {
+    echo "APK version code must be an integer from 1 through 2100000000" >&2
+    exit 2
+  }
   if [[ -z "$VARIANT" ]]; then
     echo "--variant is required; use --variant all only when every APK is intentional" >&2
     usage >&2
@@ -1715,7 +1723,7 @@ fi
 
 # Source receipts are validated before Gradle reads any producer artifact.
 # From this point forward the APK depends only on those immutable artifact bytes,
-# not on unrelated files in the shared producer worktree.
+# not on unrelated files in the shared producer checkout.
 verify_packaging_provenance_anchors || exit 1
 
 mkdir -p "$OUTPUT_DIR"

@@ -355,10 +355,9 @@ public class ChatStatsCommand implements Callable<Integer> {
                     .forEach(e -> System.out.printf("  %-20s %d%n", e.getKey(), e.getValue()));
         }
 
-        if (s.agenticSteps > 0 || s.compactions > 0) {
+        if (s.compactions > 0 || s.thinkingTokens > 0 || s.subagentsSpawned > 0) {
             System.out.println();
             System.out.println(BOLD + "  Agentic" + RESET);
-            if (s.agenticSteps > 0) System.out.printf("  Steps:       %d%n", s.agenticSteps);
             if (s.compactions > 0) System.out.printf("  Compactions: %d%n", s.compactions);
             if (s.thinkingTokens > 0) System.out.printf("  Thinking:    %s tokens%n", FormatUtils.formatNumber(s.thinkingTokens));
             if (s.subagentsSpawned > 0) System.out.printf("  Subagents:   %d%n", s.subagentsSpawned);
@@ -498,7 +497,6 @@ public class ChatStatsCommand implements Callable<Integer> {
         }
 
         JsonNode agentic = root.path("agentic");
-        data.agenticSteps = agentic.path("steps").asInt(0);
         data.compactions = agentic.path("compactions").asInt(0);
         data.thinkingTokens = agentic.path("thinkingTokens").asLong(0);
         data.subagentsSpawned = agentic.path("subagentsSpawned").asInt(0);
@@ -608,7 +606,6 @@ public class ChatStatsCommand implements Callable<Integer> {
         public int totalToolErrors;
         public Map<String, Integer> toolBreakdown;
 
-        public int agenticSteps;
         public int compactions;
         public long thinkingTokens;
         public int subagentsSpawned;

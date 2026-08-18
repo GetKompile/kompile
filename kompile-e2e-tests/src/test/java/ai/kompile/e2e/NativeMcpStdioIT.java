@@ -41,7 +41,6 @@ class NativeMcpStdioIT {
     private static final String BINARY_PROPERTY = "kompile.native.mcp.binary";
     private static final String VLM_PDF_PROPERTY = "kompile.native.mcp.vlm.pdf";
     private static final String VLM_PROJECT_ROOT_PROPERTY = "kompile.native.mcp.vlm.projectRoot";
-    private static final String VLM_WORKER_PROPERTY = "kompile.native.mcp.vlm.worker";
     private static final String VLM_MODEL_PROPERTY = "kompile.native.mcp.vlm.modelId";
     private static final String VLM_PAGE_RANGE_PROPERTY = "kompile.native.mcp.vlm.pageRange";
     private static final String VLM_MAX_TOKENS_PROPERTY = "kompile.native.mcp.vlm.maxNewTokens";
@@ -69,7 +68,7 @@ class NativeMcpStdioIT {
 
             Set<String> tools = client.listTools();
             assertTrue(tools.containsAll(Set.of(
-                            "crawl_discover", "crawl_source", "model_runtime", "knowledge_status")),
+                            "crawl_discover", "crawl_source", "model_runtime", "pipeline", "knowledge_status")),
                     () -> "Native tools/list omitted project-local tools: " + tools);
 
             client.call("crawl_discover", MAPPER.createObjectNode().put("section", "all"));
@@ -92,7 +91,6 @@ class NativeMcpStdioIT {
         Path binary = requiredExecutable(BINARY_PROPERTY);
         Path pdf = requiredFile(VLM_PDF_PROPERTY);
         Path projectRoot = requiredDirectory(VLM_PROJECT_ROOT_PROPERTY);
-        Path worker = requiredExecutable(VLM_WORKER_PROPERTY);
         String modelId = System.getProperty(VLM_MODEL_PROPERTY, "smoldocling-256m");
         String pageRange = System.getProperty(VLM_PAGE_RANGE_PROPERTY, "1");
         int maxNewTokens = positiveInt(VLM_MAX_TOKENS_PROPERTY, 256);
@@ -147,9 +145,6 @@ class NativeMcpStdioIT {
                     .put("autoBootstrap", false)
                     .put("type", "vlm_pipeline")
                     .put("timeoutMinutes", 30);
-            crawl.putObject("runtimeConfig")
-                    .put("documentModelExecutable", worker.toString())
-                    .put("documentModelExecutableMode", "DEDICATED");
             crawl.putArray("steps")
                     .add("LOADING")
                     .add("MARKDOWN_EXTRACTION")

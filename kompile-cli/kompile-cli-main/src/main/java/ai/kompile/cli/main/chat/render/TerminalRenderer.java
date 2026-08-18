@@ -585,13 +585,6 @@ public class TerminalRenderer {
     // ========================================================================
 
     /**
-     * Render the start of an agent turn (step counter).
-     */
-    public String renderAgentTurnStart(int step, int maxSteps) {
-        return dim("─── step " + step + "/" + maxSteps + " ───");
-    }
-
-    /**
      * Render context grouping for read-only tools.
      * Tool names in the map are prettified for display.
      */
@@ -662,13 +655,6 @@ public class TerminalRenderer {
      */
     public String renderCompactionNotice(int tokensBefore, int tokensAfter) {
         return "\n" + dim("  ─── context compacted: " + tokensBefore + " → " + tokensAfter + " tokens ───") + "\n";
-    }
-
-    /**
-     * Render a max-steps warning.
-     */
-    public String renderMaxStepsWarning(int maxSteps) {
-        return "\n" + yellow("⚠ Agent reached maximum steps (" + maxSteps + ")");
     }
 
     // ========================================================================

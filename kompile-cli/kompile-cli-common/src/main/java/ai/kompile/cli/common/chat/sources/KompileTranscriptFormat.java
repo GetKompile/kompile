@@ -177,7 +177,6 @@ public final class KompileTranscriptFormat {
                 || line.startsWith("[tool:")
                 || line.startsWith("[subagent:")
                 || line.startsWith("[todo:")
-                || line.startsWith("[agentic-step]")
                 || line.startsWith("[harvested:")
                 || line.startsWith("  [") && (line.contains("docs retrieved")
                 || line.contains("completed in"));

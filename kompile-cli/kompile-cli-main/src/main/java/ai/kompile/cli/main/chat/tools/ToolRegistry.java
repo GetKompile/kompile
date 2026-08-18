@@ -30,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class ToolRegistry {
     private static final Set<String> AGENT_CRAWL_LIFECYCLE_TOOLS = Set.of(
-            "crawl_discover", "model_runtime", "crawl_documents", "crawl_source", "crawl_control", "crawl_result",
+            "crawl_discover", "model_runtime", "pipeline", "crawl_documents", "crawl_source", "crawl_control", "crawl_result",
             "knowledge_status", "knowledge_search", "graph_reasoning_query",
             "ask_graph_assert", "ask_graph_retract", "activate_tools");
 

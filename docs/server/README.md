@@ -36,9 +36,9 @@ The server exposes ~100+ endpoints:
 
 ## Subprocess architecture
 
-For compute-heavy work the server re-launches itself as an isolated subprocess with `--subprocess=TYPE`. Subprocess types: `ingest`, `vector-population`, `embedding`, `model-init`, `vlm-test`, `training`.
+Compute-heavy work runs in isolated subprocesses. Ingest, vector population, embedding, model initialization, and training retain their domain lifecycles. Every model-backed data pipeline—including VLM and OCR—runs through the reusable `pipeline-serving` stdio runtime owned by the MCP host.
 
-This keeps the web server responsive while heavy operations (embedding, indexing, model loading) run in isolated processes with their own memory budgets.
+This keeps the web server responsive while model processes retain loaded artifacts across compatible requests. Callers never select executables, ports, or subprocess types.
 
 ## Pluggable modules
 

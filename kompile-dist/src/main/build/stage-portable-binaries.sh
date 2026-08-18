@@ -86,9 +86,8 @@ stage_binary "kompile-cli/kompile-model-cli/target/kompile-model" "kompile-model
 stage_binary "kompile-cli/kompile-component-cli/target/kompile-component" "kompile-component" true
 stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app" "kompile-server" true
 
-# Local MCP execution is native-only. A distribution without any one of these
-# workers would silently cross into a JVM/server path, so fail assembly early.
-stage_binary "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test" "kompile-vlm-test" true
+# Local MCP runtime artifacts are native-only. Fail assembly early rather than
+# silently crossing into a JVM/server path.
 stage_binary "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" "kompile-model-staging" true
 stage_binary "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving" "kompile-model-serving" true
 stage_binary "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving" "kompile-pipeline-serving" true

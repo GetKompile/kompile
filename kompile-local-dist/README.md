@@ -47,7 +47,7 @@ canonical skip flags rather than using a separate packaging path:
 ```
 
 The native source-build target closure is
-`cli,model-serving,pipeline-serving,vlm-test`. Override `NATIVE_TARGETS` only
+`cli,model-serving,pipeline-serving`. Override `NATIVE_TARGETS` only
 for incremental development; a release archive still fails closed if any
 required local execution executable is absent.
 

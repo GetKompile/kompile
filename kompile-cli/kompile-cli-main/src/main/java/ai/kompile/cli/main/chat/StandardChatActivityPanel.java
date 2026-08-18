@@ -333,7 +333,7 @@ final class StandardChatActivityPanel {
         String description = entry.getDescription();
         String label = description == null || description.isBlank()
                 ? entry.getType()
-                : description;
+                : entry.getType() + " — " + description;
         String status = entry.getStatus();
         if (status == null || status.isBlank()) {
             status = active ? "running" : "completed";

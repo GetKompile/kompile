@@ -384,7 +384,7 @@ export class SchedulerDashboardComponent implements OnInit, OnDestroy {
     switch (jobType) {
       case 'ingest': return 'ingest';
       case 'vectorPopulation': return 'vector-population';
-      case 'vlm': return 'vlm-test';
+      case 'vlm': return 'serving';
       case 'training': return 'training';
       case 'llmServing': return 'serving';
       case 'embedding': return 'embedding';

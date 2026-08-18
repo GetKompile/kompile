@@ -1,0 +1,126 @@
+package ai.kompile.cli.main.project;
+
+import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class PipelineRuntimeSupervisorTest {
+    @AfterEach
+    void reset() {
+        PipelineRuntimeSupervisor.clearForTests();
+        System.clearProperty(PipelineRuntimeSupervisor.IDLE_MILLIS_PROPERTY);
+    }
+
+    @Test
+    void compatibleCallsReuseOneRuntime() throws Exception {
+        AtomicInteger starts = new AtomicInteger();
+        FakeRuntime runtime = new FakeRuntime();
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> {
+            starts.incrementAndGet();
+            return runtime;
+        });
+        UnifiedPipelineDefinition definition = definition("same");
+
+        try (PipelineRuntimeSupervisor.Lease first =
+                     PipelineRuntimeSupervisor.acquire(definition, Duration.ofSeconds(1))) {
+            assertEquals("one", first.execute(Map.of("text", "one"),
+                    Duration.ofSeconds(1)).get("text"));
+        }
+        try (PipelineRuntimeSupervisor.Lease second =
+                     PipelineRuntimeSupervisor.acquire(definition, Duration.ofSeconds(1))) {
+            assertEquals("two", second.execute(Map.of("text", "two"),
+                    Duration.ofSeconds(1)).get("text"));
+            assertEquals(42L, second.pid());
+        }
+
+        assertEquals(1, starts.get());
+        assertFalse(runtime.closed.get());
+    }
+
+    @Test
+    void executionCancellationUsesTheManagedRuntimeSession() throws Exception {
+        FakeRuntime runtime = new FakeRuntime();
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> runtime);
+
+        try (PipelineRuntimeSupervisor.Lease lease = PipelineRuntimeSupervisor.acquire(
+                definition("cancel"), Duration.ofSeconds(1))) {
+            PipelineRuntimeSupervisor.RunningExecution execution =
+                    lease.start(Map.of("text", "cancel me"));
+            assertTrue(execution.cancel(Duration.ofSeconds(1)));
+            assertTrue(runtime.cancelled.get());
+        }
+    }
+
+    @Test
+    void definitionChangesInvalidateReuse() throws Exception {
+        AtomicInteger starts = new AtomicInteger();
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> {
+            starts.incrementAndGet();
+            return new FakeRuntime();
+        });
+
+        try (var ignored = PipelineRuntimeSupervisor.acquire(
+                definition("first"), Duration.ofSeconds(1))) { }
+        try (var ignored = PipelineRuntimeSupervisor.acquire(
+                definition("second"), Duration.ofSeconds(1))) { }
+
+        assertEquals(2, starts.get());
+    }
+
+    private UnifiedPipelineDefinition definition(String description) {
+        return UnifiedPipelineDefinition.builder()
+                .pipelineId("reuse")
+                .displayName("Reuse")
+                .description(description)
+                .kind(UnifiedPipelineDefinition.PipelineKind.GENERIC)
+                .topology(UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE)
+                .pipelineSpec(Map.of(
+                        "@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+                        "id", "reuse", "steps", List.of()))
+                .build();
+    }
+
+    private static final class FakeRuntime implements PipelineRuntimeSupervisor.ManagedRuntime {
+        private final AtomicBoolean closed = new AtomicBoolean();
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        @Override
+        public PipelineRuntimeSupervisor.RunningExecution start(Map<String, Object> input) {
+            return new PipelineRuntimeSupervisor.RunningExecution() {
+                @Override
+                public Map<String, Object> await(Duration timeout) {
+                    return input;
+                }
+
+                @Override
+                public boolean cancel(Duration timeout) {
+                    cancelled.set(true);
+                    return true;
+                }
+            };
+        }
+
+        @Override
+        public boolean isAlive() {
+            return !closed.get();
+        }
+
+        @Override
+        public long pid() {
+            return 42L;
+        }
+
+        @Override
+        public void close() {
+            closed.set(true);
+        }
+    }
+}

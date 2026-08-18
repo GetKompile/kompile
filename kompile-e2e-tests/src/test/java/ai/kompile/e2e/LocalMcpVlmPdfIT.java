@@ -29,7 +29,6 @@ import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.graphics.PDXObject;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -54,13 +53,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The PDF is an external, property-provided test fixture. It is read in place, never copied into
  * the repository, and never sent to an HTTP service. The JVM gate loads the production VLM pipeline
  * directly, while the MCP gate exercises discovery, model-runtime bootstrap, and
- * {@code crawl_documents} through the installed document-model worker.</p>
+ * {@code crawl_documents} through the reusable unified pipeline runtime.</p>
  */
 @Tag("integration")
 class LocalMcpVlmPdfIT {
     static final String PDF_PROPERTY = "kompile.vlm.pdf.it.path";
     static final String PROJECT_ROOT_PROPERTY = "kompile.vlm.pdf.it.projectRoot";
-    static final String WORKER_PROPERTY = "kompile.vlm.pdf.it.worker";
     static final String MODEL_PROPERTY = "kompile.vlm.pdf.it.modelId";
     static final String MODEL_DIRECTORY_PROPERTY = "kompile.vlm.pdf.it.modelDirectory";
     static final String MAX_PAGES_PROPERTY = "kompile.vlm.pdf.it.maxPages";
@@ -76,17 +74,6 @@ class LocalMcpVlmPdfIT {
     @TempDir
     Path projectRoot;
 
-    private String previousLocalCrawlExecution;
-
-    @AfterEach
-    void restoreExecutionMode() {
-        if (previousLocalCrawlExecution == null) {
-            System.clearProperty("kompile.local.crawl.execution");
-        } else {
-            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
-        }
-    }
-
     @Test
     @Timeout(value = 30, unit = TimeUnit.MINUTES)
     void jvmVlmRuntimeLoadsAndProcessesPropertyProvidedImagePdf() throws Exception {
@@ -98,9 +85,6 @@ class LocalMcpVlmPdfIT {
         int maxNewTokens = positiveInt(MAX_TOKENS_PROPERTY, 768);
         int pdfRenderDpi = positiveInt(PDF_DPI_PROPERTY, 144);
         assertImageBackedFixture(pdf, maxPages, pageRange);
-
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
 
         VlmDocumentPipeline pipeline = new VlmDocumentPipeline(
                 new KompileModelManager(), new RegistryService(), null);
@@ -225,17 +209,11 @@ class LocalMcpVlmPdfIT {
     void crawlDocumentsRunsRealLocalVlmAgainstPropertyProvidedImagePdf() throws Exception {
         Path pdf = requiredExternalPdf();
         Path testProjectRoot = configuredProjectRoot();
-        Path worker = requiredExecutable(
-                WORKER_PROPERTY,
-                Path.of(System.getProperty("user.home"), ".kompile", "bin", "kompile-vlm-test"));
         int maxPages = positiveInt(MAX_PAGES_PROPERTY, 1);
         String pageRange = resolveFixturePageRange(pdf, optionalProperty(PAGE_RANGE_PROPERTY));
         int timeoutMinutes = positiveInt(TIMEOUT_PROPERTY, 30);
         String modelId = System.getProperty(MODEL_PROPERTY, "smoldocling-256m");
         assertImageBackedFixture(pdf, maxPages, pageRange);
-
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
 
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
         PermissionService permissions = new PermissionService();
@@ -276,15 +254,14 @@ class LocalMcpVlmPdfIT {
         assertTrue(vlmTemplate.isObject(),
                 () -> "crawl_discover did not advertise a VLM pipeline: " + discovery.getOutput());
         assertTrue(vlmTemplate.path("available").asBoolean(false),
-                () -> "crawl_discover advertised VLM without an available worker: " + discovery.getOutput());
+                () -> "crawl_discover did not expose the managed VLM pipeline: " + discovery.getOutput());
         assertTrue(vlmTemplate.path("configuration").path("pipelineOptionFields").toString()
                         .contains("pdfRenderDpi")
                         && vlmTemplate.path("configuration").path("pipelineOptionFields").toString()
                         .contains("pageRange"),
                 () -> "crawl_discover omitted request-scoped VLM options: " + discovery.getOutput());
-        assertTrue(vlmTemplate.path("configuration").path("runtimeConfigFields").toString()
-                        .contains("documentModelExecutable"),
-                () -> "crawl_discover omitted the VLM worker override: " + discovery.getOutput());
+        assertFalse(discovery.getOutput().contains("documentModelExecutable"), discovery.getOutput());
+        assertFalse(discovery.getOutput().contains("vlm-test"), discovery.getOutput());
         assertEquals("model_runtime", catalog.path("modelRuntime").path("tool").asText(),
                 discovery.getOutput());
 
@@ -296,6 +273,8 @@ class LocalMcpVlmPdfIT {
         assertEquals(testProjectRoot.resolve("data/models").toString(), runtime.path("storage").asText(),
                 runtimeStatus.getOutput());
         assertFalse(runtime.path("runtimeContract").path("centralizedService").asBoolean(true),
+                runtimeStatus.getOutput());
+        assertEquals("stdio-mcp", runtime.path("pipelineRuntime").path("managedBy").asText(),
                 runtimeStatus.getOutput());
 
         ObjectNode bootstrapRequest = mapper.createObjectNode();
@@ -315,6 +294,7 @@ class LocalMcpVlmPdfIT {
         assertTrue(Files.isRegularFile(stagedModel),
                 () -> "model_runtime did not produce a local VLM artifact: " + bootstrap.getOutput());
         assertTrue(stagedModel.getFileName().toString().endsWith(".onnx")
+                        || stagedModel.getFileName().toString().endsWith(".sdz")
                         || stagedModel.getFileName().toString().equals("pipeline.json"),
                 () -> "model_runtime returned no runnable VLM pipeline artifact: " + bootstrap.getOutput());
         assertEquals(modelId, stagedModel.getParent().getFileName().toString(), bootstrap.getOutput());
@@ -354,9 +334,6 @@ class LocalMcpVlmPdfIT {
                 .put("autoBootstrap", false)
                 .put("type", "vlm_pipeline")
                 .put("timeoutMinutes", timeoutMinutes);
-        request.putObject("runtimeConfig")
-                .put("documentModelExecutable", worker.toString())
-                .put("documentModelExecutableMode", "DEDICATED");
         request.putArray("steps")
                 .add("LOADING")
                 .add("MARKDOWN_EXTRACTION")
@@ -551,19 +528,6 @@ class LocalMcpVlmPdfIT {
                         || Files.isRegularFile(directory.resolve("decoder.sdz")),
                 () -> "VLM model directory has no decoder component: " + directory);
         return directory;
-    }
-
-    private static Path requiredExecutable(String property, Path defaultPath) {
-        String configured = System.getProperty(property);
-        Path executable = (configured == null || configured.isBlank())
-                ? defaultPath : Path.of(configured.trim());
-        Path normalized = executable.toAbsolutePath().normalize();
-        assertTrue(Files.isRegularFile(normalized),
-                () -> "Required native VLM worker is missing: " + normalized
-                        + " (override with -D" + property + "=<path>)");
-        assertTrue(Files.isExecutable(normalized),
-                () -> "Configured VLM worker is not executable: " + normalized);
-        return normalized;
     }
 
     private static String resolveFixturePageRange(Path pdf, String requestedPageRange)

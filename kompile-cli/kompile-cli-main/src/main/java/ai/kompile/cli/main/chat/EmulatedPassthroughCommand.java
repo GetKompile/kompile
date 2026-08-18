@@ -215,6 +215,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private int inputRows = 1;
     private int activityRows = 2;
     private volatile String currentStatus = "idle";
+    private enum ForegroundPhase {
+        IDLE("idle"), THINKING("thinking"), RESPONDING("responding"), WORKING("working"),
+        AWAITING_INPUT("awaiting input"), INTERRUPTING("interrupting"),
+        INTERRUPTED("interrupted"), FAILED("failed"), BLOCKED("blocked");
+
+        private final String label;
+
+        ForegroundPhase(String label) {
+            this.label = label;
+        }
+    }
+
+    private volatile ForegroundPhase foregroundPhase = ForegroundPhase.IDLE;
+    private volatile boolean foregroundTerminal;
+    private final AtomicLong foregroundGeneration = new AtomicLong();
     private final List<String> scrollbackLines = new ArrayList<>();
     private int scrollViewportOffset = 0; // lines above live bottom; 0 means follow output
     private int liveDecoderScrollbackStart = -1;
@@ -1072,7 +1087,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         int width = Math.max(12, terminalWidth - 1);
         String line = busyPrompt;
         if ((line == null || line.isBlank()) && busyInputActive) {
-            line = "  Enter draft · ↑ edit pending · Ctrl+B background · Esc/Ctrl+C child · Ctrl+G cancel";
+            line = "  Enter draft · ↑ edit pending · Ctrl+B background · Esc interrupt · Ctrl+C child";
         }
         System.out.printf("\033[%d;1H\033[2K%s", busyPromptRow(), DIM + truncatePlain(line, width) + RESET);
     }
@@ -1146,12 +1161,57 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
     /** Update the managed status line ("kompile [agent] · status …") below the input box. */
     void updateStatusLine(String status) {
-        currentStatus = status == null || status.isBlank() ? "idle" : status;
+        String normalized = status == null || status.isBlank() ? "idle" : status.trim();
+        // Once Escape has claimed the foreground turn, decoder frames and late child output
+        // must not resurrect it as responding/idle. A new dispatch clears this terminal guard.
+        if (cancelSignal.get() && foregroundPhase != ForegroundPhase.IDLE
+                && foregroundPhase != ForegroundPhase.INTERRUPTED) {
+            return;
+        }
+        if (foregroundTerminal) {
+            return;
+        }
+        currentStatus = normalized;
+        foregroundPhase = phaseForStatus(normalized);
         redrawStatusLine();
         // KompileTui's bottom StatusBar tracks its own consolidated metrics separately.
         if (tui != null) {
             tui.getStatusBar().requestRedraw();
         }
+    }
+
+    private ForegroundPhase phaseForStatus(String status) {
+        String value = status == null ? "" : status.toLowerCase(Locale.ROOT);
+        if (value.contains("interrupt")) return ForegroundPhase.INTERRUPTING;
+        if (value.contains("block") || value.contains("quota") || value.contains("credit")) {
+            return ForegroundPhase.BLOCKED;
+        }
+        if (value.contains("fail") || value.contains("error")) return ForegroundPhase.FAILED;
+        if (value.contains("await")) return ForegroundPhase.AWAITING_INPUT;
+        if (value.contains("respond")) return ForegroundPhase.RESPONDING;
+        if (value.contains("work") || value.contains("tool") || value.contains("correct")) {
+            return ForegroundPhase.WORKING;
+        }
+        if (value.contains("run") || value.contains("think")) return ForegroundPhase.THINKING;
+        return ForegroundPhase.IDLE;
+    }
+
+    private void beginForegroundTurn() {
+        foregroundGeneration.incrementAndGet();
+        foregroundTerminal = false;
+        cancelSignal.set(false);
+        foregroundPhase = ForegroundPhase.THINKING;
+        currentStatus = ForegroundPhase.THINKING.label;
+        redrawStatusLine();
+        if (tui != null) tui.getStatusBar().requestRedraw();
+    }
+
+    private void markInterrupted() {
+        foregroundTerminal = true;
+        foregroundPhase = ForegroundPhase.INTERRUPTED;
+        currentStatus = ForegroundPhase.INTERRUPTED.label;
+        redrawStatusLine();
+        if (tui != null) tui.getStatusBar().requestRedraw();
     }
 
     private void drawActivityPanel(int terminalWidth) {
@@ -1176,13 +1236,14 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private void renderStatusLineLocked() {
         if (scrollBottom <= 0) return;
         int w = terminal != null && terminal.getWidth() > 0 ? terminal.getWidth() : 120;
-        String status = currentStatus == null || currentStatus.isBlank() ? "idle" : currentStatus;
+        String status = currentStatus == null || currentStatus.isBlank()
+                ? foregroundPhase.label : currentStatus;
         // BUG 9 fix: never show "idle" while a turn is active — the decoder can briefly report
         // isResponding=false between frames even though agentBusy is still true, which caused the
         // middle status line to flicker to "idle" while the input box showed [busy].
-        if (agentBusy && "idle".equals(status)) status = "responding";
+        if (agentBusy && "idle".equals(status) && !foregroundTerminal) status = "responding";
         String enforcerTag = enforcerStatusTag(enforcerEvaluator != null, enforcementPaused);
-        String text = "  kompile [" + agent + "] · " + status + enforcerTag + " · Esc/Ctrl+C child · Ctrl+G cancel";
+        String text = "  kompile [" + agent + "] · " + status + enforcerTag + " · Esc interrupt · Ctrl+C child";
         System.out.printf("\033[%d;1H\033[2K%s", statusRow(),
                 DIM + truncatePlain(text, Math.max(12, w - 1)) + RESET);
     }
@@ -2104,7 +2165,11 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 item.addLogRecord("tool: " + firstNonBlankText(toolUse.name(), "subagent"));
                 subagentActivities.addLast(item);
                 trimActivity(subagentActivities, 5);
-                if (tui != null) tui.getStatusBar().registerSubagent(key, "agent", delegationLabel);
+                if (tui != null) {
+                    tui.getStatusBar().registerSubagent(key, "agent", delegationLabel);
+                    tui.getStatusBar().updateSubagentStatus(key,
+                            delegationThinkingLabel(toolUse.input()));
+                }
             }
             if (isBackgroundProcessTool(toolUse.name(), toolUse.input())) {
                 String key = newToolActivityKey("process", toolUse.name());
@@ -2588,7 +2653,28 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 String role = firstNonBlank(node, "role", "roleName");
                 String count = firstNonBlank(node, "agent_count", "agentCount", "count");
                 if (count.isBlank() && node.path("agents").isArray()) count = String.valueOf(node.path("agents").size());
-                String target = !count.isBlank() ? count + " agents" : firstNonBlankText(agent, role, "subagent");
+                String model = firstNonBlank(node, "model");
+                String thinking = firstNonBlank(node, "thinking", "effort");
+                List<String> targets = new ArrayList<>();
+                if (node.path("subtasks").isArray()) {
+                    for (JsonNode subtask : node.path("subtasks")) {
+                        String subName = firstNonBlank(subtask, "name", "subtaskName", "description");
+                        String subAgent = firstNonBlank(subtask, "agent", "agentName", "model", "provider");
+                        String subThinking = firstNonBlank(subtask, "thinking", "effort");
+                        String target = firstNonBlankText(subName, subAgent, "subtask");
+                        if (!subAgent.isBlank() && !target.equals(subAgent)) target += "/" + subAgent;
+                        if (!subThinking.isBlank()) target += " · " + subThinking;
+                        targets.add(target);
+                    }
+                }
+                String target = !targets.isEmpty() ? String.join(", ", targets)
+                        : (!count.isBlank() ? count + " agents" : firstNonBlankText(agent, role, "subagent"));
+                List<String> launch = new ArrayList<>();
+                if (!model.isBlank()) launch.add("model=" + model);
+                if (!thinking.isBlank()) launch.add("thinking=" + thinking);
+                if (!launch.isEmpty()) target += " [" + String.join(", ", launch) + "]";
+                String prompt = firstNonBlank(node, "description", "task", "subject", "prompt", "query");
+                if (!prompt.isBlank()) target += " — " + prompt.replaceAll("\\s+", " ").trim();
                 return truncatePlain(tool + " " + target, 72);
             }
         } catch (Exception ignored) {
@@ -2607,17 +2693,49 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 String role = firstNonBlank(node, "role", "roleName");
                 String count = firstNonBlank(node, "agent_count", "agentCount", "count");
                 if (count.isBlank() && node.path("agents").isArray()) count = String.valueOf(node.path("agents").size());
+                String model = firstNonBlank(node, "model");
+                String thinking = firstNonBlank(node, "thinking", "effort");
                 String prompt = firstNonBlank(node, "description", "task", "subject", "prompt", "query");
                 if (!agent.isBlank()) parts.add("agent=" + agent);
                 if (!role.isBlank()) parts.add("role=" + role);
                 if (!count.isBlank()) parts.add("count=" + count);
+                if (!model.isBlank()) parts.add("model=" + model);
+                if (!thinking.isBlank()) parts.add("thinking=" + thinking);
                 if (!prompt.isBlank()) parts.add("task=" + prompt.replaceAll("\\s+", " ").trim());
+                if (node.path("subtasks").isArray()) {
+                    List<String> names = new ArrayList<>();
+                    for (JsonNode subtask : node.path("subtasks")) {
+                        String subName = firstNonBlank(subtask, "name", "subtaskName", "description");
+                        String subAgent = firstNonBlank(subtask, "agent", "agentName", "model", "provider");
+                        if (!subName.isBlank()) {
+                            names.add(subAgent.isBlank() ? subName : subName + "=" + subAgent);
+                        }
+                    }
+                    if (!names.isEmpty()) parts.add("subtasks=" + String.join(", ", names));
+                }
                 if (!parts.isEmpty()) return truncatePlain(String.join(" · ", parts), 120);
             }
         } catch (Exception ignored) {
             // Fall back to the standard input summary below.
         }
         return summarizeToolInput(input);
+    }
+
+    private String delegationThinkingLabel(String input) {
+        try {
+            JsonNode node = objectMapper.readTree(input == null ? "" : input);
+            String thinking = firstNonBlank(node, "thinking", "effort");
+            if (!thinking.isBlank()) return "thinking (" + thinking + ")";
+            if (node.path("subtasks").isArray()) {
+                for (JsonNode subtask : node.path("subtasks")) {
+                    thinking = firstNonBlank(subtask, "thinking", "effort");
+                    if (!thinking.isBlank()) return "thinking (" + thinking + ")";
+                }
+            }
+        } catch (Exception ignored) {
+            // Keep the generic running status when the tool input is not JSON.
+        }
+        return "thinking";
     }
 
     private String summarizeToolInput(String input) {
@@ -2836,7 +2954,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             busyEditingQueuedMessageId = null;
             busyPrompt = "";
         } else {
-            busyPrompt = "  Enter draft · ↑ edit pending · Ctrl+B background · Esc/Ctrl+C child · Ctrl+G cancel";
+            busyPrompt = "  Enter draft · ↑ edit pending · Ctrl+B background · Esc interrupt · Ctrl+C child";
         }
         drawFixedInputBox();
     }
@@ -2971,16 +3089,34 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         requestAgentCancel();
     }
 
-    private void requestAgentCancel() {
+    private boolean requestAgentCancel() {
+        if (!agentBusy && (activeProcess == null || !activeProcess.isAlive())
+                && waitingThread == null) {
+            return false;
+        }
+        if (foregroundPhase == ForegroundPhase.INTERRUPTED
+                || foregroundPhase == ForegroundPhase.INTERRUPTING) {
+            return true;
+        }
+        foregroundPhase = ForegroundPhase.INTERRUPTING;
+        foregroundTerminal = false;
+        currentStatus = ForegroundPhase.INTERRUPTING.label;
+        redrawStatusLine();
+        if (tui != null) tui.getStatusBar().requestRedraw();
         cancelSignal.set(true);
         Process p = activeProcess;
         if (p != null && p.isAlive()) {
             killProcess(p);
         }
+        if (p == tuiProcess && (p == null || !p.isAlive())) {
+            tuiProcess = null;
+            tuiAgentProcess = null;
+        }
         Thread wt = waitingThread;
         if (wt != null) {
             wt.interrupt();
         }
+        return true;
     }
 
     // ── Thread-safe output (prints into scroll region) ────────────────────
@@ -3397,7 +3533,6 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             return "";
         }
 
-        cancelSignal.set(false);
         history.logUserMessage(message);
         metrics.recordUserTurn(message);
 
@@ -3753,15 +3888,17 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             reassertTranscriptMouse();
             drawFixedInputBox();
             // Don't null out activeProcess or kill the TUI — it persists
-            // Update status bar to idle (subprocess stays registered but shows idle)
+            // A cancelled turn is terminal; late decoder frames must not reset it to idle.
             if (tui != null && tuiSubagentId != null) {
-                tui.getStatusBar().updateSubagentStatus(tuiSubagentId, "idle");
+                tui.getStatusBar().updateSubagentStatus(tuiSubagentId,
+                        cancelSignal.get() ? "interrupted" : "idle");
             }
         }
 
         long turnDuration = System.currentTimeMillis() - turnStart;
 
         if (cancelSignal.get()) {
+            markInterrupted();
             safePrintln();
             safePrintln(renderer.yellow("  Cancelled."));
             history.logSystem("User cancelled agent response after " + turnDuration + "ms");
@@ -3848,7 +3985,6 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      */
     private void onAwaitingInputChanged(boolean awaiting) {
         if (awaiting) {
-            currentStatus = "awaiting input";
             if (tui != null && tuiSubagentId != null) {
                 tui.getStatusBar().updateSubagentStatus(tuiSubagentId, "awaiting input");
             }
@@ -4859,9 +4995,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     /**
-     * Escape belongs to the child agent while a managed turn is active. Forward it so the
-     * agent dismisses its own picker/dialog or cancels generation, then keep Kompile observing the
-     * turn. The output reader clears awaiting/mirror state when the child actually leaves that UI.
+     * Internal enforcement actuator used when a child-owned picker/dialog explicitly needs an
+     * Escape byte. User Escape is bound to the Kompile cancellation widget and never routes here.
      */
     private boolean forwardEscapeToAgent() {
         boolean childOwnsEscape = agentAwaitingInput || agentBusy;
@@ -5540,7 +5675,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /quit              Exit
 
                 Keyboard shortcuts:
-                  Esc/Ctrl+C         Forward to the active child agent/subprocess
+                  Esc                 Interrupt the active Kompile turn
+                  Ctrl+C             Stop the active child subprocess
                   Ctrl+G             Force-cancel Kompile's managed agent process
                   Ctrl+B             Background: child-native when supported, otherwise Kompile-managed
                   Type + Enter       Queue a message while the agent is busy
@@ -5642,7 +5778,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         body.append("Slash commands (/help, /quit, /agent, /status) remain active.\n");
         body.append("\n");
-        body.append(DIM).append("Wheel/PageUp/PageDown scroll · Ctrl+Home/End jump · Esc/Ctrl+C child · Ctrl+G cancel").append(RESET);
+        body.append(DIM).append("Wheel/PageUp/PageDown scroll · Ctrl+Home/End jump · Esc interrupt · Ctrl+C child").append(RESET);
 
         String title = enforcerEvaluator != null
                 ? "Kompile Enforced Passthrough" : "Kompile Emulated Passthrough";
@@ -5729,20 +5865,23 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     // ── Key bindings ───────────────────────────────────────────────────────
 
     private void bindCancelKey(LineReader lineReader) {
-        if (lineReader instanceof LineReaderImpl impl) {
-            impl.getKeyMaps().get(LineReader.EMACS).bind(
-                    new Reference("cancel-emulated"),
-                    KeyMap.ctrl('G')
-            );
+        if (lineReader instanceof LineReaderImpl impl) installCancelWidget(impl);
+    }
 
-            impl.setVariable("cancel-emulated", (Widget) () -> {
-                if (agentBusy && activeProcess != null && activeProcess.isAlive()) {
-                    requestAgentInterrupt(new byte[]{0x07});
-                    safePrintln("");
-                    safePrintln(renderer.yellow("  Cancelling..."));
-                }
-                return true;
-            });
+    private void installCancelWidget(LineReaderImpl impl) {
+        String widgetName = "cancel-emulated";
+        impl.getWidgets().put(widgetName, () -> {
+            boolean accepted = requestAgentCancel();
+            if (accepted && renderer != null) {
+                safePrintln("");
+                safePrintln(renderer.yellow("  Cancelling..."));
+            }
+            return true;
+        });
+        Reference cancel = new Reference(widgetName);
+        for (KeyMap<Binding> keyMap : impl.getKeyMaps().values()) {
+            keyMap.bind(cancel, KeyMap.ctrl('G'), "\033");
+            keyMap.setAmbiguousTimeout(80L);
         }
     }
 
@@ -5757,6 +5896,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         // while still far exceeding the sub-millisecond, single-write inter-byte gap of a real arrow
         // sequence (whose '[' is already buffered, so arrows never incur the wait at all).
         lineReader.setVariable(LineReader.AMBIGUOUS_BINDING, 80L);
+        installCancelWidget(impl);
         wrapSlashRefreshWidget(impl, LineReader.SELF_INSERT);
         wrapSlashRefreshWidget(impl, LineReader.BACKWARD_DELETE_CHAR);
         installScrollbackWidgets(impl);
@@ -5850,19 +5990,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             if (forwardNavToAgent(new byte[]{0x1B, '[', 'Z'})) return true;
             return true; // Shift+Tab has no line-editor action; consume it when idle
         });
-        // Escape while a child turn is active belongs to the child. Binding a BARE ESC coexists
-        // with ESC[… arrow/tab bindings above: JLine's keymap trie fires the longest match, so
-        // ESC[A stays an arrow and a lone ESC fires this widget. With no child owner, consume the
-        // lone ESC as a no-op because it has no useful line-editor action here.
-        impl.getWidgets().put("agent-escape", () -> {
-            forwardEscapeToAgent();
-            return true;
-        });
-
         Reference left = new Reference("dialog-left");
         Reference right = new Reference("dialog-right");
         Reference shiftTab = new Reference("dialog-shift-tab");
-        Reference escape = new Reference("agent-escape");
         List<String> leftSeq = keySequences(impl, InfoCmp.Capability.key_left,
                 "\033[D", "\033OD", "\033[1D");
         List<String> rightSeq = keySequences(impl, InfoCmp.Capability.key_right,
@@ -5871,7 +6001,6 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             keyMap.bind(left, leftSeq.toArray(String[]::new));
             keyMap.bind(right, rightSeq.toArray(String[]::new));
             keyMap.bind(shiftTab, "\033[Z");
-            keyMap.bind(escape, "\033");
             // A lone ESC (cancel a dialog) is a prefix of the arrow/tab binds above, so JLine's
             // BindingReader waits the KeyMap's ambiguousTimeout to disambiguate before firing it.
             // The default 1000ms made Escape feel "stuck busy" ~1s. Set it on the keymap directly
@@ -6153,6 +6282,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      */
     private boolean dispatchToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
         agentBusy = true;
+        beginForegroundTurn();
         backgroundSignal.set(false);
         try {
             if (enforcementActive()) {
@@ -6165,6 +6295,12 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             agentBusy = false;
             agentAwaitingInput = false;
             exitMirrorForDialog();
+            if (cancelSignal.get()) {
+                markInterrupted();
+            } else if (foregroundPhase != ForegroundPhase.BLOCKED
+                    && foregroundPhase != ForegroundPhase.FAILED) {
+                updateStatusLine("idle");
+            }
         }
     }
 

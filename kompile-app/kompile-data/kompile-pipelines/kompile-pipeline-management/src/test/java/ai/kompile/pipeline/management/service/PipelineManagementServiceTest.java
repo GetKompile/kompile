@@ -7,7 +7,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -23,12 +22,8 @@ class PipelineManagementServiceTest {
     private PipelineManagementService service;
 
     @BeforeEach
-    void setUp() throws Exception {
-        service = new PipelineManagementService();
-        // Override the pipelines directory to use temp dir
-        Field pipelinesDirField = PipelineManagementService.class.getDeclaredField("pipelinesDir");
-        pipelinesDirField.setAccessible(true);
-        pipelinesDirField.set(service, tempDir);
+    void setUp() {
+        service = new PipelineManagementService(tempDir);
     }
 
     @Test
@@ -55,7 +50,7 @@ class PipelineManagementServiceTest {
         UnifiedPipelineDefinition def = createTestDefinition("file-test", "VLM");
         service.saveUnified(def);
 
-        Path expectedFile = tempDir.resolve("file-test.unified.json");
+        Path expectedFile = tempDir.resolve("unified/file-test/versions/00000000000000000001.json");
         assertTrue(Files.exists(expectedFile));
     }
 
@@ -131,7 +126,10 @@ class PipelineManagementServiceTest {
                 .kind(UnifiedPipelineDefinition.PipelineKind.RAG)
                 .topology(UnifiedPipelineDefinition.ExecutionTopology.GRAPH)
                 .modelSetId("rag-model-set")
-                .pipelineSpec(Map.of("@bridge", "rag", "retrievalK", 5))
+                .pipelineSpec(Map.of(
+                        "@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+                        "id", "full-fields-test",
+                        "steps", List.of()))
                 .ragConfig(Map.of("chunkSize", 512, "chunkOverlap", 50))
                 .extractionTypes(List.of("text-extraction"))
                 .tags(Map.of("team", "ml", "version", "2"))
@@ -141,15 +139,7 @@ class PipelineManagementServiceTest {
                 .updatedAt("2025-06-01T12:00:00Z")
                 .serving(UnifiedPipelineDefinition.ServingConfig.builder()
                         .heapSize("12g")
-                        .port(9091)
                         .gpuDeviceId("0")
-                        .replicas(2)
-                        .memoryStopPercent(75)
-                        .memoryCriticalPercent(85)
-                        .memoryKillPercent(92)
-                        .heartbeatIntervalMs(5000L)
-                        .staleTimeoutMs(60000L)
-                        .maxRestartAttempts(5)
                         .build())
                 .build();
 
@@ -169,28 +159,15 @@ class PipelineManagementServiceTest {
         assertFalse(loaded.isBuiltin());
         assertTrue(loaded.isEnabled());
         assertEquals("2025-06-01T00:00:00Z", loaded.getCreatedAt());
-        assertEquals("2025-06-01T12:00:00Z", loaded.getUpdatedAt());
+        assertNotEquals("2025-06-01T12:00:00Z", loaded.getUpdatedAt());
+        assertEquals(1L, loaded.getDefinitionVersion());
+        assertNotNull(loaded.getContentDigest());
 
         // Serving config
         UnifiedPipelineDefinition.ServingConfig servingConfig = loaded.getServing();
         assertNotNull(servingConfig);
         assertEquals("12g", servingConfig.getHeapSize());
-        assertEquals(9091, servingConfig.getPort());
         assertEquals("0", servingConfig.getGpuDeviceId());
-        assertEquals(2, servingConfig.getReplicas());
-        assertEquals(75, servingConfig.getMemoryStopPercent());
-        assertEquals(85, servingConfig.getMemoryCriticalPercent());
-        assertEquals(92, servingConfig.getMemoryKillPercent());
-        assertEquals(5000L, servingConfig.getHeartbeatIntervalMs());
-        assertEquals(60000L, servingConfig.getStaleTimeoutMs());
-        assertEquals(5, servingConfig.getMaxRestartAttempts());
-    }
-
-    @Test
-    void testExecuteSyncReturnsErrorForMissingPipeline() {
-        var result = service.executeSync("nonexistent", Map.of());
-        assertEquals("ERROR", result.getStatus());
-        assertTrue(result.getErrorMessage().contains("not found"));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -202,7 +179,10 @@ class PipelineManagementServiceTest {
                 .description("Test description for " + id)
                 .kind(UnifiedPipelineDefinition.PipelineKind.valueOf(kind))
                 .topology(UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE)
-                .pipelineSpec(Map.of("@bridge", kind.toLowerCase(), "pipelineId", id))
+                .pipelineSpec(Map.of(
+                        "@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+                        "id", id,
+                        "steps", List.of()))
                 .modelSetId("test-model-set")
                 .enabled(true)
                 .createdAt("2025-06-01T00:00:00Z")

@@ -21,7 +21,6 @@
                 <include>kompile-vector</include>
                 <include>kompile-embedding</include>
                 <include>kompile-model-init</include>
-                <include>kompile-vlm-test</include>
                 <include>kompile-training</include>
             </includes>
             <fileMode>0755</fileMode>

@@ -820,8 +820,14 @@ public class ChatRepl {
             });
         }
 
-        // Pass terminal ref to ChatCompleter for bottom border rendering
+        // Pass terminal ref to ChatCompleter for bottom border rendering.
+        // Streamed lines are recorded in the TUI, then emitted through JLine's
+        // thread-safe printAbove path so background output cannot corrupt typing.
         ChatCompleter.setTerminalRef(reader, terminal);
+        // REDISPLAY is invoked synchronously by the input thread for completion
+        // changes; repaint the authoritative transcript before it restores input.
+        ChatCompleter.setContentRedraw(tui::redrawContentView);
+        ChatCompleter.setContentOutput(tui::recordInScrollRegion);
 
         try {
             while (true) {
@@ -1204,6 +1210,14 @@ public class ChatRepl {
         }
     }
 
+    /** Finish an interrupted turn while leaving queued messages for explicit user control. */
+    public void completeTaskWithoutAutoDequeue() {
+        backgroundTaskManager.completeCurrentTask();
+        llmBusy = false;
+        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        statusBar.requestRedraw();
+    }
+
     // ── Key binding helper ────────────────────────────────────────────────────
 
     static final String STANDARD_CHAT_UP_WIDGET = "standard-chat-contextual-up";
@@ -1239,17 +1253,17 @@ public class ChatRepl {
     }
 
     static void bindStandardChatUpArrow(LineReaderImpl reader, MessageQueue queue) {
-        bindStandardChatUpArrow(reader, queue, null);
+        bindStandardChatUpArrow(reader, queue, null, null);
     }
 
     private static void bindStandardChatUpArrow(
             LineReaderImpl reader, MessageQueue queue,
-            StandardChatActivityPanel activityPanel) {
+            StandardChatActivityPanel activityPanel, KompileTui tui) {
         reader.getWidgets().put(STANDARD_CHAT_UP_WIDGET, () -> {
             String text = reader.getBuffer().toString();
             if (activityPanel != null && activityPanel.isFocused()) {
                 if (text.isBlank() && activityPanel.selectPrevious()) {
-                    reader.callWidget(LineReader.REDISPLAY);
+                    redisplayWithContent(reader, tui);
                     return true;
                 }
                 activityPanel.clearSelection();
@@ -1283,7 +1297,7 @@ public class ChatRepl {
 
             // A non-empty single-line draft remains untouched. History is still
             // available after clearing the prompt, so Up cannot destroy typed text.
-            reader.callWidget(LineReader.REDISPLAY);
+            redisplayWithContent(reader, tui);
             return true;
         });
 
@@ -1297,13 +1311,13 @@ public class ChatRepl {
             MessageQueue queue,
             StandardChatActivityPanel activityPanel,
             KompileTui tui) {
-        bindStandardChatUpArrow(reader, queue, activityPanel);
+        bindStandardChatUpArrow(reader, queue, activityPanel, tui);
 
         Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
         reader.getWidgets().put(STANDARD_CHAT_DOWN_WIDGET, () -> {
             String text = reader.getBuffer().toString();
             if (text.isBlank() && activityPanel.selectNext()) {
-                reader.callWidget(LineReader.REDISPLAY);
+                redisplayWithContent(reader, tui);
                 return true;
             }
             if (activityPanel.isFocused()) {
@@ -1317,7 +1331,7 @@ public class ChatRepl {
         Widget originalLeft = reader.getWidgets().get(LineReader.BACKWARD_CHAR);
         reader.getWidgets().put(STANDARD_CHAT_PARENT_WIDGET, () -> {
             if (reader.getBuffer().toString().isBlank() && activityPanel.selectParent()) {
-                reader.callWidget(LineReader.REDISPLAY);
+                redisplayWithContent(reader, tui);
                 return true;
             }
             return originalLeft == null || originalLeft.apply();
@@ -1327,26 +1341,32 @@ public class ChatRepl {
 
         reader.getWidgets().put(STANDARD_CHAT_PAGE_UP_WIDGET, () -> {
             boolean changed = tui.pageContent(1);
-            reader.callWidget(LineReader.REDISPLAY);
+            redisplayWithContent(reader, tui);
             return changed;
         });
         reader.getWidgets().put(STANDARD_CHAT_PAGE_DOWN_WIDGET, () -> {
             boolean changed = tui.pageContent(-1);
-            reader.callWidget(LineReader.REDISPLAY);
+            redisplayWithContent(reader, tui);
             return changed;
         });
-        KeyMap<Binding> activityKeys = reader.getKeyMaps().get(LineReader.EMACS);
-        activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_UP_WIDGET),
-                "\033[5~", "\033[5;2~", "\033[1;2A");
-        activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_DOWN_WIDGET),
-                "\033[6~", "\033[6;2~", "\033[1;2B");
+        // Page keys must follow the active JLine map as well (emacs/vi/inputrc);
+        // otherwise scrolling works only in the default map.
+        for (KeyMap<Binding> activityKeys : reader.getKeyMaps().values()) {
+            if (activityKeys == null) {
+                continue;
+            }
+            activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_UP_WIDGET),
+                    "\033[5~", "\033[5;2~", "\033[1;2A");
+            activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_DOWN_WIDGET),
+                    "\033[6~", "\033[6;2~", "\033[1;2B");
+        }
 
         Widget originalAccept = reader.getWidgets().get(LineReader.ACCEPT_LINE);
         if (originalAccept != null) {
             reader.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
                 if (activityPanel.isFocused() && reader.getBuffer().toString().isBlank()) {
                     showActivityView(tui, activityPanel.openSelectedView());
-                    reader.callWidget(LineReader.REDISPLAY);
+                    redisplayWithContent(reader, tui);
                     return true;
                 }
                 if (activityPanel.isFocused()) {
@@ -1367,7 +1387,7 @@ public class ChatRepl {
                     } else {
                         tui.printInScrollRegion(result);
                     }
-                    reader.callWidget(LineReader.REDISPLAY);
+                    redisplayWithContent(reader, tui);
                     return true;
                 }
                 if (activityPanel.isFocused()) {
@@ -1410,6 +1430,15 @@ public class ChatRepl {
         }
     }
 
+    private static void redisplayWithContent(LineReaderImpl reader, KompileTui tui) {
+        // Keep the input renderer last: the TUI repaint moves the terminal cursor,
+        // while JLine REDISPLAY restores the prompt and cursor position.
+        if (tui != null) {
+            tui.redrawContentView();
+        }
+        reader.callWidget(LineReader.REDISPLAY);
+    }
+
     private static void showActivityView(
             KompileTui tui,
             StandardChatActivityPanel.ActivityView view) {
@@ -1426,9 +1455,15 @@ public class ChatRepl {
     private static void refreshCurrentActivityView(
             KompileTui tui, StandardChatActivityPanel activityPanel) {
         StandardChatActivityPanel.ActivityView view = activityPanel.currentView();
-        if (view != null && !view.main()) {
-            tui.updateActivityView(view.key(), view.title(), view.content());
+        if (view == null || view.main()) {
+            if (!tui.isMainContentView()) {
+                tui.showMainView();
+            }
+            return;
         }
+        // updateActivityView also performs an authoritative switch when a
+        // selection changed between asynchronous refresh callbacks.
+        tui.updateActivityView(view.key(), view.title(), view.content());
     }
 
     /**

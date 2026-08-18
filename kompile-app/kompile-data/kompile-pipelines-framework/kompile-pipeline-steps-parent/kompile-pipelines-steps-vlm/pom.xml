@@ -61,6 +61,14 @@
             <artifactId>samediff-vlm</artifactId>
         </dependency>
 
+        <!-- End-to-end document understanding step. The runtime owns this heavy dependency;
+             authoring/MCP processes see only the portable step schema. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-ocr-models</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

@@ -699,8 +699,7 @@ class ToolCallExtractorTest {
                 "> Run tests",
                 "",
                 "[tool:Bash]",
-                "[agentic-step]",
-                "[system] step completed",
+                "[system] completed",
                 "Tests passed."
         ), StandardCharsets.UTF_8);
 

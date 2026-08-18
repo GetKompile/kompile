@@ -153,9 +153,6 @@ public class SkillsCommand implements Callable<Integer> {
             if (skill.getModelHint() != null) {
                 System.out.println("Model hint:  " + skill.getModelHint());
             }
-            if (skill.getMaxSteps() > 0) {
-                System.out.println("Max steps:   " + skill.getMaxSteps());
-            }
             System.out.println();
             System.out.println("── Prompt Template ──────────────────────────────────────");
             System.out.println(skill.getPromptTemplate());

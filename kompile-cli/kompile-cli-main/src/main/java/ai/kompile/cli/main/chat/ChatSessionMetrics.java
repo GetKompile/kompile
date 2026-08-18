@@ -76,8 +76,7 @@ public class ChatSessionMetrics {
     private final AtomicInteger totalToolErrors = new AtomicInteger(0);
     private final AtomicLong totalToolDurationMs = new AtomicLong(0);
 
-    // Agentic loop tracking
-    private final AtomicInteger agenticSteps = new AtomicInteger(0);
+    // Agentic context tracking
     private final AtomicInteger compactionEvents = new AtomicInteger(0);
     private long tokensBeforeCompaction = 0;
     private long tokensAfterCompaction = 0;
@@ -201,12 +200,8 @@ public class ChatSessionMetrics {
     }
 
     // ========================================================================
-    // Agentic loop tracking
+    // Agentic context tracking
     // ========================================================================
-
-    public void recordAgenticStep() {
-        agenticSteps.incrementAndGet();
-    }
 
     public void recordCompaction(long tokensBefore, long tokensAfter) {
         compactionEvents.incrementAndGet();
@@ -253,7 +248,6 @@ public class ChatSessionMetrics {
     public double getAvgResponseTimeMs() { return apiCalls.get() > 0 ? (double) totalApiLatencyMs.get() / apiCalls.get() : 0; }
     public int getTotalToolCalls() { return totalToolCalls.get(); }
     public int getTotalToolErrors() { return totalToolErrors.get(); }
-    public int getAgenticSteps() { return agenticSteps.get(); }
     public int getCompactionEvents() { return compactionEvents.get(); }
     public int getRagQueries() { return ragQueries.get(); }
     public int getDocumentsRetrieved() { return documentsRetrieved.get(); }
@@ -446,9 +440,8 @@ public class ChatSessionMetrics {
         tools.set("breakdown", toolBreakdown);
         root.set("tools", tools);
 
-        // Agentic
+        // Agentic context
         ObjectNode agentic = mapper.createObjectNode();
-        agentic.put("steps", agenticSteps.get());
         agentic.put("compactions", compactionEvents.get());
         root.set("agentic", agentic);
 

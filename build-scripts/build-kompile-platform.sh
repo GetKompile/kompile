@@ -19,7 +19,7 @@
 #   --native-targets T   Comma-separated native image targets (default: cli)
 #                        Valid: cli, component-cli, app, chat, crawl-manager,
 #                        sample, app-lite, staging, model-serving, pipeline-serving,
-#                        ingest, vector, embedding, model-init, vlm-test, training, or all
+#                        ingest, vector, embedding, model-init, training, or all
 #   --variant V          Distribution variant (default: auto-detect from platform)
 #                        Valid: cli-only, local, hosted, cpu-intel, cpu-arm, cuda, amd-zluda
 #   --dl4j-branch B      DL4J branch to clone/checkout (default: master)

@@ -159,7 +159,6 @@ public class StdioEnforcerTool {
                     .displayName(displayName(agentName))
                     .description("External " + agentName + " agent controlled by enforcer")
                     .systemPrompt("")
-                    .maxSteps(50)
                     .isSubagent(true)
                     .canSpawnSubagents(false)
                     .roleName(roleName)

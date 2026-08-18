@@ -70,8 +70,9 @@ import java.util.concurrent.atomic.AtomicReference;
 public class AgenticChatLoop {
 
     /**
-     * Optional standard-chat sink for bounded inline tool activity. Headless and
-     * legacy callers leave this unset and retain ordinary transcript rendering.
+     * Optional standard-chat side channel for tool lifecycle activity. The listener
+     * updates the activity panel while the normal transcript always renders tool
+     * calls inline as they start and complete.
      */
     public interface ToolActivityListener {
         void onToolStart(String callId, String toolName, String rawInput);
@@ -230,7 +231,7 @@ public class AgenticChatLoop {
     }
 
     /**
-     * Sets the session metrics tracker for recording tool calls, steps, and token usage.
+     * Sets the session metrics tracker for recording tool calls, iterations, and token usage.
      */
     public void setSessionMetrics(ai.kompile.cli.main.chat.ChatSessionMetrics metrics) {
         this.sessionMetrics = metrics;
@@ -283,7 +284,7 @@ public class AgenticChatLoop {
 
     /**
      * Sets the cancel signal for interrupting in-progress operations.
-     * The signal is checked between agentic steps and during LLM streaming.
+     * The signal is checked between agentic iterations and during LLM streaming.
      */
     public void setCancelSignal(AtomicBoolean cancelSignal) {
         this.cancelSignal = cancelSignal;
@@ -938,8 +939,7 @@ public class AgenticChatLoop {
         String systemPrompt = buildSystemPrompt(agent);
 
         StringBuilder fullResponse = new StringBuilder();
-        int step = 0;
-        int maxSteps = agent.getMaxSteps();
+        int iteration = 0;
 
         String currentMessage = message;
         List<ToolCallResult> pendingToolResults = null;
@@ -952,23 +952,24 @@ public class AgenticChatLoop {
         // Track conversation for compaction
         conversationHistory.add(CompactionService.ConversationEntry.user(message));
 
-        while (step < maxSteps) {
-            // Check cancellation and external crawl controls before each step.
+        // A chat turn runs until the model finishes, the user interrupts it,
+        // or an explicit tool/plan decision ends it. There is no arbitrary step
+        // or execution-limit cutoff in the chat loop.
+        while (true) {
+            // Check cancellation and external crawl controls before each iteration.
             if (isCancelled()) {
                 emitLine("\n" + renderer.yellow("  ⊘ Interrupted by user"));
                 fullResponse.append("\n[Interrupted by user]");
                 break;
             }
 
-            int nextStep = step + 1;
+            int nextStep = iteration + 1;
             if (runController != null && !runController.beforeStep(nextStep)) {
                 fullResponse.append("\n[Agent run is " + runController.state().name().toLowerCase() + "]");
                 break;
             }
-            step = nextStep;
-            if (sessionMetrics != null) sessionMetrics.recordAgenticStep();
+            iteration = nextStep;
             ChatCompleter.setActivity("Thinking");
-            emitLine(renderer.renderAgentTurnStart(step, maxSteps));
 
             // Check compaction (model-aware budget; also honors the provider-reported
             // prompt size of the previous call, which sees system prompt + tool defs)
@@ -995,7 +996,7 @@ public class AgenticChatLoop {
                 }
             }
 
-            // Rebuild after every step. activate_tools mutates the active capability
+            // Rebuild after every iteration. activate_tools mutates the active capability
             // set, so its selected group must be visible to the very next model call.
             ArrayNode toolDefs = toolDefinitions(agent, progressiveToolLoading);
 
@@ -1030,20 +1031,20 @@ public class AgenticChatLoop {
             // ── Inline enforcer check ─────────────────────────────────────
             if (inlineEnforcerEnabled && inlineEnforcer != null && !result.text.isEmpty()) {
                 ai.kompile.cli.main.chat.enforcer.EnforcerDecision decision =
-                        inlineEnforcer.evaluate(currentMessage, result.text, inlineEnforcerPolicy, step);
+                        inlineEnforcer.evaluate(currentMessage, result.text, inlineEnforcerPolicy, iteration);
                 if (decision.isStop()) {
                     // Hard stop — reject and notify
                     emitLine("\n" + renderer.red("[enforcer] BLOCKED: "
                             + String.join("; ", decision.getViolations())));
                     fullResponse.append("\n[Blocked by enforcer]");
                     break;
-                } else if (!decision.isCompliant() && step < maxSteps) {
+                } else if (!decision.isCompliant()) {
                     // Violation with correction — feed the correction prompt back
                     emitLine("\n" + renderer.yellow("[enforcer] violation: "
                             + String.join("; ", decision.getViolations())));
                     emitLine(renderer.yellow("[enforcer] sending correction (attempt "
-                            + step + "/" + inlineEnforcerMaxCorrections + ")"));
-                    if (step <= inlineEnforcerMaxCorrections) {
+                            + iteration + "/" + inlineEnforcerMaxCorrections + ")"));
+                    if (iteration <= inlineEnforcerMaxCorrections) {
                         currentMessage = decision.getCorrectionPrompt();
                         pendingToolResults = null;
                         conversationHistory.add(CompactionService.ConversationEntry.user(currentMessage));
@@ -1080,9 +1081,8 @@ public class AgenticChatLoop {
                     if (!decision.allowed()) {
                         String denied = "Tool call held: " + decision.reason();
                         fireFirstOutput();
-                        if (!routeToolDenied(call, rawToolInput, decision.reason())) {
-                            emitLine(renderer.renderToolCallDenied(call.name, decision.reason()));
-                        }
+                        notifyToolDenied(call, rawToolInput, decision.reason());
+                        emitLine(renderer.renderToolCallDenied(call.name, decision.reason()));
                         toolResults.add(new ToolCallResult(call.id, call.name, denied, true));
                         if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                         continue;
@@ -1095,10 +1095,8 @@ public class AgenticChatLoop {
                 String callSummary = TerminalRenderer.summarizeToolCall(
                         call.name, rawToolInput, 96);
                 ChatCompleter.setActivity("Working: " + callSummary);
-                boolean compactToolRow = routeToolStart(call, rawToolInput);
-                if (!compactToolRow) {
-                    emitLine(renderer.renderToolCallStart(call.name, rawToolInput));
-                }
+                notifyToolStart(call, rawToolInput);
+                emitLine(renderer.renderToolCallStart(call.name, rawToolInput));
 
                 // JLine owns the cursor while the asynchronous REPL accepts queued
                 // input. In that mode the bottom status bar is the activity spinner;
@@ -1114,10 +1112,9 @@ public class AgenticChatLoop {
                         if (spinner != null) spinner.stop();
                         String errMsg = "Unknown tool: " + call.name;
                         ToolResult missing = ToolResult.error(errMsg);
-                        if (!routeToolComplete(call, rawToolInput, missing)) {
-                            emitLine(renderer.renderToolCallComplete(
-                                    call.name, rawToolInput, missing));
-                        }
+                        notifyToolComplete(call, rawToolInput, missing);
+                        emitLine(renderer.renderToolCallComplete(
+                                call.name, rawToolInput, missing));
                         toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
                         if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                         continue;
@@ -1137,10 +1134,9 @@ public class AgenticChatLoop {
 
                     if (spinner != null) spinner.stop();
 
-                    if (!routeToolComplete(call, rawToolInput, toolResult)) {
-                        emitLine(renderer.renderToolCallComplete(
-                                call.name, rawToolInput, toolResult));
-                    }
+                    notifyToolComplete(call, rawToolInput, toolResult);
+                    emitLine(renderer.renderToolCallComplete(
+                            call.name, rawToolInput, toolResult));
 
                     // Render inline todo updates after todowrite calls
                     if ("todowrite".equals(call.name) && !toolResult.isError()) {
@@ -1199,15 +1195,13 @@ public class AgenticChatLoop {
                     if (spinner != null) spinner.stop();
 
                     if (e.isPermissionDenied()) {
-                        if (!routeToolDenied(call, rawToolInput, e.getMessage())) {
-                            emitLine(renderer.renderToolCallDenied(call.name, e.getMessage()));
-                        }
+                        notifyToolDenied(call, rawToolInput, e.getMessage());
+                        emitLine(renderer.renderToolCallDenied(call.name, e.getMessage()));
                     } else {
                         ToolResult failed = ToolResult.error(e.getMessage());
-                        if (!routeToolComplete(call, rawToolInput, failed)) {
-                            emitLine(renderer.renderToolCallComplete(
-                                    call.name, rawToolInput, failed));
-                        }
+                        notifyToolComplete(call, rawToolInput, failed);
+                        emitLine(renderer.renderToolCallComplete(
+                                call.name, rawToolInput, failed));
                     }
 
                     String errMsg = "Error: " + e.getMessage();
@@ -1227,11 +1221,6 @@ public class AgenticChatLoop {
             // Set up next iteration with tool results
             pendingToolResults = toolResults;
             currentMessage = null;
-        }
-
-        if (step >= maxSteps) {
-            emitLine(renderer.renderMaxStepsWarning(maxSteps));
-            fullResponse.append("\n[Agent reached maximum steps (").append(maxSteps).append(")]");
         }
 
         // Cleanup old truncation files
@@ -1256,36 +1245,33 @@ public class AgenticChatLoop {
         return output;
     }
 
-    private boolean routeToolStart(ToolCallRequest call, String rawInput) {
+    private void notifyToolStart(ToolCallRequest call, String rawInput) {
         ToolActivityListener listener = toolActivityListener;
-        if (listener == null) return false;
+        if (listener == null) return;
         try {
             listener.onToolStart(call.id, call.name, rawInput);
-            return true;
         } catch (RuntimeException ignored) {
-            return false;
+            // A status-panel failure must not hide the inline transcript event.
         }
     }
 
-    private boolean routeToolComplete(ToolCallRequest call, String rawInput, ToolResult result) {
+    private void notifyToolComplete(ToolCallRequest call, String rawInput, ToolResult result) {
         ToolActivityListener listener = toolActivityListener;
-        if (listener == null) return false;
+        if (listener == null) return;
         try {
             listener.onToolComplete(call.id, call.name, rawInput, result);
-            return true;
         } catch (RuntimeException ignored) {
-            return false;
+            // A status-panel failure must not hide the inline transcript event.
         }
     }
 
-    private boolean routeToolDenied(ToolCallRequest call, String rawInput, String reason) {
+    private void notifyToolDenied(ToolCallRequest call, String rawInput, String reason) {
         ToolActivityListener listener = toolActivityListener;
-        if (listener == null) return false;
+        if (listener == null) return;
         try {
             listener.onToolDenied(call.id, call.name, rawInput, reason);
-            return true;
         } catch (RuntimeException ignored) {
-            return false;
+            // A status-panel failure must not hide the inline transcript event.
         }
     }
 

@@ -82,10 +82,12 @@ Each compute-heavy phase runs as a subprocess:
 | `vector-population` | Embed chunks and write to vector store |
 | `embedding` | Dedicated embedding computation |
 | `model-init` | Model download and initialization |
-| `vlm-test` | VLM OCR processing |
+| `pipeline-serving` | Reusable execution for VLM, OCR, LLM, embedding, and custom model pipelines |
 | `training` | Model training jobs |
 
-Subprocesses are the same binary re-launched with `--subprocess=TYPE`. Each gets its own JVM with configurable heap size, timeout, and worker count. Configuration lives in `subprocess-ingest-config.json`.
+The stdio MCP host supervises process isolation. Pipeline runtimes are keyed by definition and
+model identity, reused through leases, and configured from declarative definitions rather than
+caller-owned process settings.
 
 ## Monitoring
 

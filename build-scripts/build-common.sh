@@ -215,7 +215,6 @@ GRAALVM_HOME="${GRAALVM_HOME:-}"
 #   vector         — vector population subprocess (kompile-app-main -Pnative-vector)
 #   embedding      — embedding subprocess (kompile-app-main -Pnative-embedding)
 #   model-init     — model init subprocess (kompile-app-main -Pnative-model-init)
-#   vlm-test       — VLM test subprocess (kompile-app-main -Pnative-vlm-test)
 #   training       — training subprocess (kompile-app-main -Pnative-training)
 #   all            — all of the above
 NATIVE_TARGETS="${NATIVE_TARGETS:-all}"
@@ -1307,11 +1306,6 @@ kompile_build_native_image() {
       profile="native-model-init"
       image_name="kompile-model-init"
       ;;
-    vlm-test)
-      module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main"
-      profile="native-vlm-test"
-      image_name="kompile-vlm-test"
-      ;;
     training)
       module_dir="${KOMPILE_ROOT}/kompile-app/kompile-app-parent/kompile-app-main"
       profile="native-training"
@@ -1319,12 +1313,12 @@ kompile_build_native_image() {
       ;;
     *)
       log "ERROR: Unknown native target '${target}'"
-      log "Valid targets: cli, agent, app-cli, model, component, app, chat, crawl-manager, sample, app-lite, staging, model-serving, pipeline-serving, ingest, vector, embedding, model-init, vlm-test, training"
+      log "Valid targets: cli, agent, app-cli, model, component, app, chat, crawl-manager, sample, app-lite, staging, model-serving, pipeline-serving, ingest, vector, embedding, model-init, training"
       return 1
       ;;
   esac
   case "${target}" in
-    ingest|vector|embedding|model-init|vlm-test|training)
+    ingest|vector|embedding|model-init|training)
       extra_args+=("-Dkompile.native.side-load=true")
       ;;
   esac
@@ -1400,7 +1394,7 @@ kompile_build_native_image() {
 }
 
 # All valid native image target names
-ALL_NATIVE_TARGETS="cli,agent,app-cli,model,component,app,chat,crawl-manager,sample,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,vlm-test,training"
+ALL_NATIVE_TARGETS="cli,agent,app-cli,model,component,app,chat,crawl-manager,sample,app-lite,staging,model-serving,pipeline-serving,ingest,vector,embedding,model-init,training"
 
 # Build all requested native image targets.
 # Reads NATIVE_TARGETS (comma-separated, or "all" for everything)

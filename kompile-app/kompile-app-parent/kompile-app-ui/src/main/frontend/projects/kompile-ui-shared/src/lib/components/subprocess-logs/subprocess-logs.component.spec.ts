@@ -64,24 +64,20 @@ describe('SubprocessLogsComponent', () => {
   let ingestLogSubject: Subject<IngestLogEntry>;
   let vectorLogSubject: Subject<IngestLogEntry>;
   let embeddingSubject: Subject<any>;
-  let vlmTestLogSubject: Subject<IngestLogEntry>;
 
   beforeEach(async () => {
     ingestLogSubject = new Subject<IngestLogEntry>();
     vectorLogSubject = new Subject<IngestLogEntry>();
     embeddingSubject = new Subject<any>();
-    vlmTestLogSubject = new Subject<IngestLogEntry>();
 
     webSocketServiceSpy = jasmine.createSpyObj('WebSocketService', [
       'connect',
       'subscribeToTaskLogs',
       'subscribeToVectorPopulationLogs',
       'subscribeToEmbeddingSubprocess',
-      'subscribeToVlmTestLogs',
       'unsubscribeFromTaskLogs',
       'unsubscribeFromVectorPopulationLogs',
-      'unsubscribeFromEmbeddingSubprocess',
-      'unsubscribeFromVlmTestLogs'
+      'unsubscribeFromEmbeddingSubprocess'
     ]);
 
     indexBrowserServiceSpy = jasmine.createSpyObj('IndexBrowserService', [
@@ -94,7 +90,6 @@ describe('SubprocessLogsComponent', () => {
     webSocketServiceSpy.subscribeToTaskLogs.and.returnValue(ingestLogSubject.asObservable());
     webSocketServiceSpy.subscribeToVectorPopulationLogs.and.returnValue(vectorLogSubject.asObservable());
     webSocketServiceSpy.subscribeToEmbeddingSubprocess.and.returnValue(embeddingSubject.asObservable());
-    webSocketServiceSpy.subscribeToVlmTestLogs.and.returnValue(vlmTestLogSubject.asObservable());
 
     indexBrowserServiceSpy.getVectorPopulationTaskLogs.and.returnValue(
       of(makeVectorLogsResponse())
@@ -126,7 +121,6 @@ describe('SubprocessLogsComponent', () => {
     ingestLogSubject.complete();
     vectorLogSubject.complete();
     embeddingSubject.complete();
-    vlmTestLogSubject.complete();
   });
 
   // ── 1. Creation ─────────────────────────────────────────────────────────────
@@ -249,19 +243,6 @@ describe('SubprocessLogsComponent', () => {
     discardPeriodicTasks();
 
     expect(webSocketServiceSpy.subscribeToEmbeddingSubprocess).toHaveBeenCalled();
-  }));
-
-  // ── 5. ngOnInit – vlm-test source ─────────────────────────────────────────────
-
-  it('should subscribe to VLM test logs when logSource is vlm-test', fakeAsync(() => {
-    component.taskId = 'task-1';
-    component.logSource = 'vlm-test';
-
-    fixture.detectChanges();
-    tick(200);
-    discardPeriodicTasks();
-
-    expect(webSocketServiceSpy.subscribeToVlmTestLogs).toHaveBeenCalledWith('task-1');
   }));
 
   // ── 6. processBatchedLogs ──────────────────────────────────────────────────────
@@ -854,19 +835,6 @@ describe('SubprocessLogsComponent', () => {
     component.ngOnDestroy();
 
     expect(webSocketServiceSpy.unsubscribeFromEmbeddingSubprocess).toHaveBeenCalled();
-  }));
-
-  it('should call unsubscribeFromVlmTestLogs on destroy for vlm-test source', fakeAsync(() => {
-    component.taskId = 'task-1';
-    component.logSource = 'vlm-test';
-
-    fixture.detectChanges();
-    tick(200);
-    discardPeriodicTasks();
-
-    component.ngOnDestroy();
-
-    expect(webSocketServiceSpy.unsubscribeFromVlmTestLogs).toHaveBeenCalledWith('task-1');
   }));
 
   it('should not throw on destroy when no subscriptions exist', () => {

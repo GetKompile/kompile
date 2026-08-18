@@ -7412,27 +7412,6 @@
     ]
   },
   {
-    "name": "ai.kompile.app.services.subprocess.VlmTestSubprocessLauncher",
-    "allDeclaredFields": true,
-    "queryAllDeclaredMethods": true,
-    "queryAllDeclaredConstructors": true,
-    "methods": [
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "ai.kompile.app.config.SubprocessExecutableConfig",
-          "ai.kompile.app.services.ServerPortService",
-          "ai.kompile.app.services.subprocess.SubprocessConfigService",
-          "ai.kompile.app.services.Nd4jEnvironmentConfigService"
-        ]
-      },
-      {
-        "name": "shutdown",
-        "parameterTypes": []
-      }
-    ]
-  },
-  {
     "name": "ai.kompile.app.source.providers.FileUploadSourceProvider",
     "allDeclaredFields": true,
     "queryAllDeclaredMethods": true,
@@ -8376,20 +8355,6 @@
     ]
   },
   {
-    "name": "ai.kompile.app.tools.PipelineTool",
-    "allDeclaredFields": true,
-    "queryAllDeclaredMethods": true,
-    "queryAllDeclaredConstructors": true,
-    "methods": [
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "ai.kompile.pipeline.management.service.PipelineManagementService"
-        ]
-      }
-    ]
-  },
-  {
     "name": "ai.kompile.app.tools.PromptTemplateTool",
     "allDeclaredFields": true,
     "queryAllDeclaredMethods": true,
@@ -8518,21 +8483,6 @@
         "name": "<init>",
         "parameterTypes": [
           "ai.kompile.app.web.controllers.VlmPipelineConfigController"
-        ]
-      }
-    ]
-  },
-  {
-    "name": "ai.kompile.app.tools.VlmTestTool",
-    "allDeclaredFields": true,
-    "queryAllDeclaredMethods": true,
-    "queryAllDeclaredConstructors": true,
-    "methods": [
-      {
-        "name": "<init>",
-        "parameterTypes": [
-          "ai.kompile.app.services.subprocess.VlmTestSubprocessLauncher",
-          "ai.kompile.app.web.controllers.VlmTestWorkflowController"
         ]
       }
     ]

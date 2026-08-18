@@ -291,9 +291,6 @@ public class DoctorCommand implements Callable<Integer> {
                         "Run: kompile install " + id));
             }
         }
-        if (localDistribution) {
-            out.add(checkLocalWorker(kompileHome, "document-model", "kompile-vlm-test"));
-        }
         return out;
     }
 
@@ -305,18 +302,6 @@ public class DoctorCommand implements Callable<Integer> {
         } catch (IOException e) {
             return false;
         }
-    }
-
-    static CheckResult checkLocalWorker(Path kompileHome, String name, String binaryName) {
-        Path binary = kompileHome.resolve("bin").resolve(binaryName);
-        Path windowsBinary = kompileHome.resolve("bin").resolve(binaryName + ".exe");
-        Path installed = Files.isExecutable(binary) ? binary
-                : (Files.isExecutable(windowsBinary) ? windowsBinary : null);
-        if (installed != null) {
-            return CheckResult.ok(name, "native at " + installed.toAbsolutePath());
-        }
-        return CheckResult.fail(name, "not installed",
-                "Reinstall the local distribution (install.sh --variant local)");
     }
 
     /** Human-readable description of what a persona app serves, for the "not installed" warning. */

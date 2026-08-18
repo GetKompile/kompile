@@ -5,7 +5,6 @@
 #   - kompile (the standard chat/MCP CLI; local crawl is an internal CLI mode)
 #   - kompile-model-serving
 #   - kompile-pipeline-serving
-#   - kompile-vlm-test
 #   - the selected backend's validated side-loaded native closure and SDX assets
 #
 # Usage:
@@ -21,7 +20,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_NATIVE_TARGETS="cli,model-serving,pipeline-serving,vlm-test"
+LOCAL_NATIVE_TARGETS="cli,model-serving,pipeline-serving"
 
 export VARIANT=local
 export NATIVE_TARGETS="${NATIVE_TARGETS:-${LOCAL_NATIVE_TARGETS}}"

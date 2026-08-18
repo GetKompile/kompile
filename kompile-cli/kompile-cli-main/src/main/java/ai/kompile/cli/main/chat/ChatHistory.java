@@ -242,16 +242,6 @@ public class ChatHistory {
     }
 
     /**
-     * Logs an agentic chat loop step.
-     */
-    public synchronized void logAgenticStep(int step, int maxSteps, int toolCallCount) {
-        ensureWriter();
-        if (writer != null) {
-            writer.printf("[agentic-step] %d/%d (%d tool calls)%n", step, maxSteps, toolCallCount);
-        }
-    }
-
-    /**
      * Records that this session harvested content from an external agent session.
      * Written as a header-level metadata line so the resume tool can deduplicate.
      */

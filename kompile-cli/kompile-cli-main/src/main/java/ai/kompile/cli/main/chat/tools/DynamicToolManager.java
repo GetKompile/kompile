@@ -96,8 +96,8 @@ public class DynamicToolManager {
                 Set.of("memory", "semantic_memory", "rag_search", "knowledge_search")));
 
         GROUPS.put("crawl", new ToolGroup("crawl",
-                "Discover, configure, run, monitor, and inspect folder-local model-backed crawls",
-                Set.of("crawl_discover", "model_runtime", "crawl_documents", "crawl_source",
+                "Build and maintain pipelines, then run and inspect folder-local model-backed crawls",
+                Set.of("crawl_discover", "model_runtime", "pipeline", "crawl_documents", "crawl_source",
                         "crawl_control", "crawl_result", "knowledge_status")));
 
         GROUPS.put("graph_query", new ToolGroup("graph_query",

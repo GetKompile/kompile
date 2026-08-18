@@ -147,12 +147,6 @@ public class SkillManagerTool implements CliTool {
         modelNode.put("description", "Suggested model for this skill (for create_skill, update_skill). Optional.");
         properties.set("model_hint", modelNode);
 
-        // max_steps (for create, update)
-        ObjectNode maxStepsNode = objectMapper.createObjectNode();
-        maxStepsNode.put("type", "integer");
-        maxStepsNode.put("description", "Maximum steps for this skill (0 = inherit from agent). For create_skill/update_skill.");
-        properties.set("max_steps", maxStepsNode);
-
         // project_scope (for create)
         ObjectNode scopeNode = objectMapper.createObjectNode();
         scopeNode.put("type", "boolean");
@@ -286,9 +280,6 @@ public class SkillManagerTool implements CliTool {
         if (skill.getModelHint() != null) {
             sb.append("Model Hint: ").append(skill.getModelHint()).append("\n");
         }
-        if (skill.getMaxSteps() > 0) {
-            sb.append("Max Steps: ").append(skill.getMaxSteps()).append("\n");
-        }
         sb.append("\nPrompt Template:\n");
         sb.append(skill.getPromptTemplate());
 
@@ -320,7 +311,6 @@ public class SkillManagerTool implements CliTool {
         String displayName = params.path("display_name").asText(null);
         String tools = params.path("tools").asText(null);
         String modelHint = params.path("model_hint").asText(null);
-        int maxSteps = params.path("max_steps").asInt(0);
         boolean projectScope = params.path("project_scope").asBoolean(false);
 
         Path targetDir;
@@ -350,9 +340,6 @@ public class SkillManagerTool implements CliTool {
         }
         if (modelHint != null && !modelHint.isBlank()) {
             content.append("model: ").append(modelHint).append("\n");
-        }
-        if (maxSteps > 0) {
-            content.append("max_steps: ").append(maxSteps).append("\n");
         }
         content.append("---\n");
         content.append(promptTemplate);
@@ -409,7 +396,6 @@ public class SkillManagerTool implements CliTool {
         String displayName = params.has("display_name") ? params.path("display_name").asText() : current.getDisplayName();
         String promptTemplate = params.has("prompt_template") ? params.path("prompt_template").asText() : current.getPromptTemplate();
         String modelHint = params.has("model_hint") ? params.path("model_hint").asText() : current.getModelHint();
-        int maxSteps = params.has("max_steps") ? params.path("max_steps").asInt() : current.getMaxSteps();
 
         String tools;
         if (params.has("tools")) {
@@ -434,9 +420,6 @@ public class SkillManagerTool implements CliTool {
         }
         if (modelHint != null && !modelHint.isBlank()) {
             content.append("model: ").append(modelHint).append("\n");
-        }
-        if (maxSteps > 0) {
-            content.append("max_steps: ").append(maxSteps).append("\n");
         }
         content.append("---\n");
         content.append(promptTemplate);

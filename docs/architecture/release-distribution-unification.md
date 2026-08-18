@@ -57,11 +57,10 @@ image**. Complete type table (all statically linked except `training`):
 | `vector-population` | `…VectorPopulationSubprocessMain` | |
 | `embedding` | `ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain` | persistent |
 | `model-init` | `…model.ModelInitSubprocessMain` | |
-| `vlm-test` | `…VlmTestSubprocessMain` | |
 | `serving` | `…ServingSubprocessMain` | own Spring context — see gaps §7 |
 | `graph-matrix` | `…GraphMatrixSubprocessMain` (:8094) | added 2026-07-02 |
 | `learning` | `ai.kompile.app.learning.subprocess.LearningSubprocessMain` | added 2026-07-02 |
-| `pipeline-serving` | `ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain` | now static (was reflective) |
+| `pipeline-serving` | `ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain` | MCP-owned reusable stdio runtime for every model-backed pipeline |
 | `training` | `ai.kompile.staging.subprocess.TrainingSubprocessMain` | reflective **by design** — kompile-model-staging must NEVER be an app-main dependency; works only on staging-inclusive JVM classpaths or via the separate staging binary |
 
 **Launcher → child process rules.** Every launcher decides JVM-vs-native per

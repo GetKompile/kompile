@@ -124,7 +124,7 @@ public class MainApplication {
      * Contribute the subprocess types that only kompile-app-main can host.
      *
      * <p>{@link SubprocessDispatcher} already registers the six whose mains come in through
-     * kompile-app-web-shared — ingest, vector-population, embedding, model-init, vlm-test,
+     * kompile-app-web-shared — ingest, vector-population, embedding, model-init,
      * graph-matrix — so every persona app can run those jobs from its own binary. These four are
      * the ones whose modules only this app depends on:
      *

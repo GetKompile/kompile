@@ -62,6 +62,38 @@ class KompileTuiContentViewTest {
     }
 
     @Test
+    void mismatchedRefreshSwitchesActiveViewAndKeepsItScrollable() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-active-view-switch-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-active-view-switch-queue"),
+                    new TerminalRenderer(false));
+
+            tui.showActivityView("process:one", "process one",
+                    "one-1\none-2\none-3\none-4\none-5\none-6\none-7");
+            assertTrue(tui.pageContent(1));
+            assertTrue(tui.getContentScrollOffset() > 0);
+
+            // A background refresh for a newly selected process must switch the
+            // rendered view instead of being silently discarded.
+            tui.updateActivityView("process:two", "process two",
+                    "two-1\ntwo-2\ntwo-3\ntwo-4\ntwo-5\ntwo-6\ntwo-7");
+            assertEquals("process:two", tui.getContentViewKey());
+            assertTrue(tui.getContentViewLines().contains("── process two ──"));
+            assertEquals(0, tui.getContentScrollOffset());
+
+            // Repaint is safe even before an interactive terminal is attached.
+            tui.redrawContentView();
+            assertTrue(tui.pageContent(1));
+            assertFalse(tui.getVisibleContentLines().contains("two-7"));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void switchesProcessContentInPlaceAndRestoresRetainedMainTranscript() {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-content-view-test");

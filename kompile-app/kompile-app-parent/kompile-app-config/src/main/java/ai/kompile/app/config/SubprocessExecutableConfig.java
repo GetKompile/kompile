@@ -132,12 +132,6 @@ public class SubprocessExecutableConfig {
     private String trainingPath;
 
     /**
-     * Path to the VLM test subprocess executable (optional).
-     */
-    @Value("${kompile.subprocess.executable.vlm-test-path:}")
-    private String vlmTestPath;
-
-    /**
      * Path to the CUDA-backend native executable (for backend-routed subprocess launching).
      * When a subprocess requires CUDA (per DeviceRoutingConfig), this executable is used instead.
      * If not set, falls back to classpath augmentation via SubprocessBackendResolver.
@@ -375,22 +369,6 @@ public class SubprocessExecutableConfig {
                 "ai.kompile.staging.subprocess.TrainingSubprocessMain");
     }
 
-    /**
-     * Build the command for launching a VLM test subprocess.
-     */
-    public List<String> buildVlmTestCommand(Path argsFile, String heapSize, String javaPath, String classpath) {
-        return buildVlmTestCommand(argsFile, heapSize, javaPath, classpath, 2);
-    }
-
-    /**
-     * Build the command for launching a VLM test subprocess with configurable off-heap multiplier.
-     * @param offHeapMultiplier Multiplier for off-heap memory relative to heap size (default 2)
-     */
-    public List<String> buildVlmTestCommand(Path argsFile, String heapSize, String javaPath, String classpath, int offHeapMultiplier) {
-        return buildSubprocessCommand(SubprocessType.VLM_TEST, argsFile, heapSize, javaPath, classpath,
-                "ai.kompile.app.subprocess.VlmTestSubprocessMain", offHeapMultiplier);
-    }
-
     private List<String> buildSubprocessCommand(SubprocessType type, Path argsFile, String heapSize,
                                                  String javaPath, String classpath, String mainClass) {
         return buildSubprocessCommand(type, argsFile, heapSize, javaPath, classpath, mainClass, 2);
@@ -454,7 +432,6 @@ public class SubprocessExecutableConfig {
             case EMBEDDING -> embeddingPath;
             case MODEL_INIT -> modelInitPath;
             case TRAINING -> trainingPath;
-            case VLM_TEST -> vlmTestPath;
             case GRAPH -> null;
         };
 
@@ -477,7 +454,6 @@ public class SubprocessExecutableConfig {
             case EMBEDDING -> embeddingPath;
             case MODEL_INIT -> modelInitPath;
             case TRAINING -> trainingPath;
-            case VLM_TEST -> vlmTestPath;
             case GRAPH -> null;
         };
 
@@ -579,7 +555,6 @@ public class SubprocessExecutableConfig {
         EMBEDDING,
         MODEL_INIT,
         TRAINING,
-        VLM_TEST,
         GRAPH
     }
 }

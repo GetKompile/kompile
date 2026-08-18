@@ -276,35 +276,22 @@ public final class CrawlDocumentsTool implements CliTool {
         ObjectNode processor = pipelineProperties.putObject("processor");
         processor.put("type", "object");
         processor.put("description",
-                "Execution contract. VLM/OCR use adapter=vlm-test; generic pipelines use "
-                        + "type=UNIFIED_PIPELINE plus a definition; custom subprocesses use KOMPILE_SUBPROCESS or EXECUTABLE.");
+                "Canonical execution contract. Every model-backed pipeline uses UNIFIED_PIPELINE plus a definition.");
         ObjectNode processorProperties = processor.putObject("properties");
-        processorProperties.putObject("type").put("type", "string");
-        processorProperties.putObject("adapter").put("type", "string")
-                .put("description", "Use vlm-test only for the built-in PDF VLM/OCR compatibility adapter.");
+        processorProperties.putObject("type").put("type", "string")
+                .putArray("enum").add("UNIFIED_PIPELINE");
         processorProperties.putObject("pipelineDefinition").put("type", "object");
         processorProperties.putObject("pipelineDefinitionPath").put("type", "string");
         processorProperties.putObject("pipelineDefinitionId").put("type", "string");
-        processorProperties.putObject("executable").put("type", "string");
-        processorProperties.putObject("executableMode").put("type", "string")
-                .putArray("enum").add("DEDICATED").add("UNIFIED");
-        processorProperties.putObject("componentId").put("type", "string");
-        processorProperties.putObject("arguments").put("type", "array")
-                .putObject("items").put("type", "string");
-        processorProperties.putObject("outputProtocol").put("type", "string");
-        processorProperties.putObject("outputField").put("type", "string");
         processorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
-        processorProperties.putObject("environment").put("type", "object")
-                .putObject("additionalProperties").put("type", "string");
         pipeline.putArray("required").add("pipelineId");
         ObjectNode pipelineTypeGuide = schema.putObject("pipelineTypeGuide");
         pipelineTypeGuide.put("VLM/OCR",
-                "pipelineType + modelId/modelBindings + optional processor.adapter=vlm-test; PDF compatibility worker.");
+                "pipelineType + modelId/modelBindings compiled to UnifiedPipelineDefinition.");
         pipelineTypeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
-                "pipelineType + loaderName/chunkerName/options; no document-model worker required.");
+                "pipelineType + loaderName/chunkerName/options; model steps use the same runtime contract.");
         pipelineTypeGuide.put("CUSTOM",
-                "processor.type=KOMPILE_SUBPROCESS|EXECUTABLE for a caller executable, or "
-                        + "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
+                "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
         ObjectNode pipelineRegistry = props.putObject("pipelineRegistry");
         pipelineRegistry.put("type", "object");
         pipelineRegistry.put("description", "Request-scoped pipeline registrations shared by local routing and "
@@ -368,23 +355,11 @@ public final class CrawlDocumentsTool implements CliTool {
         ObjectNode executorProperties = executor.putObject("properties");
         executorProperties.putObject("executorId").put("type", "string");
         executorProperties.putObject("type").put("type", "string")
-                .putArray("enum").add("UNIFIED_PIPELINE").add("KOMPILE_SUBPROCESS").add("EXECUTABLE");
+                .putArray("enum").add("UNIFIED_PIPELINE");
         executorProperties.putObject("pipelineDefinitionId").put("type", "string");
         executorProperties.putObject("pipelineDefinitionPath").put("type", "string");
         executorProperties.putObject("pipelineDefinition").put("type", "object");
-        executorProperties.putObject("componentId").put("type", "string");
-        executorProperties.putObject("executable").put("type", "string");
-        executorProperties.putObject("executableMode").put("type", "string")
-                .putArray("enum").add("DEDICATED").add("UNIFIED");
-        executorProperties.putObject("subprocessMode").put("type", "string");
-        executorProperties.putObject("arguments").put("type", "array")
-                .putObject("items").put("type", "string");
-        executorProperties.putObject("outputProtocol").put("type", "string")
-                .putArray("enum").add("AUTO").add("TEXT").add("JSON").add("KOMPILE_MESSAGE");
-        executorProperties.putObject("outputField").put("type", "string");
         executorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
-        executorProperties.putObject("environment").put("type", "object")
-                .putObject("additionalProperties").put("type", "string");
         executor.putArray("required").add("executorId").add("type");
         addObjectArray(props, "routeRules",
                 "Content routing rules that select a pipeline for matching documents.");
@@ -394,14 +369,6 @@ public final class CrawlDocumentsTool implements CliTool {
         runtimeConfig.put("description", "Folder-local execution settings. The local crawl engine "
                 + "resolves these directly and does not require a running MCP or application server.");
         ObjectNode runtimeProperties = runtimeConfig.putObject("properties");
-        runtimeProperties.putObject("documentModelExecutable")
-                .put("type", "string")
-                .put("description", "Legacy alias for the executable on the built-in vlm-test registration. "
-                        + "New processors should use pipelineRegistry.executors[].executable.");
-        runtimeProperties.putObject("documentModelExecutableMode")
-                .put("type", "string")
-                .put("description", "Legacy launch-mode alias for the built-in vlm-test registration.")
-                .putArray("enum").add("DEDICATED").add("UNIFIED");
         runtimeProperties.putObject("graphExtractionParallelism")
                 .put("type", "integer").put("minimum", 1).put("maximum", 32)
                 .put("description", "Concurrent local extraction work items.");

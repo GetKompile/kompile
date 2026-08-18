@@ -1,0 +1,273 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0.
+ */
+package ai.kompile.pipeline.serving.launcher;
+
+import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
+import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol;
+import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.Message;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+
+/** A reusable, process-isolated pipeline runtime controlled entirely over stdio. */
+public final class PipelineRuntimeSession implements AutoCloseable {
+    private static final int MAX_STDERR_CHARS = 16_384;
+
+    private final UnifiedPipelineDefinition definition;
+    private final Process process;
+    private final BufferedWriter input;
+    private final ConcurrentHashMap<String, CompletableFuture<Message>> pending =
+            new ConcurrentHashMap<>();
+    private final CompletableFuture<Message> ready = new CompletableFuture<>();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final StringBuilder stderr = new StringBuilder();
+    private final Thread outputReader;
+    private final Thread errorReader;
+    private volatile Consumer<Message> progressListener = ignored -> { };
+
+    PipelineRuntimeSession(UnifiedPipelineDefinition definition, Process process) {
+        this.definition = definition;
+        this.process = process;
+        this.input = new BufferedWriter(new OutputStreamWriter(
+                process.getOutputStream(), StandardCharsets.UTF_8));
+        this.outputReader = new Thread(this::readOutput,
+                "pipeline-runtime-stdout-" + definition.getPipelineId());
+        this.outputReader.setDaemon(true);
+        this.errorReader = new Thread(this::drainErrors,
+                "pipeline-runtime-stderr-" + definition.getPipelineId());
+        this.errorReader.setDaemon(true);
+        this.outputReader.start();
+        this.errorReader.start();
+    }
+
+    void awaitReady(Duration timeout) throws Exception {
+        try {
+            ready.get(Math.max(1L, timeout.toMillis()), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            close();
+            throw new IOException("Pipeline runtime did not become ready for "
+                    + definition.getPipelineId(), e);
+        }
+    }
+
+    /** One cancellable execution submitted to this reusable runtime. */
+    public final class Execution {
+        private final String requestId;
+        private final CompletableFuture<Message> response;
+
+        private Execution(String requestId, CompletableFuture<Message> response) {
+            this.requestId = requestId;
+            this.response = response;
+        }
+
+        public String requestId() {
+            return requestId;
+        }
+
+        public Map<String, Object> await(Duration timeout) throws Exception {
+            try {
+                return output(response.get(Math.max(1L, timeout.toMillis()), TimeUnit.MILLISECONDS));
+            } catch (TimeoutException e) {
+                cancel(Duration.ofSeconds(2));
+                throw new IOException("Pipeline runtime execution timed out", e);
+            } finally {
+                pending.remove(requestId, response);
+            }
+        }
+
+        public boolean cancel(Duration timeout) {
+            boolean cancelled = PipelineRuntimeSession.this.cancel(requestId, timeout);
+            if (cancelled) {
+                response.completeExceptionally(
+                        new CancellationException("Pipeline runtime execution cancelled"));
+            }
+            return cancelled;
+        }
+    }
+
+    public Execution start(Map<String, Object> request) throws IOException {
+        if (!isAlive()) throw new IOException("Pipeline runtime is not running");
+        String requestId = UUID.randomUUID().toString();
+        CompletableFuture<Message> response = new CompletableFuture<>();
+        pending.put(requestId, response);
+        try {
+            send(PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.EXECUTE,
+                    requestId, definition.getPipelineId(),
+                    request == null ? Map.of() : Map.of("input", request)));
+            return new Execution(requestId, response);
+        } catch (IOException failure) {
+            pending.remove(requestId, response);
+            throw failure;
+        }
+    }
+
+    public Map<String, Object> execute(Map<String, Object> request, Duration timeout) throws Exception {
+        return start(request).await(timeout);
+    }
+
+    private Map<String, Object> output(Message response) {
+        Object output = response.payload().get("output");
+        if (output instanceof Map<?, ?> values) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> typed = (Map<String, Object>) values;
+            return typed;
+        }
+        return response.payload();
+    }
+
+    public boolean health(Duration timeout) {
+        if (!isAlive()) return false;
+        try {
+            Message response = request(PipelineRuntimeProtocol.HEALTH, Map.of(), timeout);
+            return PipelineRuntimeProtocol.HEALTHY.equals(response.type());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public boolean cancel(String requestId, Duration timeout) {
+        if (requestId == null || requestId.isBlank()) return false;
+        try {
+            Message response = request(PipelineRuntimeProtocol.CANCEL,
+                    Map.of("targetRequestId", requestId), timeout);
+            return PipelineRuntimeProtocol.CANCELLED.equals(response.type())
+                    && Boolean.TRUE.equals(response.payload().get("cancelled"));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public void onProgress(Consumer<Message> listener) {
+        this.progressListener = listener == null ? ignored -> { } : listener;
+    }
+
+    public boolean isAlive() {
+        return !closed.get() && process.isAlive();
+    }
+
+    public long pid() {
+        return process.pid();
+    }
+
+    public UnifiedPipelineDefinition definition() {
+        return definition;
+    }
+
+    private Message request(String type, Map<String, Object> payload, Duration timeout) throws Exception {
+        if (!isAlive()) throw new IOException("Pipeline runtime is not running");
+        String requestId = UUID.randomUUID().toString();
+        CompletableFuture<Message> future = new CompletableFuture<>();
+        pending.put(requestId, future);
+        try {
+            send(PipelineRuntimeProtocol.message(
+                    type, requestId, definition.getPipelineId(), payload));
+            return future.get(Math.max(1L, timeout.toMillis()), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            throw new IOException("Pipeline runtime request timed out: " + type, e);
+        } finally {
+            pending.remove(requestId);
+        }
+    }
+
+    private void send(Message message) throws IOException {
+        synchronized (input) {
+            input.write(PipelineRuntimeProtocol.encode(message));
+            input.newLine();
+            input.flush();
+        }
+    }
+
+    private void readOutput() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.startsWith(PipelineRuntimeProtocol.PREFIX)) continue;
+                Message message = PipelineRuntimeProtocol.decode(line);
+                if (PipelineRuntimeProtocol.READY.equals(message.type())) {
+                    ready.complete(message);
+                } else if (PipelineRuntimeProtocol.ERROR.equals(message.type())
+                        && message.requestId() == null && !ready.isDone()) {
+                    ready.completeExceptionally(new IOException(message.error()));
+                } else if (PipelineRuntimeProtocol.PROGRESS.equals(message.type())) {
+                    progressListener.accept(message);
+                } else if (message.requestId() != null) {
+                    CompletableFuture<Message> future = pending.get(message.requestId());
+                    if (future != null) {
+                        if (PipelineRuntimeProtocol.ERROR.equals(message.type())) {
+                            future.completeExceptionally(new IOException(message.error()));
+                        } else {
+                            future.complete(message);
+                        }
+                    }
+                }
+            }
+            IOException closed = new IOException(
+                    "Pipeline runtime stdout closed" + stderrSuffix());
+            ready.completeExceptionally(closed);
+            failPending(closed);
+        } catch (Exception e) {
+            ready.completeExceptionally(e);
+            failPending(e);
+        }
+    }
+
+    private void drainErrors() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                process.getErrorStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                synchronized (stderr) {
+                    stderr.append(line).append(System.lineSeparator());
+                    if (stderr.length() > MAX_STDERR_CHARS) {
+                        stderr.delete(0, stderr.length() - MAX_STDERR_CHARS);
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void failPending(Throwable error) {
+        pending.values().forEach(future -> future.completeExceptionally(error));
+        pending.clear();
+    }
+
+    private String stderrSuffix() {
+        synchronized (stderr) {
+            return stderr.isEmpty() ? "" : ":\n" + stderr;
+        }
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        if (process.isAlive()) {
+            try {
+                send(PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.SHUTDOWN,
+                        UUID.randomUUID().toString(), definition.getPipelineId(), Map.of()));
+                if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroy();
+                if (!process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly();
+            } catch (Exception ignored) {
+                process.destroyForcibly();
+            }
+        }
+        failPending(new IOException("Pipeline runtime session closed"));
+    }
+}

@@ -21,7 +21,7 @@ class CrawlRunStoreTest {
         String runId = "test-" + UUID.randomUUID();
         CrawlRunStore store = new CrawlRunStore(runId, new ObjectMapper());
         AgentRunController controller = new AgentRunController(
-                AgentRunController.Mode.SUPERVISED, 10, 20);
+                AgentRunController.Mode.SUPERVISED);
 
         try {
             store.open(controller, "http://localhost:8080", "coder");
@@ -33,7 +33,6 @@ class CrawlRunStoreTest {
             AgentRunController.Snapshot snapshot = store.latestCheckpoint();
             assertEquals(AgentRunController.State.RUNNING, snapshot.state());
             assertEquals(1, snapshot.completedSteps());
-            assertEquals(10, snapshot.maxSteps());
             assertTrue(store.readEvents().stream().anyMatch(line -> line.contains("tool_completed")));
         } finally {
             Files.deleteIfExists(store.eventsFile());

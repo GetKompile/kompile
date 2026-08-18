@@ -62,7 +62,6 @@ export interface SubprocessConfigResponse {
   embeddingExecutablePath: string;
   modelInitExecutablePath: string;
   trainingExecutablePath: string;
-  vlmTestExecutablePath: string;
   subprocessTypeFlag: string;
   resolvedNativeMode: boolean;
   runningInNativeImage: boolean;
@@ -100,7 +99,6 @@ export interface SubprocessConfigUpdate {
   vlmCudaPinnedHostLimitMb?: number;
   // Per-type executable paths
   trainingExecutablePath?: string;
-  vlmTestExecutablePath?: string;
   heartbeatIntervalSeconds?: number;
   staleThresholdSeconds?: number;
   // ND4J / Pipeline settings

@@ -5,46 +5,24 @@
  */
 package ai.kompile.cli.main.project;
 
-import ai.kompile.app.subprocess.SubprocessMessage;
-import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
-import ai.kompile.cli.common.util.JavaRuntimeLocator;
-import ai.kompile.cli.main.CliProcessLauncher;
-import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
-import ai.kompile.pipeline.serving.launcher.PipelineSubprocessLauncher;
+import ai.kompile.pipeline.serving.registry.PipelineDefinitionStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.nio.ByteBuffer;
-import java.nio.channels.SeekableByteChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
- * Runs request-scoped model and pipeline processing for an offline local crawl.
- *
- * <p>VLM/OCR support is a registered compatibility adapter, not the execution contract. Callers
- * may instead select any registered unified pipeline, Kompile subprocess component, executable,
- * or runnable JAR.
+ * Resolves and executes the single unified pipeline contract for a project-local crawl.
+ * Process lifecycle and reuse are owned by {@link PipelineRuntimeSupervisor}.
  */
 public final class LocalModelPipelineRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
@@ -52,87 +30,12 @@ public final class LocalModelPipelineRunner {
     private LocalModelPipelineRunner() {
     }
 
-    public static boolean documentModelWorkerAvailable() {
-        return documentModelWorkerStatus(Path.of("").toAbsolutePath().normalize(), null).available();
-    }
-
-    public static boolean documentModelWorkerAvailable(Path projectRoot, JsonNode request) {
-        return documentModelWorkerStatus(projectRoot, request).available();
-    }
-
-    public static DocumentModelWorkerStatus documentModelWorkerStatus(Path projectRoot,
-                                                                       JsonNode request) {
-        Map<String, Object> runtimeOptions = new LinkedHashMap<>();
-        JsonNode runtimeConfig = request == null ? null : request.get("runtimeConfig");
-        if (runtimeConfig != null && runtimeConfig.isObject()) {
-            runtimeConfig.fields().forEachRemaining(entry ->
-                    runtimeOptions.put(entry.getKey(), jsonValue(entry.getValue())));
-        }
-        WorkerLocation worker = resolveWorker(projectRoot, runtimeOptions);
-        return new DocumentModelWorkerStatus(
-                worker.available(),
-                worker.source(),
-                worker.executable() == null ? null : worker.executable().toString(),
-                worker.kind() == WorkerKind.UNIFIED);
-    }
-
-    public static String validateWorkerConfiguration(Path projectRoot, JsonNode request) {
-        return validateWorkerConfiguration(
-                projectRoot, request, CliProcessLauncher.requiresNativeChildren());
-    }
-
-    static String validateWorkerConfiguration(
-            Path projectRoot, JsonNode request, boolean nativeParent) {
-        JsonNode runtimeConfig = request == null ? null : request.get("runtimeConfig");
-        if (runtimeConfig != null && !runtimeConfig.isNull()) {
-            if (!runtimeConfig.isObject()) {
-                return "runtimeConfig must be an object.";
-            }
-            JsonNode executable = runtimeConfig.get("documentModelExecutable");
-            if (executable != null && !executable.isNull()) {
-                String error = runnableError(
-                        projectRoot, executable, "runtimeConfig.documentModelExecutable",
-                        nativeParent);
-                if (error != null) {
-                    return error;
-                }
-                String mode = runtimeConfig.path("documentModelExecutableMode")
-                        .asText("DEDICATED").trim().toUpperCase(Locale.ROOT);
-                if (!Set.of("DEDICATED", "UNIFIED").contains(mode)) {
-                    return "runtimeConfig.documentModelExecutableMode must be DEDICATED or UNIFIED.";
-                }
-            }
-        }
-
-        JsonNode executors = request == null
-                ? null : request.path("pipelineRegistry").path("executors");
-        if (executors != null && executors.isArray()) {
-            for (int i = 0; i < executors.size(); i++) {
-                JsonNode executable = executors.get(i).get("executable");
-                if (executable == null || executable.isNull()) {
-                    continue;
-                }
-                String error = runnableError(
-                        projectRoot,
-                        executable,
-                        "pipelineRegistry.executors[" + i + "].executable",
-                        nativeParent);
-                if (error != null) {
-                    return error;
-                }
-            }
-        }
-        return null;
-    }
-
     /**
      * Validate the executable part of any composed unified pipeline before a crawl starts.
      *
-     * <p>Project manifests frequently contain a high-level VLM compatibility description. That
-     * description is not a generic serving pipeline: generic execution requires a serialized
-     * Pipeline under {@code pipelineSpec} with a concrete {@code @class}. Keep this check here,
-     * beside the code that actually deserializes and launches the definition, so dry-run and real
-     * local crawls report the same contract.</p>
+     * <p>Every model-backed pipeline requires a serialized Pipeline under {@code pipelineSpec}
+     * with a concrete {@code @class}. Keeping this check beside runtime resolution ensures dry-run
+     * and real local crawls enforce exactly the same contract.</p>
      */
     public static String validatePipelineDefinitions(Path projectRoot, JsonNode request) {
         if (request == null || request.isNull()) return null;
@@ -204,13 +107,10 @@ public final class LocalModelPipelineRunner {
         JsonNode processor = pipeline.path("processor");
         String type = textValue(processor.get("type"));
         if (type == null) type = textValue(pipeline.get("type"));
-        String adapter = textValue(processor.get("adapter"));
-        boolean compatibility = "vlm-test".equalsIgnoreCase(adapter);
         boolean hasDefinition = processor.has("pipelineDefinition")
                 || processor.has("pipelineDefinitionPath") || processor.has("pipelineDefinitionId")
                 || pipeline.has("pipelineDefinition") || pipeline.has("pipelineDefinitionPath")
                 || pipeline.has("pipelineDefinitionId");
-        if (compatibility && !"UNIFIED_PIPELINE".equalsIgnoreCase(type)) return null;
         if (!"UNIFIED_PIPELINE".equalsIgnoreCase(type) && !hasDefinition) return null;
 
         JsonNode inline = firstNode(processor, pipeline, "pipelineDefinition");
@@ -231,9 +131,8 @@ public final class LocalModelPipelineRunner {
                 if (!Files.isRegularFile(path)) {
                     return "Unified pipeline '" + pipelineId(pipeline)
                             + "' definition path does not exist: " + path
-                            + ". A generic definition must provide an executable pipelineSpec.@class "
-                            + "(GraphPipeline or SequencePipeline); use the crawl compatibility VLM/OCR adapter "
-                            + "for a high-level document pipeline.";
+                            + ". Every model-backed definition must provide an executable "
+                            + "pipelineSpec.@class (GraphPipeline or SequencePipeline).";
                 }
                 return validateSerializedDefinition(MAPPER.readTree(path.toFile()), pipelineId(pipeline));
             } catch (Exception e) {
@@ -264,8 +163,7 @@ public final class LocalModelPipelineRunner {
         JsonNode spec = definition.get("pipelineSpec");
         if (spec == null || !spec.isObject() || spec.isEmpty()) {
             return "Unified pipeline '" + id + "' has no executable pipelineSpec. "
-                    + "A high-level VLM/OCR configuration is not a generic serving pipeline; provide pipelineSpec.@class "
-                    + "(GraphPipeline or SequencePipeline), or select the crawl compatibility VLM/OCR adapter.";
+                    + "Provide pipelineSpec.@class (GraphPipeline or SequencePipeline) with typed steps.";
         }
         String className = textValue(spec.get("@class"));
         if (className == null) {
@@ -295,30 +193,6 @@ public final class LocalModelPipelineRunner {
         return text == null || text.isBlank() ? null : text.trim();
     }
 
-    private static String runnableError(
-            Path projectRoot, JsonNode executable, String field, boolean nativeParent) {
-        if (!executable.isTextual() || executable.asText().isBlank()) {
-            return field + " must be a non-empty path.";
-        }
-        Path path;
-        try {
-            path = resolvePath(projectRoot, executable.asText());
-        } catch (Exception e) {
-            return field + " is not a valid path: " + e.getMessage();
-        }
-        if (!Files.isRegularFile(path)) {
-            return field + " does not exist or is not a file: " + path;
-        }
-        if (!Files.isExecutable(path) && !isJar(path)) {
-            return field + " is neither executable nor a JAR: " + path;
-        }
-        if (nativeParent && isJar(path)) {
-            return field + " resolves to an executable JAR, but native Kompile execution "
-                    + "requires a native child executable: " + path;
-        }
-        return null;
-    }
-
     /**
      * Runs the processor selected by a resolved pipeline.
      */
@@ -345,16 +219,9 @@ public final class LocalModelPipelineRunner {
             return runUnified(
                     projectRoot, file, pipeline, loadedText, definition, definitionPath, definitionId);
         }
-        if ("vlm-test".equalsIgnoreCase(stringValue(processor.get("adapter")))) {
-            return runDocumentModel(projectRoot, file, pipeline, processor);
-        }
-        if ("KOMPILE_SUBPROCESS".equalsIgnoreCase(type)
-                || "EXECUTABLE".equalsIgnoreCase(type)) {
-            return runConfiguredProcessor(projectRoot, file, pipeline, loadedText, processor);
-        }
         throw new IllegalArgumentException(
                 "Pipeline '" + pipeline.pipelineId()
-                        + "' selected an unsupported processor type: " + type);
+                        + "' must use the UNIFIED_PIPELINE execution contract; got: " + type);
     }
 
     private static String runUnified(Path projectRoot,
@@ -370,13 +237,16 @@ public final class LocalModelPipelineRunner {
                     ? MAPPER.readValue(json, UnifiedPipelineDefinition.class)
                     : MAPPER.convertValue(inlineDefinition, UnifiedPipelineDefinition.class);
         } else {
-            Path path;
             if (definitionPath != null) {
-                path = resolvePath(projectRoot, String.valueOf(definitionPath));
+                Path path = resolvePath(projectRoot, String.valueOf(definitionPath));
+                definition = MAPPER.readValue(path.toFile(), UnifiedPipelineDefinition.class);
             } else {
-                path = registeredDefinitionPath(projectRoot, String.valueOf(definitionId));
+                definition = new PipelineDefinitionStore(projectRoot.resolve("data/pipelines"), MAPPER)
+                        .active(String.valueOf(definitionId))
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "No active UnifiedPipelineDefinition named '" + definitionId
+                                        + "' was found in the project pipeline store."));
             }
-            definition = MAPPER.readValue(path.toFile(), UnifiedPipelineDefinition.class);
         }
 
         if (definition.getPipelineId() == null || definition.getPipelineId().isBlank()) {
@@ -411,527 +281,18 @@ public final class LocalModelPipelineRunner {
             }
         });
 
-        PipelineSubprocessLauncher launcher = new PipelineSubprocessLauncher();
-        Map<String, Object> result;
-        try {
-            result = launcher.launchOneShot(definition, input);
-        } finally {
-            launcher.shutdown();
-        }
+        long timeoutMinutes = Math.max(1L,
+                longValue(pipeline.chunkerOptions().get("timeoutMinutes"), 30L));
+        Map<String, Object> result = PipelineRuntimeSupervisor.execute(
+                definition, input, java.time.Duration.ofMinutes(timeoutMinutes));
 
-        String text = textualOutput(result.get("output"));
+        String text = textualOutput(result);
         if (text == null || text.isBlank()) {
             throw new IOException(
                     "Unified pipeline " + definition.getPipelineId()
                             + " completed without a text or markdown output.");
         }
         return text;
-    }
-
-    /**
-     * Compatibility adapter for the built-in vlm-test preset.
-     */
-    private static String runDocumentModel(Path projectRoot,
-                                           Path file,
-                                           LocalCrawlCapabilities.ResolvedPipeline pipeline,
-                                           Map<String, Object> processor) throws Exception {
-        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (!name.endsWith(".pdf")) {
-            throw new IllegalArgumentException(
-                    pipeline.pipelineType()
-                            + " local compatibility processing supports application/pdf only. "
-                            + "Use a generic UnifiedPipelineDefinition with an executable pipelineSpec for standalone images or other input types.");
-        }
-
-        Map<String, Object> workerOptions = new LinkedHashMap<>(pipeline.chunkerOptions());
-        workerOptions.putAll(processor);
-        Object modelRuntime = workerOptions.remove("modelRuntime");
-        WorkerLocation worker = resolveWorker(projectRoot, workerOptions);
-        if (!worker.available()) {
-            throw new IllegalStateException(
-                    "The Kompile document-model subprocess is not installed. Install the model "
-                            + "worker, set runtimeConfig.documentModelExecutable, or provide "
-                            + "pipelineDefinition/pipelineDefinitionPath. " + worker.source());
-        }
-
-        Map<String, String> options = stringOptions(workerOptions);
-        options.put("pipelineType", pipeline.pipelineType());
-        String modelId = first(
-                options.get("vlmModel"),
-                options.get("modelId"),
-                options.get("modelSetId"),
-                stringValue(pipeline.chunkerOptions().get("vlmModel")));
-        ResolvedModelContext modelContext = resolveBoundModels(projectRoot, pipeline, null);
-        Map<String, Object> resolvedModel = preferredResolvedModel(modelContext.resolvedModels());
-        if (resolvedModel != null) {
-            modelId = first(stringValue(resolvedModel.get("modelId")), modelId);
-            options.put("modelSourceType", "LOCAL");
-            options.put("modelIdentifier", stringValue(resolvedModel.get("modelPath")));
-        } else if (modelRuntime != null) {
-            throw new IllegalArgumentException(
-                    "A VLM pipeline with modelRuntime requires options.modelId, options.vlmModel, "
-                            + "or modelBindings.");
-        }
-
-        VlmTestSubprocessArgs.Builder args = VlmTestSubprocessArgs.builder()
-                .taskId("local-crawl-" + pipeline.pipelineId() + "-"
-                        + Long.toUnsignedString(System.nanoTime()))
-                .filePath(file.toAbsolutePath().normalize().toString())
-                .modelId(modelId)
-                .outputFormat(first(options.get("outputFormat"), "MARKDOWN"))
-                .maxNewTokens(integer(
-                        options, "maxNewTokens", VlmTestSubprocessArgs.DEFAULT_MAX_NEW_TOKENS))
-                .temperature(decimal(
-                        options, "temperature", VlmTestSubprocessArgs.DEFAULT_TEMPERATURE))
-                .topP(decimal(options, "topP", VlmTestSubprocessArgs.DEFAULT_TOP_P))
-                .beamSize(integer(options, "beamSize", VlmTestSubprocessArgs.DEFAULT_BEAM_SIZE))
-                .doSample(bool(options, "doSample", false))
-                .pdfRenderDpi(integer(
-                        options, "pdfRenderDpi", VlmTestSubprocessArgs.DEFAULT_PDF_RENDER_DPI))
-                .pageBatchSize(integer(
-                        options, "pageBatchSize", VlmTestSubprocessArgs.DEFAULT_PAGE_BATCH_SIZE))
-                .kvCacheStrategy(first(options.get("kvCacheStrategy"), "STATIC"))
-                .maxKvLen(integer(options, "maxKvLen", 0))
-                .maxPages(integer(options, "maxPages", 0))
-                .pageRange(options.get("pageRange"))
-                .modelSourceType(options.get("modelSourceType"))
-                .modelIdentifier(options.get("modelIdentifier"))
-                .stagingUrl(options.get("stagingUrl"))
-                .stagingApiKey(options.get("stagingApiKey"))
-                .archivePath(options.get("archivePath"))
-                .options(options);
-
-        Path argsFile = args.build().writeToTempFile();
-        Path logFile = Files.createTempFile("kompile-local-model-", ".log");
-        Process process = null;
-        ExecutorService outputReader = null;
-        try {
-            ProcessBuilder builder = new ProcessBuilder(command(argsFile, options, worker))
-                    .directory(file.toAbsolutePath().normalize().getParent().toFile())
-                    .redirectError(logFile.toFile());
-            applyEnvironment(builder.environment(), options.get("environment"));
-            process = builder.start();
-            Process running = process;
-            outputReader = daemonExecutor("kompile-local-model-output");
-            Future<WorkerOutput> outputFuture =
-                    outputReader.submit(() -> readWorkerOutput(running.getInputStream()));
-
-            long timeoutMinutes = Math.max(1, integer(options, "timeoutMinutes", 30));
-            if (!process.waitFor(timeoutMinutes, TimeUnit.MINUTES)) {
-                process.destroyForcibly();
-                throw new IOException(
-                        "Document model subprocess timed out after "
-                                + timeoutMinutes + " minute(s).");
-            }
-
-            WorkerOutput output;
-            try {
-                output = outputFuture.get(10, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                throw new IOException(
-                        "Document model subprocess output did not close after completion.", e);
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof Exception exception) {
-                    throw exception;
-                }
-                throw new IOException("Unable to read document model subprocess output.", cause);
-            }
-
-            if (process.exitValue() != 0 || output.failure() != null) {
-                throw new IOException(documentModelFailure(
-                        process.exitValue(), output.failure(), tail(logFile)));
-            }
-            String text = pagesText(output.completion());
-            if (text.isBlank()) {
-                throw new IOException("Document model subprocess returned no extracted text.");
-            }
-            return text;
-        } finally {
-            stop(process, outputReader);
-            Files.deleteIfExists(argsFile);
-            Files.deleteIfExists(logFile);
-        }
-    }
-
-    private static String runConfiguredProcessor(
-            Path projectRoot,
-            Path file,
-            LocalCrawlCapabilities.ResolvedPipeline pipeline,
-            String loadedText,
-            Map<String, Object> processor) throws Exception {
-        Path executable = configuredProcessorExecutable(projectRoot, processor);
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("filePath", file.toAbsolutePath().normalize().toString());
-        payload.put("path", file.toAbsolutePath().normalize().toString());
-        payload.put("source", file.toUri().toString());
-        payload.put("text", loadedText == null ? "" : loadedText);
-        payload.put("pipelineId", pipeline.pipelineId());
-        payload.put("pipelineType", pipeline.pipelineType());
-        payload.put("options", pipeline.chunkerOptions());
-        payload.put("processor", processor);
-
-        Path argsFile = Files.createTempFile("kompile-local-pipeline-", ".json");
-        Path logFile = Files.createTempFile("kompile-local-pipeline-", ".log");
-        Process process = null;
-        ExecutorService outputReader = null;
-        try {
-            MAPPER.writerWithDefaultPrettyPrinter().writeValue(argsFile.toFile(), payload);
-            ProcessBuilder builder = new ProcessBuilder(configuredCommand(
-                    executable, projectRoot, file, pipeline, processor, argsFile))
-                    .directory(projectRoot.toAbsolutePath().normalize().toFile())
-                    .redirectError(logFile.toFile());
-            applyEnvironment(builder.environment(), processor.get("environment"));
-            process = builder.start();
-            Process running = process;
-            outputReader = daemonExecutor("kompile-local-pipeline-output");
-            Future<String> stdout = outputReader.submit(() ->
-                    new String(running.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
-
-            long timeoutMinutes = Math.max(1, longValue(processor.get("timeoutMinutes"), 30));
-            if (!process.waitFor(timeoutMinutes, TimeUnit.MINUTES)) {
-                process.destroyForcibly();
-                throw new IOException(
-                        "Registered pipeline subprocess timed out after "
-                                + timeoutMinutes + " minute(s).");
-            }
-
-            String output;
-            try {
-                output = stdout.get(10, TimeUnit.SECONDS);
-            } catch (TimeoutException e) {
-                throw new IOException(
-                        "Registered pipeline subprocess output did not close after completion.", e);
-            } catch (ExecutionException e) {
-                throw new IOException(
-                        "Unable to read registered pipeline subprocess output.", e.getCause());
-            }
-
-            if (process.exitValue() != 0) {
-                throw new IOException(first(
-                        tail(logFile),
-                        output.strip(),
-                        "Registered pipeline subprocess exited with " + process.exitValue()));
-            }
-            String text = configuredOutput(output, processor);
-            if (text == null || text.isBlank()) {
-                throw new IOException(
-                        "Registered pipeline subprocess returned no text-compatible output.");
-            }
-            return text;
-        } finally {
-            stop(process, outputReader);
-            Files.deleteIfExists(argsFile);
-            Files.deleteIfExists(logFile);
-        }
-    }
-
-    private static Path configuredProcessorExecutable(
-            Path projectRoot, Map<String, Object> processor) {
-        String requested = stringValue(processor.get("executable"));
-        if (requested != null && !requested.isBlank()) {
-            Path executable = resolvePath(projectRoot, requested);
-            if (!Files.isRegularFile(executable)
-                    || (!Files.isExecutable(executable) && !isJar(executable))) {
-                throw new IllegalArgumentException(
-                        "Registered pipeline executable is neither executable nor a JAR: "
-                                + executable);
-            }
-            return executable;
-        }
-
-        String componentId = stringValue(processor.get("componentId"));
-        if (componentId != null && !componentId.isBlank()) {
-            ComponentRegistry registry = new ComponentRegistry();
-            Path executable = executablePath(registry.getDistributionBinaryPath(componentId));
-            if (executable == null) {
-                executable = runnablePath(registry.findInstalledJar(componentId));
-            }
-            if (executable != null) {
-                return executable;
-            }
-        }
-        throw new IllegalArgumentException(
-                "Registered pipeline executor requires executable or an installed componentId.");
-    }
-
-    private static List<String> configuredCommand(
-            Path executable,
-            Path projectRoot,
-            Path file,
-            LocalCrawlCapabilities.ResolvedPipeline pipeline,
-            Map<String, Object> processor,
-            Path argsFile) {
-        List<String> command = new ArrayList<>();
-        addExecutable(command, executable, Map.of());
-
-        List<String> configuredArguments = stringList(processor.get("arguments"));
-        boolean argsReferenced = false;
-        for (String argument : configuredArguments) {
-            command.add(argument
-                    .replace("{args}", argsFile.toString())
-                    .replace("{file}", file.toAbsolutePath().normalize().toString())
-                    .replace("{projectRoot}", projectRoot.toAbsolutePath().normalize().toString())
-                    .replace("{pipelineId}", pipeline.pipelineId()));
-            argsReferenced |= argument.contains("{args}");
-        }
-
-        String subprocessMode = stringValue(processor.get("subprocessMode"));
-        boolean kompileSubprocess =
-                "KOMPILE_SUBPROCESS".equalsIgnoreCase(stringValue(processor.get("type")))
-                        || "UNIFIED".equalsIgnoreCase(
-                                stringValue(processor.get("executableMode")));
-        if (configuredArguments.isEmpty()
-                && kompileSubprocess
-                && subprocessMode != null
-                && !subprocessMode.isBlank()) {
-            command.add("--subprocess=" + subprocessMode);
-        }
-        if (!argsReferenced) {
-            command.add(argsFile.toString());
-        }
-        return command;
-    }
-
-    private static String configuredOutput(String output, Map<String, Object> processor)
-            throws IOException {
-        String protocol = first(stringValue(processor.get("outputProtocol")), "AUTO")
-                .toUpperCase(Locale.ROOT);
-        String trimmed = output == null ? "" : output.strip();
-        if ("TEXT".equals(protocol)) {
-            return trimmed;
-        }
-
-        if ("KOMPILE_MESSAGE".equals(protocol)
-                || trimmed.contains(SubprocessMessage.MESSAGE_PREFIX)) {
-            String resultPrefix = first(
-                    stringValue(processor.get("resultPrefix")), "PIPELINE_RESULTS:");
-            String messageField = first(stringValue(processor.get("messageField")), "message");
-            for (String line : trimmed.lines().toList()) {
-                if (!line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
-                    continue;
-                }
-                JsonNode message =
-                        MAPPER.readTree(line.substring(SubprocessMessage.MESSAGE_PREFIX.length()));
-                String detail = message.path(messageField).asText("");
-                if (!detail.startsWith(resultPrefix)) {
-                    continue;
-                }
-                Object result = MAPPER.convertValue(
-                        MAPPER.readTree(detail.substring(resultPrefix.length())), Object.class);
-                String text = textualOutput(result);
-                if (text != null) {
-                    return text;
-                }
-            }
-            if ("KOMPILE_MESSAGE".equals(protocol)) {
-                return null;
-            }
-        }
-
-        if ("JSON".equals(protocol) || trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            JsonNode json = MAPPER.readTree(trimmed);
-            String outputField = stringValue(processor.get("outputField"));
-            if (outputField != null && !outputField.isBlank()) {
-                for (String part : outputField.split("\\.")) {
-                    json = json.path(part);
-                }
-            }
-            String text = textualOutput(MAPPER.convertValue(json, Object.class));
-            if (text != null) {
-                return text;
-            }
-            if (json.isTextual()) {
-                return json.asText();
-            }
-        }
-        return trimmed;
-    }
-
-    private static Path registeredDefinitionPath(Path projectRoot, String definitionId) {
-        if (definitionId == null
-                || definitionId.isBlank()
-                || definitionId.contains("/")
-                || definitionId.contains("\\")) {
-            throw new IllegalArgumentException(
-                    "pipelineDefinitionId must be a registered pipeline identifier.");
-        }
-
-        String fileName = definitionId.endsWith(".json")
-                ? definitionId : definitionId + ".json";
-        List<Path> candidates = new ArrayList<>();
-        candidates.add(projectRoot.resolve(".kompile/pipelines/unified").resolve(fileName));
-        candidates.add(projectRoot.resolve("data/pipelines/unified").resolve(fileName));
-        String dataDir = System.getProperty("kompile.data.dir");
-        if (dataDir != null && !dataDir.isBlank()) {
-            candidates.add(Path.of(dataDir).resolve("pipelines/unified").resolve(fileName));
-        }
-        candidates.add(Path.of(
-                System.getProperty("user.home"),
-                ".kompile", "pipelines", "unified", fileName));
-
-        for (Path candidate : candidates) {
-            Path normalized = candidate.toAbsolutePath().normalize();
-            if (Files.isRegularFile(normalized)) {
-                return normalized;
-            }
-        }
-        throw new IllegalArgumentException(
-                "No registered UnifiedPipelineDefinition named '" + definitionId
-                        + "' was found in the project or Kompile pipeline registry.");
-    }
-
-    private static WorkerOutput readWorkerOutput(InputStream stdout) throws IOException {
-        JsonNode completion = null;
-        String failure = null;
-        try (BufferedReader reader =
-                     new BufferedReader(new InputStreamReader(stdout, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (!line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
-                    continue;
-                }
-                JsonNode message =
-                        MAPPER.readTree(line.substring(SubprocessMessage.MESSAGE_PREFIX.length()));
-                String type = message.path("type").asText();
-                String detail = message.path("message").asText();
-                if (detail.startsWith("VLM_RESULTS:")) {
-                    completion = MAPPER.readTree(detail.substring("VLM_RESULTS:".length()));
-                } else if ("FAILED".equals(type)) {
-                    failure = message.path("errorMessage")
-                            .asText("Document model pipeline failed");
-                }
-            }
-        }
-        return new WorkerOutput(completion, failure);
-    }
-
-    private static List<String> command(
-            Path argsFile, Map<String, String> options, WorkerLocation worker) {
-        List<String> command = new ArrayList<>();
-        addExecutable(command, worker.executable(), options);
-        if (worker.kind() == WorkerKind.UNIFIED) {
-            command.add("--subprocess=vlm-test");
-        }
-        command.add(argsFile.toString());
-        return command;
-    }
-
-    private static WorkerLocation resolveWorker(Path projectRoot, Map<String, ?> options) {
-        return resolveWorker(projectRoot, options, CliProcessLauncher.requiresNativeChildren());
-    }
-
-    private static WorkerLocation resolveWorker(
-            Path projectRoot, Map<String, ?> options, boolean nativeParent) {
-        String requested = stringValue(options.get("documentModelExecutable"));
-        if (requested != null && !requested.isBlank()) {
-            Path path;
-            try {
-                path = resolvePath(projectRoot, requested);
-            } catch (Exception e) {
-                return WorkerLocation.unavailable(
-                        "Invalid runtimeConfig.documentModelExecutable: " + e.getMessage());
-            }
-            if (!Files.isRegularFile(path)
-                    || (!Files.isExecutable(path) && !isJar(path))) {
-                return WorkerLocation.unavailable(
-                        "runtimeConfig.documentModelExecutable is neither executable nor a JAR: "
-                                + path);
-            }
-            if (nativeParent && isJar(path)) {
-                return WorkerLocation.unavailable(
-                        "runtimeConfig.documentModelExecutable resolves to an executable JAR, "
-                                + "but native Kompile execution requires a native document-model "
-                                + "worker: " + path);
-            }
-            boolean unified = "UNIFIED".equalsIgnoreCase(
-                    stringValue(options.get("documentModelExecutableMode")));
-            return new WorkerLocation(
-                    path,
-                    unified ? WorkerKind.UNIFIED : WorkerKind.DEDICATED,
-                    "runtimeConfig.documentModelExecutable");
-        }
-
-        ComponentRegistry registry = new ComponentRegistry();
-        Path dedicated = executablePath(
-                registry.getDistributionBinaryPath("kompile-vlm-test"));
-        if (dedicated == null && !nativeParent) {
-            dedicated = runnablePath(registry.findInstalledJar("kompile-vlm-test"));
-        }
-        if (dedicated != null) {
-            return new WorkerLocation(
-                    dedicated, WorkerKind.DEDICATED, "component-registry:kompile-vlm-test");
-        }
-
-        Path configured = configuredExecutable();
-        if (configured != null) {
-            if (nativeParent && isJar(configured)) {
-                return WorkerLocation.unavailable(
-                        "The configured legacy document-model worker is an executable JAR, but "
-                                + "native Kompile execution requires kompile-vlm-test as a native "
-                                + "child executable: " + configured);
-            }
-            return new WorkerLocation(
-                    configured, WorkerKind.DEDICATED, "legacy-property-or-environment");
-        }
-        return WorkerLocation.unavailable(
-                nativeParent
-                        ? "The native distribution is missing bin/kompile-vlm-test; executable-JAR "
-                                + "and app-persona fallbacks are disabled for local MCP execution."
-                        : "No standalone document-model executable or executable JAR was found.");
-    }
-
-    private static ExecutorService daemonExecutor(String name) {
-        return Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, name);
-            thread.setDaemon(true);
-            return thread;
-        });
-    }
-
-    private static void stop(Process process, ExecutorService outputReader) {
-        if (process != null && process.isAlive()) {
-            process.destroyForcibly();
-        }
-        if (outputReader != null) {
-            outputReader.shutdownNow();
-        }
-    }
-
-    private static void addExecutable(
-            List<String> command, Path executable, Map<String, String> options) {
-        if (isJar(executable)) {
-            command.add(JavaRuntimeLocator.javaExecutable());
-            command.add("-Xmx" + first(options.get("heapSize"), "8g"));
-            command.add("-XX:+UseG1GC");
-            command.add("-XX:+ExitOnOutOfMemoryError");
-            command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
-            command.add("-jar");
-        }
-        command.add(executable.toString());
-    }
-
-    private static Path executablePath(File file) {
-        if (file == null) {
-            return null;
-        }
-        Path path = file.toPath().toAbsolutePath().normalize();
-        return Files.isRegularFile(path) && Files.isExecutable(path) ? path : null;
-    }
-
-    private static Path runnablePath(File file) {
-        if (file == null) {
-            return null;
-        }
-        Path path = file.toPath().toAbsolutePath().normalize();
-        return Files.isRegularFile(path) && (Files.isExecutable(path) || isJar(path))
-                ? path : null;
-    }
-
-    private static boolean isJar(Path path) {
-        return path != null
-                && path.getFileName() != null
-                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar");
     }
 
     private static Path resolvePath(Path projectRoot, String value) {
@@ -941,18 +302,6 @@ public final class LocalModelPipelineRunner {
             path = base.resolve(path);
         }
         return path.toAbsolutePath().normalize();
-    }
-
-    private static Path configuredExecutable() {
-        String value = first(
-                System.getProperty("kompile.subprocess.executable.vlm-test-path"),
-                System.getenv("KOMPILE_VLM_SUBPROCESS_PATH"));
-        if (value == null) {
-            return null;
-        }
-        Path path = Path.of(value).toAbsolutePath().normalize();
-        return Files.isRegularFile(path) && (Files.isExecutable(path) || isJar(path))
-                ? path : null;
     }
 
     private static String pagesText(JsonNode completion) {
@@ -1001,7 +350,7 @@ public final class LocalModelPipelineRunner {
         return null;
     }
 
-    static ResolvedModelContext resolveBoundModels(
+    public static ResolvedModelContext resolveBoundModels(
             Path projectRoot,
             LocalCrawlCapabilities.ResolvedPipeline pipeline,
             UnifiedPipelineDefinition definition) throws IOException, InterruptedException {
@@ -1190,76 +539,6 @@ public final class LocalModelPipelineRunner {
         if (value != null) target.put(key, value.toString());
     }
 
-    private static Map<String, Object> preferredResolvedModel(
-            Map<String, Map<String, Object>> resolvedModels) {
-        for (String role : List.of("vision", "vlm", "default")) {
-            Map<String, Object> model = resolvedModels.get(role);
-            if (model != null) return model;
-        }
-        return resolvedModels.values().stream().findFirst().orElse(null);
-    }
-
-    private static Map<String, Object> modelRuntimeOptions(Object configured) {
-        if (!(configured instanceof Map<?, ?> values)) {
-            throw new IllegalArgumentException("modelRuntime must be an object.");
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : values.entrySet()) {
-            if (entry.getKey() != null && entry.getValue() != null) {
-                result.put(String.valueOf(entry.getKey()), entry.getValue());
-            }
-        }
-        return result;
-    }
-
-    private static Map<String, String> stringOptions(Map<String, Object> values) {
-        Map<String, String> result = new LinkedHashMap<>();
-        values.forEach((key, value) -> {
-            if (value == null || "pipelineDefinition".equals(key)) {
-                return;
-            }
-            try {
-                result.put(key, value instanceof Map<?, ?> || value instanceof List<?>
-                        ? MAPPER.writeValueAsString(value) : String.valueOf(value));
-            } catch (Exception ignored) {
-                result.put(key, String.valueOf(value));
-            }
-        });
-        return result;
-    }
-
-    private static int integer(Map<String, String> options, String key, int fallback) {
-        try {
-            return Integer.parseInt(options.getOrDefault(key, String.valueOf(fallback)));
-        } catch (Exception ignored) {
-            return fallback;
-        }
-    }
-
-    private static double decimal(Map<String, String> options, String key, double fallback) {
-        try {
-            return Double.parseDouble(options.getOrDefault(key, String.valueOf(fallback)));
-        } catch (Exception ignored) {
-            return fallback;
-        }
-    }
-
-    private static boolean bool(Map<String, String> options, String key, boolean fallback) {
-        String value = options.get(key);
-        return value == null ? fallback : Boolean.parseBoolean(value);
-    }
-
-    private static void applyEnvironment(Map<String, String> target, Object configured) {
-        if (!(configured instanceof Map<?, ?> values)) {
-            return;
-        }
-        for (Map.Entry<?, ?> entry : values.entrySet()) {
-            if (entry.getKey() != null && entry.getValue() != null) {
-                target.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-            }
-        }
-    }
-
     private static long longValue(Object value, long fallback) {
         try {
             return value == null ? fallback : Long.parseLong(String.valueOf(value));
@@ -1294,25 +573,6 @@ public final class LocalModelPipelineRunner {
         return value == null ? null : String.valueOf(value);
     }
 
-    private static Object jsonValue(JsonNode value) {
-        if (value == null || value.isNull()) {
-            return null;
-        }
-        if (value.isTextual()) {
-            return value.asText();
-        }
-        if (value.isBoolean()) {
-            return value.asBoolean();
-        }
-        if (value.isIntegralNumber()) {
-            return value.asLong();
-        }
-        if (value.isFloatingPointNumber()) {
-            return value.asDouble();
-        }
-        return MAPPER.convertValue(value, Object.class);
-    }
-
     private static String first(String... values) {
         for (String value : values) {
             if (value != null && !value.isBlank()) {
@@ -1322,68 +582,7 @@ public final class LocalModelPipelineRunner {
         return null;
     }
 
-    private static String documentModelFailure(
-            int exitCode, String protocolFailure, String stderrTail) {
-        List<String> details = new ArrayList<>();
-        if (protocolFailure != null && !protocolFailure.isBlank()) {
-            details.add(protocolFailure.strip());
-        }
-        if (stderrTail != null && !stderrTail.isBlank()
-                && (protocolFailure == null || !stderrTail.strip().equals(protocolFailure.strip()))) {
-            details.add("Document model subprocess stderr:\n" + stderrTail.strip());
-        }
-        if (details.isEmpty()) {
-            details.add("Document model subprocess exited with " + exitCode);
-        } else if (exitCode != 0) {
-            details.add("Document model subprocess exit code: " + exitCode);
-        }
-        return String.join("\n", details);
-    }
-
-    private static String tail(Path logFile) {
-        final int maxBytes = 16 * 1024;
-        try (SeekableByteChannel channel = Files.newByteChannel(
-                logFile, StandardOpenOption.READ)) {
-            long size = channel.size();
-            int length = (int) Math.min(size, maxBytes);
-            channel.position(Math.max(0, size - length));
-            ByteBuffer buffer = ByteBuffer.allocate(length);
-            while (buffer.hasRemaining() && channel.read(buffer) >= 0) {
-                // Read only the bounded tail. The worker may emit a large diagnostic log.
-            }
-            String value = new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8)
-                    .strip();
-            return value.length() > 4_000
-                    ? value.substring(value.length() - 4_000) : value;
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    public record DocumentModelWorkerStatus(
-            boolean available, String source, String executable, boolean unifiedExecutable) {
-    }
-
-    private record WorkerLocation(Path executable, WorkerKind kind, String source) {
-        static WorkerLocation unavailable(String source) {
-            return new WorkerLocation(null, WorkerKind.UNAVAILABLE, source);
-        }
-
-        boolean available() {
-            return kind != WorkerKind.UNAVAILABLE;
-        }
-    }
-
-    private enum WorkerKind {
-        DEDICATED,
-        UNIFIED,
-        UNAVAILABLE
-    }
-
-    private record WorkerOutput(JsonNode completion, String failure) {
-    }
-
-    record ResolvedModelContext(
+    public record ResolvedModelContext(
             Map<String, String> bindings,
             Map<String, Map<String, Object>> resolvedModels) {
         static ResolvedModelContext empty() {

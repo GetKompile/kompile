@@ -15,7 +15,6 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -39,12 +38,9 @@ class LocalProjectCrawlBackendTest {
 
     private ObjectMapper mapper;
     private ToolContext context;
-    private String previousLocalCrawlExecution;
 
     @BeforeEach
     void setUp() {
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("offline-worker")
                 .enabledTools(Set.of("*"))
@@ -64,15 +60,6 @@ class LocalProjectCrawlBackendTest {
         }
         context = new ToolContext("offline-crawl-test", agent, permissions, projectRoot,
                 new ToolRegistry(mapper));
-    }
-
-    @AfterEach
-    void restoreLocalCrawlExecution() {
-        if (previousLocalCrawlExecution == null) {
-            System.clearProperty("kompile.local.crawl.execution");
-        } else {
-            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
-        }
     }
 
     @Test
@@ -396,7 +383,8 @@ class LocalProjectCrawlBackendTest {
         assertTrue(result.getOutput().contains("\"OCR\""));
         assertTrue(result.getOutput().contains("\"TABLE_AWARE\""));
         assertTrue(result.getOutput().contains("\"KEYWORD_ONLY\""));
-        assertTrue(result.getOutput().contains("documentModelWorker"));
+        assertFalse(result.getOutput().contains("documentModelWorker"));
+        assertTrue(result.getOutput().contains("pooled model-runtime children"));
         assertTrue(result.getOutput().contains("pipelineTemplates"));
         assertTrue(result.getOutput().contains("\"id\" : \"ENRICHMENT\""), result.getOutput());
         assertTrue(result.getOutput().contains("UnifiedGraphReasoningLifecycle"), result.getOutput());
@@ -427,7 +415,7 @@ class LocalProjectCrawlBackendTest {
         ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
 
         assertFalse(result.isError(), result.getOutput());
-        assertEquals("in-process-explicit", result.getMetadata().get("executionMode"));
+        assertEquals("mcp-host", result.getMetadata().get("executionMode"));
         Path knowledgeBase = projectRoot.resolve("data/crawls/configured-kb");
         String documents = Files.readString(knowledgeBase.resolve("documents.jsonl"));
         String chunks = Files.readString(knowledgeBase.resolve("chunks.jsonl"));

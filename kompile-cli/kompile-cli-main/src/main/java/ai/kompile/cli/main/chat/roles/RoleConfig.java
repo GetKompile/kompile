@@ -37,7 +37,6 @@ public class RoleConfig {
     String systemPrompt;
     @Builder.Default Set<String> enabledTools = Set.of("*");
     @Builder.Default Map<String, PermissionService.PermissionLevel> permissionOverrides = Map.of();
-    @Builder.Default int maxSteps = 50;
     @Builder.Default boolean canSpawnSubagents = true;
     @Builder.Default String modelHint = "default";
     /**
@@ -72,7 +71,6 @@ public class RoleConfig {
                 .enabledTools(enabledTools)
                 .permissionOverrides(permissionOverrides)
                 .isSubagent(false)
-                .maxSteps(maxSteps)
                 .canSpawnSubagents(canSpawnSubagents)
                 .modelHint(modelHint)
                 .isCustom(!isBuiltIn)
@@ -87,7 +85,6 @@ public class RoleConfig {
         sb.append("description: ").append(description).append("\n");
         sb.append("category: ").append(category).append("\n");
         sb.append("model: ").append(modelHint).append("\n");
-        sb.append("max_steps: ").append(maxSteps).append("\n");
         sb.append("can_spawn: ").append(canSpawnSubagents).append("\n");
 
         if (agentDefaults != null && !agentDefaults.isEmpty()) {

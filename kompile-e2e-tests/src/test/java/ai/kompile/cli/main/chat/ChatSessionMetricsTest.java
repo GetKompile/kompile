@@ -205,13 +205,6 @@ class ChatSessionMetricsTest {
     class AgenticAndRag {
 
         @Test
-        void agenticSteps() {
-            metrics.recordAgenticStep();
-            metrics.recordAgenticStep();
-            assertEquals(2, metrics.getAgenticSteps());
-        }
-
-        @Test
         void compactionEvents() {
             metrics.recordCompaction(10000, 5000);
             assertEquals(1, metrics.getCompactionEvents());
@@ -256,7 +249,6 @@ class ChatSessionMetricsTest {
             metrics.recordUserTurn("Hello");
             metrics.recordAssistantTurn("Hi", 100);
             metrics.recordToolCall("read", false, 10);
-            metrics.recordAgenticStep();
             metrics.recordRagQuery(3);
 
             ObjectMapper mapper = new ObjectMapper();
@@ -268,6 +260,7 @@ class ChatSessionMetricsTest {
             assertTrue(json.has("timing"));
             assertTrue(json.has("tools"));
             assertTrue(json.has("agentic"));
+            assertFalse(json.get("agentic").has("steps"));
             assertTrue(json.has("rag"));
 
             assertEquals("test-session", json.path("session").path("sessionId").asText());

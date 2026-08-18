@@ -139,7 +139,6 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
   editEmbeddingExecutablePath = '';
   editModelInitExecutablePath = '';
   editTrainingExecutablePath = '';
-  editVlmTestExecutablePath = '';
   editSubprocessTypeFlag = '--subprocess=';
 
   // Edit form - Memory watchdog thresholds
@@ -306,7 +305,6 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
         this.editEmbeddingExecutablePath = config.embeddingExecutablePath || '';
         this.editModelInitExecutablePath = config.modelInitExecutablePath || '';
         this.editTrainingExecutablePath = config.trainingExecutablePath || '';
-        this.editVlmTestExecutablePath = config.vlmTestExecutablePath || '';
         this.editSubprocessTypeFlag = config.subprocessTypeFlag || '--subprocess=';
         // Memory watchdog thresholds
         this.editOffHeapThresholdPercent = config.offHeapThresholdPercent ?? 80;
@@ -472,7 +470,6 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
       embeddingExecutablePath: this.editEmbeddingExecutablePath,
       modelInitExecutablePath: this.editModelInitExecutablePath,
       trainingExecutablePath: this.editTrainingExecutablePath,
-      vlmTestExecutablePath: this.editVlmTestExecutablePath,
       subprocessTypeFlag: this.editSubprocessTypeFlag,
       // Memory watchdog thresholds
       offHeapThresholdPercent: this.editOffHeapThresholdPercent,
@@ -539,7 +536,6 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
         this.editEmbeddingExecutablePath = config.embeddingExecutablePath || '';
         this.editModelInitExecutablePath = config.modelInitExecutablePath || '';
         this.editTrainingExecutablePath = config.trainingExecutablePath || '';
-        this.editVlmTestExecutablePath = config.vlmTestExecutablePath || '';
         this.editSubprocessTypeFlag = config.subprocessTypeFlag || '--subprocess=';
         // Memory watchdog thresholds
         this.editOffHeapThresholdPercent = config.offHeapThresholdPercent ?? 80;

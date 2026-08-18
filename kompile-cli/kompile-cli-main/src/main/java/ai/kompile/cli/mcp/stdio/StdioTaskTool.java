@@ -115,7 +115,7 @@ public class StdioTaskTool {
         AgentConfig agentConfig = AgentConfig.builder(requestedAgent)
             .displayName(displayName)
             .description("External " + displayName + " agent")
-            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(true)
+            .systemPrompt(prompt).isSubagent(true).canSpawnSubagents(true)
             .roleName(roleName)
             .modelOverride(model)
             .thinkingOverride(thinking)

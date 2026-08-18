@@ -49,8 +49,7 @@ public final class LocalCrawlCapabilities {
 
     private static final Set<String> BUILTIN_PIPELINE_TYPES = Set.of(
             "STANDARD_TEXT", "VLM", "OCR", "CODE", "TABLE_AWARE", "KEYWORD_ONLY", "CUSTOM");
-    private static final Set<String> EXECUTOR_TYPES = Set.of(
-            "UNIFIED_PIPELINE", "KOMPILE_SUBPROCESS", "EXECUTABLE");
+    private static final Set<String> EXECUTOR_TYPES = Set.of("UNIFIED_PIPELINE");
     private static final Pattern PIPELINE_TYPE_PATTERN = Pattern.compile("[A-Za-z][A-Za-z0-9_.:-]*");
     private static final Set<String> SUPPORTED_STEPS = Set.of(
             "LOADING", "MARKDOWN_EXTRACTION", "CHUNKING", "LEXICAL_INDEX");
@@ -64,12 +63,6 @@ public final class LocalCrawlCapabilities {
 
     /** Build discovery data from the executable local registry. */
     public static ObjectNode catalog(ObjectMapper mapper, String executionMode) {
-        return catalog(mapper, executionMode, LocalModelPipelineRunner.documentModelWorkerAvailable());
-    }
-
-    /** Build discovery data using the worker availability resolved for the active project folder. */
-    public static ObjectNode catalog(ObjectMapper mapper, String executionMode,
-                                     boolean documentModelWorkerAvailable) {
         ObjectNode catalog = mapper.createObjectNode();
         ArrayNode templates = catalog.putArray("pipelineTemplates");
         pipelineTemplate(templates, STANDARD_TEXT_PIPELINE, "STANDARD_TEXT", "auto",
@@ -79,8 +72,8 @@ public final class LocalCrawlCapabilities {
                 "recursive-character", 1_800, 180,
                 "Source code and project files with code validation and boundary-aware chunking.");
         ObjectNode vlmTemplate = pipelineTemplate(templates, VLM_PIPELINE, "VLM", "pdf",
-                "recursive-character", 2_000, 200, documentModelWorkerAvailable,
-                "Model-backed PDF extraction in the isolated document-model subprocess.");
+                "recursive-character", 2_000, 200,
+                "Model-backed PDF extraction through the reusable unified pipeline runtime.");
         ObjectNode vlmConfiguration = vlmTemplate.putObject("configuration");
         vlmConfiguration.put("defaultModelId", "smoldocling-256m");
         vlmConfiguration.putArray("pipelineOptionFields")
@@ -89,27 +82,17 @@ public final class LocalCrawlCapabilities {
                 .add("pdfRenderDpi").add("pageBatchSize")
                 .add("temperature").add("topP").add("beamSize").add("doSample")
                 .add("kvCacheEnabled").add("kvCacheMaxEntries").add("timeoutMinutes");
-        vlmConfiguration.putArray("runtimeConfigFields")
-                .add("documentModelExecutable").add("documentModelExecutableMode");
-        vlmConfiguration.put("workerResolution",
-                "Omit runtimeConfig.documentModelExecutable to resolve an installed kompile-vlm-test worker, "
-                        + "or provide an absolute executable path for this request only.");
-        vlmTemplate.put("executionModel", "crawl-compatibility")
-                .put("workerRequired", true)
+        vlmTemplate.put("executionModel", "unified-pipeline-runtime")
                 .put("supportedInputTypes", "application/pdf")
-                .put("definitionFormat", "pipelineType=VLM + KOMPILE_SUBPROCESS adapter=vlm-test")
-                .put("genericAlternative", "Use processor.type=UNIFIED_PIPELINE with a UnifiedPipelineDefinition.pipelineSpec containing @class (GraphPipeline or SequencePipeline); this is a separate execution contract.");
+                .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec");
         vlmConfiguration.put("modelLifecycle",
-                "Use model_runtime to inspect or import folder models before selecting modelId; "
-                        + "artifact readiness does not imply VLM execution readiness, and the VLM worker and pipeline remain request-scoped.");
+                "The MCP runtime resolves or bootstraps bound models and acquires a reusable isolated runtime automatically.");
         ObjectNode ocrTemplate = pipelineTemplate(templates, OCR_PIPELINE, "OCR", "pdf",
-                "recursive-character", 2_000, 200, documentModelWorkerAvailable,
-                "PDF OCR/extraction through the isolated document-model subprocess.");
-        ocrTemplate.put("executionModel", "crawl-compatibility")
-                .put("workerRequired", true)
+                "recursive-character", 2_000, 200,
+                "PDF OCR/extraction through the reusable unified pipeline runtime.");
+        ocrTemplate.put("executionModel", "unified-pipeline-runtime")
                 .put("supportedInputTypes", "application/pdf")
-                .put("definitionFormat", "pipelineType=OCR + KOMPILE_SUBPROCESS adapter=vlm-test")
-                .put("genericAlternative", "Use processor.type=UNIFIED_PIPELINE with a UnifiedPipelineDefinition.pipelineSpec containing @class for custom OCR/VLM processing.");
+                .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec");
         pipelineTemplate(templates, TABLE_AWARE_PIPELINE, "TABLE_AWARE", "table",
                 "recursive-character", 2_000, 200,
                 "Table-preserving HTML/PDF extraction; set options.modelBacked=true for VLM extraction.");
@@ -155,18 +138,12 @@ public final class LocalCrawlCapabilities {
         catalog.put("executionMode", executionMode);
         catalog.put("distributed", false);
         ObjectNode systems = catalog.putObject("pipelineSystems");
-        systems.putObject("crawlCompatibility")
-                .put("selector", "pipelineType VLM or OCR")
-                .put("executor", "KOMPILE_SUBPROCESS adapter=vlm-test")
-                .put("worker", "kompile-vlm-test / runtimeConfig.documentModelExecutable / KOMPILE_VLM_SUBPROCESS_PATH")
-                .put("supportedInputTypes", "application/pdf")
-                .put("dryRun", "crawl_documents dryRun=true validates this worker contract without persisting artifacts");
-        systems.putObject("genericUnified")
-                .put("selector", "processor.type=UNIFIED_PIPELINE or a pipelineDefinition reference")
+        systems.putObject("unified")
+                .put("selector", "Every model-backed pipeline")
                 .put("definition", "UnifiedPipelineDefinition")
                 .put("pipelineSpec", "Concrete serialized Pipeline with @class, such as SequencePipeline or GraphPipeline")
-                .put("worker", "Caller-provided pipeline executable/serving child; not the crawl compatibility worker")
-                .put("supportedInputTypes", "Defined by the pipeline steps");
+                .put("runtime", "MCP-owned pooled stdio runtime; no executable or process configuration is accepted from callers")
+                .put("reuse", "Compatible definitions and resolved model artifacts share a bounded warm process");
 
         ObjectNode wiring = catalog.putObject("wiringRecipe");
         wiring.put("workflow",
@@ -176,38 +153,25 @@ public final class LocalCrawlCapabilities {
         wiring.put("modelBinding",
                 "Use pipeline.modelId/vlmModel for one model, modelBindings for role-to-model ids, "
                         + "or modelRefs for project manifest models.");
-        ObjectNode compatibilityRequest = wiring.putObject("compatibilityVlm")
-                .put("contract", "PDF + managed vlm-test worker");
-        ObjectNode compatibilityExample = compatibilityRequest.putObject("minimumRequest");
-        compatibilityExample.putArray("documents").addObject()
+        ObjectNode unifiedRequest = wiring.putObject("unifiedVlm")
+                .put("contract", "PDF + model binding + unified pipeline definition");
+        ObjectNode minimumRequest = unifiedRequest.putObject("minimumRequest");
+        minimumRequest.putArray("documents").addObject()
                 .put("path", "docs/report.pdf").put("pipelineId", "pdf-vlm");
-        compatibilityExample.putArray("pipelines").addObject()
+        minimumRequest.putArray("pipelines").addObject()
                 .put("pipelineId", "pdf-vlm")
                 .put("pipelineType", "VLM")
                 .put("modelId", "smoldocling-256m");
-        compatibilityExample.put("defaultPipelineId", "pdf-vlm").put("dryRun", true);
-        compatibilityExample.putObject("modelRuntime").put("autoBootstrap", true);
-        compatibilityRequest.put("workerOverride",
-                "Optional runtimeConfig.documentModelExecutable; otherwise resolve kompile-vlm-test from the component registry.");
-        ObjectNode genericRequest = wiring.putObject("genericUnified")
-                .put("contract", "UnifiedPipelineDefinition + concrete pipelineSpec");
-        genericRequest.put("pipelineProcessor",
-                "{\"type\":\"UNIFIED_PIPELINE\",\"pipelineDefinitionId\":\"custom\"}");
-        genericRequest.put("definitionShape",
-                "{\"pipelineId\":\"custom\",\"pipelineSpec\":{\"@class\":"
-                        + "\"ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline\","
-                        + "\"id\":\"custom\",\"steps\":[GenericStepConfig...]}}");
-        genericRequest.put("note",
-                "Use a concrete runnerClassName in each GenericStepConfig; VLM/OCR compatibility adapters are a separate contract.");
+        minimumRequest.put("defaultPipelineId", "pdf-vlm").put("dryRun", true);
+        minimumRequest.putObject("modelRuntime").put("autoBootstrap", true);
 
         ObjectNode typeGuide = catalog.putObject("pipelineTypeGuide");
         typeGuide.put("VLM/OCR",
-                "pipelineType + modelId/modelBindings + optional processor.adapter=vlm-test; PDF compatibility worker.");
+                "UnifiedPipelineDefinition + modelId/modelBindings; MCP manages runtime acquisition and reuse.");
         typeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
-                "pipelineType + loaderName/chunkerName/options; no document-model worker required.");
+                "pipelineType + loaderName/chunkerName/options; model-backed steps still use the same unified runtime.");
         typeGuide.put("CUSTOM",
-                "processor.type=KOMPILE_SUBPROCESS|EXECUTABLE for a caller executable, or "
-                        + "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class.");
+                "UNIFIED_PIPELINE with pipelineDefinition/pipelineSpec.@class; arbitrary executable branches are not supported.");
 
         ObjectNode registry = catalog.putObject("pipelineRegistry");
         registry.put("requestField", "pipelineRegistry")
@@ -224,20 +188,13 @@ public final class LocalCrawlCapabilities {
         BUILTIN_PIPELINE_TYPES.stream().sorted().forEach(pipelineTypes::add);
 
         ObjectNode modelProcessing = catalog.putObject("modelProcessing")
-                .put("available", documentModelWorkerAvailable)
-                .put("documentModelWorker", documentModelWorkerAvailable)
-                .put("builtinDocumentProcessor", documentModelWorkerAvailable)
+                .put("available", true)
                 .put("callerDefinedUnifiedPipelines", true)
-                .put("callerDefinedExecutors", true)
-                .put("execution", "request-scoped Kompile subprocesses; no MCP/application server required")
+                .put("execution", "MCP-owned reusable stdio pipeline runtimes; no application server required")
                 .put("semanticServing", "processingRoute LOCAL_MODEL/serving or graphExtraction.llmProvider=serving")
                 .put("finalReasoningLearning", "portable FOL/PSL/MEBN hybrid-consensus models stored in the folder .kgraph")
-                .put("lifecycle", "children stop before the MCP command returns")
-                .put("configuration", "pipelineRegistry models/defaults/definitions/executors, project pipeline "
-                        + "registrations, or pipeline processor overrides");
-        modelProcessing.put("unavailableReason", documentModelWorkerAvailable
-                ? ""
-                : "No crawl compatibility VLM/OCR worker resolved. A model artifact alone is not executable; configure runtimeConfig.documentModelExecutable, KOMPILE_VLM_SUBPROCESS_PATH, or install kompile-vlm-test.");
+                .put("lifecycle", "leases release after each call; compatible children remain warm for bounded reuse")
+                .put("configuration", "pipelineRegistry models/defaults/definitions and project pipeline registrations");
         return catalog;
     }
 
@@ -248,18 +205,8 @@ public final class LocalCrawlCapabilities {
         }
         try {
             JsonNode runtimeConfig = request.get("runtimeConfig");
-            if (runtimeConfig != null && !runtimeConfig.isNull()) {
-                if (!runtimeConfig.isObject()) return "runtimeConfig must be an object.";
-                JsonNode executable = runtimeConfig.get("documentModelExecutable");
-                if (executable != null && !executable.isNull()
-                        && (!executable.isTextual() || executable.asText().isBlank())) {
-                    return "runtimeConfig.documentModelExecutable must be a non-empty path.";
-                }
-                String executableMode = text(runtimeConfig, "documentModelExecutableMode");
-                if (executableMode != null && !Set.of("DEDICATED", "UNIFIED")
-                        .contains(executableMode.toUpperCase(Locale.ROOT))) {
-                    return "runtimeConfig.documentModelExecutableMode must be DEDICATED or UNIFIED.";
-                }
+            if (runtimeConfig != null && !runtimeConfig.isNull() && !runtimeConfig.isObject()) {
+                return "runtimeConfig must be an object.";
             }
             String registryError = registryError(request);
             if (registryError != null) return registryError;
@@ -412,10 +359,6 @@ public final class LocalCrawlCapabilities {
         mergeOptions(processor, document == null ? null : document.get("processor"));
         applyExecutorReference(request, document, processor);
         applyDefinitionReference(request, document, processor);
-        JsonNode runtimeConfig = request == null ? null : request.get("runtimeConfig");
-        // Backward-compatible aliases are copied only into the built-in registered processor.
-        copyOption(processor, runtimeConfig, "documentModelExecutable");
-        copyOption(processor, runtimeConfig, "documentModelExecutableMode");
         JsonNode modelRuntime = request == null ? null : request.get("modelRuntime");
         if (modelRuntime != null && modelRuntime.isObject()) {
             processor.put("modelRuntime", jsonValue(modelRuntime));
@@ -471,8 +414,8 @@ public final class LocalCrawlCapabilities {
         return BUILTIN_PIPELINE_TYPES;
     }
 
-    /** Whether extraction must cross a second process boundary for this document. */
-    public static boolean usesProcessingSubprocess(ResolvedPipeline pipeline) {
+    /** Whether this document selects a model-backed unified pipeline. */
+    public static boolean usesModelPipeline(ResolvedPipeline pipeline) {
         if (pipeline == null) return false;
         return !pipeline.processor().isEmpty()
                 || pipeline.chunkerOptions().containsKey("pipelineDefinition")
@@ -544,10 +487,10 @@ public final class LocalCrawlCapabilities {
                 Map.of("separators", List.of("\n\n", "\n", " ")), Map.of()));
         pipelines.put(VLM_PIPELINE, new PipelineDefinition(VLM_PIPELINE,
                 "VLM", "pdf", "recursive-character", 2_000, 200, Map.of(),
-                builtinDocumentProcessor("VLM")));
+                builtinModelProcessor("VLM")));
         pipelines.put(OCR_PIPELINE, new PipelineDefinition(OCR_PIPELINE,
                 "OCR", "pdf", "recursive-character", 2_000, 200, Map.of(),
-                builtinDocumentProcessor("OCR")));
+                builtinModelProcessor("OCR")));
         pipelines.put(TABLE_AWARE_PIPELINE, new PipelineDefinition(TABLE_AWARE_PIPELINE,
                 "TABLE_AWARE", "table", "recursive-character", 2_000, 200,
                 Map.of("preserveTables", true), Map.of()));
@@ -789,6 +732,15 @@ public final class LocalCrawlCapabilities {
                                                  Map<String, Object> definitionsById,
                                                  Map<String, Object> processor) {
         if (definition == null) return;
+        boolean explicitReference = definition.hasNonNull("pipelineDefinition")
+                || definition.hasNonNull("pipelineDefinitionPath")
+                || definition.hasNonNull("pipelineDefinitionId")
+                || definition.hasNonNull("registeredDefinitionId");
+        if (explicitReference) {
+            processor.remove("pipelineDefinition");
+            processor.remove("pipelineDefinitionPath");
+            processor.remove("pipelineDefinitionId");
+        }
         for (String field : List.of("pipelineDefinition", "pipelineDefinitionPath", "pipelineDefinitionId")) {
             copyOption(processor, definition, field);
         }
@@ -809,13 +761,42 @@ public final class LocalCrawlCapabilities {
         if (source.containsKey(key)) target.put(key, source.get(key));
     }
 
-    private static Map<String, Object> builtinDocumentProcessor(String pipelineType) {
+    /** Canonical executable definition for built-in document model pipelines. */
+    public static Map<String, Object> builtinModelProcessor(String pipelineType) {
+        String normalized = pipelineType == null ? "VLM" : pipelineType.toUpperCase(Locale.ROOT);
+        String id = "OCR".equals(normalized) ? OCR_PIPELINE : VLM_PIPELINE;
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("outputFormat", "OCR".equals(normalized) ? "MARKDOWN" : "DOCTAGS");
+        parameters.put("pdfRenderDpi", 300);
+        parameters.put("pageBatchSize", 1);
+
+        Map<String, Object> step = new LinkedHashMap<>();
+        step.put("@class", "ai.kompile.pipelines.framework.core.config.GenericStepConfig");
+        step.put("runnerClassName", "ai.kompile.pipelines.steps.vlm.VlmDocumentStepRunner");
+        step.put("parameters", parameters);
+
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline");
+        spec.put("id", id);
+        spec.put("steps", List.of(step));
+
+        Map<String, Object> definition = new LinkedHashMap<>();
+        definition.put("schemaVersion", 1);
+        definition.put("definitionVersion", 1);
+        definition.put("pipelineId", id);
+        definition.put("displayName", "OCR".equals(normalized)
+                ? "OCR document extraction" : "VLM document extraction");
+        definition.put("kind", "VLM");
+        definition.put("topology", "SEQUENCE");
+        definition.put("modelSetId", "smoldocling-256m");
+        definition.put("pipelineSpec", spec);
+        definition.put("runtimeRequirements", Map.of(
+                "capabilities", List.of("document-understanding", "pdf"),
+                "runnerTypes", List.of("ai.kompile.pipelines.steps.vlm.VlmDocumentStepRunner")));
+
         Map<String, Object> processor = new LinkedHashMap<>();
-        processor.put("type", "KOMPILE_SUBPROCESS");
-        processor.put("adapter", "vlm-test");
-        processor.put("subprocessMode", "vlm-test");
-        processor.put("componentId", "kompile-vlm-test");
-        processor.put("pipelineType", pipelineType);
+        processor.put("type", "UNIFIED_PIPELINE");
+        processor.put("pipelineDefinition", definition);
         return Map.copyOf(processor);
     }
 

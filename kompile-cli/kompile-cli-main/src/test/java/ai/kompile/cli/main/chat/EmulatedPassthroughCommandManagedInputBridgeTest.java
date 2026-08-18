@@ -78,7 +78,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void managedCancelBindingDoesNotBindRawEscape() throws Exception {
+    void managedCancelBindingRegistersEscapeWidgetAcrossKeymaps() throws Exception {
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)
                 .build();
@@ -87,14 +87,16 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         bindCancelKey.setAccessible(true);
         bindCancelKey.invoke(new EmulatedPassthroughCommand(), reader);
 
-        KeyMap<Binding> keyMap = ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS);
-        Binding rawEscape = keyMap.getBound("\033");
-        if (rawEscape instanceof Reference ref) {
-            assertNotEquals("cancel-emulated", ref.name(), "Raw Escape must not trigger managed cancel");
+        LineReaderImpl impl = (LineReaderImpl) reader;
+        assertTrue(impl.getWidgets().containsKey("cancel-emulated"));
+        for (KeyMap<Binding> keyMap : impl.getKeyMaps().values()) {
+            Binding rawEscape = keyMap.getBound("\033");
+            assertInstanceOf(Reference.class, rawEscape);
+            assertEquals("cancel-emulated", ((Reference) rawEscape).name());
+            Binding ctrlG = keyMap.getBound(KeyMap.ctrl('G'));
+            assertInstanceOf(Reference.class, ctrlG);
+            assertEquals("cancel-emulated", ((Reference) ctrlG).name());
         }
-        Binding ctrlG = keyMap.getBound(KeyMap.ctrl('G'));
-        assertInstanceOf(Reference.class, ctrlG);
-        assertEquals("cancel-emulated", ((Reference) ctrlG).name());
     }
 
     @Test
@@ -616,7 +618,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             invokeTwoStringReturn(command, "startBackgroundActivity", "opencode response", "starting");
             invokeStringArg(command, "trackAssistantLog", "live token chunk");
             invokeToolUseArg(command, "trackToolActivityStart", new PassthroughStreamParser.ToolUse(
-                    "task", "{\"description\":\"delegate checks\"}"));
+                    "task", "{\"agent\":\"codex\",\"model\":\"gpt-5.6-sol\",\"thinking\":\"xhigh\",\"description\":\"delegate checks\"}"));
             invokeTwoStringArg(command, "trackToolActivityLog", "task", "subagent log line");
             invokeNoArg(command, "drawFixedInputBox");
         } finally {
@@ -627,6 +629,8 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertTrue(rendered.contains("opencode response"), "The backgrounded agent response should remain visible while running");
         assertTrue(rendered.contains("live token chunk"), "Background response logs should update in the activity panel");
         assertTrue(rendered.contains("delegate checks"), "Running subagent should be visible while active");
+        assertTrue(rendered.contains("codex"), "Running subagent should show its agent name");
+        assertTrue(rendered.contains("xhigh"), "Running subagent should show its thinking setting");
         assertTrue(rendered.contains("subagent log line"), "Subagent log output should update in the activity panel");
     }
 
@@ -935,13 +939,11 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void escapeForwardsToActiveChildWithoutCancelingTurnOrMirror() throws Exception {
+    void escapeCancelsActiveChildAndMarksTurnInterrupted() throws Exception {
         EmulatedPassthroughCommand command = configuredBusyCommand("draft while current runs");
         setField(command, "agentBusy", true);
         setField(command, "agentAwaitingInput", true);
         setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.OpenCodeDecoder());
-        ByteArrayOutputStream agentInput = new ByteArrayOutputStream();
-        setField(command, "agentStdin", agentInput);
         ((AtomicBoolean) getField(command, "tuiTurnSawContent")).set(true);
         setField(command, "autoMirrorForDialog", true);
         setField(command, "mirrorRender", true);
@@ -954,14 +956,15 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
 
         assertTrue(escapeWidget.apply());
 
-        assertArrayEquals(new byte[]{0x1B}, agentInput.toByteArray(),
-                "Escape should be forwarded to the child agent");
-        assertFalse(((AtomicBoolean) getField(command, "cancelSignal")).get(),
-                "Escape must not mark the Kompile turn as cancelled");
-        assertTrue((Boolean) getField(command, "agentAwaitingInput"),
-                "Kompile should wait for the child to redraw/close the dialog");
-        assertTrue((Boolean) getField(command, "mirrorRender"),
-                "Mirror should stay active until decoder state says the dialog is gone");
+        assertTrue(((AtomicBoolean) getField(command, "cancelSignal")).get(),
+                "Escape must mark the Kompile turn as cancelled");
+        assertEquals("interrupting", getField(command, "currentStatus"));
+        invokeNoArg(command, "markInterrupted");
+        assertEquals("interrupted", getField(command, "currentStatus"));
+        command.updateStatusLine("idle");
+        assertEquals("interrupted", getField(command, "currentStatus"),
+                "Late decoder idle frames must not erase the interrupted terminal state");
+        assertTrue((Boolean) getField(command, "mirrorRender"));
         assertTrue((Boolean) getField(command, "autoMirrorForDialog"));
     }
 

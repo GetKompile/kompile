@@ -1,161 +1,148 @@
 #!/usr/bin/env bash
-#
-# 05-extract-pdfs.sh
-#
-# For each PDF under sample-pdfs/, run SmolDocling VLM extraction via the
-# /api/vlm/test/run endpoint, poll for completion, then save the page-by-page
-# text output as a single markdown file under var/extracted/.
-#
-# This is the VLM-specific piece that differs from kompile-demo. SmolDocling
-# runs in an isolated subprocess (VlmTestSubprocessMain) spawned by
-# VlmTestSubprocessLauncher — that process is the one actually loading the
-# vision encoder + decoder + embed_tokens ONNX models and running the pipeline
-# end-to-end.
-#
-# Environment knobs:
-#   KOMPILE_VLM_MODEL_ID       default: smoldocling-256m
-#   KOMPILE_VLM_OUTPUT_FORMAT  default: MARKDOWN (also valid: DOCTAGS, PLAIN_TEXT)
-#   KOMPILE_VLM_MAX_PAGES      default: 3    (limit for demo speed)
-#   KOMPILE_VLM_PDF_DPI        default: 150
-#   KOMPILE_VLM_MAX_NEW_TOKENS default: 2048
-#   KOMPILE_VLM_POLL_SECONDS   default: 3
-
+# Extract image-based PDFs through the project-local stdio MCP pipeline runtime.
 set -euo pipefail
 
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PDF_DIR="${DEMO_DIR}/sample-pdfs"
-OUT_DIR="${DEMO_DIR}/var/extracted"
-APP_BASE="http://localhost:8080"
+KOMPILE_BIN="${KOMPILE_BIN:-kompile}"
+export KOMPILE_VLM_MODEL_ID="${KOMPILE_VLM_MODEL_ID:-smoldocling-256m}"
+export KOMPILE_VLM_OUTPUT_FORMAT="${KOMPILE_VLM_OUTPUT_FORMAT:-MARKDOWN}"
+export KOMPILE_VLM_MAX_PAGES="${KOMPILE_VLM_MAX_PAGES:-3}"
+export KOMPILE_VLM_PDF_DPI="${KOMPILE_VLM_PDF_DPI:-150}"
+export KOMPILE_VLM_MAX_NEW_TOKENS="${KOMPILE_VLM_MAX_NEW_TOKENS:-2048}"
+export KOMPILE_BIN DEMO_DIR
 
-VLM_MODEL_ID="${KOMPILE_VLM_MODEL_ID:-smoldocling-256m}"
-VLM_OUTPUT_FORMAT="${KOMPILE_VLM_OUTPUT_FORMAT:-MARKDOWN}"
-VLM_MAX_PAGES="${KOMPILE_VLM_MAX_PAGES:-3}"
-VLM_PDF_DPI="${KOMPILE_VLM_PDF_DPI:-150}"
-VLM_MAX_NEW_TOKENS="${KOMPILE_VLM_MAX_NEW_TOKENS:-2048}"
-VLM_POLL_SECONDS="${KOMPILE_VLM_POLL_SECONDS:-3}"
-
-mkdir -p "${OUT_DIR}"
-
-log() { printf '[05-extract-pdfs] %s\n' "$*"; }
-
-if ! command -v jq >/dev/null 2>&1; then
-    log "ERROR: jq is required to parse VLM results; install it (e.g. dnf install jq)"
-    exit 1
-fi
-
-if ! curl -fsS "${APP_BASE}/actuator/health" >/dev/null 2>&1; then
-    log "ERROR: kompile-app-main not reachable at ${APP_BASE}"
-    log "       run scripts/03-start-app.sh first"
-    exit 1
-fi
-
-shopt -s nullglob
-pdfs=("${PDF_DIR}"/*.pdf "${PDF_DIR}"/*.PDF)
-if (( ${#pdfs[@]} == 0 )); then
-    log "ERROR: no PDFs found under ${PDF_DIR}"
-    log "       drop one or more *.pdf files there and re-run"
-    exit 1
-fi
-
-log "found ${#pdfs[@]} PDF(s) to extract"
-log "  model:       ${VLM_MODEL_ID}"
-log "  format:      ${VLM_OUTPUT_FORMAT}"
-log "  maxPages:    ${VLM_MAX_PAGES}"
-log "  dpi:         ${VLM_PDF_DPI}"
-log "  maxNewToks:  ${VLM_MAX_NEW_TOKENS}"
-log "  output dir:  ${OUT_DIR}"
-
-extract_one() {
-    local pdf="$1"
-    local base; base="$(basename "${pdf}")"
-    local stem="${base%.*}"
-    local out_md="${OUT_DIR}/${stem}.md"
-    local raw_json="${OUT_DIR}/${stem}.result.json"
-
-    log "------------------------------------------------------------"
-    log "extracting ${base}"
-
-    local submit_resp
-    submit_resp=$(curl -sS -X POST "${APP_BASE}/api/vlm/test/run" \
-        -F "file=@${pdf};type=application/pdf" \
-        -F "modelId=${VLM_MODEL_ID}" \
-        -F "outputFormat=${VLM_OUTPUT_FORMAT}" \
-        -F "maxPages=${VLM_MAX_PAGES}" \
-        -F "pdfRenderDpi=${VLM_PDF_DPI}" \
-        -F "maxNewTokens=${VLM_MAX_NEW_TOKENS}")
-
-    local task_id
-    task_id=$(printf '%s' "${submit_resp}" | jq -r '.taskId // empty')
-    if [[ -z "${task_id}" ]]; then
-        log "ERROR: /api/vlm/test/run did not return a taskId"
-        log "response: ${submit_resp}"
-        return 1
-    fi
-    log "taskId=${task_id}"
-
-    # Poll status until DONE or terminal. The status endpoint switches from
-    # "RUNNING" to a terminal state; completed results land in /results/{taskId}.
-    local status phase pct last=""
-    local deadline=$(( SECONDS + 1800 ))
-    while true; do
-        if (( SECONDS > deadline )); then
-            log "ERROR: VLM extraction timed out after 30 minutes for ${base}"
-            return 1
-        fi
-        local status_json
-        status_json=$(curl -sS "${APP_BASE}/api/vlm/test/status/${task_id}" || true)
-        if [[ -z "${status_json}" ]]; then
-            sleep "${VLM_POLL_SECONDS}"
-            continue
-        fi
-        status=$(printf '%s' "${status_json}" | jq -r '.status // empty')
-        phase=$(printf '%s' "${status_json}" | jq -r '.currentPhase // empty')
-        pct=$(printf '%s' "${status_json}" | jq -r '.progressPercent // empty')
-        local tag="${status}|${phase}|${pct}"
-        if [[ "${tag}" != "${last}" ]]; then
-            log "  status=${status} phase=${phase} progress=${pct}%"
-            last="${tag}"
-        fi
-        case "${status}" in
-            COMPLETED|DONE|SUCCESS|FINISHED)
-                break
-                ;;
-            FAILED|ERROR|CANCELLED)
-                log "ERROR: extraction ended with status=${status}"
-                printf '%s\n' "${status_json}"
-                return 1
-                ;;
-            *)
-                sleep "${VLM_POLL_SECONDS}"
-                ;;
-        esac
-    done
-
-    # Fetch the full result and persist the raw JSON for inspection + the
-    # assembled markdown we actually feed into the ingest step.
-    curl -sS "${APP_BASE}/api/vlm/test/results/${task_id}" -o "${raw_json}"
-    if [[ ! -s "${raw_json}" ]]; then
-        log "ERROR: empty result from /api/vlm/test/results/${task_id}"
-        return 1
-    fi
-
-    # Each entry in .pages is { pageNumber, text, success, ... }. Join all
-    # successful pages with blank-line separators and prepend an H1 title.
-    {
-        printf '# %s\n\n' "${stem}"
-        printf '_Extracted from %s via SmolDocling (%s)_\n\n' "${base}" "${VLM_MODEL_ID}"
-        jq -r '.pages[]? | select(.success == true) | "## Page \(.pageNumber)\n\n\(.text)\n"' \
-            "${raw_json}"
-    } > "${out_md}"
-
-    local page_count
-    page_count=$(jq '.pages | length' "${raw_json}" 2>/dev/null || echo "?")
-    log "wrote ${out_md} (${page_count} page result(s))"
+command -v "${KOMPILE_BIN}" >/dev/null 2>&1 || {
+  echo "ERROR: ${KOMPILE_BIN} is not installed" >&2
+  exit 1
+}
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: python3 is required for the stdio MCP demo client" >&2
+  exit 1
 }
 
-for pdf in "${pdfs[@]}"; do
-    extract_one "${pdf}"
-done
+python3 <<'PY'
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
 
-log "------------------------------------------------------------"
-log "extraction complete; markdown files in ${OUT_DIR}"
+root = pathlib.Path(os.environ["DEMO_DIR"])
+pdfs = sorted(root.joinpath("sample-pdfs").glob("*.[pP][dD][fF]"))
+if not pdfs:
+    raise SystemExit(f"ERROR: no PDFs found under {root / 'sample-pdfs'}")
+
+proc = subprocess.Popen(
+    [os.environ["KOMPILE_BIN"], "mcp-stdio"],
+    cwd=root,
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=sys.stderr,
+    text=True,
+    bufsize=1,
+)
+next_id = 0
+
+def request(method, params=None):
+    global next_id
+    next_id += 1
+    message = {"jsonrpc": "2.0", "id": next_id, "method": method}
+    if params is not None:
+        message["params"] = params
+    proc.stdin.write(json.dumps(message) + "\n")
+    proc.stdin.flush()
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            raise RuntimeError("stdio MCP process exited before responding")
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if response.get("id") != next_id:
+            continue
+        if "error" in response:
+            raise RuntimeError(response["error"])
+        return response.get("result", {})
+
+def notify(method, params=None):
+    message = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        message["params"] = params
+    proc.stdin.write(json.dumps(message) + "\n")
+    proc.stdin.flush()
+
+def call_tool(name, arguments):
+    result = request("tools/call", {"name": name, "arguments": arguments})
+    if result.get("isError"):
+        text = "\n".join(item.get("text", "") for item in result.get("content", []))
+        raise RuntimeError(f"{name} failed: {text}")
+    return result
+
+try:
+    request("initialize", {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "kompile-vlm-demo", "version": "1"},
+    })
+    notify("notifications/initialized")
+
+    model_id = os.environ["KOMPILE_VLM_MODEL_ID"]
+    call_tool("model_runtime", {
+        "action": "bootstrap",
+        "modelId": model_id,
+        "autoBootstrap": True,
+        "timeoutMinutes": 60,
+    })
+
+    pipeline_id = "vlm-demo-pdf"
+    call_tool("crawl_documents", {
+        "name": "VLM demo PDF extraction",
+        "knowledgeBase": {"name": "vlm-demo-extracted"},
+        "documents": [
+            {"path": str(pdf), "sourceType": "FILE", "pipelineId": pipeline_id}
+            for pdf in pdfs
+        ],
+        "pipelines": [{
+            "pipelineId": pipeline_id,
+            "pipelineType": "VLM",
+            "loaderName": "pdf",
+            "chunkerName": "sentence",
+            "modelId": model_id,
+            "options": {
+                "outputFormat": os.environ["KOMPILE_VLM_OUTPUT_FORMAT"],
+                "maxPages": int(os.environ["KOMPILE_VLM_MAX_PAGES"]),
+                "pdfRenderDpi": int(os.environ["KOMPILE_VLM_PDF_DPI"]),
+                "maxNewTokens": int(os.environ["KOMPILE_VLM_MAX_NEW_TOKENS"]),
+                "pageBatchSize": 1,
+                "temperature": 0.0,
+                "doSample": False,
+            },
+        }],
+        "defaultPipelineId": pipeline_id,
+        "modelRuntime": {"autoBootstrap": False},
+        "steps": ["LOADING", "MARKDOWN_EXTRACTION", "CHUNKING"],
+        "strictSteps": True,
+        "deriveOntology": False,
+        "embeddingTraining": {"enabled": False},
+        "reasoningLearning": {"enabled": False},
+    })
+
+    source = root / "data" / "markdown" / "vlm-demo-extracted"
+    destination = root / "var" / "extracted"
+    destination.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    if source.is_dir():
+        for markdown in source.rglob("*.md"):
+            shutil.copy2(markdown, destination / markdown.name)
+            copied += 1
+    print(f"Extracted {len(pdfs)} PDF(s) through stdio MCP; copied {copied} markdown artifact(s) to {destination}")
+finally:
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+PY

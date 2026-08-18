@@ -30,7 +30,6 @@ public class SkillConfig {
     private final String description;
     private final String promptTemplate;
     private final Set<String> allowedTools; // null → inherit from current agent
-    private final int maxSteps; // 0 → inherit from current agent
     private final String modelHint; // null → inherit from current agent
     private final boolean builtIn;
     private final String category;
@@ -41,7 +40,6 @@ public class SkillConfig {
         this.description = builder.description;
         this.promptTemplate = builder.promptTemplate;
         this.allowedTools = builder.allowedTools;
-        this.maxSteps = builder.maxSteps;
         this.modelHint = builder.modelHint;
         this.builtIn = builder.builtIn;
         this.category = builder.category;
@@ -52,7 +50,6 @@ public class SkillConfig {
     public String getDescription() { return description; }
     public String getPromptTemplate() { return promptTemplate; }
     public Set<String> getAllowedTools() { return allowedTools; }
-    public int getMaxSteps() { return maxSteps; }
     public String getModelHint() { return modelHint; }
     public boolean isBuiltIn() { return builtIn; }
     public String getCategory() { return category; }
@@ -80,7 +77,6 @@ public class SkillConfig {
         private String description = "";
         private String promptTemplate = "";
         private Set<String> allowedTools = null;
-        private int maxSteps = 0;
         private String modelHint = null;
         private boolean builtIn = false;
         private String category = "general";
@@ -107,11 +103,6 @@ public class SkillConfig {
 
         public Builder allowedTools(Set<String> allowedTools) {
             this.allowedTools = allowedTools;
-            return this;
-        }
-
-        public Builder maxSteps(int maxSteps) {
-            this.maxSteps = maxSteps;
             return this;
         }
 

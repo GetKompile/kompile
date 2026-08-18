@@ -231,21 +231,6 @@ class DoctorCommandTest {
         assertFalse(DoctorCommand.isLocalDistribution(tmp));
     }
 
-    @Test
-    void localWorkerCheckRequiresExecutableNativeWorker(@TempDir Path tmp) throws IOException {
-        Path bin = Files.createDirectories(tmp.resolve("bin"));
-        Path worker = Files.writeString(bin.resolve("kompile-vlm-test"), "native");
-        assertTrue(worker.toFile().setExecutable(true));
-
-        DoctorCommand.CheckResult present =
-                DoctorCommand.checkLocalWorker(tmp, "document-model", "kompile-vlm-test");
-        DoctorCommand.CheckResult missing =
-                DoctorCommand.checkLocalWorker(tmp, "missing-worker", "missing-worker");
-
-        assertEquals(DoctorCommand.Status.OK, present.status());
-        assertEquals(DoctorCommand.Status.FAIL, missing.status());
-    }
-
     // ── isNativeImage helper ──────────────────────────────────────────────────
 
     @Test

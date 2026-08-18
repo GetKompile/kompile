@@ -80,14 +80,6 @@ public final class CrawlCommand implements Callable<Integer> {
                     + "(default: auto offline, supervised online).")
     private String mode;
 
-    @CommandLine.Option(names = "--max-steps", defaultValue = "30",
-            description = "Maximum agent decisions for this run.")
-    private int maxSteps;
-
-    @CommandLine.Option(names = "--max-tool-calls", defaultValue = "200",
-            description = "Maximum tool calls for this run.")
-    private int maxToolCalls;
-
     @CommandLine.Option(names = "--rag", negatable = true, defaultValue = "true",
             description = "Enable server-side RAG context.")
     private boolean rag;
@@ -175,7 +167,7 @@ public final class CrawlCommand implements Callable<Integer> {
         String appUrl = normalizeAppUrl(requestedUrl);
         String mcpUrl = normalizeMcpUrl(requestedUrl);
 
-        AgentRunController controller = new AgentRunController(parseMode(mode, false), maxSteps, maxToolCalls);
+        AgentRunController controller = new AgentRunController(parseMode(mode, false));
         System.out.println("Connecting to " + mcpUrl + " ...");
         try (McpSseClient client = new McpSseClient(mcpUrl)) {
             client.connect();
@@ -223,8 +215,7 @@ public final class CrawlCommand implements Callable<Integer> {
         String workerCrawlUrl = crawlUrl == null || crawlUrl.isBlank()
                 ? null
                 : trimTrailingSlashes(crawlUrl);
-        AgentRunController controller = new AgentRunController(
-                parseMode(mode, true), maxSteps, maxToolCalls);
+        AgentRunController controller = new AgentRunController(parseMode(mode, true));
         CrawlRunStore store = new CrawlRunStore(sessionId, mapper);
         AgentRunController.Snapshot prior = resumeId == null ? null : store.latestCheckpoint();
         if (prior != null) {

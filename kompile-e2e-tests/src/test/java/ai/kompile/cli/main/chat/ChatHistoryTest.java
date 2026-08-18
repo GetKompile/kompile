@@ -164,15 +164,6 @@ class ChatHistoryTest {
             assertTrue(content.contains("[todo:create] #1 Fix the bug"));
         }
 
-        @Test
-        void logAgenticStep() throws IOException {
-            history.open("http://localhost:8080", "claude", false);
-            history.logAgenticStep(3, 10, 2);
-            history.close();
-
-            String content = history.readTranscript();
-            assertTrue(content.contains("[agentic-step] 3/10 (2 tool calls)"));
-        }
     }
 
     @Nested
@@ -270,7 +261,6 @@ class ChatHistoryTest {
             assertDoesNotThrow(() -> history.logAgentResponse("claude", "test", 100));
             assertDoesNotThrow(() -> history.logSubagent("explorer", "desc", 100, false));
             assertDoesNotThrow(() -> history.logTodoEvent("create", "1", "task"));
-            assertDoesNotThrow(() -> history.logAgenticStep(1, 10, 2));
         }
     }
 

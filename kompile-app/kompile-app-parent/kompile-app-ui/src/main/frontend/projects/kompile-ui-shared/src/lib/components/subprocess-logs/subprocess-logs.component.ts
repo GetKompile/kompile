@@ -30,7 +30,7 @@ import { IndexBrowserService } from '../../services/index-browser.service';
 import { IngestLogEntry } from '../../models/api-models';
 import { backendUrl } from '../../services/base.service';
 
-export type LogSourceType = 'ingest' | 'vector-population' | 'embedding' | 'vlm-test' | 'training' | 'serving';
+export type LogSourceType = 'ingest' | 'vector-population' | 'embedding' | 'training' | 'serving';
 
 @Component({
   selector: 'app-subprocess-logs',
@@ -286,18 +286,6 @@ export class SubprocessLogsComponent implements OnInit, OnDestroy, OnChanges, Af
           },
           error: (err) => {
             console.error('Error receiving vector population logs:', err);
-          }
-        });
-    } else if (this.logSource === 'vlm-test') {
-      if (!this.taskId) return;
-      this.logSubscription = this.webSocketService.subscribeToVlmTestLogs(this.taskId)
-        .subscribe({
-          next: (logEntry) => {
-            this.lastWebSocketLogTime = Date.now();
-            this.logBuffer$.next(logEntry);
-          },
-          error: (err) => {
-            console.error('Error receiving VLM test logs:', err);
           }
         });
     } else {
@@ -727,8 +715,6 @@ export class SubprocessLogsComponent implements OnInit, OnDestroy, OnChanges, Af
     } else if (this.taskId) {
       if (this.logSource === 'vector-population') {
         this.webSocketService.unsubscribeFromVectorPopulationLogs(this.taskId);
-      } else if (this.logSource === 'vlm-test') {
-        this.webSocketService.unsubscribeFromVlmTestLogs(this.taskId);
       } else {
         // Ingest, training, serving all use the same ingest log topic
         this.webSocketService.unsubscribeFromTaskLogs(this.taskId);

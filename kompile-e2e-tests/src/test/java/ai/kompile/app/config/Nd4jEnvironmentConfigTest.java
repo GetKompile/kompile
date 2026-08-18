@@ -440,8 +440,8 @@ class Nd4jEnvironmentConfigTest {
             }
         }
 
-        @Test @DisplayName("Config propagates through VlmTestSubprocessArgs")
-        void configThroughVlmTestArgs() throws Exception {
+        @Test @DisplayName("Config propagates through PipelineServingSubprocessArgs")
+        void configThroughPipelineRuntimeArgs() throws Exception {
             var config = Nd4jEnvironmentConfig.builder()
                     .maxThreads(16)
                     .optimizerEnabled(true)
@@ -451,18 +451,16 @@ class Nd4jEnvironmentConfigTest {
             String configJson = MAPPER.writeValueAsString(
                     Nd4jEnvironmentConfig.defaults().merge(config));
 
-            var args = ai.kompile.app.subprocess.VlmTestSubprocessArgs.builder()
-                    .taskId("vlm-task")
-                    .filePath("/test.pdf")
-                    .modelId("gotocr2")
-                    .callbackBaseUrl("http://localhost:8080")
-                    .nd4jConfigJson(configJson)
-                    .build();
+            var args = new ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs(
+                    "pipeline-task", "{\"pipelineId\":\"document-vlm\"}",
+                    configJson, 80, 90, 95, 2000,
+                    80, 90, 95, 3000);
 
-            var tempFile = java.nio.file.Files.createTempFile("vlm-args-", ".json");
+            var tempFile = java.nio.file.Files.createTempFile("pipeline-args-", ".json");
             try {
-                args.toFile(tempFile);
-                var restored = ai.kompile.app.subprocess.VlmTestSubprocessArgs.fromFile(tempFile);
+                var written = args.writeToTempFile();
+                java.nio.file.Files.move(written, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                var restored = ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs.fromFile(tempFile);
                 var restoredConfig = MAPPER.readValue(restored.nd4jConfigJson(), Nd4jEnvironmentConfig.class);
 
                 assertEquals(16, restoredConfig.maxThreads());

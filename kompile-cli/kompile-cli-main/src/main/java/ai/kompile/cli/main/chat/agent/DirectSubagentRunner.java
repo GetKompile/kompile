@@ -133,13 +133,13 @@ public class DirectSubagentRunner implements SubagentRunner {
 
     private String runConversation(DirectSession session, String prompt, long startTime) throws Exception {
         StringBuilder fullResponse = new StringBuilder();
-        int step = 0;
-        int maxSteps = session.agent.getMaxSteps();
 
         String currentMessage = prompt;
         List<DirectLlmClient.ToolCallResultInput> pendingToolResults = null;
 
-        while (step < maxSteps) {
+        // Direct subagents run until they finish or their shared abort signal
+        // fires. Chat does not impose an arbitrary execution-limit cutoff.
+        while (true) {
             if (session.parentContext.isAborted()) {
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
@@ -148,10 +148,9 @@ public class DirectSubagentRunner implements SubagentRunner {
                 return fullResponse + "\n[Subagent aborted]";
             }
 
-            step++;
-            notifyStatus(session.id, "thinking · step " + step + "/" + maxSteps);
+            notifyStatus(session.id, "thinking");
 
-            // Rebuild on every step so an activate_tools call immediately exposes
+            // Rebuild on every iteration so an activate_tools call immediately exposes
             // its selected capability group to the subagent's next request.
             ArrayNode toolDefinitions = directToolDefinitionsFor(session.agent);
             DirectLlmClient.StreamResult result = session.client.streamChat(
@@ -169,7 +168,7 @@ public class DirectSubagentRunner implements SubagentRunner {
                 if (fullResponse.length() > 0) fullResponse.append('\n');
                 fullResponse.append(result.text);
                 // Streaming chunks are already retained through onSubagentOutput.
-                emitActivity(session.id, "responding · step " + step + "/" + maxSteps,
+                emitActivity(session.id, "responding",
                         "", session.parentContext);
             }
 
@@ -255,18 +254,10 @@ public class DirectSubagentRunner implements SubagentRunner {
         long durationMs = System.currentTimeMillis() - startTime;
         String finalResult = fullResponse.toString().trim();
 
-        if (step >= maxSteps) {
-            notifyStatus(session.id, "stopped at max steps");
-            emitActivity(session.id, "stopped at max steps",
-                    renderer.renderSubagentError(session.agent.getName(),
-                            "Reached max steps (" + maxSteps + ")"), session.parentContext);
-            finalResult += "\n[Subagent reached maximum steps (" + maxSteps + ")]";
-        } else {
-            notifyStatus(session.id, "completed");
-            emitActivity(session.id, "completed",
-                    renderer.renderSubagentComplete(session.agent.getName(), durationMs),
-                    session.parentContext);
-        }
+        notifyStatus(session.id, "completed");
+        emitActivity(session.id, "completed",
+                renderer.renderSubagentComplete(session.agent.getName(), durationMs),
+                session.parentContext);
 
         return finalResult.isEmpty() ? "(subagent returned empty response)" : finalResult;
     }

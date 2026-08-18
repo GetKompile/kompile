@@ -79,7 +79,7 @@ class CrawlDiscoveryToolTest {
     }
 
     @Test
-    void pipelineDiscoveryUsesFolderLocalWorkerAndPipelineContracts() throws Exception {
+    void pipelineDiscoveryUsesManagedUnifiedPipelineContracts() throws Exception {
         RestTemplate restTemplate = new RestTemplate();
         CrawlDiscoveryTool tool = new CrawlDiscoveryTool(
                 new GroundingBackendClient("http://crawl", restTemplate), mapper);
@@ -92,9 +92,10 @@ class CrawlDiscoveryToolTest {
         assertTrue(result.getOutput().contains("\"pipelineSystems\""), result.getOutput());
         assertTrue(result.getOutput().contains("\"wiringRecipe\""), result.getOutput());
         assertTrue(result.getOutput().contains("\"pipelineTypeGuide\""), result.getOutput());
-        assertTrue(result.getOutput().contains("\"compatibilityVlm\""), result.getOutput());
-        assertTrue(result.getOutput().contains("\"genericUnified\""), result.getOutput());
-        assertTrue(result.getOutput().contains("\"documentModelWorker\""), result.getOutput());
+        assertTrue(result.getOutput().contains("\"unifiedVlm\""), result.getOutput());
+        assertTrue(result.getOutput().contains("bounded warm process"), result.getOutput());
+        assertFalse(result.getOutput().contains("documentModelWorker"), result.getOutput());
+        assertFalse(result.getOutput().contains("vlm-test"), result.getOutput());
         assertTrue(result.getOutput().contains("\"supportedInputTypes\""), result.getOutput());
         assertTrue(result.getOutput().contains("STANDARD_TEXT"), result.getOutput());
         assertTrue(result.getOutput().contains("TABLE_AWARE"), result.getOutput());

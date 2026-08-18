@@ -40,7 +40,7 @@ import java.util.stream.Stream;
 
 /**
  * CLI subcommand for inspecting subprocess logs written by launchers
- * (ingest, vector-population, embedding, model-init, vlm-test, training).
+ * (ingest, vector-population, embedding, model-init, pipeline-serving, training).
  *
  * <p>Mirrors {@link AgentLogsCommand} but keyed on {@code (subprocessType, runId)}
  * instead of {@code (instance, agent, processId)}.
@@ -100,7 +100,7 @@ public class SubprocessLogsCommand implements Callable<Integer> {
         @CommandLine.Mixin RemoteOptions remote;
 
         @CommandLine.Option(names = {"--type"},
-                description = "Filter by subprocess type (ingest, vector-population, embedding, model-init, vlm-test, training)")
+                description = "Filter by subprocess type (ingest, vector-population, embedding, model-init, pipeline-serving, training)")
         String type;
         @CommandLine.Option(names = {"--run-id"}, description = "Filter by run id")
         String runId;

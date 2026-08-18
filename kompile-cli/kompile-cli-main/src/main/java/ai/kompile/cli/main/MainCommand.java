@@ -49,7 +49,6 @@ import ai.kompile.cli.main.kclaw.KclawCommand;
 import ai.kompile.cli.main.knowledge.KnowledgeCommand;
 import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
-import ai.kompile.cli.main.project.LocalCrawlSubprocessMain;
 import ai.kompile.cli.main.project.ProjectCommand;
 import ai.kompile.cli.main.run.RunCommand;
 import ai.kompile.cli.main.sdk.SdkMain;
@@ -154,12 +153,6 @@ public class MainCommand implements Callable<Integer> {
         // belongs to the model-serving subprocesses spawned on demand.
         NativeLibraryResolver.bootstrapCoreOrThrow();
 
-        if (args != null && args.length == 2
-                && "--subprocess=local-crawl".equalsIgnoreCase(args[0])) {
-            LocalCrawlSubprocessMain.main(new String[]{args[1]});
-            System.exit(0);
-            return;
-        }
         CommandLine commandLine = new CommandLine(new MainCommand());
 
         // Discover and register plugin commands via ServiceLoader

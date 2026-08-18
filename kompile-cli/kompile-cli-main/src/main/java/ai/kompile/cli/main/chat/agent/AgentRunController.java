@@ -26,24 +26,20 @@ public final class AgentRunController {
 
     public record Decision(boolean allowed, String reason) {}
     public record Snapshot(Mode mode, State state, int completedSteps, int toolCalls,
-                           int maxSteps, int maxToolCalls, boolean approvalPending) {}
+                           boolean approvalPending) {}
 
     private static final Set<String> READ_ONLY_CRAWL_OPERATIONS = Set.of(
             "status", "list", "source_types", "preflight", "transcript",
             "graph_stats", "runtime_config");
 
     private final Mode mode;
-    private final int maxSteps;
-    private final int maxToolCalls;
     private final AtomicInteger completedSteps = new AtomicInteger();
     private final AtomicInteger toolCalls = new AtomicInteger();
     private final AtomicBoolean approvalPending = new AtomicBoolean();
     private volatile State state;
 
-    public AgentRunController(Mode mode, int maxSteps, int maxToolCalls) {
+    public AgentRunController(Mode mode) {
         this.mode = mode == null ? Mode.SUPERVISED : mode;
-        this.maxSteps = maxSteps <= 0 ? 50 : maxSteps;
-        this.maxToolCalls = maxToolCalls <= 0 ? 200 : maxToolCalls;
         this.state = this.mode == Mode.SINGLE_STEP ? State.PAUSED : State.RUNNING;
     }
 
@@ -51,19 +47,13 @@ public final class AgentRunController {
         if (state == State.STOPPED || state == State.PAUSED) {
             return false;
         }
-        if (nextStep > maxSteps) {
-            state = State.STOPPED;
-            return false;
-        }
         return true;
     }
 
     public synchronized void afterStep() {
         if (state == State.STOPPED) return;
-        int completed = completedSteps.incrementAndGet();
-        if (completed >= maxSteps) {
-            state = State.STOPPED;
-        } else if (mode == Mode.SINGLE_STEP) {
+        completedSteps.incrementAndGet();
+        if (mode == Mode.SINGLE_STEP) {
             state = State.PAUSED;
         }
     }
@@ -75,11 +65,7 @@ public final class AgentRunController {
         if (state == State.PAUSED) {
             return new Decision(false, "agent run is paused; use /crawl resume or /crawl step");
         }
-        int calls = toolCalls.incrementAndGet();
-        if (calls > maxToolCalls) {
-            state = State.STOPPED;
-            return new Decision(false, "tool-call budget exhausted (" + maxToolCalls + ")");
-        }
+        toolCalls.incrementAndGet();
         if (isMutation(toolName, arguments) && mode == Mode.SUPERVISED
                 && !approvalPending.getAndSet(false)) {
             return new Decision(false, "mutation requires approval; use /crawl approve");
@@ -111,14 +97,14 @@ public final class AgentRunController {
 
     public Snapshot snapshot() {
         return new Snapshot(mode, state, completedSteps.get(), toolCalls.get(),
-                maxSteps, maxToolCalls, approvalPending.get());
+                approvalPending.get());
     }
 
     /** Restore counters and cooperative state from a persisted checkpoint. */
     public synchronized void restore(Snapshot snapshot) {
         if (snapshot == null) return;
-        completedSteps.set(Math.max(0, Math.min(snapshot.completedSteps(), maxSteps)));
-        toolCalls.set(Math.max(0, Math.min(snapshot.toolCalls(), maxToolCalls)));
+        completedSteps.set(Math.max(0, snapshot.completedSteps()));
+        toolCalls.set(Math.max(0, snapshot.toolCalls()));
         approvalPending.set(snapshot.approvalPending());
         state = snapshot.state() == null ? State.RUNNING : snapshot.state();
     }

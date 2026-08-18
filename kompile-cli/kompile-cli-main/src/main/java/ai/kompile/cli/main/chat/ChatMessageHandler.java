@@ -71,6 +71,7 @@ public class ChatMessageHandler {
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
     private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
     private final AtomicReference<String> activeRemoteProcessId = new AtomicReference<>();
+    private final AtomicBoolean turnActive = new AtomicBoolean();
 
     // Mutable llmBusy flag — read/written by ChatRepl main loop as well
     // We access it via ChatRepl accessors to keep a single source of truth.
@@ -126,7 +127,12 @@ public class ChatMessageHandler {
         // tear down the transcript before the one requested turn completes.
         if (repl.isForceAgentic()) {
             cancelSignal.set(false);
-            handleAcceptedChatMessage(message);
+            turnActive.set(true);
+            try {
+                handleAcceptedChatMessage(message);
+            } finally {
+                turnActive.set(false);
+            }
             return;
         }
 
@@ -145,11 +151,13 @@ public class ChatMessageHandler {
             // second Enter can race the worker and launch two model turns.
             repl.setLlmBusy(true);
             cancelSignal.set(false);
+            turnActive.set(true);
             activeRemoteProcessId.set(null);
             Thread dispatchThread = new Thread(() -> {
                 try {
                     action.run();
                 } finally {
+                    turnActive.set(false);
                     if (activeDispatchThread.compareAndSet(Thread.currentThread(), null)) {
                         activeResponseBody.set(null);
                         activeRemoteProcessId.set(null);
@@ -173,9 +181,17 @@ public class ChatMessageHandler {
         // active turn and must report that fact to the widget.
         Thread active = activeDispatchThread.get();
         String processId = activeRemoteProcessId.getAndSet(null);
+        InputStream responseBody = activeResponseBody.get();
+        boolean accepted = turnActive.get() || active != null || responseBody != null
+                || (processId != null && !processId.isBlank());
+        if (!accepted) {
+            return false;
+        }
         cancelSignal.set(true);
+        ChatCompleter.markInterrupted();
+        repl.requestStatusRedraw();
         agenticLoop.cancelActiveTurn();
-        InputStream responseBody = activeResponseBody.getAndSet(null);
+        responseBody = activeResponseBody.getAndSet(null);
         if (responseBody != null) {
             try {
                 responseBody.close();
@@ -189,7 +205,7 @@ public class ChatMessageHandler {
         if (active != null && active != Thread.currentThread()) {
             active.interrupt();
         }
-        return active != null;
+        return true;
     }
 
     private void cancelRemoteProcess(String processId) {
@@ -245,7 +261,11 @@ public class ChatMessageHandler {
                 // completeTaskWithAutoDequeue may synchronously call back into
                 // handleChatMessage. The re-entrant lock keeps llmBusy reserved
                 // across that hand-off so a newly typed message cannot overtake it.
-                repl.completeTaskWithAutoDequeue();
+                if (!cancelSignal.get()) {
+                    repl.completeTaskWithAutoDequeue();
+                } else {
+                    repl.completeTaskWithoutAutoDequeue();
+                }
             }
         }
     }

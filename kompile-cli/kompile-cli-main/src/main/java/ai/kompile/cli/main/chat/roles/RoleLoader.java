@@ -46,7 +46,6 @@ import java.util.stream.Stream;
  * category: development
  * description: Senior backend developer specializing in Java/Spring Boot
  * model: default
- * max_steps: 50
  * can_spawn: true
  * agent_defaults.codex.model: gpt-5.6-terra
  * agent_defaults.codex.thinking.default: medium
@@ -151,7 +150,6 @@ public class RoleLoader {
                     .systemPrompt(content.trim())
                     .sourceFile(file.toString())
                     .isBuiltIn(isBuiltIn)
-                    .maxSteps(50)
                     .build();
         }
 
@@ -165,7 +163,6 @@ public class RoleLoader {
                     .systemPrompt(content.substring(3).trim())
                     .sourceFile(file.toString())
                     .isBuiltIn(isBuiltIn)
-                    .maxSteps(50)
                     .build();
         }
 
@@ -181,7 +178,6 @@ public class RoleLoader {
         String description = fields.getOrDefault("description", "Role: " + name);
         String category = fields.getOrDefault("category", "general");
         String modelHint = fields.getOrDefault("model", "default");
-        int maxSteps = parseIntOrDefault(fields.get("max_steps"), 50);
         boolean canSpawn = "true".equalsIgnoreCase(fields.getOrDefault("can_spawn", "true"));
 
         // Parse agent fallback priority
@@ -233,7 +229,6 @@ public class RoleLoader {
                 .agentFallbackPriority(agentFallbackPriority)
                 .sourceFile(file.toString())
                 .isBuiltIn(isBuiltIn)
-                .maxSteps(maxSteps)
                 .build();
     }
 
@@ -314,14 +309,6 @@ public class RoleLoader {
         return lowerKey;
     }
 
-    private int parseIntOrDefault(String value, int defaultValue) {
-        if (value == null || value.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
 
     /**
      * Save a role configuration to a Markdown file.

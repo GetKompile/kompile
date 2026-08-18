@@ -32,8 +32,8 @@ import org.springframework.stereotype.Component;
  * Migrates existing LLM and VLM pipeline definitions from their respective
  * registries into the unified pipeline store on application startup.
  *
- * <p>This ensures that all pipeline definitions are visible and executable
- * from the unified {@code /api/pipelines} REST API, regardless of whether
+ * <p>This ensures that all pipeline definitions are visible through the unified
+ * {@code /api/pipelines} definition API and executable through stdio MCP, regardless of whether
  * they were created via {@code /api/llm/config/pipelines} or
  * {@code /api/vlm/config/pipelines}.</p>
  *

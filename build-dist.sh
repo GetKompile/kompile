@@ -174,7 +174,6 @@ CLI_NATIVE=true            # Native CLI unless --jars-only selects the JVM tier
 APP_NATIVE=false           # kompile-app-main native
 STAGING_NATIVE=false       # kompile-model-staging native
 LOCAL_RUNTIME=false        # request-scoped model/pipeline serving artifacts
-DOCUMENT_MODEL_NATIVE=false # dedicated request-scoped document/VLM worker
 SERVER_JARS_ONLY=false     # package service JARs instead of service images
 BUNDLE_RUNTIME=true        # jlink runtime for JVM fallback/product services
 INCLUDE_CLI_JAR=true       # shaded CLI/JBang fallback
@@ -277,18 +276,15 @@ fi
 # local MCP workers only as Graal executables; their JNI/CUDA payload stays in lib/.
 if [ -n "${ND4J_BACKEND}" ]; then
     LOCAL_RUNTIME=true
-    DOCUMENT_MODEL_NATIVE=true
 fi
 
 # The JAR tier is a complete JVM distribution boundary. Native images are not
 # built or copied, while the existing shaded/exec JARs remain addressable by the
-# same component names through ComponentRegistry. The document-model worker is
-# currently native-only, so it is intentionally omitted from this tier.
+# same component names through ComponentRegistry.
 if [ "${JARS_ONLY}" = true ]; then
     CLI_NATIVE=false
     SERVER_JARS_ONLY=true
     INCLUDE_CLI_JAR=true
-    DOCUMENT_MODEL_NATIVE=false
 fi
 
 if [ -n "${SDK_CLASSIFIER_OVERRIDE}" ]; then
@@ -632,19 +628,6 @@ if [ "${SKIP_NATIVE}" = false ]; then
         done
     fi
 
-    # Dedicated document-model worker used by local MCP crawl pipelines. This
-    # must not route through kompile-app-main or an executable server JAR.
-    if [ "${DOCUMENT_MODEL_NATIVE}" = true ] && [ "${SERVER_JARS_ONLY}" = false ]; then
-        echo "  kompile-vlm-test: building native image..."
-        (
-            cd kompile-app/kompile-app-parent/kompile-app-main
-            "${MVN}" package -Pnative-vlm-test -Dkompile.native.side-load=true -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
-                2>&1 | tee /tmp/kompile-vlm-test-native.log
-        ) &
-        PIDS+=($!)
-        throttle_native_build
-    fi
-
     # Wait for whatever is still in flight (empty in serial mode because every launch was reaped).
     echo ""
     echo "  Waiting for ${#PIDS[@]} native build(s)..."
@@ -986,33 +969,6 @@ if [ "${LOCAL_RUNTIME}" = true ]; then
     done
 fi
 
-# Ship the dedicated local document-model worker. There is intentionally no
-# executable-JAR fallback for this path: native MCP execution must remain native.
-if [ "${DOCUMENT_MODEL_NATIVE}" = true ]; then
-    VLM_WORKER_TARGET="kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test${EXE_SUFFIX}"
-    if [ "${SERVER_JARS_ONLY}" = false ] && [ -f "${VLM_WORKER_TARGET}" ]; then
-        cp "${VLM_WORKER_TARGET}" "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
-        chmod +x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
-        normalize_elf_portability "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}"
-        echo "  bin/kompile-vlm-test ($(du -h "${VLM_WORKER_TARGET}" | cut -f1))"
-        # The VLM worker reaches PDFBox's AWT rasterizer after model bootstrap.
-        # Its GraalVM-emitted JDK shims must therefore be present even in the
-        # minimal CLI/local-runtime distribution where app-main is not shipped.
-        VLM_WORKER_SHIMS=0
-        for shim in "$(dirname "${VLM_WORKER_TARGET}")"/lib*.so; do
-            [ -f "${shim}" ] || continue
-            cp -an "${shim}" "${DIST_DIR}/lib/" 2>/dev/null || true
-            VLM_WORKER_SHIMS=$((VLM_WORKER_SHIMS + 1))
-        done
-        if [ "${VLM_WORKER_SHIMS}" -gt 0 ]; then
-            echo "  lib/ (+${VLM_WORKER_SHIMS} GraalVM JDK shim libraries from kompile-vlm-test)"
-        fi
-    else
-        echo "  ERROR: native document-model worker is missing: ${VLM_WORKER_TARGET}" >&2
-        exit 1
-    fi
-fi
-
 # Copy the end-user persona apps: chat (:8081) and the crawl manager (:8082).
 #
 # These ship whenever the server ships. kompile-app-main is the admin console now and no
@@ -1133,12 +1089,6 @@ if [ "${LOCAL_RUNTIME}" = true ]; then
         require_native_component "pipeline-serving" "kompile-pipeline-serving"
     fi
 fi
-if [ "${DOCUMENT_MODEL_NATIVE}" = true ] \
-        && [ ! -x "${DIST_DIR}/bin/kompile-vlm-test${EXE_SUFFIX}" ]; then
-    echo "  ERROR: native document-model worker is missing: bin/kompile-vlm-test${EXE_SUFFIX}" >&2
-    exit 1
-fi
-
 # Copy launchers at the payload boundary. Product/server variants retain the
 # complete launcher set. A staging-only distribution keeps its native convenience
 # launcher; the local execution distribution has no staging launcher.
@@ -1346,7 +1296,7 @@ if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
         none
 
     if { [ "${APP_NATIVE}" = true ] || [ "${STAGING_NATIVE}" = true ] \
-            || [ "${LOCAL_RUNTIME}" = true ] || [ "${DOCUMENT_MODEL_NATIVE}" = true ]; }; then
+            || [ "${LOCAL_RUNTIME}" = true ]; }; then
         bash "${NATIVE_STAGER}" \
             "${APP_NATIVE_LIBS}" \
             "${DIST_DIR}/lib" \
@@ -1457,7 +1407,6 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
     "model-staging": $(component_forms kompile-model-staging kompile-model-staging.jar),
     "model-serving": $(component_forms kompile-model-serving kompile-model-serving.jar),
     "pipeline-serving": $(component_forms kompile-pipeline-serving kompile-pipeline-serving.jar),
-    "document-model": $(component_forms kompile-vlm-test kompile-vlm-test.jar),
     "chat": $(component_forms kompile-chat kompile-chat.jar),
     "crawl-manager": $(component_forms kompile-crawl-manager kompile-crawl-manager.jar),
     "scripting-worker": $(component_forms kompile-scripting-worker kompile-scripting-worker.jar),

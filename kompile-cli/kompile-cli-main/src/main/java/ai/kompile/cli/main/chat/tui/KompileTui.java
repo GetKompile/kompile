@@ -329,10 +329,37 @@ public class KompileTui {
     }
 
     /**
+     * Repaint the active content view after an external renderer (such as JLine)
+     * has redrawn the terminal. The view state remains authoritative in this
+     * object, so redisplay cannot leave a stale or blank activity screen behind.
+     */
+    public void redrawContentView() {
+        if (!started) return;
+        synchronized (drawLock) {
+            setScrollRegion();
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+        }
+    }
+
+    /**
      * Print text into the scroll region.
      * Moves cursor to the last scroll row, prints the text, then scrolls up.
      * Thread-safe via drawLock.
      */
+    /**
+     * Record streamed transcript lines without writing to the terminal.
+     *
+     * JLine owns the live input cursor while a prompt is active. Background
+     * output uses {@code LineReader.printAbove} for the actual write; this
+     * state-only hook keeps the TUI's authoritative transcript in sync without
+     * moving the cursor from a non-JLine thread.
+     */
+    public void recordInScrollRegion(String text) {
+        synchronized (drawLock) {
+            rememberMainLines(splitLines(text));
+        }
+    }
+
     public void printInScrollRegion(String text) {
         List<String> lines = splitLines(text);
         synchronized (drawLock) {
@@ -390,7 +417,14 @@ public class KompileTui {
      * This is used for live subagent chunks and process output updates.
      */
     public void updateActivityView(String key, String title, String content) {
-        if (key == null || !key.equals(contentViewKey)) return;
+        if (key == null || key.isBlank()) return;
+        if (!key.equals(contentViewKey)) {
+            // A selection/process transition can arrive between refresh callbacks.
+            // Treat the new key as an authoritative view switch instead of silently
+            // updating an off-screen transcript.
+            showActivityView(key, title, content);
+            return;
+        }
         List<String> lines = new ArrayList<>();
         lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
         lines.addAll(splitLines(content));

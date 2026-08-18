@@ -271,7 +271,7 @@ public class KubernetesJobSchedulerDelegate implements ExternalJobSchedulerDeleg
             case "embedding" -> "embedding";
             case "modelInit" -> "model-init";
             case "training" -> "training";
-            case "vlm" -> "vlm-test";
+            case "vlm" -> "pipeline-serving";
             default -> jobType;
         };
     }

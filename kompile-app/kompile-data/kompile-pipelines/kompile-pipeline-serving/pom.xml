@@ -46,6 +46,15 @@
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
         </dependency>
 
+        <!-- Runtime step plugins are packaged into the standalone runtime but are not
+             propagated to MCP/CLI parents that depend on this launcher API. -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-steps-vlm</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot (optional - for launcher integration) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -97,6 +106,32 @@
 
     <build>
         <plugins>
+            <!-- SameDiff importer hooks are discovered through ClassGraph on the JVM. The
+                 native pipeline runtime carries the baked scan once for every model step. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>unpack-onnx-importer-classgraph-scan</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>unpack</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>org.eclipse.deeplearning4j</groupId>
+                                    <artifactId>sdx-aot</artifactId>
+                                    <version>${nd4j.version}</version>
+                                    <type>jar</type>
+                                    <overWrite>true</overWrite>
+                                    <includes>sdx-classgraph-scan.json</includes>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -183,6 +218,8 @@
                             <buildArgs combine.children="append">
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--enable-url-protocols=http,https</buildArg>
+                                <buildArg>-H:+AddAllCharsets</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${maven.multiModuleProjectDirectory}/kompile-app/kompile-app-parent/kompile-app-main/src/main/resources/META-INF/native-image/pipeline-runtime</buildArg>
                                 <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp,org.nd4j,org.eclipse.deeplearning4j</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>

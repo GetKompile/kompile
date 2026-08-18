@@ -1,16 +1,7 @@
 package ai.kompile.rag.pipeline.service;
 
-import ai.kompile.core.embeddings.EmbeddingModel;
-import ai.kompile.core.embeddings.VectorStore;
-import ai.kompile.core.llm.LanguageModel;
-import ai.kompile.core.reranking.RerankerService;
-import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.modelmanager.ModelConstants;
-import ai.kompile.modelmanager.RegistryBasedModelManager;
-import ai.kompile.pipelines.framework.api.PipelineExecutor;
-import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.core.config.GenericStepConfig;
-import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 import ai.kompile.rag.pipeline.domain.*;
 import ai.kompile.rag.pipeline.steps.*;
@@ -19,12 +10,10 @@ import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -33,7 +22,6 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Service
@@ -45,17 +33,6 @@ public class RagPipelineService {
     private final Path storageDir;
     private final ConcurrentHashMap<String, RagPipelineDefinition> pipelines = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, RagPipelineDefinition> builtins = new ConcurrentHashMap<>();
-
-    @Autowired(required = false)
-    private EmbeddingModel embeddingModel;
-    @Autowired(required = false)
-    private VectorStore vectorStore;
-    @Autowired(required = false)
-    private DocumentRetriever documentRetriever;
-    @Autowired(required = false)
-    private RerankerService rerankerService;
-    @Autowired(required = false)
-    private LanguageModel languageModel;
 
     public RagPipelineService() {
         this.objectMapper = JsonUtils.newStandardMapper().enable(SerializationFeature.INDENT_OUTPUT);
@@ -201,49 +178,6 @@ public class RagPipelineService {
         return "available";
     }
 
-    // ===================== Execution =====================
-
-    public RagPipelineResult execute(String pipelineId, String query) {
-        RagPipelineDefinition def = getById(pipelineId)
-                .orElseThrow(() -> new NoSuchElementException("Pipeline not found: " + pipelineId));
-
-        long startTime = System.currentTimeMillis();
-
-        try {
-            SequencePipeline pipeline = buildSequencePipeline(def);
-            DefaultContext context = new DefaultContext(Data.empty());
-
-            // Inject Spring beans into context for step runners
-            if (embeddingModel != null) context.put("embeddingModel", embeddingModel);
-            if (vectorStore != null) context.put("vectorStore", vectorStore);
-            if (documentRetriever != null) context.put("documentRetriever", documentRetriever);
-            if (rerankerService != null) context.put("rerankerService", rerankerService);
-            if (languageModel != null) context.put("languageModel", languageModel);
-
-            try (PipelineExecutor executor = pipeline.createExecutor()) {
-                Data input = Data.empty();
-                input.put("query", query);
-
-                Data output = executor.exec(input, context);
-
-                long durationMs = System.currentTimeMillis() - startTime;
-                String response = output.has("response") ? output.get("response") : null;
-                String contextStr = output.has("context") ? output.get("context") : null;
-                long docCount = output.has("document_count") ? output.get("document_count") : 0L;
-
-                return new RagPipelineResult(
-                        pipelineId, def.getName(), "completed",
-                        response, contextStr, (int) docCount, durationMs, null);
-            }
-        } catch (Exception e) {
-            long durationMs = System.currentTimeMillis() - startTime;
-            log.error("Pipeline execution failed: {}", e.getMessage(), e);
-            return new RagPipelineResult(
-                    pipelineId, def.getName(), "error",
-                    null, null, 0, durationMs, e.getMessage());
-        }
-    }
-
     public SequencePipeline buildSequencePipeline(RagPipelineDefinition def) {
         SequencePipeline.Builder builder = SequencePipeline.builder();
 
@@ -374,17 +308,4 @@ public class RagPipelineService {
         }
     }
 
-    @lombok.Data
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class RagPipelineResult {
-        private String pipelineId;
-        private String pipelineName;
-        private String status; // "completed", "error"
-        private String response;
-        private String context;
-        private int documentCount;
-        private long durationMs;
-        private String errorMessage;
-    }
 }

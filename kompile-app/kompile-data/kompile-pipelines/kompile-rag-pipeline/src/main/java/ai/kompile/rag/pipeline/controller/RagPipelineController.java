@@ -6,7 +6,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 import java.util.NoSuchElementException;
 
 @RestController
@@ -77,17 +76,4 @@ public class RagPipelineController {
         }
     }
 
-    @PostMapping("/{id}/execute")
-    public ResponseEntity<RagPipelineService.RagPipelineResult> execute(
-            @PathVariable String id, @RequestBody Map<String, String> body) {
-        String query = body.get("query");
-        if (query == null || query.isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
-        try {
-            return ResponseEntity.ok(ragPipelineService.execute(id, query));
-        } catch (NoSuchElementException e) {
-            return ResponseEntity.notFound().build();
-        }
-    }
 }

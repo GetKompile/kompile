@@ -1,7 +1,11 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.mcp.McpSseClient;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tui.KompileTui;
 import org.jline.reader.*;
+import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
 import org.jline.terminal.Attributes;
 import org.jline.terminal.Size;
@@ -325,6 +329,135 @@ class ChatCompleterTtyTest {
                 output.contains("Run shell cmd");
         assertTrue(hasDescriptions,
                 "/tool <TAB> should show tool descriptions, output: " + output);
+    }
+
+    @Test
+    void fullChatHotkeySetupPreservesOrdinaryTyping() throws Exception {
+        LineReaderImpl impl = (LineReaderImpl) reader;
+        ChatCompleter.enableAutoTrigger(reader);
+        for (KeyMap<Binding> keyMap : impl.getKeyMaps().values()) {
+            if (keyMap != null) {
+                keyMap.setAmbiguousTimeout(80L);
+            }
+        }
+        ChatRepl.bindCancelKey(impl.getKeyMaps(), "\033");
+        ChatRepl.bindModeSwitchingHotkeys(impl.getKeyMaps().get(LineReader.EMACS));
+
+        ChatCompleter.setContentRedraw(() -> {
+            terminal.writer().print("R");
+            terminal.writer().flush();
+        });
+        try {
+            assertEquals("abcdefghijklmnopqrstuvwxyz", readLineResult("abcdefghijklmnopqrstuvwxyz" + CR),
+                    "chat hotkey registration must never swallow printable input");
+        } finally {
+            ChatCompleter.setContentRedraw(null);
+        }
+
+    }
+
+    @Test
+    void realAnsiTuiRedrawDuringTypingPreservesPrintableInput() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-real-tui-test");
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes,
+                new MessageQueue("chat-completer-real-tui-queue"),
+                new TerminalRenderer(true));
+        PrintStream previousOut = System.out;
+        try {
+            // KompileTui uses the process-wide writer for cursor-addressed redraws;
+            // route it into the same xterm capture used by the LineReader.
+            System.setOut(new PrintStream(terminalOutput, true, StandardCharsets.UTF_8));
+            tui.start(terminal);
+            tui.showActivityView("process:live", "live process", "one\ntwo\nthree");
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.enableAutoTrigger(reader);
+            for (KeyMap<Binding> keyMap : ((LineReaderImpl) reader).getKeyMaps().values()) {
+                if (keyMap != null) {
+                    keyMap.setAmbiguousTimeout(80L);
+                }
+            }
+            ChatRepl.bindCancelKey(((LineReaderImpl) reader).getKeyMaps(), "\\033");
+            assertEquals("typed", readLineResult("typed" + CR),
+                    "cursor-addressed TUI redraw must not swallow printable input");
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            tui.stop();
+            System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void realAnsiTuiStreamedOutputDuringTypingPreservesPrintableInput() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-real-tui-stream-test");
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes,
+                new MessageQueue("chat-completer-real-tui-stream-queue"),
+                new TerminalRenderer(true));
+        PrintStream previousOut = System.out;
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            System.setOut(new PrintStream(terminalOutput, true, StandardCharsets.UTF_8));
+            tui.start(terminal);
+            tui.showActivityView("process:live", "live process", "one\ntwo\nthree");
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.setContentOutput(tui::recordInScrollRegion);
+            Future<String> line = executor.submit(() -> reader.readLine("> "));
+            Thread.sleep(75);
+            ChatCompleter.printAbove("streamed while editing");
+            keyboardPipe.write("typed".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("typed", line.get(5, TimeUnit.SECONDS),
+                    "live TUI output must not swallow printable input");
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            executor.shutdownNow();
+            tui.stop();
+            System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void streamedOutputUsesAuthoritativeContentSink() {
+        List<String> received = new ArrayList<>();
+        ChatCompleter.setContentOutput(received::add);
+        try {
+            ChatCompleter.printAbove("tool output chunk");
+        } finally {
+            ChatCompleter.setContentOutput(null);
+        }
+        assertEquals(List.of("tool output chunk"), received,
+                "streamed output should be handed to the active transcript sink");
+    }
+
+    @Test
+    void streamedOutputDuringReadPreservesPrintableTyping() throws Exception {
+        List<String> received = new CopyOnWriteArrayList<>();
+        ChatCompleter.setTerminalRef(reader, terminal);
+        ChatCompleter.setContentOutput(received::add);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> line = executor.submit(() -> reader.readLine("> "));
+            Thread.sleep(75);
+            ChatCompleter.printAbove("tool output while editing");
+            keyboardPipe.write("typed".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("typed", line.get(5, TimeUnit.SECONDS),
+                    "background output must not swallow the active input buffer");
+            assertEquals(List.of("tool output while editing"), received);
+        } finally {
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.clearTerminalRef(reader);
+            executor.shutdownNow();
+        }
     }
 
     // ========================================================================

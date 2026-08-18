@@ -280,14 +280,16 @@ User Query ──> Query Processing (intent detection, rewriting)
 
 For scaling, the main application can offload work to subprocesses:
 
-**Subprocess types:** `ingest`, `vector-population`, `embedding`, `model-init`, `training`, `vlm-test`
+**Subprocess types:** `ingest`, `vector-population`, `embedding`, `model-init`, `training`, `pipeline-serving`
 
 **Launch modes:**
 1. **Auto** (default): Detects native image vs JVM automatically
 2. **JVM**: `java -cp <classpath> <MainClass>`
 3. **Native**: `/path/to/kompile-app --subprocess=TYPE`
 
-The unified native executable routes subprocess types in `MainApplication.main()` before Spring Boot starts. Each subprocess type has a dedicated launcher and main class.
+The stdio MCP host owns reusable pipeline-runtime leases. `pipeline-serving` is the single
+model-pipeline execution process and accepts versioned definitions over a bidirectional stdio
+protocol; VLM, OCR, LLM, embedding, and custom model steps do not have dedicated launch paths.
 
 `SubprocessMemoryWatchdog` monitors GPU and system memory with velocity tracking across all subprocess types.
 

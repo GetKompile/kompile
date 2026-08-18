@@ -19,7 +19,6 @@ package ai.kompile.app.runtime;
 import ai.kompile.app.subprocess.GraphMatrixSubprocessMain;
 import ai.kompile.app.subprocess.IngestSubprocessMain;
 import ai.kompile.app.subprocess.VectorPopulationSubprocessMain;
-import ai.kompile.app.subprocess.VlmTestSubprocessMain;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessMain;
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain;
 import org.slf4j.Logger;
@@ -71,7 +70,6 @@ public final class SubprocessDispatcher {
         register("vector-population", VectorPopulationSubprocessMain::main);
         register("embedding", EmbeddingSubprocessMain::main);
         register("model-init", ModelInitSubprocessMain::main);
-        register("vlm-test", VlmTestSubprocessMain::main);
         register("graph-matrix", GraphMatrixSubprocessMain::main);
     }
 

@@ -164,8 +164,8 @@ The main JAR supports subprocess routing via `--subprocess=TYPE`:
 | `ingest` | Document ingestion (parsing, chunking, embedding, indexing) |
 | `vector-population` | Bulk vector index population |
 | `embedding` | Long-running embedding subprocess (stdin/stdout protocol) |
-| `model-init` | One-shot model initialization/download |
-| `vlm-test` | Vision-language model testing |
+| `model-init` | Model initialization/download |
+| `pipeline-serving` | Reusable stdio runtime for all model-backed pipelines, including VLM/OCR |
 | `training` | Model fine-tuning |
 
 Most subprocesses are launched automatically by the main app. The serving

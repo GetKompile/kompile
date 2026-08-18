@@ -22,7 +22,6 @@ make_source "kompile-cli/kompile-app-cli/target/kompile-app-cli" app-cli
 make_source "kompile-cli/kompile-model-cli/target/kompile-model" model
 make_source "kompile-cli/kompile-component-cli/target/kompile-component" component
 make_source "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-app" server
-make_source "kompile-app/kompile-app-parent/kompile-app-main/target/kompile-vlm-test" vlm
 make_source "kompile-app/kompile-models/kompile-model-staging/target/kompile-model-staging" staging
 make_source "kompile-app/kompile-app-parent/kompile-app-subprocess/kompile-app-subprocess-serving/target/kompile-model-serving" model-serving
 make_source "kompile-app/kompile-data/kompile-pipelines/kompile-pipeline-serving/target/kompile-pipeline-serving" pipeline-serving
@@ -33,7 +32,7 @@ make_source "kompile-app/kompile-app-parent/kompile-app-chat/target/libjava.so" 
 bash "${STAGER}" "${REPO}" "${DEST}" "${NORMALIZER}"
 
 for staged in kompile kompile-agent kompile-app-cli kompile-model kompile-component kompile-server \
-        kompile-vlm-test kompile-model-staging kompile-model-serving kompile-pipeline-serving kompile-chat; do
+        kompile-model-staging kompile-model-serving kompile-pipeline-serving kompile-chat; do
     [ -x "${DEST}/${staged}" ] || {
         echo "ERROR: expected staged executable is missing: ${staged}" >&2
         exit 1

@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit tests for {@link ChatSessionMetrics}.
  * <p>
- * Tests turn recording, token tracking, tool tracking, agentic steps,
+ * Tests turn recording, token tracking, tool tracking, agentic context,
  * RAG tracking, queue tracking, performance harness, role changes,
  * session outcome, formatted output, getTopTools, and JSON serialization.
  */
@@ -254,22 +254,7 @@ class ChatSessionMetricsTest {
     // ===================================================================
 
     @Nested
-    class AgenticLoopTracking {
-
-        @Test
-        void initialState_zeroSteps() {
-            assertEquals(0, metrics.getAgenticSteps());
-            assertEquals(0, metrics.getCompactionEvents());
-        }
-
-        @Test
-        void recordAgenticStep_increments() {
-            metrics.recordAgenticStep();
-            metrics.recordAgenticStep();
-            metrics.recordAgenticStep();
-
-            assertEquals(3, metrics.getAgenticSteps());
-        }
+    class AgenticContextTracking {
 
         @Test
         void recordCompaction_increments() {
@@ -589,6 +574,7 @@ class ChatSessionMetricsTest {
             assertTrue(json.has("timing"));
             assertTrue(json.has("tools"));
             assertTrue(json.has("agentic"));
+            assertFalse(json.get("agentic").has("steps"));
 
             assertEquals("test-session-001", json.get("session").get("sessionId").asText());
         }
@@ -603,7 +589,6 @@ class ChatSessionMetricsTest {
             metrics.recordAssistantTurn("Hi there!", 500);
             metrics.recordTokenUsage(1000, 500, 200, 50);
             metrics.recordToolCall("Bash", false, 100);
-            metrics.recordAgenticStep();
             metrics.recordRagQuery(3);
             metrics.recordMessageQueued();
             metrics.recordTaskBackgrounded();

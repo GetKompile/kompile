@@ -55,14 +55,3 @@ export interface PipelineModelStatus {
   requirements: ModelRequirement[];
   allModelsReady: boolean;
 }
-
-export interface RagPipelineResult {
-  pipelineId: string;
-  pipelineName: string;
-  status: 'completed' | 'error';
-  response?: string;
-  context?: string;
-  documentCount: number;
-  durationMs: number;
-  errorMessage?: string;
-}

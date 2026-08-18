@@ -620,8 +620,12 @@ public class StatusBar {
         // --- Foreground model activity ---
         String activity = ChatCompleter.getActivity();
         if (activity != null && !activity.isBlank()) {
-            String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
-            segments.add(spinner + " " + YELLOW + activity + RESET);
+            if (ChatCompleter.isActivityTerminal()) {
+                segments.add(YELLOW + "■" + RESET + " " + YELLOW + activity + RESET);
+            } else {
+                String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
+                segments.add(spinner + " " + YELLOW + activity + RESET);
+            }
         }
 
         // --- Judge/enforcer watchers ---
@@ -682,7 +686,8 @@ public class StatusBar {
                 SubagentEntry sa = visibleSubagents.get(0);
                 String desc = sa.getType();
                 if (sa.getDescription() != null && !sa.getDescription().isEmpty()) {
-                    desc = StringUtils.truncateEllipsis(sa.getDescription(), 20);
+                    desc = sa.getType() + " — "
+                            + StringUtils.truncateEllipsis(sa.getDescription(), 20);
                 }
                 String statusText = sa.getStatus();
                 if (statusText != null && !statusText.isEmpty()) {
@@ -694,8 +699,14 @@ public class StatusBar {
                             + DIM + " (" + sa.getElapsed() + ")" + RESET);
                 }
             } else {
+                String names = visibleSubagents.stream()
+                        .limit(3)
+                        .map(sa -> sa.getType() == null || sa.getType().isBlank()
+                                ? "agent" : sa.getType())
+                        .collect(java.util.stream.Collectors.joining(", "));
+                if (visibleSubagents.size() > 3) names += ", …";
                 segments.add(spinner + " ▸ "
-                        + MAGENTA + visibleSubagents.size() + " subagents" + RESET);
+                        + MAGENTA + names + RESET);
             }
         }
 
@@ -949,7 +960,7 @@ public class StatusBar {
     // ========================================================================
 
     private boolean hasActiveItems() {
-        return ChatCompleter.getActivity() != null
+        return (ChatCompleter.getActivity() != null && !ChatCompleter.isActivityTerminal())
                 || !processManager.listRunning().isEmpty()
                 || !taskManager.getActiveTasks().isEmpty()
                 || activeSubagents.stream().anyMatch(sa -> !isIdleStatus(sa.getStatus()));

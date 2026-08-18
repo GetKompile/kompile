@@ -10,7 +10,6 @@ import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
-import ai.kompile.cli.main.project.LocalModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -52,14 +51,13 @@ public final class ModelRuntimeTool implements CliTool {
         return "Inspect, bootstrap, or import a model into the current folder's Kompile project. "
                 + "Native Kompile runs model staging as a request-scoped native child; JVM development "
                 + "may use the equivalent executable-JAR ABI. "
-                + "artifacts are registered under the folder's data/models tree for later crawl serving. "
-                + "Model artifact readiness is reported separately from VLM execution readiness: a downloaded "
-                + "VLM model still needs a resolved document-model worker. No kompile-app-main process or centralized service is required.";
+                + "artifacts are registered under the folder's data/models tree for automatic use by "
+                + "MCP-owned reusable pipeline runtimes. No application server or caller-managed process is required.";
     }
 
     @Override
     public String compactHint() {
-        return "Folder model lifecycle: action=status|bootstrap|import; status includes artifact readiness and the separate VLM worker/execution readiness; artifacts stay under data/models.";
+        return "Folder model lifecycle: action=status|bootstrap|import; artifacts stay under data/models and pipeline runtimes consume them automatically.";
     }
 
     @Override
@@ -138,19 +136,11 @@ public final class ModelRuntimeTool implements CliTool {
                     .put("centralizedService", false)
                     .put("lifecycle", "request-scoped subprocess with guaranteed teardown");
 
-            LocalModelPipelineRunner.DocumentModelWorkerStatus worker =
-                    LocalModelPipelineRunner.documentModelWorkerStatus(projectRoot, params);
-            ObjectNode workerStatus = response.putObject("documentModelWorker");
-            workerStatus.put("available", worker.available())
-                    .put("source", worker.source())
-                    .put("unifiedExecutable", worker.unifiedExecutable());
-            if (worker.executable() != null && !worker.executable().isBlank()) {
-                workerStatus.put("executable", worker.executable());
-            }
-            response.put("vlmExecutionReady", worker.available());
-            response.put("readinessNote", worker.available()
-                    ? "VLM execution can be requested when a compatible local model artifact is ready."
-                    : "Model artifacts and VLM execution are separate: install/resolve a document-model worker before using the crawl VLM/OCR compatibility adapters.");
+            response.putObject("pipelineRuntime")
+                    .put("managedBy", "stdio-mcp")
+                    .put("startup", "on-demand")
+                    .put("reuse", "bounded pooled sessions")
+                    .put("callerConfigurationRequired", false);
 
             if ("status".equals(action)) {
                 response.set("models", mapper.valueToTree(LocalProjectModelBootstrap.inventory(projectRoot)));

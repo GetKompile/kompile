@@ -96,7 +96,7 @@ import java.util.jar.JarFile;
  *   <li>JavaCPP cache dir is set to a per-subprocess temp directory to avoid
  *       conflicts with the parent process native libs.</li>
  *   <li>Spring Boot fat-JAR BOOT-INF entries are extracted when the classpath
- *       contains only a fat JAR (same pattern as VlmTestSubprocessLauncher).</li>
+ *       contains only a fat JAR (the shared managed-subprocess pattern).</li>
  * </ul>
  */
 @Service
@@ -1179,7 +1179,7 @@ public class ServingSubprocessLauncher implements RestartableSubprocess, Backend
      * Build the classpath string for the serving subprocess.
      *
      * <p>Handles Spring Boot fat JARs by extracting BOOT-INF/lib and BOOT-INF/classes
-     * into a sibling directory, exactly as {@link VlmTestSubprocessLauncher} does.</p>
+     * into a sibling directory using the shared managed-subprocess layout.</p>
      */
     private String buildClasspath() {
         Set<String> entries = new LinkedHashSet<>();

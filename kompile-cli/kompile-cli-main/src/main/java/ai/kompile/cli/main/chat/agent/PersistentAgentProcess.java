@@ -232,8 +232,10 @@ public class PersistentAgentProcess implements AutoCloseable {
             }
             if (result.isBlank() && (process == null || !process.isAlive())) {
                 String detail = diagnosticText();
-                failureReason = "Agent process exited before returning a response"
-                        + (detail.isBlank() ? "" : ": " + detail);
+                if (failureReason == null || failureReason.isBlank()) {
+                    failureReason = "Agent process exited before returning a response"
+                            + (detail.isBlank() ? "" : ": " + detail);
+                }
                 throw new IOException(failureReason);
             }
             return result;
@@ -370,6 +372,11 @@ public class PersistentAgentProcess implements AutoCloseable {
                         || lower.contains("not authenticated") || lower.contains("disabled")) {
                     recordDiagnostic(trimmed);
                 }
+                if (isFatalDiagnostic(lower)) {
+                    failureReason = "Judge agent reported an availability failure: " + trimmed;
+                    close();
+                    return;
+                }
                 if (!trimmed.startsWith("{")) continue;
 
                 // Capture session ID
@@ -424,6 +431,17 @@ public class PersistentAgentProcess implements AutoCloseable {
             CountDownLatch rdy = processReady;
             if (rdy != null) rdy.countDown();
         }
+    }
+
+    private boolean isFatalDiagnostic(String lower) {
+        if (lower == null || lower.isBlank()) return false;
+        return lower.contains("usage limit") || lower.contains("weekly limit")
+                || lower.contains("monthly limit") || lower.contains("quota exceeded")
+                || lower.contains("rate limit") || lower.contains("out of credits")
+                || lower.contains("too many requests") || lower.contains("not authenticated")
+                || lower.contains("not logged in") || lower.contains("authentication required")
+                || lower.contains("login required") || lower.contains("agent disabled")
+                || lower.contains("command not found");
     }
 
     private String extractAssistantText(String json) {

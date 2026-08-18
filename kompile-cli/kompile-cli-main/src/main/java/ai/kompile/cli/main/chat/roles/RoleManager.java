@@ -215,7 +215,6 @@ public class RoleManager {
                 .systemPrompt(systemPrompt != null ? systemPrompt : existing.getSystemPrompt())
                 .enabledTools(existing.getEnabledTools())
                 .permissionOverrides(existing.getPermissionOverrides())
-                .maxSteps(existing.getMaxSteps())
                 .canSpawnSubagents(existing.isCanSpawnSubagents())
                 .modelHint(existing.getModelHint())
                 .agentDefaults(agentDefaults != null

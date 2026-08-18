@@ -170,7 +170,8 @@ val sdxRequiredClasses = setOf(
     "org/nd4j/dsp/model/SdxLlmNative\$ChunkCallback.class",
     "org/nd4j/dsp/model/SdxLlmNative\$CancelCallback.class",
     "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer.class",
-    "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer\$ChatMessage.class"
+    "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer\$ChatMessage.class",
+    "org/eclipse/deeplearning4j/tokenizers/NativeTokenizer\$DecodeStream.class"
 )
 
 val sdxSharedJava: Configuration by configurations.creating {

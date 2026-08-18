@@ -52,7 +52,6 @@ public class SubprocessTempCleanup {
             "ingest-args-",
             "vector-pop-args-",
             "training-args-",
-            "vlm-test-args-",
             "model-init-args-",
     };
 

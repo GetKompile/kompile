@@ -100,7 +100,6 @@ import { SkillsManagerComponent } from './components/skills-manager/skills-manag
 import { TrainingHistoryComponent } from './components/developer-hub/training-history/training-history.component';
 import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
 import { VlmModelsComponent } from './components/vlm-models/vlm-models.component';
-import { VlmTestWorkflowComponent } from './components/vlm-test-workflow/vlm-test-workflow.component';
 
 // Standalone components referenced from the templates above. Standalone components
 // reached only from other standalone components carry their own imports and are not
@@ -198,8 +197,7 @@ import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-or
     SkillsManagerComponent,
     TrainingHistoryComponent,
     VlmManagementComponent,
-    VlmModelsComponent,
-    VlmTestWorkflowComponent
+    VlmModelsComponent
   ],
   imports: [
     BrowserModule,

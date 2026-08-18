@@ -16,7 +16,6 @@ import ai.kompile.cli.main.chat.tools.grounding.LocalProjectGraphBackend;
 import ai.kompile.graph.reasoning.unified.UnifiedGraph;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -60,13 +59,9 @@ class McpToolBusinessLogicTest {
 
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
     private JvmToolHarness harness;
-    private String previousLocalCrawlExecution;
 
     @BeforeEach
     void setUp() {
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
-
         AgentConfig agent = AgentConfig.builder("jvm-mcp-business-it")
                 .enabledTools(Set.of("*"))
                 .build();
@@ -87,15 +82,6 @@ class McpToolBusinessLogicTest {
         ToolContext context = new ToolContext(
                 "jvm-mcp-business-it", agent, permissions, project, registry);
         harness = new JvmToolHarness(registry, context);
-    }
-
-    @AfterEach
-    void restoreExecutionMode() {
-        if (previousLocalCrawlExecution == null) {
-            System.clearProperty("kompile.local.crawl.execution");
-        } else {
-            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
-        }
     }
 
     @Test

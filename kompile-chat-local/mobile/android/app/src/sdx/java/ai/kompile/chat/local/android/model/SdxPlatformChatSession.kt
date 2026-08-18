@@ -487,7 +487,11 @@ internal object SdxPlatformRuntimeOwner {
                             report.optDouble("decodeTokensPerSecond", -1.0),
                         "plan_phase" to report.optInt("planPhase", -1),
                         "execution_count" to report.optInt("executionCount", -1),
-                        "used_fallback" to report.optInt("usedFallback", -1)
+                        "used_fallback" to report.optInt("usedFallback", -1),
+                        "prompt_token_ids" to
+                            (report.optJSONArray("promptTokenIds")?.toString() ?: "[]"),
+                        "generated_token_ids" to
+                            (report.optJSONArray("generatedTokenIds")?.toString() ?: "[]")
                     )
                 )
             } else {

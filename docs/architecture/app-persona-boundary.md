@@ -52,8 +52,7 @@ core / config / dto / ingest / facts / platform / mcp / crawl
 Three back-edges into app-main were inverted rather than dragged along:
 
 - `SubprocessHeartbeatBroadcaster` moved **down** into `kompile-app-platform` (its only kompile
-  dependency was `SubprocessMessage` in app-core, and platform already has spring-messaging) —
-  no code change, and `VlmTestSubprocessLauncher` still reaches it from app-main.
+  dependency was `SubprocessMessage` in app-core, and platform already has spring-messaging).
 - `MonitorService` is now reached through the `SubprocessTaskCompletionListener` SPI
   (`kompile-app-platform`), implemented by `MonitorService` in app-main. Injection stays
   `@Autowired(required = false)`, so a persona app without the monitor subsystem simply skips the
@@ -267,8 +266,7 @@ Everything else. Mounted only by `kompile-app-main`.
 `TritonCacheController` `/api/triton-cache` ·
 `VlmModelController` `/api/vlm` ·
 `VlmOrchestrationController` `/api/vlm-orchestration` ·
-`VlmPipelineConfigController` `/api/vlm/config` ·
-`VlmTestWorkflowController` `/api/vlm/test`
+`VlmPipelineConfigController` `/api/vlm/config`
 
 ## Shared base paths that split across personas
 
@@ -517,7 +515,7 @@ when its controller bean is absent — but the compile-time edge still dictates 
 | `SystemConfigTool` | admin ×3, shared ×1 | admin |
 | `AgentConfigTool` | admin ×2, **chat ×1** | **split** — `SystemPromptController` half → chat |
 | `JobHistoryTool` | crawl ×3, **admin ×1** | **split** — `SubprocessEventHistoryController` half → admin |
-| `ArchiveTool`, `EvalDebugTool`, `McpServerTool`, `ModelRegistryTool`, `RagTestTool`, `VlmPipelineTool`, `VlmTestTool` | admin only | admin |
+| `ArchiveTool`, `EvalDebugTool`, `McpServerTool`, `ModelRegistryTool`, `RagTestTool`, `VlmPipelineTool` | admin only | admin |
 
 Two tools straddle the boundary and must be split, not moved. `JobHistoryTool` is the newly found one:
 three of its four injections are crawl, but `SubprocessEventHistoryController` is admin.

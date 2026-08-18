@@ -48,6 +48,13 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class UnifiedPipelineDefinition {
 
+    /** Current portable definition schema. Increment only for incompatible changes. */
+    public static final int CURRENT_SCHEMA_VERSION = 1;
+
+    public enum LifecycleState {
+        DRAFT, ACTIVE, ARCHIVED
+    }
+
     /**
      * The kind of pipeline - determines which builder bridge is used to construct
      * the framework Pipeline from domain-specific config.
@@ -65,6 +72,17 @@ public class UnifiedPipelineDefinition {
 
     // ── Identity ─────────────────────────────────────────────────────────────
 
+    /** Portable definition schema version. */
+    @Builder.Default
+    private int schemaVersion = CURRENT_SCHEMA_VERSION;
+
+    /** Immutable project-local version assigned by the pipeline store. */
+    @Builder.Default
+    private long definitionVersion = 1L;
+
+    /** SHA-256 of compatibility-affecting definition content. */
+    private String contentDigest;
+
     /** Unique ID, used as filename under ~/.kompile/data/pipelines/ */
     private String pipelineId;
 
@@ -73,6 +91,10 @@ public class UnifiedPipelineDefinition {
 
     /** Description of what this pipeline does */
     private String description;
+
+    /** Lifecycle is controlled by version promotion rather than in-place mutation. */
+    @Builder.Default
+    private LifecycleState lifecycleState = LifecycleState.DRAFT;
 
     /** Pipeline kind - determines execution strategy and builder bridge */
     private PipelineKind kind;
@@ -92,6 +114,10 @@ public class UnifiedPipelineDefinition {
      * happens lazily in the subprocess.</p>
      */
     private Map<String, Object> pipelineSpec;
+
+    /** Named input and output contracts exposed to MCP pipeline authors. */
+    private Map<String, DataContract> inputs;
+    private Map<String, DataContract> outputs;
 
     // ── Domain-Specific Overlays ─────────────────────────────────────────────
 
@@ -129,8 +155,11 @@ public class UnifiedPipelineDefinition {
 
     // ── Serving Configuration ────────────────────────────────────────────────
 
-    /** Configuration for subprocess-based serving */
+    /** Resource configuration for the MCP-owned reusable runtime. */
     private ServingConfig serving;
+
+    /** Runtime capabilities required to execute the definition. */
+    private RuntimeRequirements runtimeRequirements;
 
     // ── Metadata ─────────────────────────────────────────────────────────────
 
@@ -147,12 +176,44 @@ public class UnifiedPipelineDefinition {
     /** ISO-8601 last update timestamp */
     private String updatedAt;
 
+    /** Agent/user provenance for immutable versions. */
+    private String createdBy;
+    private String updatedBy;
+    private String source;
+
     /** Arbitrary tags for categorization/filtering */
     private Map<String, Object> tags;
 
-    /**
-     * Serving configuration that controls how the subprocess is launched and monitored.
-     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class DataContract {
+        private String type;
+        @Builder.Default
+        private boolean required = false;
+        private String description;
+        private Map<String, Object> constraints;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class RuntimeRequirements {
+        private List<String> capabilities;
+        private List<String> runnerTypes;
+        private String backend;
+        private String device;
+        private String memoryRegime;
+        private Map<String, Object> options;
+    }
+
+    /** Resource configuration for the reusable isolated runtime. */
     @Data
     @Builder
     @NoArgsConstructor
@@ -165,51 +226,7 @@ public class UnifiedPipelineDefinition {
         @Builder.Default
         private String heapSize = "8g";
 
-        /** HTTP port for persistent serving (0 = auto-assign) */
-        @Builder.Default
-        private int port = 0;
-
-        /** Number of subprocess replicas (1 = single process) */
-        @Builder.Default
-        private int replicas = 1;
-
         /** GPU device ID(s) to use ("0", "0,1", "auto") */
         private String gpuDeviceId;
-
-        /** JVM heap stop threshold percent (trigger graceful stop) */
-        @Builder.Default
-        private int memoryStopPercent = 80;
-
-        /** JVM heap critical threshold percent (trigger GC + warning) */
-        @Builder.Default
-        private int memoryCriticalPercent = 90;
-
-        /** JVM heap kill threshold percent (force exit) */
-        @Builder.Default
-        private int memoryKillPercent = 95;
-
-        /** GPU memory stop threshold percent */
-        @Builder.Default
-        private int gpuStopPercent = 80;
-
-        /** GPU memory critical threshold percent */
-        @Builder.Default
-        private int gpuCriticalPercent = 90;
-
-        /** GPU memory kill threshold percent */
-        @Builder.Default
-        private int gpuKillPercent = 95;
-
-        /** Heartbeat interval in milliseconds */
-        @Builder.Default
-        private long heartbeatIntervalMs = 3000;
-
-        /** Time without heartbeat before subprocess is considered stale */
-        @Builder.Default
-        private long staleTimeoutMs = 120000;
-
-        /** Maximum restart attempts after failure */
-        @Builder.Default
-        private int maxRestartAttempts = 3;
     }
 }

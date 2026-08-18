@@ -501,8 +501,8 @@ public class ChatCommandRouter {
         AgentRunController.Snapshot snapshot = controller.snapshot();
         System.out.println(renderer.cyan("  Crawl run: " + snapshot.state())
                 + renderer.dim(" mode=" + snapshot.mode()
-                + " steps=" + snapshot.completedSteps() + "/" + snapshot.maxSteps()
-                + " tools=" + snapshot.toolCalls() + "/" + snapshot.maxToolCalls()
+                + " completed=" + snapshot.completedSteps()
+                + " tools=" + snapshot.toolCalls()
                 + " approval=" + snapshot.approvalPending()));
         if (store != null) store.checkpoint(controller, "operator_" + op);
     }
@@ -990,7 +990,7 @@ public class ChatCommandRouter {
             return;
         }
 
-        List<String> headers = List.of("Agent", "Description", "Steps", "Model");
+        List<String> headers = List.of("Agent", "Description", "Model");
         List<List<String>> rows = new ArrayList<>();
 
         for (AgentConfig subagent : subagents) {
@@ -1004,7 +1004,6 @@ public class ChatCommandRouter {
             rows.add(List.of(
                 subagent.getName() + customTag,
                 desc != null ? desc : "",
-                String.valueOf(subagent.getMaxSteps()),
                 model
             ));
         }

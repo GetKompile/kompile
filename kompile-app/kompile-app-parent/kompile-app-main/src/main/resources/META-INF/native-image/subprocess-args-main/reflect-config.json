@@ -18,7 +18,7 @@
   "allDeclaredFields":true,
   "queryAllDeclaredMethods":true,
   "queryAllDeclaredConstructors":true,
-  "methods":[{"name":"<init>","parameterTypes":["java.lang.String","java.lang.String","java.lang.String","java.lang.String","int","java.lang.String","int","int","int","long","int","int","int","long","java.lang.String"] }, {"name":"callbackBaseUrl","parameterTypes":[] }, {"name":"executionMode","parameterTypes":[] }, {"name":"gpuMemoryCriticalPercent","parameterTypes":[] }, {"name":"gpuMemoryKillPercent","parameterTypes":[] }, {"name":"gpuMemoryStopPercent","parameterTypes":[] }, {"name":"heartbeatIntervalMs","parameterTypes":[] }, {"name":"memoryCheckIntervalMs","parameterTypes":[] }, {"name":"memoryCriticalPercent","parameterTypes":[] }, {"name":"memoryKillPercent","parameterTypes":[] }, {"name":"memoryStopPercent","parameterTypes":[] }, {"name":"nd4jConfigJson","parameterTypes":[] }, {"name":"pipelineDefinitionJson","parameterTypes":[] }, {"name":"requestDataJson","parameterTypes":[] }, {"name":"servingPort","parameterTypes":[] }, {"name":"taskId","parameterTypes":[] }]
+  "methods":[{"name":"<init>","parameterTypes":["java.lang.String"] }, {"name":"pipelineDefinitionJson","parameterTypes":[] }]
 },
 {
   "name":"ai.kompile.app.subprocess.ServingSubprocessArgs",

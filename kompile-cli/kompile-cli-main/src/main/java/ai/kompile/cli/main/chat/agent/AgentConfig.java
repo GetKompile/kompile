@@ -41,7 +41,6 @@ public class AgentConfig {
     private final Set<String> enabledTools;
     private final Map<String, PermissionService.PermissionLevel> permissionOverrides;
     private final boolean isSubagent;
-    private final int maxSteps;
     private final boolean canSpawnSubagents;
     private final String modelHint; // e.g. "fast", "default", "powerful" - guides model selection
     private final List<String> allowedModels; // models this agent is allowed to use (empty = all)
@@ -58,7 +57,6 @@ public class AgentConfig {
         this.enabledTools = builder.enabledTools;
         this.permissionOverrides = builder.permissionOverrides;
         this.isSubagent = builder.isSubagent;
-        this.maxSteps = builder.maxSteps;
         this.canSpawnSubagents = builder.canSpawnSubagents;
         this.modelHint = builder.modelHint;
         this.allowedModels = builder.allowedModels;
@@ -75,7 +73,6 @@ public class AgentConfig {
     public Set<String> getEnabledTools() { return enabledTools; }
     public Map<String, PermissionService.PermissionLevel> getPermissionOverrides() { return permissionOverrides; }
     public boolean isSubagent() { return isSubagent; }
-    public int getMaxSteps() { return maxSteps; }
     public boolean canSpawnSubagents() { return canSpawnSubagents; }
     public String getModelHint() { return modelHint; }
     public List<String> getAllowedModels() { return allowedModels; }
@@ -113,7 +110,6 @@ public class AgentConfig {
         private Set<String> enabledTools = Set.of("*");
         private Map<String, PermissionService.PermissionLevel> permissionOverrides = Map.of();
         private boolean isSubagent = false;
-        private int maxSteps = 50;
         private boolean canSpawnSubagents = false;
         private String modelHint = "default";
         private List<String> allowedModels = List.of();
@@ -154,11 +150,6 @@ public class AgentConfig {
 
         public Builder isSubagent(boolean isSubagent) {
             this.isSubagent = isSubagent;
-            return this;
-        }
-
-        public Builder maxSteps(int maxSteps) {
-            this.maxSteps = maxSteps;
             return this;
         }
 

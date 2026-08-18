@@ -26,7 +26,6 @@ export type ToolsSubTab =
   | 'knowledgeGraph'
   | 'backup'
   | 'prompts'
-  | 'pipelines'
   | 'processEngine'
   | 'workflows'
   | 'computeGraph'
@@ -36,7 +35,7 @@ export type ToolsSubTab =
 
 const KNOWN_TABS: ToolsSubTab[] = [
   'mcp', 'orchestrator', 'chunkManager', 'knowledgeGraph',
-  'backup', 'prompts', 'pipelines', 'processEngine',
+  'backup', 'prompts', 'processEngine',
   'workflows', 'computeGraph', 'crawlers', 'codeProjects',
   'indexBrowser'
 ];

@@ -71,9 +71,11 @@ class ProjectCommandVlmOcrPresetTest {
         assertTrue(manifest.contains("\"id\" : \"vlm-ocr-ingest\""));
         assertTrue(manifest.contains("\"id\" : \"run-vlm-ocr\""));
 
-        assertTrue(pipeline.contains("\"enableVlm\" : true"));
-        assertTrue(pipeline.contains("\"enableOcr\" : true"));
+        assertTrue(pipeline.contains("\"kind\" : \"VLM\""));
+        assertTrue(pipeline.contains("\"pipelineSpec\""));
+        assertTrue(pipeline.contains("\"runnerClassName\" : \"ai.kompile.pipelines.steps.vlm.VlmDocumentStepRunner\""));
         assertTrue(pipeline.contains("\"pdfRoutingMode\" : \"FORCE_VLM\""));
+        assertTrue(routing.contains("\"pipelineDefinitionPath\" : \"data/pipelines/vlm-ocr-pipeline.json\""));
         assertTrue(routing.contains("\"fileExtensions\" : [\".pdf\"]"));
         assertTrue(routing.contains("\".png\""));
         assertTrue(stagingRegistry.contains("\"model_id\" : \"smoldocling-256m\""));

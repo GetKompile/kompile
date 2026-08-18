@@ -630,9 +630,6 @@ class TuiAgentResponseTest {
             int vtHeight = Math.max(80, result.capturedOutput().size() + 40);
             VirtualTerminal vt = new VirtualTerminal(vtHeight, 200);
 
-            // Agent turn start indicator
-            vt.feed(renderer.renderAgentTurnStart(2, 10) + "\n");
-
             // Context group (gathered context summary)
             Map<String, Integer> toolCounts = new LinkedHashMap<>();
             toolCounts.put("Read", 3);
@@ -648,18 +645,11 @@ class TuiAgentResponseTest {
             // Compaction notice
             vt.feed(renderer.renderCompactionNotice(45000, 12000));
 
-            // Max steps warning
-            vt.feed(renderer.renderMaxStepsWarning(10) + "\n");
-
             // Border + prompt
             vt.feed("\033[2m" + "─".repeat(200) + "\033[0m\n");
             vt.feed(buildPrompt(agent));
 
             String fullScreen = AsciiRenderer.stripAnsi(vt.getAllContentText());
-
-            // Agent turn indicator visible
-            assertTrue(fullScreen.contains("step 2/10") || fullScreen.contains("2/10"),
-                    agent + ": agent turn indicator must be visible");
 
             // Context group visible
             assertTrue(fullScreen.contains("Gathered context") || fullScreen.contains("6 calls"),
@@ -669,10 +659,6 @@ class TuiAgentResponseTest {
             assertTrue(fullScreen.contains("compacted") || fullScreen.contains("45000")
                     || fullScreen.contains("12000"),
                     agent + ": compaction notice must be visible");
-
-            // Max steps warning visible
-            assertTrue(fullScreen.contains("maximum steps") || fullScreen.contains("10"),
-                    agent + ": max steps warning must be visible");
 
             // Real agent content still visible
             boolean agentContent = false;
@@ -1677,26 +1663,21 @@ class TuiAgentResponseTest {
     }
 
     // ========================================================================
-    // Real agent with compaction notice + max steps warning — verifying
-    // these operational status elements render correctly alongside real
-    // agent ANSI output.
+    // Real agent with compaction notice — verifying operational context
+    // renders correctly alongside real agent ANSI output.
     // ========================================================================
 
     @Nested
     @DisabledOnOs(OS.WINDOWS)
-    class RealAgentWithCompactionAndMaxSteps {
+    class RealAgentWithCompaction {
 
-        private void assertCompactionAndMaxStepsWithRealAgent(String agent, String prompt) {
+        private void assertCompactionWithRealAgent(String agent, String prompt) {
             assertAgentOnPath(agent);
             ManagedRunResult result = runThroughManagedPipeline(agent, prompt);
             TerminalRenderer renderer = new TerminalRenderer(true);
 
             int vtHeight = Math.max(100, result.capturedOutput().size() + 50);
             VirtualTerminal vt = new VirtualTerminal(vtHeight, 200);
-
-            // Agent turn indicator
-            String turnIndicator = renderer.renderAgentTurnStart(3, 10);
-            vt.feed(turnIndicator + "\n\n");
 
             // Real agent output
             for (String line : result.capturedOutput()) {
@@ -1711,10 +1692,6 @@ class TuiAgentResponseTest {
             String compaction = renderer.renderCompactionNotice(128000, 45000);
             vt.feed(compaction + "\n");
 
-            // Max steps warning
-            String maxSteps = renderer.renderMaxStepsWarning(10);
-            vt.feed(maxSteps + "\n");
-
             // Border + prompt
             vt.feed("\033[2m" + "─".repeat(200) + "\033[0m\n");
             vt.feed(buildPrompt(agent));
@@ -1727,18 +1704,10 @@ class TuiAgentResponseTest {
             }
             String fullScreen = allRows.toString();
 
-            // Turn indicator visible
-            assertTrue(fullScreen.contains("step 3") || fullScreen.contains("3/10"),
-                    agent + ": agent turn indicator must be visible");
-
             // Compaction notice visible
             assertTrue(fullScreen.contains("compacted") || fullScreen.contains("128000")
                             || fullScreen.contains("45000"),
                     agent + ": compaction notice must be visible");
-
-            // Max steps warning visible
-            assertTrue(fullScreen.contains("maximum steps") || fullScreen.contains("10"),
-                    agent + ": max steps warning must be visible");
 
             // Agent content visible
             assertFalse(result.capturedOutput().isEmpty(),
@@ -1747,43 +1716,43 @@ class TuiAgentResponseTest {
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void claude_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("claude",
+        void claude_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("claude",
                     "Read pom.xml and tell me the Java version. Just the number.");
         }
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void gemini_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("gemini",
+        void gemini_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("gemini",
                     "Run 'echo GEMINI_COMPACT' and report. One sentence.");
         }
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void qwen_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("qwen",
+        void qwen_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("qwen",
                     "Read pom.xml and tell me the artifactId. Just the value.");
         }
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void codex_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("codex",
+        void codex_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("codex",
                     "Run 'echo CODEX_COMPACT' and report. One sentence.");
         }
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void pi_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("pi",
+        void pi_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("pi",
                     "Run 'echo PI_COMPACT' and report. One sentence.");
         }
 
         @Test
         @Timeout(value = TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
-        void opencode_compactionAndMaxSteps_withRealOutput() {
-            assertCompactionAndMaxStepsWithRealAgent("opencode",
+        void opencode_compaction_withRealOutput() {
+            assertCompactionWithRealAgent("opencode",
                     "Read pom.xml and tell me the groupId. Just the value.");
         }
     }

@@ -1471,7 +1471,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         // Bridge DSP capture-OOM knobs from the managed nd4j config (Nd4jEnvironmentConfigService
         // exposes them as nd4j.dsp.* system properties) to the ND4J_DSP_* env vars libnd4j reads.
-        // Only VlmTestSubprocessLauncher did this before — the embedding lane's capture OOM
+        // The document pipeline lane handled this first — the embedding lane's capture OOM
         // (2026-07-05) prescribed -Dnd4j.dsp.captureWorkspaceMb with no way to deliver it here.
         String dspCaptureWs = System.getProperty("nd4j.dsp.captureWorkspaceMb");
         if (dspCaptureWs != null && !dspCaptureWs.isBlank()) {

@@ -174,7 +174,7 @@ public class SessionIndex {
                     messageCount++;
                 } else if (!line.trim().isEmpty() && !line.startsWith("──") && !line.startsWith("[system]") 
                            && !line.startsWith("[resumed") && !line.startsWith("[tool:") && !line.startsWith("[subagent:")
-                           && !line.startsWith("[agentic-step]") && !line.startsWith("[todo:")) {
+                           && !line.startsWith("[todo:")) {
                     // Count non-empty, non-metadata lines as assistant content
                     if (messageCount > 0) {
                         // Already counting messages

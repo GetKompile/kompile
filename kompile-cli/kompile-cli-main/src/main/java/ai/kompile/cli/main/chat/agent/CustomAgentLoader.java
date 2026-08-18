@@ -41,7 +41,6 @@ import java.util.stream.Stream;
  * description: Short description of what this agent does
  * model: fast
  * mode: subagent
- * max_steps: 20
  * tools: read, grep, glob, list, bash
  * deny_tools: edit, write, patch
  * ---
@@ -56,7 +55,6 @@ import java.util.stream.Stream;
  *   <li><b>description</b>: Human-readable description</li>
  *   <li><b>model</b>: Model hint — "fast", "default", "powerful" (default: "default")</li>
  *   <li><b>mode</b>: "primary" or "subagent" (default: "subagent")</li>
- *   <li><b>max_steps</b>: Maximum agentic loop iterations (default: 20)</li>
  *   <li><b>tools</b>: Comma-separated tool IDs, or "*" for all (default: "*")</li>
  *   <li><b>deny_tools</b>: Comma-separated tools to deny (e.g. "edit, write, patch")</li>
  *   <li><b>can_spawn</b>: Whether this agent can spawn subagents (default: false)</li>
@@ -155,7 +153,6 @@ public class CustomAgentLoader {
                     .systemPrompt(content.trim())
                     .isSubagent(true)
                     .isCustom(true)
-                    .maxSteps(20)
                     .build();
         }
 
@@ -168,7 +165,6 @@ public class CustomAgentLoader {
                     .systemPrompt(content.substring(3).trim())
                     .isSubagent(true)
                     .isCustom(true)
-                    .maxSteps(20)
                     .build();
         }
 
@@ -183,7 +179,6 @@ public class CustomAgentLoader {
         String description = fields.getOrDefault("description", "Custom agent: " + name);
         String modelHint = fields.getOrDefault("model", "default");
         String mode = fields.getOrDefault("mode", "subagent");
-        int maxSteps = parseIntOrDefault(fields.get("max_steps"), 20);
         boolean canSpawn = "true".equalsIgnoreCase(fields.getOrDefault("can_spawn", "false"));
 
         // Parse tools
@@ -234,7 +229,6 @@ public class CustomAgentLoader {
                 .isSubagent("subagent".equalsIgnoreCase(mode))
                 .canSpawnSubagents(canSpawn)
                 .isCustom(true)
-                .maxSteps(maxSteps)
                 .build();
     }
 
@@ -251,12 +245,4 @@ public class CustomAgentLoader {
         return fields;
     }
 
-    private int parseIntOrDefault(String value, int defaultValue) {
-        if (value == null || value.isBlank()) return defaultValue;
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
-    }
 }

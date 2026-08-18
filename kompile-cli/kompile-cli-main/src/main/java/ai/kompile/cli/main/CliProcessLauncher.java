@@ -95,9 +95,8 @@ public final class CliProcessLauncher {
             }
         }
 
-        // A native process never drops into the executable-JAR tier. In
-        // particular, KOMPILE_CLI_JAR must not override native self re-exec for
-        // local-crawl workers.
+        // A native process never drops into the executable-JAR tier. In particular,
+        // KOMPILE_CLI_JAR must not override native self re-execution.
         if (requiresNativeChildren()) {
             return null;
         }

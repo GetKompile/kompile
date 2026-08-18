@@ -254,12 +254,9 @@ public class SessionLifecycleManager {
         }
 
         // Agentic
-        if (sessionMetrics.getAgenticSteps() > 0) {
+        if (sessionMetrics.getCompactionEvents() > 0) {
             body.append("\n").append(renderer.bold("Agentic")).append("\n");
-            body.append("  Steps:     ").append(sessionMetrics.getAgenticSteps()).append("\n");
-            if (sessionMetrics.getCompactionEvents() > 0) {
-                body.append("  Compacts:  ").append(sessionMetrics.getCompactionEvents()).append("\n");
-            }
+            body.append("  Compacts:  ").append(sessionMetrics.getCompactionEvents()).append("\n");
         }
 
         // RAG

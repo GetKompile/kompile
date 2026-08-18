@@ -250,18 +250,17 @@ producer started independently may not be visible to a later packaging process.
 android/build-tensor-g3-offline-apk.sh
 ```
 
-The wrapper discovers the sibling deeplearning4j checkout, uses
-`/tmp/sdx-android-build`, and defaults developer builds to GraalVM quick-build
-mode. Set `KOMPILE_ANDROID_WORK_ROOT`, `KOMPILE_DL4J_ROOT`, or
-`KOMPILE_NATIVE_QUICK_BUILD=0` only for a nonstandard root or optimized build.
+The wrapper discovers the sibling deeplearning4j checkout and always uses the
+stable `/tmp/sdx-android-build` root. The checked-in entry point has no
+root-selection, quick-build, or caller-provided build-identity switches.
 
 Before starting a producer, the wrapper holds a work-root pipeline lock and runs
 the checked-in targeted cleanup preflight. It removes interrupted publication
 directories, superseded immutable CPU/AOT generations beyond the active plus
 one rollback, abandoned provider Maven quarantines, provider manifest
-temporaries, and APK/Gradle staging. It deliberately preserves stable CMake
-worktrees, managed dependency stages, complete checksum-addressed Graal object
-stages, ccache, provider native/dist outputs, and current/rollback APKs. The
+temporaries, and APK/Gradle staging. It deliberately preserves the single stable
+CMake workspace, managed dependency stages, complete checksum-addressed Graal
+object stages, ccache, provider native/dist outputs, and current/rollback APKs. The
 provider producer also removes its active Maven quarantine on every exit, so a
 failed build cannot accumulate another abandoned native tree.
 

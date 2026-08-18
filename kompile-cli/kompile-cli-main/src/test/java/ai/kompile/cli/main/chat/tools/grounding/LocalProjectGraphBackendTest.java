@@ -20,7 +20,6 @@ import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpServer;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -43,12 +42,9 @@ class LocalProjectGraphBackendTest {
 
     private ObjectMapper mapper;
     private ToolContext context;
-    private String previousLocalCrawlExecution;
 
     @BeforeEach
     void setUp() {
-        previousLocalCrawlExecution = System.getProperty("kompile.local.crawl.execution");
-        System.setProperty("kompile.local.crawl.execution", "inline");
         mapper = new ObjectMapper();
         AgentConfig agent = AgentConfig.builder("local-graph-worker")
                 .enabledTools(Set.of("*"))
@@ -61,15 +57,6 @@ class LocalProjectGraphBackendTest {
         }
         context = new ToolContext("local-graph-test", agent, permissions, projectRoot,
                 new ToolRegistry(mapper));
-    }
-
-    @AfterEach
-    void restoreLocalCrawlExecution() {
-        if (previousLocalCrawlExecution == null) {
-            System.clearProperty("kompile.local.crawl.execution");
-        } else {
-            System.setProperty("kompile.local.crawl.execution", previousLocalCrawlExecution);
-        }
     }
 
     @Test

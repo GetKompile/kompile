@@ -35,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -476,17 +477,36 @@ public class ChatCompleter implements Completer {
     /** Cached reflective handle to LineReaderImpl.post (protected field). */
     private static volatile Field postField;
 
+    /**
+     * Marks a SELF_INSERT/BACKWARD_DELETE dispatch so completion updates never
+     * call JLine REDISPLAY recursively from inside the active widget.
+     */
+    private static final ThreadLocal<Boolean> IN_INPUT_WIDGET =
+            ThreadLocal.withInitial(() -> false);
+
     /** Terminal reference for measuring width (set via {@link #setTerminalRef}). */
     private static volatile Terminal terminalRef;
 
     /** Active standard-chat reader used for thread-safe asynchronous output. */
     private static volatile LineReader lineReaderRef;
 
+    /** Repaints the TUI content after JLine redraws the prompt/post area. */
+    private static volatile Runnable contentRedraw;
+
+    /**
+     * Authoritative output sink for the active TUI transcript. Keeping this separate
+     * from JLine's printAbove prevents streamed tool/model output from disappearing
+     * on the next prompt redisplay.
+     */
+    private static volatile Consumer<String> contentOutput;
+
     /** Retained compatibility hook; queue state is rendered by the status bar, not JLine post rows. */
     private static volatile Supplier<List<String>> queueSupplier;
 
     /** Current standard-chat model activity rendered by the persistent status bar. */
     private static volatile String activityLabel;
+    /** Terminal activity must remain visible without being rendered as a live spinner. */
+    private static volatile boolean activityTerminal;
 
     /** Activity shown after Escape interrupts a turn until the next edit begins. */
     private static final String INTERRUPTED_ACTIVITY = "Interrupted by user";
@@ -508,6 +528,30 @@ public class ChatCompleter implements Completer {
     }
 
     /**
+     * Register the active TUI repaint callback. JLine's REDISPLAY redraws the
+     * prompt and may clear cursor-addressed transcript rows, so the TUI must
+     * repaint its authoritative view immediately afterwards.
+     */
+    public static void setContentRedraw(Runnable redraw) {
+        contentRedraw = redraw;
+    }
+
+    /** Register the active TUI transcript sink for asynchronous output. */
+    public static void setContentOutput(Consumer<String> output) {
+        contentOutput = output;
+    }
+
+    private static void redrawContentView() {
+        Runnable redraw = contentRedraw;
+        if (redraw == null) return;
+        try {
+            redraw.run();
+        } catch (RuntimeException ignored) {
+            // The terminal may be shutting down; never break line editing.
+        }
+    }
+
+    /**
      * Whether a standard-chat line editor is available for managed asynchronous output.
      */
     public static boolean hasLineReader() {
@@ -518,13 +562,17 @@ public class ChatCompleter implements Completer {
         if (lineReaderRef == reader) {
             lineReaderRef = null;
             terminalRef = null;
+            contentRedraw = null;
+            contentOutput = null;
             cachedImpl = null;
             activityLabel = null;
+            activityTerminal = false;
         }
     }
 
     public static void setActivity(String activity) {
         activityLabel = activity == null || activity.isBlank() ? null : activity;
+        activityTerminal = false;
     }
 
     public static String getActivity() {
@@ -533,13 +581,19 @@ public class ChatCompleter implements Completer {
 
     /** Mark the foreground turn as interrupted; the next input edit clears it. */
     public static void markInterrupted() {
-        setActivity(INTERRUPTED_ACTIVITY);
+        activityLabel = INTERRUPTED_ACTIVITY;
+        activityTerminal = true;
+    }
+
+    public static boolean isActivityTerminal() {
+        return activityTerminal;
     }
 
     /** Clear only the transient interruption marker, preserving normal activity state. */
     public static boolean clearInterruptedOnInput() {
         if (INTERRUPTED_ACTIVITY.equals(activityLabel)) {
             activityLabel = null;
+            activityTerminal = false;
             return true;
         }
         return false;
@@ -552,6 +606,31 @@ public class ChatCompleter implements Completer {
      */
     public static void printAbove(String text) {
         String line = text == null ? "" : text;
+        Consumer<String> output = contentOutput;
+        if (output != null) {
+            try {
+                // Update the authoritative transcript first. The actual terminal write
+                // must go through LineReader.printAbove: unlike callWidget(REDISPLAY),
+                // JLine serializes printAbove with its active read loop and restores the
+                // prompt/cursor without mutating input state from this background thread.
+                output.accept(line);
+            } catch (RuntimeException ignored) {
+                output = null;
+            }
+            if (output != null) {
+                LineReader reader = lineReaderRef;
+                if (reader instanceof LineReaderImpl impl && impl.isReading()) {
+                    try {
+                        reader.printAbove(line);
+                        return;
+                    } catch (RuntimeException ignored) {
+                        // JLine may be shutting down; redraw the retained view below.
+                    }
+                }
+                redrawContentView();
+                return;
+            }
+        }
         LineReader reader = lineReaderRef;
         if (reader instanceof LineReaderImpl impl && impl.isReading()) {
             try {
@@ -614,17 +693,29 @@ public class ChatCompleter implements Completer {
         Widget origBackDelete = impl.getWidgets().get(LineReader.BACKWARD_DELETE_CHAR);
 
         impl.getWidgets().put(LineReader.SELF_INSERT, () -> {
-            clearInterruptedOnInput();
-            origSelfInsert.apply();
-            updatePostDisplay(impl);
-            return true;
+            boolean previous = IN_INPUT_WIDGET.get();
+            IN_INPUT_WIDGET.set(true);
+            try {
+                clearInterruptedOnInput();
+                origSelfInsert.apply();
+                updatePostDisplay(impl);
+                return true;
+            } finally {
+                IN_INPUT_WIDGET.set(previous);
+            }
         });
 
         impl.getWidgets().put(LineReader.BACKWARD_DELETE_CHAR, () -> {
-            clearInterruptedOnInput();
-            origBackDelete.apply();
-            updatePostDisplay(impl);
-            return true;
+            boolean previous = IN_INPUT_WIDGET.get();
+            IN_INPUT_WIDGET.set(true);
+            try {
+                clearInterruptedOnInput();
+                origBackDelete.apply();
+                updatePostDisplay(impl);
+                return true;
+            } finally {
+                IN_INPUT_WIDGET.set(previous);
+            }
         });
 
         // Hook up/down history navigation so border updates after recall
@@ -693,6 +784,18 @@ public class ChatCompleter implements Completer {
         }
     }
 
+    private static void redisplayWithContent(LineReaderImpl impl) {
+        // JLine itself redraws after a SELF_INSERT widget returns. Calling
+        // REDISPLAY here would re-enter the widget while its buffer/cursor state
+        // is still being updated, which can make printable keys disappear. Keep
+        // the explicit repaint for out-of-band completion/activity changes only.
+        if (IN_INPUT_WIDGET.get()) {
+            return;
+        }
+        redrawContentView();
+        impl.callWidget(LineReader.REDISPLAY);
+    }
+
     /**
      * Sets JLine's {@code post} field to show a bottom border below the
      * input line, followed by any matching candidates when typing slash
@@ -716,7 +819,7 @@ public class ChatCompleter implements Completer {
             // No slash prefix: the status bar owns persistent state, so clear post rows.
             if (buf.isEmpty() || !buf.startsWith("/")) {
                 setBottomBorderOnly(impl);
-                impl.callWidget(LineReader.REDISPLAY);
+                redisplayWithContent(impl);
                 return;
             }
 
@@ -729,7 +832,7 @@ public class ChatCompleter implements Completer {
             if (candidates.isEmpty()) {
                 // No matches: remove transient completion rows.
                 setBottomBorderOnly(impl);
-                impl.callWidget(LineReader.REDISPLAY);
+                redisplayWithContent(impl);
                 return;
             }
 
@@ -766,7 +869,7 @@ public class ChatCompleter implements Completer {
             // fromAnsi() so JLine correctly measures visible width
             AttributedString postContent = AttributedString.fromAnsi(sb.toString());
             postField.set(impl, (Supplier<AttributedString>) () -> postContent);
-            impl.callWidget(LineReader.REDISPLAY);
+            redisplayWithContent(impl);
         } catch (Exception ignored) {
             // Never let completion display break typing
         }

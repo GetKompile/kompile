@@ -492,9 +492,9 @@ EMBEDDING → VECTOR_INDEXING → COMPLETED`
 - **Memory monitoring**: Each job reports heap, native memory, direct buffers, and
   subprocess RSS
 
-Subprocesses (`ingest`, `vector-population`, `embedding`, `model-init`, `vlm-test`,
-`training`) are the same binary re-launched with `--subprocess=TYPE`. No separate process
-management needed.
+Subprocesses (`ingest`, `vector-population`, `embedding`, `model-init`, `pipeline-serving`,
+`training`) are launched and supervised internally. Model-backed pipelines use reusable
+stdio runtime leases; callers never configure executable paths or process lifecycles.
 
 **REST API highlights** (~100+ endpoints):
 

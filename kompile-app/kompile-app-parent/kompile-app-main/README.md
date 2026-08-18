@@ -87,7 +87,6 @@ Heavy processing runs in isolated subprocesses to prevent crashes from affecting
 | `vector-population` | Embedding generation and vector indexing |
 | `embedding` | Standalone embedding operations |
 | `model-init` | Model download and initialization |
-| `vlm-test` | Vision-language model testing |
 | `training` | Model training jobs |
 | `graph` | Knowledge graph operations |
 | `serving` | Model serving |
@@ -306,7 +305,7 @@ Set credentials via environment variables (`GOOGLE_CLIENT_ID`, `MICROSOFT_CLIENT
 
 ## Native Image Profiles
 
-Nine GraalVM native image profiles for building specialized binaries:
+GraalVM native image profiles build the application and generic subprocess runtimes:
 
 | Profile | Description |
 |---------|-------------|
@@ -315,7 +314,6 @@ Nine GraalVM native image profiles for building specialized binaries:
 | `native-vector` | Vector population subprocess |
 | `native-embedding` | Embedding subprocess |
 | `native-model-init` | Model initialization subprocess |
-| `native-vlm-test` | VLM testing subprocess |
 | `native-training` | Training subprocess |
 | `native-graph` | Graph subprocess |
 | `native-serving` | Model serving subprocess |

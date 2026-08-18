@@ -67,8 +67,6 @@ public final class CrawlRunStore {
             node.put("state", snapshot.state().name());
             node.put("completedSteps", snapshot.completedSteps());
             node.put("toolCalls", snapshot.toolCalls());
-            node.put("maxSteps", snapshot.maxSteps());
-            node.put("maxToolCalls", snapshot.maxToolCalls());
             node.put("approvalPending", snapshot.approvalPending());
             appendNode(node);
         } catch (IOException ignored) {
@@ -105,7 +103,6 @@ public final class CrawlRunStore {
                 AgentRunController.State state = parseState(node.path("state").asText());
                 return new AgentRunController.Snapshot(mode, state,
                         node.path("completedSteps").asInt(0), node.path("toolCalls").asInt(0),
-                        node.path("maxSteps").asInt(50), node.path("maxToolCalls").asInt(200),
                         node.path("approvalPending").asBoolean(false));
             }
         } catch (IOException | RuntimeException ignored) {

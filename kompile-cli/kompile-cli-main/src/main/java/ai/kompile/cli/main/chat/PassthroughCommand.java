@@ -1298,7 +1298,7 @@ public class PassthroughCommand implements Callable<Integer> {
             String description = prompt.length() > 80 ? prompt.substring(0, 77) + "..." : prompt;
 
             history.logSubagent("passthrough-subagent", description, durationMs, isError);
-            metrics.recordAgenticStep();
+
 
             // Record the subagent's own token usage if present
             JsonNode subUsage = result.path("usage");
@@ -1375,7 +1375,7 @@ public class PassthroughCommand implements Callable<Integer> {
                                     : description;
                             history.logSubagent(subagentType, subagentDesc, 0, false);
                             metrics.recordToolCall("Agent:" + subagentType, false, 0);
-                            metrics.recordAgenticStep();
+
                             // Index subagent tool call
                             ToolCallIndex.getInstance().record(
                                     metrics.getSessionId(), "Agent:" + subagentType,

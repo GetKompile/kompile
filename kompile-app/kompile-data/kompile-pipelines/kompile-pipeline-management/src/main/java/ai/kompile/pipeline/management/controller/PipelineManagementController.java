@@ -1,17 +1,28 @@
 package ai.kompile.pipeline.management.controller;
 
-import ai.kompile.pipeline.management.dto.*;
+import ai.kompile.pipeline.management.dto.PipelineSummaryDto;
+import ai.kompile.pipeline.management.dto.StepSchemaDto;
+import ai.kompile.pipeline.management.dto.ValidationResult;
 import ai.kompile.pipeline.management.service.PipelineManagementService;
+import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
 
+/** Read/write definition management only; pipeline execution is available through stdio MCP. */
 @RestController
 @RequestMapping("/api/pipelines")
 public class PipelineManagementController {
-
     private final PipelineManagementService service;
 
     public PipelineManagementController(PipelineManagementService service) {
@@ -24,78 +35,47 @@ public class PipelineManagementController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<CreatePipelineRequest> get(@PathVariable String id) {
-        CreatePipelineRequest request = service.get(id);
-        if (request == null) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(request);
+    public ResponseEntity<UnifiedPipelineDefinition> get(@PathVariable String id) {
+        UnifiedPipelineDefinition definition = service.getUnified(id);
+        return definition == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(definition);
+    }
+
+    @GetMapping("/{id}/versions")
+    public ResponseEntity<List<UnifiedPipelineDefinition>> versions(@PathVariable String id) {
+        return ResponseEntity.ok(service.versions(id));
     }
 
     @PostMapping
-    public ResponseEntity<PipelineSummaryDto> create(@RequestBody CreatePipelineRequest request) {
-        return ResponseEntity.ok(service.save(request));
+    public ResponseEntity<UnifiedPipelineDefinition> create(
+            @RequestBody UnifiedPipelineDefinition definition) {
+        return ResponseEntity.ok(service.saveUnified(definition));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<PipelineSummaryDto> update(@PathVariable String id, @RequestBody CreatePipelineRequest request) {
-        request.setPipelineId(id);
-        return ResponseEntity.ok(service.save(request));
+    public ResponseEntity<UnifiedPipelineDefinition> update(
+            @PathVariable String id,
+            @RequestBody UnifiedPipelineDefinition definition) {
+        definition.setPipelineId(id);
+        return ResponseEntity.ok(service.saveUnified(definition));
+    }
+
+    @PostMapping("/{id}/versions/{version}/promote")
+    public ResponseEntity<UnifiedPipelineDefinition> promote(
+            @PathVariable String id,
+            @PathVariable long version,
+            @RequestParam(required = false) Long expectedActiveVersion) {
+        return ResponseEntity.ok(service.promote(id, version, expectedActiveVersion));
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Map<String, Boolean>> delete(@PathVariable String id) {
-        boolean deleted = service.delete(id);
-        return ResponseEntity.ok(Map.of("deleted", deleted));
+        return ResponseEntity.ok(Map.of("archived", service.delete(id)));
     }
 
     @PostMapping("/validate")
-    public ResponseEntity<ValidationResult> validate(@RequestBody CreatePipelineRequest request) {
-        return ResponseEntity.ok(service.validate(request));
-    }
-
-    @PostMapping("/{id}/execute")
-    public ResponseEntity<PipelineExecutionResult> executeSync(
-            @PathVariable String id,
-            @RequestBody(required = false) Map<String, Object> input) {
-        return ResponseEntity.ok(service.executeSync(id, input));
-    }
-
-    @PostMapping("/{id}/execute-async")
-    public ResponseEntity<Map<String, String>> executeAsync(
-            @PathVariable String id,
-            @RequestBody(required = false) Map<String, Object> input) {
-        String executionId = service.executeAsync(id, input);
-        return ResponseEntity.ok(Map.of("executionId", executionId));
-    }
-
-    @GetMapping("/executions/{executionId}")
-    public ResponseEntity<PipelineExecutionResult> getAsyncResult(@PathVariable String executionId) {
-        return ResponseEntity.ok(service.getAsyncResult(executionId));
-    }
-
-    @PostMapping("/{id}/serve")
-    public ResponseEntity<Map<String, Object>> serve(@PathVariable String id) {
-        boolean success = service.servePipeline(id);
-        return ResponseEntity.ok(Map.of("pipelineId", id, "serving", success));
-    }
-
-    @PostMapping("/{id}/unserve")
-    public ResponseEntity<Map<String, Object>> unserve(@PathVariable String id) {
-        boolean success = service.unservePipeline(id);
-        return ResponseEntity.ok(Map.of("pipelineId", id, "serving", false, "wasServing", success));
-    }
-
-    @GetMapping("/serving/status")
-    public ResponseEntity<Map<String, Boolean>> servingStatus() {
-        return ResponseEntity.ok(service.getServingStatus());
-    }
-
-    @PostMapping("/serving/{id}/invoke")
-    public ResponseEntity<PipelineExecutionResult> invokeServed(
-            @PathVariable String id,
-            @RequestBody(required = false) Map<String, Object> input) {
-        return ResponseEntity.ok(service.invokeServed(id, input));
+    public ResponseEntity<ValidationResult> validate(
+            @RequestBody UnifiedPipelineDefinition definition) {
+        return ResponseEntity.ok(service.validate(definition));
     }
 
     @GetMapping("/steps/available")

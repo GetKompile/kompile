@@ -7,16 +7,14 @@ import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "pipeline",
         subcommands = {
-                PipelineExec.class,
                 PipelineValidate.class,
                 PipelineListSteps.class,
-                PipelineServe.class,
                 NewStepCreator.class
         },
         mixinStandardHelpOptions = false,
-        description = "Commands for managing and executing pipelines.\n" +
-                "Pipelines compose multiple processing steps (Python, ONNX, SameDiff, DL4J, etc.) " +
-                "into reusable workflows.")
+        description = "Validate pipeline definitions and inspect authoring schemas.\n" +
+                "Use the stdio MCP 'pipeline' tool to create, version, run, cancel, promote, " +
+                "and roll back managed pipelines.")
 public class PipelineMain implements Callable<Integer> {
 
     @Override

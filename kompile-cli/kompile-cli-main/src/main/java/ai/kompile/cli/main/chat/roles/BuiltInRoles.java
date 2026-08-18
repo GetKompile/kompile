@@ -50,7 +50,6 @@ public class BuiltInRoles {
                     """)
             .enabledTools(Set.of("*"))
             .canSpawnSubagents(true)
-            .maxSteps(50)
             .isBuiltIn(true)
             .build();
 
@@ -76,7 +75,6 @@ public class BuiltInRoles {
             .permissionOverrides(Map.of())
             .agentDefaults(Map.of("codex", new RoleAgentDefaults("gpt-5.6-sol", "xhigh", Map.of())))
             .canSpawnSubagents(true)
-            .maxSteps(30)
             .isBuiltIn(true)
             .build();
 
@@ -116,7 +114,6 @@ public class BuiltInRoles {
                     "patch", PermissionService.PermissionLevel.DENY
             ))
             .canSpawnSubagents(false)
-            .maxSteps(20)
             .isBuiltIn(true)
             .build();
 
@@ -153,7 +150,6 @@ public class BuiltInRoles {
                     "bash", PermissionService.PermissionLevel.ASK
             ))
             .canSpawnSubagents(false)
-            .maxSteps(15)
             .isBuiltIn(true)
             .build();
 
@@ -189,7 +185,6 @@ public class BuiltInRoles {
                     "bash", PermissionService.PermissionLevel.ASK
             ))
             .canSpawnSubagents(true)
-            .maxSteps(30)
             .isBuiltIn(true)
             .build();
 
@@ -227,7 +222,6 @@ public class BuiltInRoles {
                     "patch", PermissionService.PermissionLevel.DENY
             ))
             .canSpawnSubagents(true)
-            .maxSteps(40)
             .isBuiltIn(true)
             .build();
 

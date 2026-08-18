@@ -40,6 +40,7 @@ import ai.kompile.cli.main.chat.tools.grounding.CrawlControlTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDiscoveryTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
 import ai.kompile.cli.main.chat.tools.grounding.ModelRuntimeTool;
+import ai.kompile.cli.main.chat.tools.grounding.PipelineTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlResultTool;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlSourceTool;
 import ai.kompile.cli.main.chat.tools.grounding.GraphExportTool;
@@ -182,6 +183,7 @@ public class ToolRegistryFactory {
         registry.register(new CrawlDocumentsTool(crawlBaseUrl, objectMapper));
         registry.register(new CrawlDiscoveryTool(crawlBaseUrl, objectMapper));
         registry.register(new ModelRuntimeTool(objectMapper));
+        registry.register(new PipelineTool(objectMapper));
         registry.register(new CrawlControlTool(crawlBaseUrl, objectMapper));
         registry.register(new CrawlResultTool(crawlBaseUrl, objectMapper));
         registry.register(new ProcessMiningCliTool(baseUrl, objectMapper));

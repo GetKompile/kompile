@@ -783,24 +783,11 @@ class ToolCallFormattingTest {
     class MiscRendering {
 
         @Test
-        void renderAgentTurnStart_shouldShowStepCounter() {
-            String output = renderer.renderAgentTurnStart(3, 10);
-            assertTrue(output.contains("step 3/10"));
-        }
-
-        @Test
         void renderCompactionNotice_shouldShowTokenCounts() {
             String output = renderer.renderCompactionNotice(50000, 20000);
             assertTrue(output.contains("50000"));
             assertTrue(output.contains("20000"));
             assertTrue(output.contains("context compacted"));
-        }
-
-        @Test
-        void renderMaxStepsWarning_shouldShowLimit() {
-            String output = renderer.renderMaxStepsWarning(25);
-            assertTrue(output.contains("25"));
-            assertTrue(output.contains("maximum steps"));
         }
 
         @Test

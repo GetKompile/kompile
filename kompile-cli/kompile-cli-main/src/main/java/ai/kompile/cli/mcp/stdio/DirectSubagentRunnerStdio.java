@@ -242,6 +242,11 @@ public class DirectSubagentRunnerStdio {
             }
 
             String response = runner.runMessage(effectivePrompt, history, metrics);
+            String blockingNotice = runner.getBlockingNotice();
+            if (blockingNotice != null) {
+                throw new IllegalStateException("Subagent '" + agentName + "' stopped: "
+                        + blockingNotice + ". Select another agent or retry after the limit resets.");
+            }
             if (response != null && !response.isBlank()) {
                 synchronized (captured) {
                     if (captured.indexOf(response) < 0) {

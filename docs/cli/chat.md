@@ -83,17 +83,17 @@ kompile chat --mode passthrough --agent=claude-code --rag --role=architect
 
 Kompile injects its MCP tools into the agent, adds a system prompt, and manages session persistence.
 
-### Project-local knowledge worker
+### Project-local knowledge runtime
 
 A passthrough agent can crawl and search the current project without a Kompile server. Start the
 stdio MCP server with the project as its work directory, call `crawl_discover` to inspect executable
 loaders, chunkers, and pipeline templates, then use `crawl_documents` or `crawl_source`. The agent
-process performs loading, subprocess pipeline execution, chunking, and indexing into
-`data/crawls/<knowledge-base>`; `knowledge_search`, `knowledge_status`, `memory`, and
-`semantic_memory` remain available in the same session.
+host performs loading, pooled stdio pipeline execution, chunking, and indexing into
+`data/crawls/<knowledge-base>`; `knowledge_search`, `knowledge_status`, and `memory` remain available
+in the same session.
 
-The local worker supports standard text, code, tables, keyword-only indexes, OCR, VLM, and custom
-unified pipelines. OCR/VLM work is isolated in the packaged model subprocess. Connecting with
+The local runtime supports standard text, code, tables, keyword-only indexes, OCR, VLM, and custom
+unified pipelines. Every model-backed step uses the same packaged runtime contract. Connecting with
 `--url` keeps the same MCP contracts but hands job scheduling, shared state, and distributed model
 coordination to the full server.
 

@@ -43,27 +43,26 @@ class LocalCrawlCapabilitiesTest {
         assertEquals("subprocess", catalog.path("executionMode").asText());
         assertTrue(catalog.path("modelProcessing").path("semanticServing").asText()
                 .contains("LOCAL_MODEL/serving"));
-        assertEquals("children stop before the MCP command returns",
-                catalog.path("modelProcessing").path("lifecycle").asText());
+        assertTrue(catalog.path("modelProcessing").path("lifecycle").asText()
+                .contains("bounded reuse"));
         assertTrue(catalog.path("wiringRecipe").path("workflow").asText()
                 .contains("crawl_documents dryRun=true"));
         assertEquals("VLM",
-                catalog.path("wiringRecipe").path("compatibilityVlm")
+                catalog.path("wiringRecipe").path("unifiedVlm")
                         .path("minimumRequest").path("pipelines").get(0)
                         .path("pipelineType").asText());
-        assertTrue(catalog.path("wiringRecipe").path("genericUnified")
-                .path("definitionShape").asText().contains("pipelineSpec"));
         assertTrue(catalog.path("pipelineTypeGuide").path("CUSTOM").asText()
                 .contains("UNIFIED_PIPELINE"));
     }
 
     @Test
-    void discoveryDoesNotAdvertiseModelTemplatesWithoutAWorker() {
-        ObjectNode catalog = LocalCrawlCapabilities.catalog(mapper, "in-process-native", false);
+    void discoveryAdvertisesManagedModelPipelinesWithoutWorkerPrerequisites() {
+        ObjectNode catalog = LocalCrawlCapabilities.catalog(mapper, "mcp-host-native");
 
-        assertFalse(template(catalog, LocalCrawlCapabilities.VLM_PIPELINE).path("available").asBoolean());
-        assertFalse(template(catalog, LocalCrawlCapabilities.OCR_PIPELINE).path("available").asBoolean());
-        assertFalse(catalog.path("modelProcessing").path("builtinDocumentProcessor").asBoolean());
+        assertTrue(template(catalog, LocalCrawlCapabilities.VLM_PIPELINE).path("available").asBoolean());
+        assertTrue(template(catalog, LocalCrawlCapabilities.OCR_PIPELINE).path("available").asBoolean());
+        assertFalse(catalog.toString().contains("worker"));
+        assertFalse(catalog.toString().contains("documentModelExecutable"));
         assertTrue(catalog.path("modelProcessing").path("callerDefinedUnifiedPipelines").asBoolean());
         assertTrue(catalog.path("pipelineRegistry").path("arbitraryPipelineTypes").asBoolean());
     }
@@ -146,7 +145,7 @@ class LocalCrawlCapabilitiesTest {
     }
 
     @Test
-    void modelAndKeywordPipelineExecutionModesAreResolvedLocally() throws Exception {
+    void modelBackedAndLocalPipelinesAreResolvedConsistently() throws Exception {
         Path pdf = tempDir.resolve("scan.pdf");
         Files.writeString(pdf, "not executed in this resolution test");
         ObjectNode request = (ObjectNode) mapper.readTree("""
@@ -159,13 +158,13 @@ class LocalCrawlCapabilitiesTest {
 
         LocalCrawlCapabilities.ResolvedPipeline vision =
                 LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
-        assertTrue(LocalCrawlCapabilities.usesProcessingSubprocess(vision));
+        assertTrue(LocalCrawlCapabilities.usesModelPipeline(vision));
         assertEquals("smol", vision.chunkerOptions().get("vlmModel"));
 
         ((ObjectNode) request.withArray("documents").get(0)).put("pipelineId", "keywords");
         LocalCrawlCapabilities.ResolvedPipeline keywords =
                 LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
-        assertFalse(LocalCrawlCapabilities.usesProcessingSubprocess(keywords));
+        assertFalse(LocalCrawlCapabilities.usesModelPipeline(keywords));
     }
 
     @Test
@@ -174,10 +173,6 @@ class LocalCrawlCapabilitiesTest {
         Files.writeString(pdf, "resolution only");
         ObjectNode request = (ObjectNode) mapper.readTree("""
                 {
-                  "runtimeConfig": {
-                    "documentModelExecutable": "workers/vlm",
-                    "documentModelExecutableMode": "UNIFIED"
-                  },
                   "modelRuntime": {
                     "autoBootstrap": true,
                     "source": "huggingface",
@@ -208,8 +203,8 @@ class LocalCrawlCapabilitiesTest {
         assertEquals("folder-model", resolved.chunkerOptions().get("modelId"));
         assertEquals(7, resolved.chunkerOptions().get("maxPages"));
         assertEquals(180, resolved.chunkerOptions().get("pdfRenderDpi"));
-        assertEquals("workers/vlm", resolved.processor().get("documentModelExecutable"));
-        assertEquals("UNIFIED", resolved.processor().get("documentModelExecutableMode"));
+        assertEquals("UNIFIED_PIPELINE", resolved.processor().get("type"));
+        assertTrue(resolved.processor().containsKey("pipelineDefinition"));
         Map<?, ?> modelRuntime = (Map<?, ?>) resolved.processor().get("modelRuntime");
         assertEquals(true, modelRuntime.get("autoBootstrap"));
         assertEquals("ds4sd/SmolDocling-256M-preview", modelRuntime.get("repository"));
@@ -277,9 +272,7 @@ class LocalCrawlCapabilitiesTest {
     }
 
     @Test
-    void arbitraryPipelinesInheritRegisteredDefaultsAndExecutors() throws Exception {
-        Path audio = tempDir.resolve("meeting.txt");
-        Files.writeString(audio, "audio placeholder");
+    void oneOffExecutablePipelineContractsAreRejected() throws Exception {
         ObjectNode request = (ObjectNode) mapper.readTree("""
                 {
                   "pipelineRegistry": {
@@ -288,31 +281,13 @@ class LocalCrawlCapabilitiesTest {
                       "type": "KOMPILE_SUBPROCESS",
                       "componentId": "kompile-audio",
                       "subprocessMode": "audio-transcription"
-                    }],
-                    "defaults": [{
-                      "pipelineId": "audio-default",
-                      "pipelineType": "AUDIO_TRANSCRIPTION",
-                      "loaderName": "text",
-                      "chunkerName": "no-op",
-                      "executorId": "transcriber"
                     }]
-                  },
-                  "pipelines": [{
-                    "pipelineId": "meeting-audio",
-                    "registeredPipelineId": "audio-default"
-                  }],
-                  "documents": [{"path": "%s", "pipelineId": "meeting-audio"}]
+                  }
                 }
-                """.formatted(audio.toString().replace("\\", "\\\\")));
+                """);
 
-        assertNull(LocalCrawlCapabilities.validationError(request));
-        LocalCrawlCapabilities.ResolvedPipeline resolved =
-                LocalCrawlCapabilities.resolve(request, null, tempDir, audio);
-
-        assertEquals("AUDIO_TRANSCRIPTION", resolved.pipelineType());
-        assertEquals("transcriber", resolved.processor().get("executorId"));
-        assertEquals("audio-transcription", resolved.processor().get("subprocessMode"));
-        assertTrue(LocalCrawlCapabilities.usesProcessingSubprocess(resolved));
+        String error = LocalCrawlCapabilities.validationError(request);
+        assertTrue(error.contains("Unsupported pipeline executor type"), error);
     }
 
     @Test

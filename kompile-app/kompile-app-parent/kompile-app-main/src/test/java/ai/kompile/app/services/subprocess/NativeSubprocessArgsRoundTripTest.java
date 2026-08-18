@@ -20,7 +20,6 @@ import ai.kompile.app.learning.subprocess.LearningSubprocessArgs;
 import ai.kompile.app.learning.subprocess.ReasoningLearningSubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessArgs;
 import ai.kompile.app.subprocess.VectorPopulationSubprocessArgs;
-import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
 import ai.kompile.app.subprocess.model.ModelInitSubprocessArgs;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -151,67 +150,6 @@ class NativeSubprocessArgsRoundTripTest {
     }
 
     @Test
-    void vlmTestArgsRoundTrip() throws Exception {
-        VlmTestSubprocessArgs expected = VlmTestSubprocessArgs.builder()
-                .taskId("trace-vlm")
-                .filePath("/tmp/scan.pdf")
-                .modelId("trace-vlm-model")
-                .outputFormat("MARKDOWN")
-                .maxNewTokens(321)
-                .temperature(0.2)
-                .topP(0.8)
-                .beamSize(2)
-                .doSample(true)
-                .pdfRenderDpi(240)
-                .pageBatchSize(2)
-                .cudaPinnedHostLimitMb(128)
-                .callbackBaseUrl("http://127.0.0.1:18080")
-                .nd4jConfigJson("{\"maxThreads\":2}")
-                .kvCacheStrategy("PAGED")
-                .maxKvLen(1024)
-                .optimizerEnabled(true)
-                .optimizerFp16(false)
-                .clearDecoderCache(true)
-                .tritonEnabled(false)
-                .tritonTf32(true)
-                .dspNoNativeDecode(true)
-                .dspNoFreeze(true)
-                .dspNoAttnOverride(true)
-                .dspNoDirect(true)
-                .noCublasWorkspace(true)
-                .dspCaptureOomMaxRetries(4)
-                .dspCaptureOomRetryInterval(3)
-                .dspCublasWorkspaceMb(64)
-                .dspGraphMetadataSafetyMb(96)
-                .dspProactiveEvictBeforeCapture(true)
-                .dspLruEviction(true)
-                .dspCaptureWorkspaceMb(128)
-                .speculativeTokens(3)
-                .debugDiagnostics(true)
-                .opTiming(true)
-                .maxPages(5)
-                .modelSourceType("staging")
-                .modelIdentifier("trace-vlm-model")
-                .stagingUrl("http://127.0.0.1:18090")
-                .stagingApiKey("trace-key")
-                .archivePath("/tmp/vlm-model.zip")
-                .memoryThresholdPercent(71)
-                .memoryCriticalPercent(81)
-                .memoryKillThresholdPercent(91)
-                .memoryCheckIntervalMs(4567)
-                .gpuMemoryThresholdPercent(72)
-                .gpuMemoryCriticalPercent(82)
-                .gpuMemoryKillThresholdPercent(92)
-                .offHeapThresholdPercent(73)
-                .offHeapCriticalPercent(83)
-                .offHeapKillThresholdPercent(93)
-                .options(Map.of("trace", "true"))
-                .build();
-        Path file = expected.writeToTempFile();
-        assertFileRoundTrip(expected, file, VlmTestSubprocessArgs::fromFile);
-    }
-
-    @Test
     void learningArgsUseTheProductionMapConversionPath() throws Exception {
         LearningSubprocessArgs expected = new LearningSubprocessArgs(
                 42L,
@@ -259,21 +197,7 @@ class NativeSubprocessArgsRoundTripTest {
     @Test
     void pipelineServingArgsRoundTrip() throws Exception {
         PipelineServingSubprocessArgs expected = new PipelineServingSubprocessArgs(
-                "trace-pipeline-serving",
-                "{\"id\":\"trace-pipeline\"}",
-                PipelineServingSubprocessArgs.MODE_PERSISTENT_SERVING,
-                "{\"value\":1}",
-                19095,
-                "{\"maxThreads\":2}",
-                71,
-                81,
-                91,
-                5678L,
-                72,
-                82,
-                92,
-                1500L,
-                "http://127.0.0.1:18080");
+                "{\"id\":\"trace-pipeline\"}");
         Path file = expected.writeToTempFile();
         assertFileRoundTrip(expected, file, PipelineServingSubprocessArgs::fromFile);
     }
