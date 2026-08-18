@@ -1,5 +1,6 @@
 package ai.kompile.pipeline.serving;
 
+import ai.kompile.pipeline.serving.definition.PipelineDefinitionValidator;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -70,6 +71,30 @@ class UnifiedPipelineDefinitionTest {
         assertEquals("16g", deserialized.getServing().getHeapSize());
         assertEquals("0", deserialized.getServing().getGpuDeviceId());
         assertTrue(deserialized.isEnabled());
+    }
+
+    @Test
+    void validatesPlainMapStepParametersAdvertisedByMcp() {
+        UnifiedPipelineDefinition definition = UnifiedPipelineDefinition.builder()
+                .pipelineId("vlm-document")
+                .kind(UnifiedPipelineDefinition.PipelineKind.VLM)
+                .topology(UnifiedPipelineDefinition.ExecutionTopology.SEQUENCE)
+                .pipelineSpec(Map.of(
+                        "@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+                        "id", "vlm-document",
+                        "steps", java.util.List.of(Map.of(
+                                "@class", "ai.kompile.pipelines.framework.core.config.GenericStepConfig",
+                                "runnerClassName", "ai.kompile.pipelines.steps.vlm.VlmDocumentStepRunner",
+                                "parameters", Map.of(
+                                        "outputFormat", "MARKDOWN",
+                                        "pdfRenderDpi", 96,
+                                        "pageBatchSize", 1)))))
+                .build();
+
+        PipelineDefinitionValidator.Validation validation =
+                PipelineDefinitionValidator.validate(definition);
+
+        assertTrue(validation.valid(), () -> String.join("; ", validation.errors()));
     }
 
     @Test

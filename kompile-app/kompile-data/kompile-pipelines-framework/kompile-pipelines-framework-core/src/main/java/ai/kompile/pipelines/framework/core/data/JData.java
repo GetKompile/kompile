@@ -98,11 +98,28 @@ public class JData implements Data {
         JData data = new JData();
         if (map != null) {
             for (Map.Entry<String, Object> entry : map.entrySet()) {
-                // The put(String, Object) method will infer types
-                data.put(entry.getKey(), entry.getValue());
+                data.put(entry.getKey(), normalizeValue(entry.getValue()));
             }
         }
         return data;
+    }
+
+    private static Object normalizeValue(Object value) {
+        if (value instanceof Data) {
+            return value;
+        }
+        if (value instanceof Map<?, ?> rawMap) {
+            Map<String, Object> nested = new LinkedHashMap<>();
+            rawMap.forEach((key, nestedValue) ->
+                    nested.put(String.valueOf(key), normalizeValue(nestedValue)));
+            return fromMapInternal(nested);
+        }
+        if (value instanceof List<?> rawList) {
+            List<Object> nested = new ArrayList<>(rawList.size());
+            rawList.forEach(item -> nested.add(normalizeValue(item)));
+            return nested;
+        }
+        return value;
     }
 
 
@@ -183,12 +200,10 @@ public class JData implements Data {
             } else {
                 Object firstElement = list.get(0);
                 ValueType elementType = JDataValueInferer.inferValueType(firstElement); // Helper needed
-                if (elementType == null || elementType == ValueType.LIST || elementType == ValueType.DATA) {
-                    // Fallback: treat as list of generic objects or handle as error
-                    // For simplicity, we'll store it as a list of generic objects, type will be ValueType.LIST
-                    // but listElementType will be difficult to determine robustly.
-                    values.put(key, new JDataValueWrapper(ValueType.LIST, null, new ArrayList<>(list))); // Store a copy
-                    listElementTypes.put(key, null); // Mark as unknown or best guess
+                if (elementType == null || elementType == ValueType.LIST) {
+                    // Preserve heterogeneous or nested lists without claiming a specific element type.
+                    values.put(key, new JDataValueWrapper(ValueType.LIST, null, new ArrayList<>(list)));
+                    listElementTypes.put(key, null);
                 } else {
                     // Check if all elements are of the same inferred type (optional, for stricter JData)
                     putList(key, (List<?>) list, elementType);

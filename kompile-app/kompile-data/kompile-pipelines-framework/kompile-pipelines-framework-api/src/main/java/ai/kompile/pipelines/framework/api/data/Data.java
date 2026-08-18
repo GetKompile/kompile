@@ -19,6 +19,7 @@ package ai.kompile.pipelines.framework.api.data;
 import ai.kompile.pipelines.framework.api.Configuration;
 import ai.kompile.pipelines.framework.api.kvcache.KVCache;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -45,6 +46,7 @@ import java.util.Set;
  * Instances are typically created via a {@link DataFactory} implementation,
  * discovered using {@link ServiceLoader}.
  */
+@JsonTypeInfo(use = JsonTypeInfo.Id.NONE)
 public interface Data extends Configuration {
 
     /**

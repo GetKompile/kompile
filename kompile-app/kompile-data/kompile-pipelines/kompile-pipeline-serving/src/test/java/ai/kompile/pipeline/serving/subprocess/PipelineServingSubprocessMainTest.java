@@ -1,8 +1,11 @@
 package ai.kompile.pipeline.serving.subprocess;
 
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
+import ai.kompile.pipelines.framework.api.data.Data;
+import ai.kompile.pipelines.framework.api.data.ValueType;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,6 +26,7 @@ class PipelineServingSubprocessMainTest {
         Map<String, Object> input = PipelineServingSubprocessMain.withDefinitionContext(
                 Map.of(
                         "text", "hello",
+                        "pages", List.of(Map.of("text", "page one")),
                         "modelBindings", Map.of("generator", "untrusted-override")),
                 definition);
 
@@ -32,5 +36,13 @@ class PipelineServingSubprocessMainTest {
         assertEquals("/models/generator.gguf",
                 ((Map<?, ?>) ((Map<?, ?>) input.get("resolvedModels")).get("generator"))
                         .get("modelPath"));
+
+        Data data = Data.fromMap(input);
+        assertEquals("generator-config",
+                data.getData("modelBindings").getString("generator"));
+        assertEquals("/models/generator.gguf",
+                data.getData("resolvedModels").getData("generator").getString("modelPath"));
+        assertEquals("page one",
+                data.<Data>getList("pages", ValueType.DATA).get(0).getString("text"));
     }
 }
