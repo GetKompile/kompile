@@ -23,6 +23,9 @@ import ai.kompile.cli.main.chat.harness.JudgeBackendFactory;
 import ai.kompile.cli.main.chat.harness.ResilientJudgeBackend;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 /**
  * LLM-backed enforcer judge. It evaluates a subordinate LLM turn against
  * user-authored rules and returns a machine-readable intervention decision.
@@ -32,6 +35,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
     private static final int MAX_PROMPT_CHARS = 4_000;
     private static final int MAX_OUTPUT_CHARS = 8_000;
     private static final int MAX_CONTEXT_CHARS = 8_000;
+    private static final long DEFAULT_READY_TIMEOUT_MS = 30_000L;
 
     /**
      * Unified system prompt for all evaluation modes (full, partial, tool-call).
@@ -74,6 +78,9 @@ public class EnforcerJudge implements EnforcerEvaluator {
 
     /** The background warm-up thread, kept so {@link #awaitWarm(long)} can join it. */
     private volatile Thread warmupThread;
+    private volatile boolean warmupComplete;
+    private volatile String readinessFailure;
+    private final List<Runnable> stateListeners = new CopyOnWriteArrayList<>();
 
     /**
      * Warm the backend on a background daemon thread. A synchronous warm-up here used to
@@ -85,9 +92,18 @@ public class EnforcerJudge implements EnforcerEvaluator {
     private void warmUpAsync() {
         Thread warmup = new Thread(() -> {
             try {
-                backend.warmUp(SYSTEM_PROMPT);
+                synchronized (this) {
+                    backend.warmUp(SYSTEM_PROMPT);
+                }
             } catch (Throwable t) {
-                // Best-effort: first evaluate() will retry via the backend's own ensure path.
+                readinessFailure = t.getMessage() == null || t.getMessage().isBlank()
+                        ? t.getClass().getSimpleName() : t.getMessage();
+            } finally {
+                warmupComplete = true;
+                if (!backend.isAvailable() && (readinessFailure == null || readinessFailure.isBlank())) {
+                    readinessFailure = backend.failureReason();
+                }
+                fireStateChange();
             }
         }, "enforcer-judge-warmup");
         warmup.setDaemon(true);
@@ -113,6 +129,44 @@ public class EnforcerJudge implements EnforcerEvaluator {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
+        }
+    }
+
+    /**
+     * Wait for the judge's actual backend health check. A binary merely existing on
+     * PATH is not sufficient: this blocks the first subordinate turn until the
+     * selected agent has authenticated and accepted a request.
+     */
+    @Override
+    public boolean awaitReady(long timeoutMs) {
+        long bounded = timeoutMs > 0 ? timeoutMs : DEFAULT_READY_TIMEOUT_MS;
+        if (!awaitWarm(bounded)) {
+            readinessFailure = "Judge warm-up timed out after " + bounded + "ms";
+            try {
+                backend.close();
+            } catch (RuntimeException ignored) {
+                // Best effort; the watcher is still failed below.
+            }
+            fireStateChange();
+            return false;
+        }
+        return isAvailable();
+    }
+
+    /** Register a callback for readiness failures and restart/modify transitions. */
+    public void addStateListener(Runnable listener) {
+        if (listener != null) {
+            stateListeners.add(listener);
+        }
+    }
+
+    private void fireStateChange() {
+        for (Runnable listener : stateListeners) {
+            try {
+                listener.run();
+            } catch (RuntimeException ignored) {
+                // UI/process bookkeeping must not break judge execution.
+            }
         }
     }
 
@@ -143,6 +197,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
                     SYSTEM_PROMPT);
         } catch (Exception failure) {
             System.err.println("[enforcer] judge failure: " + failure.getMessage());
+            fireStateChange();
             throw failure;
         }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -172,6 +227,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
                     SYSTEM_PROMPT);
         } catch (Exception failure) {
             System.err.println("[enforcer] judge partial-evaluation failure: " + failure.getMessage());
+            fireStateChange();
             throw failure;
         }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -199,6 +255,7 @@ public class EnforcerJudge implements EnforcerEvaluator {
                     SYSTEM_PROMPT);
         } catch (Exception failure) {
             System.err.println("[enforcer] judge tool-evaluation failure: " + failure.getMessage());
+            fireStateChange();
             throw failure;
         }
         long latencyMs = (System.nanoTime() - startNanos) / 1_000_000L;
@@ -209,7 +266,8 @@ public class EnforcerJudge implements EnforcerEvaluator {
 
     @Override
     public boolean isAvailable() {
-        return backend != null && backend.isAvailable();
+        return backend != null && (readinessFailure == null || readinessFailure.isBlank())
+                && backend.isAvailable();
     }
 
     @Override
@@ -220,8 +278,11 @@ public class EnforcerJudge implements EnforcerEvaluator {
     /** Human-readable state for CLI/REST controls. */
     public synchronized String judgeStatus() {
         if (backend == null) return "failed · no judge backend";
-        String state = backend.isAvailable() ? "ready" : "failed";
-        String reason = backend.failureReason();
+        String state = !warmupComplete ? "starting" : isAvailable() ? "ready" : "failed";
+        String reason = readinessFailure;
+        if (reason == null || reason.isBlank()) {
+            reason = backend.failureReason();
+        }
         return state + " · " + backend.describe()
                 + (reason == null || reason.isBlank() ? "" : " · " + reason);
     }
@@ -230,10 +291,21 @@ public class EnforcerJudge implements EnforcerEvaluator {
     public synchronized String restartJudge() {
         if (backend == null) return "Judge restart failed: no judge backend";
         try {
+            readinessFailure = null;
+            warmupComplete = false;
             backend.restart();
+            backend.warmUp(SYSTEM_PROMPT);
+            warmupComplete = true;
+            if (!backend.isAvailable()) {
+                readinessFailure = backend.failureReason();
+            }
+            fireStateChange();
             return "Judge restarted: " + judgeStatus();
         } catch (Exception failure) {
-            return "Judge restart failed: " + failure.getMessage();
+            readinessFailure = failure.getMessage();
+            warmupComplete = true;
+            fireStateChange();
+            return "Judge restart failed: " + judgeStatus();
         }
     }
 
@@ -241,12 +313,26 @@ public class EnforcerJudge implements EnforcerEvaluator {
     public synchronized String modifyJudge(String selection) {
         if (backend == null) return "Judge modification failed: no judge backend";
         try {
+            readinessFailure = null;
+            warmupComplete = false;
             if (!backend.modify(selection)) {
-                return "Judge agent '" + selection + "' is unavailable; use /judge restart after installing it";
+                warmupComplete = true;
+                readinessFailure = backend.failureReason();
+                fireStateChange();
+                return "Judge agent '" + selection + "' is unavailable: " + judgeStatus();
             }
+            backend.warmUp(SYSTEM_PROMPT);
+            warmupComplete = true;
+            if (!backend.isAvailable()) {
+                readinessFailure = backend.failureReason();
+            }
+            fireStateChange();
             return "Judge modified: " + judgeStatus();
         } catch (Exception failure) {
-            return "Judge modification failed: " + failure.getMessage();
+            readinessFailure = failure.getMessage();
+            warmupComplete = true;
+            fireStateChange();
+            return "Judge modification failed: " + judgeStatus();
         }
     }
 

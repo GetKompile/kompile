@@ -451,17 +451,22 @@ class Nd4jEnvironmentConfigTest {
             String configJson = MAPPER.writeValueAsString(
                     Nd4jEnvironmentConfig.defaults().merge(config));
 
+            String pipelineDefinitionJson = MAPPER.writeValueAsString(
+                    java.util.Map.of(
+                            "pipelineId", "document-vlm",
+                            "nd4jConfigJson", configJson));
             var args = new ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs(
-                    "pipeline-task", "{\"pipelineId\":\"document-vlm\"}",
-                    configJson, 80, 90, 95, 2000,
-                    80, 90, 95, 3000);
+                    pipelineDefinitionJson);
 
             var tempFile = java.nio.file.Files.createTempFile("pipeline-args-", ".json");
             try {
                 var written = args.writeToTempFile();
                 java.nio.file.Files.move(written, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 var restored = ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessArgs.fromFile(tempFile);
-                var restoredConfig = MAPPER.readValue(restored.nd4jConfigJson(), Nd4jEnvironmentConfig.class);
+                assertEquals(pipelineDefinitionJson, restored.pipelineDefinitionJson());
+                var definition = MAPPER.readTree(restored.pipelineDefinitionJson());
+                var restoredConfig = MAPPER.readValue(
+                        definition.get("nd4jConfigJson").asText(), Nd4jEnvironmentConfig.class);
 
                 assertEquals(16, restoredConfig.maxThreads());
                 assertTrue(restoredConfig.optimizerEnabled());

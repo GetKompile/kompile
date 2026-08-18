@@ -55,12 +55,6 @@ class SkillConfigTest {
         }
 
         @Test
-        void maxStepsDefaultsToZero() {
-            SkillConfig skill = SkillConfig.builder("test").build();
-            assertEquals(0, skill.getMaxSteps());
-        }
-
-        @Test
         void modelHintDefaultsToNull() {
             SkillConfig skill = SkillConfig.builder("test").build();
             assertNull(skill.getModelHint());
@@ -91,7 +85,6 @@ class SkillConfigTest {
                     .description("Stage and commit changes")
                     .promptTemplate("Create a git commit. {{args}}")
                     .allowedTools(tools)
-                    .maxSteps(20)
                     .modelHint("fast")
                     .builtIn(true)
                     .category("git")
@@ -102,7 +95,6 @@ class SkillConfigTest {
             assertEquals("Stage and commit changes", skill.getDescription());
             assertEquals("Create a git commit. {{args}}", skill.getPromptTemplate());
             assertEquals(tools, skill.getAllowedTools());
-            assertEquals(20, skill.getMaxSteps());
             assertEquals("fast", skill.getModelHint());
             assertTrue(skill.isBuiltIn());
             assertEquals("git", skill.getCategory());

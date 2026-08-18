@@ -33,9 +33,13 @@ BUILD_JOBS=2
 SDK_BUILDER="$DL4J_ROOT/nd4j/sdx-aot/src/main/android/build-android-sdx-sdk.sh"
 CLEANUP_BUILDER="$DL4J_ROOT/nd4j/sdx-aot/src/main/android/prune-android-sdx-build-cache.sh"
 ACCELERATOR_BUILDER="$DL4J_ROOT/libnd4j/tools/mobile/build-android-accelerator.sh"
+ACCELERATOR_OUTPUT_ROOT="$DL4J_ROOT/libnd4j/build/mobile/tensor-g3"
+ACCELERATOR_AAR="$ACCELERATOR_OUTPUT_ROOT/dist/sdx-runtime-android-arm64-tensor-g3.aar"
+ACCELERATOR_NATIVE_AAR="$ACCELERATOR_OUTPUT_ROOT/native/sdx-runtime-sdk/dist/sdx-runtime-android-arm64-tensor-g3.aar"
+ACCELERATOR_NATIVE_RECEIPT="$ACCELERATOR_NATIVE_AAR.build-receipt"
 APK_BUILDER="$SCRIPT_DIR/tools/build-offline-accelerators.sh"
 RESUME_PUBLISH=0
-PUBLISH_MODE_ARGS=()
+PUBLISH_MODE_ARGS=(--tensor-g3-aar "$ACCELERATOR_AAR")
 # The active immutable generations reference every managed/object stage needed for
 # an identical-build cache hit. Keep those references, but do not retain obsolete
 # rollback generations or unreferenced multi-gigabyte fallback stages.
@@ -96,9 +100,19 @@ if (( RESUME_PUBLISH == 0 )); then
     --production \
     --jobs "$BUILD_JOBS" \
     --output-root "$WORK_ROOT"
-  "$ACCELERATOR_BUILDER" tensor-g3-nnapi \
-    --jobs "$BUILD_JOBS" \
-    --output-root "$WORK_ROOT/accelerator/tensor-g3"
+
+  ACCELERATOR_BUILD_ARGS=(
+    --jobs "$BUILD_JOBS"
+    --output-root "$ACCELERATOR_OUTPUT_ROOT"
+  )
+  if [[ -s "$ACCELERATOR_NATIVE_AAR" && -s "$ACCELERATOR_NATIVE_RECEIPT" ]]; then
+    printf 'Reusing the verified Tensor G3 native producer; rebuilding only tokenizer/Java packaging.\n'
+    ACCELERATOR_BUILD_ARGS+=(--skip-native --reuse-receipted-native)
+  else
+    printf 'No verified Tensor G3 native producer exists; building it once at %s.\n' \
+      "$ACCELERATOR_OUTPUT_ROOT"
+  fi
+  "$ACCELERATOR_BUILDER" tensor-g3-nnapi "${ACCELERATOR_BUILD_ARGS[@]}"
 else
   printf 'Resume publish: reusing immutable producer artifacts from their verified historical receipts.\n'
   PUBLISH_MODE_ARGS+=(--reuse-receipted-producers)

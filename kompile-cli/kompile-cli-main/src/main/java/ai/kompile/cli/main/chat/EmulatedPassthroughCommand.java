@@ -542,6 +542,10 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             this.bgProcMgr = new BackgroundProcessManager(sessionId, Path.of(workingDir));
             this.tui = new KompileTui(bgTaskMgr, bgProcMgr, messageQueue, renderer);
             this.drawLock = tui.getDrawLock();
+            // Refresh the activity panel for lifecycle changes and every captured
+            // output line, so an opened process view follows the live log.
+            bgProcMgr.addChangeListener(this::redrawActivityPanelOnly);
+            bgProcMgr.addOutputListener((entry, line) -> redrawActivityPanelOnly());
             tui.setAgentName(agent);
             tui.setSessionId(sessionId);
             tui.setMode("passthrough");
@@ -1575,29 +1579,50 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         if (policy != null && policy.getRules() != null) {
             ruleCount = (int) policy.getRules().lines().filter(l -> !l.isBlank()).count();
         }
-        mgr.registerVirtual(
+        BackgroundProcessManager.ProcessEntry enforcerEntry = mgr.registerVirtual(
                 BackgroundProcessManager.ProcessKind.ENFORCER, "enforcer",
                 "Enforcer · " + mode + " · " + ruleCount + " rule" + (ruleCount == 1 ? "" : "s"),
                 Map.of("mode", mode, "rules", String.valueOf(ruleCount), "backend", backend));
         if (llm) {
-            boolean available = true;
+            boolean ready = false;
+            boolean failed = false;
             String failure = "";
             if (evaluator instanceof EnforcerJudge judge) {
-                available = judge.isAvailable();
-                failure = judge.judgeStatus();
+                String state = judge.judgeStatus();
+                ready = state.startsWith("ready");
+                failed = state.startsWith("failed");
+                failure = state;
             }
-            String description = "Judge · " + backend + (available ? " · ready" : " · FAILED");
-            if (!available && !failure.isBlank()) {
-                description += " · " + failure;
-            }
+            String lifecycle = ready ? "ready" : failed ? "failed" : "starting";
+            String description = "Judge · " + backend + " · " + lifecycle.toUpperCase(Locale.ROOT)
+                    + (failed && !failure.isBlank() ? " · " + failure : "");
             BackgroundProcessManager.ProcessEntry judgeEntry = mgr.registerVirtual(
                     BackgroundProcessManager.ProcessKind.JUDGE, "judge",
                     description,
                     Map.of("backend", backend, "mode", mode,
-                            "status", available ? "ready" : "failed",
+                            "status", lifecycle,
                             "failure", failure));
-            if (!available) {
+            if (failed) {
                 mgr.fail(judgeEntry.getId(), 1);
+                mgr.fail(enforcerEntry.getId(), 1);
+            }
+            if (evaluator instanceof EnforcerJudge judge) {
+                judge.addStateListener(() -> {
+                    String state = judge.judgeStatus();
+                    if (state.startsWith("failed")) {
+                        mgr.updateVirtual(judgeEntry.getId(),
+                                "Judge · " + backend + " · FAILED · " + state,
+                                Map.of("backend", backend, "mode", mode,
+                                        "status", "failed", "failure", state));
+                        mgr.fail(judgeEntry.getId(), 1);
+                        mgr.fail(enforcerEntry.getId(), 1);
+                    } else if (state.startsWith("ready")) {
+                        mgr.updateVirtual(judgeEntry.getId(),
+                                "Judge · " + backend + " · READY",
+                                Map.of("backend", backend, "mode", mode,
+                                        "status", "ready", "failure", ""));
+                    }
+                });
             }
         }
     }

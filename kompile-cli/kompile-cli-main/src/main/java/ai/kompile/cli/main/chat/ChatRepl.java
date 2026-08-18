@@ -146,6 +146,12 @@ public class ChatRepl {
     // Unified TUI manager: TopBar + scroll region + StatusBar
     private final KompileTui tui;
 
+    // Active JLine handles. The model/provider picker runs after the outer readLine
+    // returns, so it can safely borrow this reader without a re-entrant read loop.
+    private volatile LineReader activeReader;
+    private volatile Terminal activeTerminal;
+    private volatile boolean modelPickerActive;
+
     // Persistent below-bar status line showing processes, subagents, queue
     private final StatusBar statusBar;
 
@@ -553,6 +559,8 @@ public class ChatRepl {
                 .build();
 
         reader.getHistory().load();
+        this.activeReader = reader;
+        this.activeTerminal = terminal;
 
         // Auto-trigger slash command completion as the user types
         ChatCompleter.enableAutoTrigger(reader);
@@ -613,6 +621,17 @@ public class ChatRepl {
         lineReader.getWidgets().put("cancel-operation", new Widget() {
             @Override
             public boolean apply() {
+                if (modelPickerActive) {
+                    // Escape is an interruption for the picker itself. If a model
+                    // turn is also active, cancel that turn before unwinding the
+                    // nested picker read.
+                    if (messageHandler != null) {
+                        messageHandler.requestCancel();
+                    }
+                    ChatCompleter.markInterrupted();
+                    requestStatusRedraw();
+                    throw new UserInterruptException("");
+                }
                 boolean cancelled = false;
                 if (messageHandler != null) {
                     // The handler owns the active-turn thread; do not gate this on
@@ -761,7 +780,7 @@ public class ChatRepl {
         System.out.println();
 
         // Start the unified TUI: TopBar + scroll region + StatusBar
-        tui.setAgentName(localMode ? localProviderDisplayName() : agentName);
+        tui.setAgentName(localMode ? activeModelDisplayName() : agentName);
         tui.setSessionId(sessionId);
         tui.setMode(localMode ? "local" : "server");
         tui.setPlanningMode(agenticLoop.isPlanningMode());
@@ -782,6 +801,9 @@ public class ChatRepl {
         };
         backgroundTaskManager.addChangeListener(activityRedraw);
         processManager.addChangeListener(activityRedraw);
+        // Process lifecycle listeners only fire on launch/exit. Subscribe to the
+        // capture stream as well so an opened process view follows output line-by-line.
+        processManager.addOutputListener((entry, line) -> activityRedraw.run());
         tui.addResizeListener(activityRedraw);
 
         // Wire subagent lifecycle tracking into the status bar
@@ -923,6 +945,9 @@ public class ChatRepl {
             tui.stop();
             ChatCompleter.clearTerminalRef(reader);
             ChatCompleter.setQueueSupplier(null);
+            activeReader = null;
+            activeTerminal = null;
+            modelPickerActive = false;
 
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
@@ -1574,6 +1599,7 @@ public class ChatRepl {
         chatHistory.logSystem("Switched LLM from " + previousProvider + "/" + previousModel
                 + " to " + this.chatConfig.getProvider() + "/" + this.chatConfig.getModel()
                 + "; retained " + retainedMessages + " conversation messages");
+        refreshModelDisplay();
         return true;
     }
 
@@ -1595,6 +1621,257 @@ public class ChatRepl {
     boolean isLlmBusy() { return llmBusy; }
     void setLlmBusy(boolean busy) { this.llmBusy = busy; }
     void requestStatusRedraw() { statusBar.requestRedraw(); }
+
+    /**
+     * Open the provider/model switcher as a modal owned by the transcript region.
+     * The outer chat prompt has already returned when this is called, so borrowing
+     * the active reader is safe and keeps all selection input in the same terminal.
+     */
+    void openModelProviderPicker() {
+        if (!localMode || chatConfig == null) {
+            ChatCompleter.printAbove("Provider/model switching is only available in local standard chat.");
+            return;
+        }
+        LineReader reader = activeReader;
+        if (reader == null) {
+            ChatCompleter.printAbove("The model picker is unavailable until the interactive terminal is ready.");
+            return;
+        }
+
+        List<String> providers = switchableProviders();
+        if (providers.isEmpty()) {
+            ChatCompleter.printAbove("No providers can be switched in this session. Use /setup to reconfigure.");
+            return;
+        }
+
+        String selectedProvider = chatConfig.getProvider();
+        String selectedModel = chatConfig.getModel();
+        boolean committed = false;
+        modelPickerActive = true;
+        ChatCompleter.setTemporaryWindowActive(true);
+        tui.showTemporaryWindow("Provider and model", pickerLines(
+                "Choose a provider", providers, selectedProvider, selectedProvider, selectedModel));
+        try {
+            while (true) {
+                tui.updateTemporaryWindow("Provider and model", pickerLines(
+                        "Choose a provider", providers, selectedProvider, selectedProvider, selectedModel));
+                String providerInput = reader.readLine("picker provider (number/name, Esc cancels): ");
+                if (providerInput == null || providerInput.isBlank()
+                        || "cancel".equalsIgnoreCase(providerInput.trim())) {
+                    return;
+                }
+                if ("back".equalsIgnoreCase(providerInput.trim())) {
+                    continue;
+                }
+                String providerChoice = parsePickerChoice(providerInput, providers);
+                if (providerChoice == null) {
+                    tui.updateTemporaryWindow("Provider and model", List.of(
+                            "Invalid provider: " + providerInput.trim(),
+                            "Choose a numbered provider or its exact name.",
+                            "Current: " + activeModelDisplayName()));
+                    continue;
+                }
+                selectedProvider = providerChoice;
+
+                List<String> models = modelChoices(selectedProvider, selectedModel);
+                while (true) {
+                    String defaultModel = models.isEmpty() ? selectedModel : models.get(0);
+                    tui.updateTemporaryWindow("Provider and model", pickerLines(
+                            "Choose a model for " + providerLabel(selectedProvider),
+                            models, defaultModel, selectedProvider, selectedModel));
+                    String modelInput = reader.readLine("picker model (number/name, blank uses default, Esc cancels): ");
+                    if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
+                        return;
+                    }
+                    if ("back".equalsIgnoreCase(modelInput.trim())) {
+                        break;
+                    }
+                    String modelChoice = modelInput.isBlank()
+                            ? defaultModel : parsePickerChoice(modelInput, models);
+                    if (modelChoice == null || modelChoice.isBlank()) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "No model is available for " + providerLabel(selectedProvider) + ".",
+                                "Type a model name or choose another provider.",
+                                "Current: " + activeModelDisplayName()));
+                        continue;
+                    }
+                    selectedModel = modelChoice;
+
+                    ChatConfig candidate = buildModelProviderCandidate(selectedProvider, selectedModel);
+                    if (!canHotSwitchLocalProvider(candidate)) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "That provider owns a separate runtime and cannot be replaced in-place:",
+                                "  " + providerLabel(selectedProvider),
+                                "Use /setup and restart the session for this provider."));
+                        continue;
+                    }
+                    if (!candidate.isValid()) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "Credentials are not configured for " + providerLabel(selectedProvider) + ".",
+                                "Run /setup to configure this provider, then try again.",
+                                "The current provider/model is still active."));
+                        continue;
+                    }
+                    if (commitModelProviderSelection(candidate)) {
+                        committed = true;
+                    }
+                    return;
+                }
+            }
+        } catch (UserInterruptException | EndOfFileException ignored) {
+            // Escape/EOF closes only the temporary picker. The active turn's cancel
+            // widget has already requested interruption when Escape was pressed.
+        } finally {
+            modelPickerActive = false;
+            ChatCompleter.setTemporaryWindowActive(false);
+            tui.closeTemporaryWindow();
+            refreshCurrentActivityView(tui, activityPanel);
+            if (committed) {
+                refreshModelDisplay();
+                ChatCompleter.printAbove(renderer.green("  Active model: ")
+                        + renderer.cyan(activeModelDisplayName())
+                        + renderer.dim(" (applies to the next message)"));
+            }
+        }
+    }
+
+    /** Apply the explicit `/model <name>` form through the same atomic path. */
+    void applyModelSelection(String model) {
+        if (model == null || model.isBlank() || chatConfig == null) return;
+        ChatConfig candidate = buildModelProviderCandidate(chatConfig.getProvider(), model.trim());
+        if (!candidate.isValid()) {
+            ChatCompleter.printAbove(renderer.yellow("  Cannot use model ") + renderer.cyan(model.trim())
+                    + renderer.dim(" because the current provider is not configured."));
+            return;
+        }
+        commitModelProviderSelection(candidate);
+    }
+
+    private boolean commitModelProviderSelection(ChatConfig candidate) {
+        String previous = activeModelDisplayName();
+        if (!updateChatConfig(candidate)) {
+            ChatCompleter.printAbove(renderer.yellow("  Provider/model switch was not applied.")
+                    + renderer.dim(" Use /setup for a runtime-owned provider."));
+            return false;
+        }
+        try {
+            chatConfig.save();
+        } catch (Exception ignored) {
+            // The in-session switch remains active even if persistence is unavailable.
+        }
+        refreshModelDisplay();
+        chatHistory.logSystem("Selected provider/model: " + activeModelDisplayName());
+        if (!previous.equals(activeModelDisplayName())) {
+            ChatCompleter.printAbove(renderer.green("  Selected provider/model: ")
+                    + renderer.cyan(activeModelDisplayName())
+                    + renderer.dim(" — current response continues; next message uses it."));
+        }
+        return true;
+    }
+
+    private ChatConfig buildModelProviderCandidate(String provider, String model) {
+        ChatConfig candidate = new ChatConfig();
+        candidate.applyLlmSettingsFrom(chatConfig);
+        candidate.setProvider(provider);
+        candidate.setModel(model);
+        // Never carry a credential across providers. For the current provider,
+        // preserve the resolved in-memory credential without persisting it.
+        if (provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
+            candidate.setApiKey(chatConfig.getApiKey());
+            candidate.setBaseUrl(chatConfig.getBaseUrl());
+        } else {
+            candidate.setApiKey(null);
+            candidate.setBaseUrl(null);
+        }
+        return candidate;
+    }
+
+    private List<String> switchableProviders() {
+        LinkedHashSet<String> providers = new LinkedHashSet<>();
+        for (String provider : ChatConfig.PROVIDER_ORDER) {
+            if (!"kompile".equals(provider) && !"kompile-local".equals(provider)) {
+                providers.add(provider);
+            }
+        }
+        if ("custom".equalsIgnoreCase(chatConfig.getProvider())) {
+            providers.add("custom");
+        }
+        if (chatConfig.getProvider() != null && !chatConfig.getProvider().isBlank()
+                && !"kompile".equalsIgnoreCase(chatConfig.getProvider())
+                && !"kompile-local".equalsIgnoreCase(chatConfig.getProvider())) {
+            providers.add(chatConfig.getProvider());
+        }
+        return List.copyOf(providers);
+    }
+
+    private List<String> modelChoices(String provider, String currentModel) {
+        LinkedHashSet<String> models = new LinkedHashSet<>();
+        if (currentModel != null && provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
+            models.add(currentModel);
+        }
+        for (String model : ChatConfig.getDefaultModels(provider)) {
+            models.add(model);
+        }
+        AgentConfig activeAgent = agentRegistry.get(localAgentName);
+        if (activeAgent == null) activeAgent = agentRegistry.getDefault();
+        if (activeAgent != null && activeAgent.getAllowedModels() != null
+                && provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
+            models.addAll(activeAgent.getAllowedModels());
+        }
+        return List.copyOf(models);
+    }
+
+    private static String parsePickerChoice(String input, List<String> choices) {
+        String value = input == null ? "" : input.trim();
+        if (value.isEmpty()) return null;
+        try {
+            int index = Integer.parseInt(value);
+            if (index >= 1 && index <= choices.size()) return choices.get(index - 1);
+        } catch (NumberFormatException ignored) {
+            // Match names case-insensitively below.
+        }
+        for (String choice : choices) {
+            if (choice.equalsIgnoreCase(value)) return choice;
+        }
+        return null;
+    }
+
+    private List<String> pickerLines(String heading, List<String> choices,
+                                     String defaultChoice, String provider, String model) {
+        List<String> lines = new ArrayList<>();
+        lines.add("Active: " + activeModelDisplayName());
+        lines.add("Selection is applied atomically after both values are chosen.");
+        lines.add("A response already in flight continues on its original request.");
+        lines.add("");
+        lines.add(heading + ":");
+        for (int i = 0; i < choices.size(); i++) {
+            String marker = choices.get(i).equalsIgnoreCase(defaultChoice) ? " *" : "  ";
+            lines.add(String.format("%2d%s %s", i + 1, marker, choices.get(i)));
+        }
+        if (choices.isEmpty()) lines.add("  (type a value at the prompt)");
+        lines.add("");
+        lines.add("Provider: " + provider + "   Model: " + model);
+        lines.add("Commands: number/name, back, or Esc to cancel");
+        return lines;
+    }
+
+    private String providerLabel(String provider) {
+        if (provider == null) return "unknown";
+        return ChatConfig.PROVIDERS.getOrDefault(provider, provider);
+    }
+
+    private String activeModelDisplayName() {
+        if (chatConfig == null) return "local";
+        String provider = localProviderDisplayName();
+        String model = chatConfig.getModel();
+        return model == null || model.isBlank() ? provider : provider + " / " + model;
+    }
+
+    private void refreshModelDisplay() {
+        tui.setAgentName(activeModelDisplayName());
+        renderer.setTerminalTitle("kompile chat (local) — " + activeModelDisplayName());
+        statusBar.requestRedraw();
+    }
 
     boolean isAutoDequeueEnabled() {
         return queueManager == null ? autoDequeueEnabled : queueManager.isAutoDequeueEnabled();

@@ -119,7 +119,6 @@ class CustomSkillLoaderTest {
                     description: Deploy the application
                     category: devops
                     tools: bash, read, grep
-                    max_steps: 25
                     model: fast
                     ---
                     Deploy the app to staging. {{args}}
@@ -137,7 +136,6 @@ class CustomSkillLoaderTest {
             assertEquals("Deploy the application", skill.getDescription());
             assertEquals("devops", skill.getCategory());
             assertEquals(Set.of("bash", "read", "grep"), skill.getAllowedTools());
-            assertEquals(25, skill.getMaxSteps());
             assertEquals("fast", skill.getModelHint());
             assertFalse(skill.isBuiltIn());
             assertTrue(skill.getPromptTemplate().contains("Deploy the app"));
@@ -229,37 +227,6 @@ class CustomSkillLoaderTest {
             SkillConfig skill = loader.parseSkillFile(file);
 
             assertEquals("custom", skill.getCategory());
-        }
-
-        @Test
-        void defaultMaxStepsIsZero() throws IOException {
-            Path file = tempDir.resolve("nosteps.md");
-            Files.writeString(file, """
-                    ---
-                    name: nosteps
-                    ---
-                    Template. {{args}}
-                    """);
-
-            SkillConfig skill = loader.parseSkillFile(file);
-
-            assertEquals(0, skill.getMaxSteps());
-        }
-
-        @Test
-        void invalidMaxStepsUsesDefault() throws IOException {
-            Path file = tempDir.resolve("badsteps.md");
-            Files.writeString(file, """
-                    ---
-                    name: badsteps
-                    max_steps: notanumber
-                    ---
-                    Template. {{args}}
-                    """);
-
-            SkillConfig skill = loader.parseSkillFile(file);
-
-            assertEquals(0, skill.getMaxSteps());
         }
 
         @Test

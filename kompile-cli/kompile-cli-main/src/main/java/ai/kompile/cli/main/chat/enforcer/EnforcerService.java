@@ -25,6 +25,9 @@ import java.util.function.Supplier;
  */
 public class EnforcerService {
 
+    private static final long JUDGE_READY_TIMEOUT_MS =
+            Long.getLong("kompile.judge.readyTimeoutMs", 30_000L);
+
     @FunctionalInterface
     public interface AgentTurnExecutor {
         String run(String prompt) throws Exception;
@@ -72,7 +75,8 @@ public class EnforcerService {
         // Resolve the evaluator, applying the fallback policy if the judge is unavailable.
         EnforcerEvaluator activeEvaluator = evaluator;
         String backend = activeEvaluator != null ? activeEvaluator.describe() : "none";
-        if (activeEvaluator == null || !activeEvaluator.isAvailable()) {
+        boolean ready = activeEvaluator != null && activeEvaluator.awaitReady(JUDGE_READY_TIMEOUT_MS);
+        if (!ready || !activeEvaluator.isAvailable()) {
             EnforcerEvaluator keyword = buildKeywordFallback(policy);
             if (keyword != null) {
                 activeEvaluator = keyword;

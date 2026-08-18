@@ -44,8 +44,8 @@ ANDROID_NDK="${ANDROID_NDK:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}}"
 GRAALVM_HOME="${GRAALVM_HOME:-${JAVA_HOME:-}}"
 MAVEN="${MAVEN:-$MODULE_DIR/../../../../mvnw}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
-NATIVE_IMAGE_MAX_HEAP="${SDX_NATIVE_IMAGE_MAX_HEAP:-16g}"
-NATIVE_IMAGE_THREADS="${SDX_NATIVE_IMAGE_THREADS:-8}"
+NATIVE_IMAGE_MAX_HEAP="${SDX_NATIVE_IMAGE_MAX_HEAP:-12g}"
+NATIVE_IMAGE_THREADS="${SDX_NATIVE_IMAGE_THREADS:-}"
 WORK_DIR="$MODULE_DIR/target/android-ndk-aot"
 OUTPUT_DIR="$MODULE_DIR/target/android-aot"
 CLASSES_DIR=""
@@ -81,6 +81,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+# Keep Native Image analysis/compiler concurrency inside the same explicit job
+# budget as the rest of the Android producer unless a lower-level invocation
+# deliberately overrides it.
+NATIVE_IMAGE_THREADS="${NATIVE_IMAGE_THREADS:-$JOBS}"
 
 ANDROID_API=28
 EXPECTED_NDK_REVISION=28.1.13356709

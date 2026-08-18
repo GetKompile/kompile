@@ -523,6 +523,26 @@ class BackgroundProcessManagerTest {
         }
 
         @Test
+        void outputListenerShouldReceiveLinesBeforeProcessExit() throws Exception {
+            CountDownLatch firstLine = new CountDownLatch(1);
+            AtomicReference<String> captured = new AtomicReference<>();
+            manager.addOutputListener((process, line) -> {
+                captured.set(line);
+                firstLine.countDown();
+            });
+
+            ProcessEntry entry = manager.launch(
+                    "printf 'streamed-line\\n'; sleep 10",
+                    "Streaming output", Path.of(System.getProperty("user.dir")));
+
+            assertTrue(firstLine.await(5, TimeUnit.SECONDS),
+                    "output listener should fire while process is still running");
+            assertEquals("streamed-line", captured.get());
+            assertTrue(entry.isRunning(), "line callback must precede process exit");
+            assertTrue(manager.kill(entry.getId()));
+        }
+
+        @Test
         void processToolStreamShouldExposeRunningProcessOutput() throws Exception {
             ProcessEntry entry = manager.launch(
                     "printf 'tool-stream-ready\\n'; sleep 10",

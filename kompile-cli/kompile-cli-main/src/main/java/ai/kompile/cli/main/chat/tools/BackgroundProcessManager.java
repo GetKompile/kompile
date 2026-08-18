@@ -49,6 +49,15 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     /**
+     * Callback invoked for every output line as it is captured. The callback runs on
+     * the process I/O thread, after the line has been flushed to the durable log.
+     */
+    @FunctionalInterface
+    public interface OutputCallback {
+        void onProcessOutput(ProcessEntry entry, String line);
+    }
+
+    /**
      * State of a tracked process.
      */
     public enum ProcessState {
@@ -80,10 +89,10 @@ public class BackgroundProcessManager implements AutoCloseable {
         private volatile Integer exitCode;
         private volatile ProcessState state;
         private final Path outputFile;
-        private final String description;
+        private volatile String description;
         private final Process process;
         private final ProcessKind kind;
-        private final Map<String, String> metadata;
+        private volatile Map<String, String> metadata;
 
         ProcessEntry(String id, String command, long pid, Instant startTime,
                      Path outputFile, String description, Process process,
@@ -142,8 +151,11 @@ public class BackgroundProcessManager implements AutoCloseable {
     private volatile ExitCallback exitCallback;
     private final Thread shutdownHook;
 
-    // General state-change listeners (fired on launch, exit, kill)
+    // General state-change listeners (fired on launch, output, exit, kill)
     private final List<Runnable> changeListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    // Output listeners are separate from state listeners so callers can redraw the
+    // currently viewed process without treating every output line as a lifecycle change.
+    private final List<OutputCallback> outputListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * Default retention for completed process entries (1 hour).
@@ -219,6 +231,43 @@ public class BackgroundProcessManager implements AutoCloseable {
 
     public void removeChangeListener(Runnable listener) {
         changeListeners.remove(listener);
+    }
+
+    /** Register a listener for live output from every real process. */
+    public void addOutputListener(OutputCallback listener) {
+        if (listener != null) {
+            outputListeners.add(listener);
+        }
+    }
+
+    public void removeOutputListener(OutputCallback listener) {
+        outputListeners.remove(listener);
+    }
+
+    /** Update a virtual watcher's visible state without replacing its process entry. */
+    public boolean updateVirtual(String processId, String description, Map<String, String> metadata) {
+        ProcessEntry entry = processes.get(processId);
+        if (entry == null || !entry.isVirtual() || !entry.isRunning()) {
+            return false;
+        }
+        if (description != null && !description.isBlank()) {
+            entry.description = description;
+        }
+        if (metadata != null) {
+            entry.metadata = Map.copyOf(metadata);
+        }
+        fireChange();
+        return true;
+    }
+
+    private void fireOutput(ProcessEntry entry, String line) {
+        for (OutputCallback listener : outputListeners) {
+            try {
+                listener.onProcessOutput(entry, line);
+            } catch (RuntimeException ignored) {
+                // A redraw listener must not interrupt output capture.
+            }
+        }
     }
 
     private void fireChange() {
@@ -339,6 +388,9 @@ public class BackgroundProcessManager implements AutoCloseable {
                 writer.write(line);
                 writer.newLine();
                 writer.flush();
+                // Notify after the durable log is updated so an activity view can
+                // immediately re-read the complete line without racing the writer.
+                fireOutput(entry, line);
             }
 
             // Process has exited; get exit code

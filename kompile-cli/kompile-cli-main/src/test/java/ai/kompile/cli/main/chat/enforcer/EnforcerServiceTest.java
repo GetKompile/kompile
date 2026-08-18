@@ -67,6 +67,35 @@ class EnforcerServiceTest {
     }
 
     @Test
+    void doesNotRunAgentWhenJudgeReadinessFails() {
+        AtomicInteger executorCalls = new AtomicInteger();
+        EnforcerEvaluator unavailable = new FixedEvaluator(
+                List.of(EnforcerDecision.pass("should not be reached"))) {
+            @Override
+            public boolean awaitReady(long timeoutMs) {
+                return false;
+            }
+
+            @Override
+            public String describe() {
+                return "stale-cli";
+            }
+        };
+
+        EnforcerResult result = new EnforcerService(unavailable).enforce(
+                "answer",
+                new EnforcerPolicy("Use one sentence.", 0, false),
+                prompt -> {
+                    executorCalls.incrementAndGet();
+                    return "unexpected";
+                });
+
+        assertEquals(EnforcerResult.Status.UNAVAILABLE, result.getStatus());
+        assertEquals(0, executorCalls.get(), "judge failure must stop before the subordinate agent runs");
+        assertTrue(result.getMessage().contains("failing closed"));
+    }
+
+    @Test
     void passesRecentContextToEvaluator() {
         List<EnforcerConversationContext> seen = new ArrayList<>();
         EnforcerService service = new EnforcerService(new FixedEvaluator(

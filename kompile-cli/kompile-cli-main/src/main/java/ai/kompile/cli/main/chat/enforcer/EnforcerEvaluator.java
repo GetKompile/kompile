@@ -32,6 +32,14 @@ public interface EnforcerEvaluator {
 
     boolean isAvailable();
 
+    /**
+     * Wait for an evaluator that has asynchronous startup (for example a CLI judge
+     * process) to finish its readiness check. Keyword evaluators are ready immediately.
+     */
+    default boolean awaitReady(long timeoutMs) {
+        return isAvailable();
+    }
+
     String describe();
 
     /**

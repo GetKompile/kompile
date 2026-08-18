@@ -65,7 +65,6 @@ class RoleSystemTest {
                 .category("testing")
                 .description("A test role")
                 .systemPrompt("You are a test role")
-                .maxSteps(25)
                 .canSpawnSubagents(false)
                 .modelHint("fast")
                 .isBuiltIn(false)
@@ -76,7 +75,6 @@ class RoleSystemTest {
         assertEquals("testing", role.getCategory());
         assertEquals("A test role", role.getDescription());
         assertEquals("You are a test role", role.getSystemPrompt());
-        assertEquals(25, role.getMaxSteps());
         assertFalse(role.isCanSpawnSubagents());
         assertEquals("fast", role.getModelHint());
         assertFalse(role.isBuiltIn());
@@ -116,7 +114,6 @@ class RoleSystemTest {
                 category: testing
                 description: A test role for parsing
                 model: fast
-                max_steps: 20
                 can_spawn: false
                 ---
                 You are a test role for parsing frontmatter and body.
@@ -134,7 +131,6 @@ class RoleSystemTest {
         assertEquals("testing", role.getCategory());
         assertEquals("A test role for parsing", role.getDescription());
         assertEquals("fast", role.getModelHint());
-        assertEquals(20, role.getMaxSteps());
         assertFalse(role.isCanSpawnSubagents());
         assertTrue(role.getSystemPrompt().contains("test role for parsing"));
     }
@@ -277,7 +273,6 @@ class RoleSystemTest {
                 .name("test-role")
                 .displayName("Test Role")
                 .systemPrompt("You are a test")
-                .maxSteps(30)
                 .build();
 
         var agentConfig = role.toAgentConfig();
@@ -286,7 +281,6 @@ class RoleSystemTest {
         assertEquals("test-role", agentConfig.getName());
         assertEquals("Test Role", agentConfig.getDisplayName());
         assertEquals("You are a test", agentConfig.getSystemPrompt());
-        assertEquals(30, agentConfig.getMaxSteps());
     }
 
     @Test

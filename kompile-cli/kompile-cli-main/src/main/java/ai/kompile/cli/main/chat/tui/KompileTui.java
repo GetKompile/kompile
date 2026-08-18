@@ -82,6 +82,16 @@ public class KompileTui {
     /** Activity views pin their title row while their transcript body scrolls. */
     private volatile boolean contentViewPinsHeader = false;
 
+    /** True while a short-lived modal (for example the provider/model picker) owns the content area. */
+    private volatile boolean temporaryWindowActive = false;
+    private volatile String temporaryWindowTitle = "";
+    private volatile List<String> temporaryWindowLines = List.of();
+    private String savedContentViewKey;
+    private String savedContentViewTitle;
+    private List<String> savedContentViewLines;
+    private int savedContentScrollOffset;
+    private boolean savedContentViewPinsHeader;
+
     /**
      * Extra rows reserved between the scroll region and the StatusBar.
      * Used by EmulatedPassthroughCommand for its input box, queue preview, etc.
@@ -224,6 +234,73 @@ public class KompileTui {
         }
     }
 
+    public boolean isTemporaryWindowActive() {
+        return temporaryWindowActive;
+    }
+
+    /**
+     * Replace the content region with a modal window while retaining the active
+     * transcript/view underneath it. Background output continues to update the
+     * retained transcript, but cannot overwrite this window until it closes.
+     */
+    public void showTemporaryWindow(String title, List<String> lines) {
+        List<String> window = new ArrayList<>();
+        window.add("╭─ " + (title == null || title.isBlank() ? "Kompile" : title) + " ─╮");
+        if (lines != null) {
+            for (String line : lines) {
+                window.add("│ " + (line == null ? "" : line) + " │");
+            }
+        }
+        window.add("╰" + "─".repeat(Math.max(1, Math.min(120, terminalWidth - 2))) + "╯");
+        synchronized (drawLock) {
+            if (!temporaryWindowActive) {
+                savedContentViewKey = contentViewKey;
+                savedContentViewTitle = contentViewTitle;
+                savedContentViewLines = contentViewLines;
+                savedContentScrollOffset = contentScrollOffset;
+                savedContentViewPinsHeader = contentViewPinsHeader;
+            }
+            temporaryWindowActive = true;
+            temporaryWindowTitle = title == null ? "" : title;
+            temporaryWindowLines = List.copyOf(window);
+            contentViewKey = "__temporary__";
+            contentViewTitle = temporaryWindowTitle;
+            contentViewLines = temporaryWindowLines;
+            contentScrollOffset = 0;
+            contentViewPinsHeader = false;
+            replaceScrollRegion(contentViewLines, false);
+        }
+        if (!started) {
+            window.forEach(System.out::println);
+        }
+    }
+
+    public void updateTemporaryWindow(String title, List<String> lines) {
+        showTemporaryWindow(title, lines);
+    }
+
+    /** Close the modal and restore the exact view that was underneath it. */
+    public void closeTemporaryWindow() {
+        synchronized (drawLock) {
+            if (!temporaryWindowActive) return;
+            temporaryWindowActive = false;
+            contentViewKey = savedContentViewKey == null ? MAIN_CONTENT_VIEW : savedContentViewKey;
+            contentViewTitle = savedContentViewTitle == null ? "Main chat" : savedContentViewTitle;
+            if (MAIN_CONTENT_VIEW.equals(contentViewKey)) {
+                contentViewLines = List.copyOf(mainTranscriptLines);
+            } else {
+                contentViewLines = savedContentViewLines == null ? List.of() : savedContentViewLines;
+            }
+            contentScrollOffset = savedContentScrollOffset;
+            contentViewPinsHeader = savedContentViewPinsHeader;
+            savedContentViewKey = null;
+            savedContentViewTitle = null;
+            savedContentViewLines = null;
+            temporaryWindowLines = List.of();
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+        }
+    }
+
     /** Retain a JLine-owned user input row without printing it a second time. */
     public void rememberMainTranscriptLine(String text) {
         synchronized (drawLock) {
@@ -334,7 +411,7 @@ public class KompileTui {
      * object, so redisplay cannot leave a stale or blank activity screen behind.
      */
     public void redrawContentView() {
-        if (!started) return;
+        if (!started || temporaryWindowActive) return;
         synchronized (drawLock) {
             setScrollRegion();
             replaceScrollRegion(contentViewLines, contentViewPinsHeader);
@@ -395,6 +472,7 @@ public class KompileTui {
      * and the activity tree below it do not drift down the terminal.
      */
     public void showActivityView(String key, String title, String content) {
+        if (temporaryWindowActive) return;
         List<String> lines = new ArrayList<>();
         lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
         lines.addAll(splitLines(content));
@@ -417,6 +495,7 @@ public class KompileTui {
      * This is used for live subagent chunks and process output updates.
      */
     public void updateActivityView(String key, String title, String content) {
+        if (temporaryWindowActive) return;
         if (key == null || key.isBlank()) return;
         if (!key.equals(contentViewKey)) {
             // A selection/process transition can arrive between refresh callbacks.
@@ -445,6 +524,7 @@ public class KompileTui {
 
     /** Restore the retained parent-chat transcript in-place. */
     public void showMainView() {
+        if (temporaryWindowActive) return;
         synchronized (drawLock) {
             contentViewKey = MAIN_CONTENT_VIEW;
             contentViewTitle = "Main chat";

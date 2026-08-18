@@ -503,6 +503,9 @@ public class ChatCompleter implements Completer {
     /** Retained compatibility hook; queue state is rendered by the status bar, not JLine post rows. */
     private static volatile Supplier<List<String>> queueSupplier;
 
+    /** True while a temporary picker owns the transcript area. */
+    private static volatile boolean temporaryWindowActive;
+
     /** Current standard-chat model activity rendered by the persistent status bar. */
     private static volatile String activityLabel;
     /** Terminal activity must remain visible without being rendered as a live spinner. */
@@ -567,7 +570,16 @@ public class ChatCompleter implements Completer {
             cachedImpl = null;
             activityLabel = null;
             activityTerminal = false;
+            temporaryWindowActive = false;
         }
+    }
+
+    public static void setTemporaryWindowActive(boolean active) {
+        temporaryWindowActive = active;
+    }
+
+    public static boolean isTemporaryWindowActive() {
+        return temporaryWindowActive;
     }
 
     public static void setActivity(String activity) {
@@ -618,6 +630,11 @@ public class ChatCompleter implements Completer {
                 output = null;
             }
             if (output != null) {
+                // The modal owns the terminal surface. Keep recording output above,
+                // but defer JLine printAbove until the picker restores the main view.
+                if (temporaryWindowActive) {
+                    return;
+                }
                 LineReader reader = lineReaderRef;
                 if (reader instanceof LineReaderImpl impl && impl.isReading()) {
                     try {

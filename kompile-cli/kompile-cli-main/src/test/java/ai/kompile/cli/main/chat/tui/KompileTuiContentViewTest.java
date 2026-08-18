@@ -138,4 +138,42 @@ class KompileTuiContentViewTest {
             processes.close();
         }
     }
+
+    @Test
+    void temporaryWindowOwnsRenderingAndRestoresActiveView() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-temporary-window-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-temporary-window-queue"),
+                    new TerminalRenderer(false));
+            tui.printInScrollRegion("parent output");
+            tui.showActivityView("process:one", "process one", "process output");
+
+            tui.showTemporaryWindow("Provider and model", java.util.List.of(
+                    "Active: OpenAI / gpt-4o", "1  Anthropic", "2  OpenAI"));
+            assertTrue(tui.isTemporaryWindowActive());
+            assertEquals("__temporary__", tui.getContentViewKey());
+            assertTrue(tui.getContentViewLines().stream()
+                    .anyMatch(line -> line.contains("Active: OpenAI / gpt-4o")));
+
+            // Async activity/output cannot overwrite the modal, but is retained.
+            tui.recordInScrollRegion("output while picker is open");
+            tui.updateActivityView("process:one", "process one", "new process output");
+            assertTrue(tui.getContentViewLines().stream()
+                    .noneMatch(line -> line.contains("new process output")));
+
+            tui.closeTemporaryWindow();
+            assertFalse(tui.isTemporaryWindowActive());
+            assertEquals("process:one", tui.getContentViewKey());
+            assertTrue(tui.getContentViewLines().stream()
+                    .anyMatch(line -> line.contains("process output")));
+
+            tui.showMainView();
+            assertTrue(tui.getContentViewLines().contains("output while picker is open"));
+        } finally {
+            processes.close();
+        }
+    }
 }

@@ -185,8 +185,12 @@ public class StdioEnforcerTool {
                 meta.put("lastTaskId", taskId);
             }
 
-            completed = true;
-            String started = "Enforcer watcher started: "
+            // An unavailable/error result means the judge could not run; leave the
+            // watcher in FAILED state so /processes cannot report a dead judge as
+            // successful background work.
+            completed = result.getStatus() != EnforcerResult.Status.UNAVAILABLE
+                    && result.getStatus() != EnforcerResult.Status.ERROR;
+            String started = "Enforcer watcher " + (completed ? "completed" : "failed") + ": "
                     + (processEntry != null ? processEntry.getId() : "untracked")
                     + " session=" + runtimePolicy.getSessionId()
                     + " agent=" + agentName
@@ -221,7 +225,7 @@ public class StdioEnforcerTool {
         BackgroundProcessManager.ProcessEntry entry = processManager.registerVirtual(
                 BackgroundProcessManager.ProcessKind.ENFORCER,
                 "enforcer " + (agentName != null ? agentName : "agent"),
-                "Enforcer watcher for " + (agentName != null ? agentName : "agent"),
+                "Enforcer watcher checking judge for " + (agentName != null ? agentName : "agent"),
                 metadata);
         System.out.println("[enforcer] watcher started: " + entry.getId()
                 + " session=" + sessionId

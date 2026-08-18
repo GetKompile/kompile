@@ -18,7 +18,7 @@ Options:
   --graph-verifier <file>            Packaged graph Android verifier
   --javacpp-jar <file>               JavaCPP 1.5.13 build JAR
   --jni-output <arm64-v8a-dir>       Generated graph JNI output directory
-  --work-root <dir>                  Canonical isolated producer/staging/output root
+  --work-root <dir>                  Canonical isolated producer and staging root
   --android-sdk <dir>                Android SDK root (or ANDROID_HOME)
   --android-ndk <dir>                Android NDK used by runtime verifiers
   --java-home <dir>                  JDK 17 (or JAVA_HOME)
@@ -389,8 +389,8 @@ configure_work_root() {
   local tensor_g3_candidate
 
   [[ -n "$WORK_ROOT" ]] || return 0
-  [[ "$JNI_OUTPUT_EXPLICIT" == "0" && "$OUTPUT_EXPLICIT" == "0" ]] || {
-    echo "--work-root owns JNI staging and APK output; do not combine it with --jni-output or --output" >&2
+  [[ "$JNI_OUTPUT_EXPLICIT" == "0" ]] || {
+    echo "--work-root owns JNI staging; do not combine it with --jni-output" >&2
     return 1
   }
   [[ "$WORK_ROOT" != "/" ]] || {
@@ -412,7 +412,9 @@ configure_work_root() {
     APK_STAGING_ROOT="$WORK_ROOT/apk-stage"
   fi
   JNI_OUTPUT_DIR="$WORK_ROOT/apk-jni/arm64-v8a"
-  OUTPUT_DIR="$WORK_ROOT/apk-output"
+  if (( OUTPUT_EXPLICIT == 0 )); then
+    OUTPUT_DIR="$WORK_ROOT/apk-output"
+  fi
   RAM_GRADLE_BUILD=1
 
   if [[ "$SDX_LLM_SDK_SOURCE" == "canonical" ]]; then

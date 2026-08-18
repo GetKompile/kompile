@@ -150,8 +150,15 @@ public class ChatCommandRouter {
                 return true;
 
             case "/setup":
-            case "/provider":
                 runSetup();
+                return true;
+
+            case "/provider":
+                if (localMode) {
+                    repl.openModelProviderPicker();
+                } else {
+                    runSetup();
+                }
                 return true;
 
             case "/tools":
@@ -1105,70 +1112,11 @@ public class ChatCommandRouter {
         List<String> allowedModels = activeAgent.getAllowedModels();
 
         if (rest.isEmpty()) {
-            // Show current model and list available models
-            System.out.println(ascii.sectionHeader("Model"));
-            System.out.println("  Current model: " + renderer.cyan(currentModel));
-            System.out.println("  Provider:      " + renderer.dim(provider));
-            System.out.println("  Agent:         " + renderer.dim(repl.getLocalAgentName()));
-            System.out.println();
-
-            if (providerModels.length == 0 && (allowedModels == null || allowedModels.isEmpty())) {
-                System.out.println(renderer.dim("  No predefined models for provider '" + provider + "'."));
-                System.out.println(renderer.dim("  Use /model <model-name> to set any model."));
-            } else {
-                // Merge: show all provider models + mark which are allowed for this agent
-                LinkedHashSet<String> allModels = new LinkedHashSet<>();
-                for (String m : providerModels) allModels.add(m);
-                if (allowedModels != null) {
-                    for (String m : allowedModels) allModels.add(m);
-                }
-
-                List<String> headers = List.of("Model", "Status", "Agent Access");
-                List<List<String>> rows = new ArrayList<>();
-                for (String m : allModels) {
-                    String status = m.equals(currentModel) ? renderer.green("● active") : "";
-                    String access;
-                    if (allowedModels == null || allowedModels.isEmpty()) {
-                        access = renderer.green("allowed");
-                    } else if (allowedModels.contains(m)) {
-                        access = renderer.green("allowed");
-                    } else {
-                        access = renderer.dim("not in allowlist");
-                    }
-                    rows.add(List.of(m, status, access));
-                }
-                System.out.println(ascii.table(headers, rows));
-            }
-            System.out.println();
-            System.out.println(renderer.dim("  Usage: /model <model-name>"));
-            System.out.println(renderer.dim("  Example: /model claude-opus-4-20250514"));
+            repl.openModelProviderPicker();
             return;
         }
 
-        // Switch model
-        String newModel = rest;
-
-        // Warn if not in the agent's allowlist (but still allow it)
-        if (allowedModels != null && !allowedModels.isEmpty() && !allowedModels.contains(newModel)) {
-            System.out.println(renderer.yellow("  ⚠ Model '" + newModel + "' is not in the allowlist for agent '" +
-                    repl.getLocalAgentName() + "'."));
-            System.out.println(renderer.dim("    Allowed: " + String.join(", ", allowedModels)));
-            System.out.println(renderer.dim("    Switching anyway — use /model to see recommended models."));
-        }
-
-        chatConfig.setModel(newModel);
-        try {
-            chatConfig.save();
-        } catch (Exception e) {
-            // Non-fatal — config will still be used in memory this session
-        }
-
-        // Update session metrics
-        sessionMetrics.setModel(newModel);
-
-        chatHistory.logSystem("Switched model to: " + newModel);
-        System.out.println(renderer.green("  Switched model to: ") + renderer.cyan(newModel));
-        System.out.println(renderer.dim("  Note: the new model will be used for subsequent messages."));
+        repl.applyModelSelection(rest);
     }
 
     // ========================================================================

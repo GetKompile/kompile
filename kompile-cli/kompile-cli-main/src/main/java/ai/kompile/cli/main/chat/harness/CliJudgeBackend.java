@@ -88,6 +88,23 @@ public class CliJudgeBackend implements JudgeBackend {
                 markFailure(e.getMessage());
                 System.err.println("[enforcer] judge unavailable: " + failureReason);
             }
+            return;
+        }
+
+        // Non-persistent CLIs used to be considered healthy solely because their
+        // executable existed on PATH. Perform a bounded real request before allowing
+        // a subordinate turn; this surfaces disabled, stale, unauthenticated, and
+        // exhausted-quota agents as a failed judge instead of a 120s "running" watcher.
+        try {
+            String response = generateSingleShot(
+                    "Reply with exactly OK. Do not use tools or modify files.",
+                    systemPrompt);
+            if (response == null || response.isBlank()) {
+                markFailure("Judge preflight returned no response");
+            }
+        } catch (Exception failure) {
+            markFailure("Judge preflight failed: " + failure.getMessage());
+            System.err.println("[enforcer] judge unavailable: " + failureReason);
         }
     }
 
