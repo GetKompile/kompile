@@ -262,6 +262,8 @@ public final class LocalModelPipelineRunner {
         if (!modelContext.bindings().isEmpty()) {
             definition.setModelBindings(modelContext.bindings());
             definition.setResolvedModels(modelContext.resolvedModels());
+            definition.setPipelineSpec(materializeModelRoles(
+                    definition.getPipelineSpec(), modelContext.resolvedModels()));
         }
 
         Map<String, Object> input = new LinkedHashMap<>();
@@ -304,6 +306,95 @@ public final class LocalModelPipelineRunner {
         return path.toAbsolutePath().normalize();
     }
 
+    /**
+     * Replace provider-neutral modelRole/tokenizerRole parameters with the resolved local artifact
+     * paths. Definitions remain portable and immutable in the registry; only the per-run copy is
+     * materialized. Explicit modelUri/tokenizerPath values in a custom definition always win.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> materializeModelRoles(
+            Map<String, Object> pipelineSpec,
+            Map<String, Map<String, Object>> resolvedModels) {
+        if (pipelineSpec == null || pipelineSpec.isEmpty()) return pipelineSpec;
+        Object materialized = materializeModelRolesValue(pipelineSpec, resolvedModels);
+        return materialized instanceof Map<?, ?> map
+                ? (Map<String, Object>) map : pipelineSpec;
+    }
+
+    private static Object materializeModelRolesValue(
+            Object value,
+            Map<String, Map<String, Object>> resolvedModels) {
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            raw.forEach((key, item) -> copy.put(String.valueOf(key),
+                    materializeModelRolesValue(item, resolvedModels)));
+
+            String stepClassName = stringValue(copy.get("@class"));
+            boolean uriBackedModelConfig = stepClassName != null
+                    && stepClassName.endsWith("LLMStepConfig");
+            String modelRole = stringValue(copy.get("modelRole"));
+            if (modelRole != null) {
+                Map<String, Object> descriptor = modelDescriptor(modelRole, resolvedModels);
+                Object modelPath = descriptor.get("modelPath");
+                if (!copy.containsKey("modelUri") && modelPath != null) {
+                    copy.put("modelUri", uriBackedModelConfig
+                            ? fileUri(modelPath) : modelPath);
+                }
+                if (!copy.containsKey("modelPath") && modelPath != null) {
+                    copy.put("modelPath", modelPath);
+                }
+            }
+
+            String tokenizerRole = stringValue(copy.get("tokenizerRole"));
+            if (tokenizerRole != null) {
+                Map<String, Object> descriptor = modelDescriptor(tokenizerRole, resolvedModels);
+                Object tokenizerPath = descriptor.get("tokenizerPath");
+                if (tokenizerPath != null) {
+                    copy.putIfAbsent("tokenizerPath", tokenizerPath);
+                    copy.putIfAbsent("tokenizerUri", uriBackedModelConfig
+                            ? fileUri(tokenizerPath) : tokenizerPath);
+                }
+            }
+            return copy;
+        }
+        if (value instanceof List<?> values) {
+            List<Object> copy = new ArrayList<>(values.size());
+            for (Object item : values) copy.add(materializeModelRolesValue(item, resolvedModels));
+            return copy;
+        }
+        return value;
+    }
+
+    private static String fileUri(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String raw = String.valueOf(value);
+        try {
+            return Path.of(raw).toAbsolutePath().normalize().toUri().toString();
+        } catch (RuntimeException ignored) {
+            return raw;
+        }
+    }
+
+    private static Map<String, Object> modelDescriptor(
+            String role,
+            Map<String, Map<String, Object>> resolvedModels) {
+        Map<String, Object> descriptor = resolvedModels.get(role);
+        if (descriptor == null) {
+            descriptor = resolvedModels.entrySet().stream()
+                    .filter(entry -> entry.getKey().equalsIgnoreCase(role))
+                    .map(Map.Entry::getValue)
+                    .findFirst().orElse(null);
+        }
+        if (descriptor == null) {
+            throw new IllegalArgumentException(
+                    "Pipeline step requires model role '" + role
+                            + "', but no matching model binding was supplied.");
+        }
+        return descriptor;
+    }
+
     private static String pagesText(JsonNode completion) {
         if (completion == null || !completion.path("pages").isArray()) {
             return "";
@@ -326,7 +417,7 @@ public final class LocalModelPipelineRunner {
             return text;
         }
         if (value instanceof Map<?, ?> map) {
-            for (String key : List.of("markdown", "text", "content", "output")) {
+            for (String key : List.of("markdown", "text", "content", "output", "response", "llm_response")) {
                 String text = textualOutput(map.get(key));
                 if (text != null && !text.isBlank()) {
                     return text;
@@ -354,6 +445,14 @@ public final class LocalModelPipelineRunner {
             Path projectRoot,
             LocalCrawlCapabilities.ResolvedPipeline pipeline,
             UnifiedPipelineDefinition definition) throws IOException, InterruptedException {
+        return resolveBoundModels(projectRoot, pipeline, definition, true);
+    }
+
+    public static ResolvedModelContext resolveBoundModels(
+            Path projectRoot,
+            LocalCrawlCapabilities.ResolvedPipeline pipeline,
+            UnifiedPipelineDefinition definition,
+            boolean allowProjectMutation) throws IOException, InterruptedException {
         Map<String, String> bindings = new LinkedHashMap<>();
         if (definition != null) {
             mergeBindings(bindings, definition.getModelBindings());
@@ -378,12 +477,16 @@ public final class LocalModelPipelineRunner {
         String modelSetId = first(
                 stringValue(pipeline.chunkerOptions().get("modelSetId")),
                 definition == null ? null : definition.getModelSetId());
-        String legacyModelId = first(
-                stringValue(pipeline.chunkerOptions().get("modelId")),
-                stringValue(pipeline.chunkerOptions().get("vlmModel")),
-                modelSetId);
-        if (bindings.isEmpty() && legacyModelId != null
-                && (modelSetId != null || defaultRuntime != null)) {
+        String modelId = stringValue(pipeline.chunkerOptions().get("modelId"));
+        String vlmModel = stringValue(pipeline.chunkerOptions().get("vlmModel"));
+        if (modelId != null && vlmModel != null && !modelId.equals(vlmModel)) {
+            throw new IllegalArgumentException(
+                    "Conflicting model selectors: modelId='" + modelId
+                            + "' and vlmModel='" + vlmModel
+                            + "'. Use modelBindings.default for an authoritative selection.");
+        }
+        String legacyModelId = first(modelId, vlmModel, modelSetId);
+        if (bindings.isEmpty() && legacyModelId != null) {
             bindings.put("default", legacyModelId);
         }
         if (bindings.isEmpty()) {
@@ -408,7 +511,8 @@ public final class LocalModelPipelineRunner {
             Map<String, Object> runtimeOptions = modelRuntimeOptions(defaultRuntime, modelDefinition);
             LocalProjectModelBootstrap.ResolvedProjectModel resolved = resolvedByReference.get(reference);
             if (resolved == null) {
-                resolved = LocalProjectModelBootstrap.ensure(projectRoot, selection, runtimeOptions);
+                resolved = LocalProjectModelBootstrap.ensure(
+                        projectRoot, selection, runtimeOptions, allowProjectMutation);
                 resolvedByReference.put(reference, resolved);
             }
 

@@ -23,6 +23,8 @@ Options:
   --object-output <file>    Publish the verified relocatable object and stop
   --reuse-jdk-libs <dir>    Reuse the verified JDK 21.0.10 native closure
   --reuse-svm-libs <dir>    Reuse libjvm/liblibchelper archives
+  --reuse-support-if-present <dir>
+                             Reuse a complete receipted JDK/SVM closure when present
   --support-libraries-only  Build/verify support archives and stop
   --offline                 Do not fetch upstream sources; Maven runs offline
   --clean                   Remove this script's work directory first
@@ -33,8 +35,9 @@ commits and cached below the work directory. Reuse options exist for fast,
 deterministic relinking and CI audits.
 
 Native Image resource environment:
-  SDX_NATIVE_IMAGE_MAX_HEAP=16g  Maximum Native Image JVM heap
-  SDX_NATIVE_IMAGE_THREADS=8     Native Image analysis/compiler thread limit
+  SDX_NATIVE_IMAGE_MAX_HEAP=12g  Maximum Native Image JVM heap
+  SDX_NATIVE_IMAGE_THREADS=<jobs>
+                                 Native Image analysis/compiler thread limit
 USAGE
 }
 
@@ -54,6 +57,7 @@ REUSE_OBJECT=""
 OBJECT_OUTPUT=""
 REUSE_JDK_LIBS=""
 REUSE_SVM_LIBS=""
+REUSE_SUPPORT_IF_PRESENT=""
 SUPPORT_LIBRARIES_ONLY=false
 STRICT_CLASSPATH=false
 OFFLINE=false
@@ -74,6 +78,7 @@ while [[ $# -gt 0 ]]; do
         --object-output) OBJECT_OUTPUT="${2:?missing value for --object-output}"; shift 2 ;;
         --reuse-jdk-libs) REUSE_JDK_LIBS="${2:?missing value for --reuse-jdk-libs}"; shift 2 ;;
         --reuse-svm-libs) REUSE_SVM_LIBS="${2:?missing value for --reuse-svm-libs}"; shift 2 ;;
+        --reuse-support-if-present) REUSE_SUPPORT_IF_PRESENT="${2:?missing value for --reuse-support-if-present}"; shift 2 ;;
         --support-libraries-only) SUPPORT_LIBRARIES_ONLY=true; shift ;;
         --offline) OFFLINE=true; shift ;;
         --clean) CLEAN=true; shift ;;
@@ -108,6 +113,28 @@ fail() {
     echo "ERROR: $*" >&2
     exit 3
 }
+
+if [[ -n "$REUSE_SUPPORT_IF_PRESENT" ]]; then
+    [[ -z "$REUSE_JDK_LIBS" && -z "$REUSE_SVM_LIBS" ]] ||
+        fail "--reuse-support-if-present cannot be combined with explicit support reuse directories"
+    SUPPORT_CLOSURE_COMPLETE=true
+    for support_file in \
+        libjvm.a liblibchelper.a \
+        libjava.a libnet.a libnio.a libzip.a libprefs.a libextnet.a \
+        jdk-support-receipt; do
+        if [[ ! -s "$REUSE_SUPPORT_IF_PRESENT/$support_file" ]]; then
+            SUPPORT_CLOSURE_COMPLETE=false
+            break
+        fi
+    done
+    if [[ "$SUPPORT_CLOSURE_COMPLETE" == true ]]; then
+        REUSE_JDK_LIBS="$REUSE_SUPPORT_IF_PRESENT"
+        REUSE_SVM_LIBS="$REUSE_SUPPORT_IF_PRESENT"
+        echo "Reusing complete receipted Android support closure: $REUSE_SUPPORT_IF_PRESENT"
+    else
+        echo "Android support closure is absent or incomplete; building it in the selected work directory"
+    fi
+fi
 
 assert_unix_file_attributes_abi() {
     local binary="$1"

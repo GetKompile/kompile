@@ -423,13 +423,14 @@ public class VlmModelController {
      * @param file Image file (PNG, JPG) or single-page PDF to process
      * @param iterations Number of iterations to run for averaging (default 1, max 10)
      * @param maxTokens Maximum tokens to generate per iteration (default 4096)
+     * @param modelId Configured VLM model definition id
      */
     @PostMapping(value = "/benchmark", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<Map<String, Object>> benchmarkVlm(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "iterations", defaultValue = "1") int iterations,
             @RequestParam(value = "maxTokens", defaultValue = "4096") int maxTokens,
-            @RequestParam(value = "modelId", required = false) String modelId) {
+            @RequestParam(value = "modelId") String modelId) {
 
         if (ocrPipelineService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -438,6 +439,10 @@ public class VlmModelController {
 
         iterations = Math.max(1, Math.min(iterations, 10));
         maxTokens = Math.max(1, Math.min(maxTokens, 8192));
+        if (modelId == null || modelId.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "modelId is required; configure a VLM model definition first"));
+        }
 
         try {
             // Save uploaded file to temp
@@ -451,9 +456,8 @@ public class VlmModelController {
             int totalGenTokens = 0;
 
             for (int i = 0; i < iterations; i++) {
-                // Use OcrPipelineService to process the file with VLM
-                String effectiveModelId = modelId != null ? modelId : "smoldocling-256m";
-                var results = ocrPipelineService.processPdfWithVlm(tempFile, effectiveModelId);
+                // Use the explicitly configured VLM model definition.
+                var results = ocrPipelineService.processPdfWithVlm(tempFile, modelId);
 
                 if (results != null && !results.isEmpty()) {
                     var result = results.get(0);
@@ -498,7 +502,7 @@ public class VlmModelController {
                     "avgGenerateTimeMs", iterations > 0 ? totalGenMs / iterations : 0,
                     "avgGeneratedTokens", iterations > 0 ? totalGenTokens / iterations : 0,
                     "totalTokensGenerated", totalGenTokens,
-                    "modelId", modelId != null ? modelId : "default"
+                    "modelId", modelId
             ));
 
             // Cleanup
@@ -519,11 +523,17 @@ public class VlmModelController {
      */
     @GetMapping("/benchmark/quick")
     public ResponseEntity<Map<String, Object>> quickBenchmark(
-            @RequestParam(value = "maxTokens", defaultValue = "256") int maxTokens) {
+            @RequestParam(value = "maxTokens", defaultValue = "256") int maxTokens,
+            @RequestParam(value = "modelId") String modelId) {
 
         if (ocrPipelineService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(Map.of("error", "OcrPipelineService not available"));
+        }
+
+        if (modelId == null || modelId.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", "modelId is required; configure a VLM model definition first"));
         }
 
         try {
@@ -534,7 +544,7 @@ public class VlmModelController {
             ImageIO.write(testImage, "png", tempFile);
 
             long startTime = System.nanoTime();
-            var results = ocrPipelineService.processPdfWithVlm(tempFile, "smoldocling-256m");
+            var results = ocrPipelineService.processPdfWithVlm(tempFile, modelId);
             long totalMs = (System.nanoTime() - startTime) / 1_000_000;
 
             Map<String, Object> response = new LinkedHashMap<>();

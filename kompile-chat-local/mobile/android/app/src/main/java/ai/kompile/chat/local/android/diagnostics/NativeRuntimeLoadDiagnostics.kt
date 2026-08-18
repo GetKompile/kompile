@@ -174,6 +174,9 @@ internal data class RecoveredNativeOperation(
 /** Pure formatting and correlation rules so crash evidence remains host-testable. */
 internal object NativeOperationDiagnosticPolicy {
     private const val EXIT_MATCH_CLOCK_SLOP_MILLIS = 2_000L
+    private const val SDX_RUNTIME_PROCESS_SUFFIX = ":sdx_model_runtime"
+    private const val SIGKILL = 9
+    private const val BACKGROUND_SERVICE_IMPORTANCE = 300
 
     fun exitMatchesAttempt(
         attempt: NativeOperationAttempt,
@@ -234,13 +237,33 @@ internal object NativeOperationDiagnosticPolicy {
         else -> "unknown process termination"
     }
 
+    /**
+     * The isolated runtime is deliberately retired with Process.killProcess when its last client
+     * unbinds. Android reports that intentional teardown as REASON_SIGNALED/SIGKILL after an app
+     * restart. A bound worker timeout, native crash, or low-memory kill has different evidence and
+     * must remain an error.
+     */
+    fun isExpectedRuntimeRetirement(
+        attempt: NativeOperationAttempt,
+        exitEvidence: NativeOperationExitEvidence?
+    ): Boolean = exitEvidence != null &&
+        attempt.processName.endsWith(SDX_RUNTIME_PROCESS_SUFFIX) &&
+        exitEvidence.processName == attempt.processName &&
+        exitEvidence.reason == ApplicationExitInfo.REASON_SIGNALED &&
+        exitEvidence.status == SIGKILL &&
+        exitEvidence.importance >= BACKGROUND_SERVICE_IMPORTANCE &&
+        exitEvidence.timestampEpochMillis >= attempt.checkpointEpochMillis
+
     fun createDiagnostic(
         attempt: NativeOperationAttempt,
         exitEvidence: NativeOperationExitEvidence?,
         managedFailure: Throwable? = null
     ): ImportDiagnostic {
         val reason = exitEvidence?.let { reasonLabel(it.reason) }
+        val expectedRuntimeRetirement = isExpectedRuntimeRetirement(attempt, exitEvidence)
         val summary = when {
+            expectedRuntimeRetirement ->
+                "The SDX runtime was retired during app restart while ${attempt.checkpoint.label}; the cached model remains resumable."
             reason != null -> "Android recorded a $reason while ${attempt.checkpoint.label}."
             managedFailure != null -> {
                 val detail = managedFailure.message?.takeIf(String::isNotBlank)
@@ -305,9 +328,17 @@ internal object NativeOperationDiagnosticPolicy {
                 ?: attempt.checkpointEpochMillis,
             operation = attempt.operation.label,
             phase = attempt.checkpoint.label,
-            severity = ImportDiagnosticSeverity.ERROR,
+            severity = if (expectedRuntimeRetirement) {
+                ImportDiagnosticSeverity.INFO
+            } else {
+                ImportDiagnosticSeverity.ERROR
+            },
             summary = summary,
-            remediation = attempt.operation.remediation,
+            remediation = if (expectedRuntimeRetirement) {
+                "Resume the cached model operation; the verified model, canonical SDZ, and device-driver cache remain reusable."
+            } else {
+                attempt.operation.remediation
+            },
             technicalDetails = details
         )
     }

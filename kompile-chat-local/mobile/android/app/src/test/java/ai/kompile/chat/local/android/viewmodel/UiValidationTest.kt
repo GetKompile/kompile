@@ -1,5 +1,6 @@
 package ai.kompile.chat.local.android.viewmodel
 
+import ai.kompile.chat.local.android.ui.screens.copyableChatDebugTranscript
 import ai.kompile.chat.local.android.ui.screens.copyableChatTranscript
 import ai.kompile.chat.local.android.ui.screens.shouldShowHuggingFaceImportOnChat
 import org.junit.Assert.assertEquals
@@ -147,7 +148,18 @@ class UiValidationTest {
             ),
             route = "LOCAL_TENSOR_G3_NNAPI",
             error = "Encoding failed",
-            errorStackTrace = "stack-line"
+            errorStackTrace = "stack-line",
+            streaming = StreamingUiState(
+                phase = "decoding",
+                content = "live café",
+                protocolExchanges = listOf(
+                    ProtocolExchangeUi(
+                        "{\"stream\":true}",
+                        "live raw café",
+                        listOf("live protocol warning")
+                    )
+                )
+            )
         )
 
         assertTrue(transcript.contains("Search for café"))
@@ -157,6 +169,37 @@ class UiValidationTest {
         assertTrue(transcript.contains("bad MCP envelope"))
         assertTrue(transcript.contains("Encoding failed"))
         assertTrue(transcript.contains("stack-line"))
+        assertTrue(transcript.contains("streaming.protocol[0].request_json"))
+        assertTrue(transcript.contains("live raw café"))
+        assertTrue(transcript.contains("live protocol warning"))
+    }
+
+    @Test
+    fun copiedDebugTranscriptIncludesLifecycleAndNativeEvidence() {
+        val debug = copyableChatDebugTranscript(
+            messages = listOf(UiMessage("user", "Hello")),
+            route = "LOCAL_TENSOR_G3_NNAPI",
+            modelState = ModelUiState.Ready("/models/model.sdz", "LOCAL_TENSOR_G3_NNAPI"),
+            graphState = GraphUiState.Ready("/graphs/default.kgraph"),
+            importOperation = ImportOperationKind.NONE,
+            modelLoadProgress = ModelLoadProgressUi("Ready", "Restored device cache"),
+            diagnostics = emptyList(),
+            error = "native failure",
+            errorStackTrace = "stack line",
+            streaming = null,
+            smokeDecodeTrace = "event=native_chunk chunk_utf8_sha256=abc" + "x".repeat(300_000),
+            capturedAtEpochMillis = 1234L
+        )
+
+        assertTrue(debug.startsWith("Kompile Chat debug transcript"))
+        assertTrue(debug.contains("captured_at_epoch_ms=1234"))
+        assertTrue(debug.contains("model_state=Ready"))
+        assertTrue(debug.contains("graph_state=Ready"))
+        assertTrue(debug.contains("model_load_progress.detail=Restored device cache"))
+        assertTrue(debug.contains("native_chunk chunk_utf8_sha256=abc"))
+        assertTrue(debug.contains("debug log truncated for clipboard safety"))
+        assertTrue(debug.toByteArray(Charsets.UTF_8).size <= 200_000)
+        assertTrue(debug.contains("native failure"))
     }
 
     @Test
@@ -166,7 +209,9 @@ class UiValidationTest {
         ).readText()
 
         assertTrue(source.contains("contentDescription = \"Copy transcript\""))
-        assertTrue(source.contains("copyableChatTranscript(messages, route, error, errorStackTrace)"))
+        assertTrue(source.contains("contentDescription = \"Copy debug log\""))
+        assertTrue(source.contains("testTag(\"copy_debug_log_button\")"))
+        assertTrue(source.contains("copyableChatTranscript(messages, route, error, errorStackTrace, streaming)"))
     }
 
     @Test

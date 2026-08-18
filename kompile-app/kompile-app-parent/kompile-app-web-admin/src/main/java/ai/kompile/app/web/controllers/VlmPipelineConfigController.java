@@ -50,6 +50,7 @@ import java.util.stream.Collectors;
  *   <tr><td>POST</td><td>/api/vlm/config/stages</td><td>Create custom stage</td></tr>
  *   <tr><td>GET</td><td>/api/vlm/config/model-sets</td><td>List all model sets</td></tr>
  *   <tr><td>POST</td><td>/api/vlm/config/model-sets</td><td>Create custom model set</td></tr>
+ *   <tr><td>PUT</td><td>/api/vlm/config/model-sets/{id}</td><td>Update custom model set</td></tr>
  *   <tr><td>DELETE</td><td>/api/vlm/config/model-sets/{id}</td><td>Delete custom model set</td></tr>
  * </table>
  *
@@ -316,6 +317,28 @@ public class VlmPipelineConfigController {
             response.put("setId", modelSet.getSetId());
             response.put("message", "Model set created successfully");
             return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        } else {
+            response.put("success", false);
+            response.put("errors", errors);
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    /**
+     * Update a custom model set.
+     */
+    @PutMapping("/model-sets/{setId}")
+    public ResponseEntity<Map<String, Object>> updateModelSet(
+            @PathVariable String setId,
+            @RequestBody VlmCustomModelSet modelSet) {
+        List<String> errors = registry.updateModelSet(setId, modelSet);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        if (errors.isEmpty()) {
+            response.put("success", true);
+            response.put("setId", setId);
+            response.put("message", "Model set updated successfully");
+            return ResponseEntity.ok(response);
         } else {
             response.put("success", false);
             response.put("errors", errors);

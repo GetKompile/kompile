@@ -232,4 +232,13 @@ class ToolRegistryStdioParityTest {
                 "CHAT_ONLY_EXCLUSIONS contains tool IDs not registered in ToolRegistryFactory — " +
                 "remove the stale entries: " + staleExclusions);
     }
+
+    @Test
+    void modelRuntimeAdvertisesStandaloneConversionThroughStdio() {
+        var schema = new ModelRuntimeTool(OM).parameterSchema();
+        assertTrue(schema.path("properties").path("action").path("enum").toString().contains("convert"));
+        assertTrue(schema.path("properties").has("outputPath"));
+        assertTrue(schema.path("properties").has("modelExecutable"));
+        assertTrue(schema.path("properties").has("modelJar"));
+    }
 }

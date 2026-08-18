@@ -46,7 +46,6 @@ class LocalModelPipelineRunnerTest {
 
         Map<String, Object> modelRuntime = new LinkedHashMap<>();
         modelRuntime.put("autoBootstrap", true);
-        modelRuntime.put("localPath", descriptor.toString());
         modelRuntime.put("format", "vlm");
         modelRuntime.put("type", "vlm_pipeline");
         modelRuntime.put("stagingExecutable", staging.toString());
@@ -69,6 +68,69 @@ class LocalModelPipelineRunnerTest {
                 .findFirst().orElseThrow();
         assertEquals(true, inventory.get("ready"));
         assertEquals("VLM", inventory.get("role"));
+
+        Path manifest = tempDir.resolve("kompile.project.json");
+        String manifestBeforeReadOnlyTest = Files.readString(manifest);
+        LocalModelPipelineRunner.ResolvedModelContext readOnly =
+                LocalModelPipelineRunner.resolveBoundModels(
+                        tempDir, pipeline, null, false);
+        assertEquals(descriptor.toAbsolutePath().normalize().toString(),
+                readOnly.resolvedModels().get("default").get("modelPath"));
+        assertEquals(manifestBeforeReadOnlyTest, Files.readString(manifest));
+    }
+
+    @Test
+    void localModelDirectoryResolvesWithoutStagingOrProjectMutation() throws Exception {
+        Path modelDirectory = tempDir.resolve("models/custom-vlm");
+        Files.createDirectories(modelDirectory);
+        Files.writeString(modelDirectory.resolve("tokenizer.json"), "{}");
+
+        Path impossibleStaging = tempDir.resolve("must-not-run");
+        Files.writeString(impossibleStaging, "#!/bin/sh\nexit 99\n");
+        assertTrue(impossibleStaging.toFile().setExecutable(true));
+
+        UnifiedPipelineDefinition definition = UnifiedPipelineDefinition.builder()
+                .pipelineId("local-only")
+                .kind(UnifiedPipelineDefinition.PipelineKind.GENERIC)
+                .modelBindings(Map.of("vision", "local-vlm"))
+                .modelDefinitions(Map.of("local-vlm", Map.of(
+                        "id", "local-vlm",
+                        "modelId", "local-vlm",
+                        "localPath", modelDirectory.toString(),
+                        "type", "vlm_pipeline",
+                        "runtime", Map.of(
+                                "forceBootstrap", true,
+                                "stagingExecutable", impossibleStaging.toString()))))
+                .build();
+        LocalCrawlCapabilities.ResolvedPipeline pipeline =
+                new LocalCrawlCapabilities.ResolvedPipeline(
+                        "local-only", "CUSTOM", "pdf", "no-op", 0, 0, Map.of());
+
+        LocalModelPipelineRunner.ResolvedModelContext resolved =
+                LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, definition);
+
+        assertEquals(modelDirectory.toAbsolutePath().normalize().toString(),
+                resolved.resolvedModels().get("vision").get("modelPath"));
+        assertEquals(false, resolved.resolvedModels().get("vision").get("bootstrapped"));
+        assertEquals("local", resolved.resolvedModels().get("vision").get("disposition"));
+        assertTrue(Files.notExists(tempDir.resolve("kompile.project.json")));
+    }
+
+    @Test
+    void conflictingLegacyModelSelectorsAreRejectedBeforeProvisioning() {
+        LocalCrawlCapabilities.ResolvedPipeline pipeline =
+                new LocalCrawlCapabilities.ResolvedPipeline(
+                        "conflict", "VLM", "pdf", "no-op", 0, 0,
+                        Map.of("modelId", "first", "vlmModel", "second"));
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                LocalModelPipelineRunner.resolveBoundModels(tempDir, pipeline, null, false));
+
+        assertTrue(failure.getMessage().contains("Conflicting model selectors"),
+                failure.getMessage());
+        assertTrue(failure.getMessage().contains("modelBindings.default"),
+                failure.getMessage());
+        assertTrue(Files.notExists(tempDir.resolve("kompile.project.json")));
     }
 
     @Test

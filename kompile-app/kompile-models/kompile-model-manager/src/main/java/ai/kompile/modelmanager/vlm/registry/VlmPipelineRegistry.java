@@ -480,11 +480,12 @@ public class VlmPipelineRegistry {
      * Register a custom model set.
      */
     public List<String> registerModelSet(VlmCustomModelSet modelSet) {
-        if (modelSet.getSetId() == null || modelSet.getSetId().isBlank()) {
-            return List.of("setId is required");
+        if (modelSet == null) {
+            return List.of("modelSet is required");
         }
-        if (modelSet.getDisplayName() == null || modelSet.getDisplayName().isBlank()) {
-            return List.of("displayName is required");
+        List<String> validationErrors = modelSet.validate();
+        if (!validationErrors.isEmpty()) {
+            return validationErrors;
         }
 
         VlmCustomModelSet existing = modelSets.get(modelSet.getSetId());
@@ -498,6 +499,31 @@ public class VlmPipelineRegistry {
 
         log.info("Registered model set: {}", modelSet.getSetId());
         return List.of();
+    }
+
+    /**
+     * Update an existing custom model set while preserving its creation timestamp.
+     */
+    public List<String> updateModelSet(String setId, VlmCustomModelSet modelSet) {
+        if (setId == null || setId.isBlank()) {
+            return List.of("setId is required");
+        }
+        VlmCustomModelSet existing = modelSets.get(setId);
+        if (existing == null) {
+            return List.of("Model set not found: " + setId);
+        }
+        if (existing.isBuiltin()) {
+            return List.of("Cannot override builtin model set: " + setId);
+        }
+        if (modelSet == null) {
+            return List.of("modelSet is required");
+        }
+        modelSet.setSetId(setId);
+        if (modelSet.getCreatedAt() <= 0) {
+            modelSet.setCreatedAt(existing.getCreatedAt());
+        }
+        modelSet.setBuiltin(false);
+        return registerModelSet(modelSet);
     }
 
     /**

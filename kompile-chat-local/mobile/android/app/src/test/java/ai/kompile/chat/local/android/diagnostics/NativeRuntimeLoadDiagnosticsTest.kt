@@ -151,6 +151,60 @@ class NativeRuntimeLoadDiagnosticsTest {
     }
 
     @Test
+    fun runtimeRetirementAfterRestartIsInformationalAndResumable() {
+        val runtimeAttempt = attempt(
+            checkpoint = NativeOperationCheckpoint.LOAD_MODEL_BUNDLE,
+            processName = "ai.kompile.chat.local.android.tensorg3.debug:sdx_model_runtime"
+        )
+        val exit = NativeOperationExitEvidence(
+            timestampEpochMillis = runtimeAttempt.checkpointEpochMillis + 1_000L,
+            processName = runtimeAttempt.processName,
+            processId = runtimeAttempt.processId,
+            reason = ApplicationExitInfo.REASON_SIGNALED,
+            status = 9,
+            description = "",
+            pssKilobytes = 0L,
+            rssKilobytes = 0L,
+            importance = 300,
+            trace = "",
+            traceReadFailure = ""
+        )
+
+        assertTrue(NativeOperationDiagnosticPolicy.isExpectedRuntimeRetirement(runtimeAttempt, exit))
+        val diagnostic = NativeOperationDiagnosticPolicy.createDiagnostic(runtimeAttempt, exit)
+        assertEquals(ImportDiagnosticSeverity.INFO, diagnostic.severity)
+        assertTrue(diagnostic.summary.contains("retired during app restart"))
+        assertTrue(diagnostic.remediation.contains("cached model operation"))
+    }
+
+    @Test
+    fun foregroundRuntimeSigkillRemainsAnError() {
+        val runtimeAttempt = attempt(
+            checkpoint = NativeOperationCheckpoint.LOAD_MODEL_BUNDLE,
+            processName = "ai.kompile.chat.local.android.tensorg3.debug:sdx_model_runtime"
+        )
+        val exit = NativeOperationExitEvidence(
+            timestampEpochMillis = runtimeAttempt.checkpointEpochMillis + 1_000L,
+            processName = runtimeAttempt.processName,
+            processId = runtimeAttempt.processId,
+            reason = ApplicationExitInfo.REASON_SIGNALED,
+            status = 9,
+            description = "",
+            pssKilobytes = 0L,
+            rssKilobytes = 0L,
+            importance = 100,
+            trace = "",
+            traceReadFailure = ""
+        )
+
+        assertFalse(NativeOperationDiagnosticPolicy.isExpectedRuntimeRetirement(runtimeAttempt, exit))
+        assertEquals(
+            ImportDiagnosticSeverity.ERROR,
+            NativeOperationDiagnosticPolicy.createDiagnostic(runtimeAttempt, exit).severity
+        )
+    }
+
+    @Test
     fun importerConversionDeathTargetsTheHuggingFaceFailureSurface() {
         val conversion = attempt(
             operation = NativeOperationKind.SDX_MODEL_PREPARATION,

@@ -217,6 +217,35 @@ class StagingServiceLocalModelTest {
     }
 
     @Test
+    void stageLocalSafeTensorsModel_routesThroughCanonicalConversion() throws Exception {
+        String modelId = "safetensors-test";
+        Path modelFile = sourceDir.resolve("model.safetensors");
+        Files.write(modelFile, new byte[]{1, 2, 3});
+
+        when(conversionService.convert(any(), any(), eq("safetensors"), any()))
+                .thenAnswer(invocation -> {
+                    Path outputPath = invocation.getArgument(1);
+                    assertTrue(outputPath.toString().endsWith("model.sdz"),
+                            "SafeTensors conversion should use .sdz output, got: " + outputPath);
+                    Files.write(outputPath, new byte[100]);
+                    return ConversionResult.builder()
+                            .success(true)
+                            .artifact(ConversionArtifact.canonicalSdz(outputPath))
+                            .build();
+                });
+        when(conversionService.validate(any()))
+                .thenReturn(ConversionService.ValidationResult.success(5, 10));
+
+        stagingService.stageLocalModel(modelId, modelFile.toString(), "safetensors", true);
+        awaitStatus(modelId, StagingStatus.COMPLETED, 15);
+
+        ModelEntry model = registryService.getModel(modelId).orElseThrow();
+        assertEquals(ModelType.DENSE_ENCODER, model.getType());
+        assertEquals("model.sdz", model.getModelFile());
+        verify(conversionService).convert(any(), any(), eq("safetensors"), any());
+    }
+
+    @Test
     void stageLocalVlmPipeline_promotesPipelineManifestWithoutSameDiffValidation() throws Exception {
         String modelId = "vlm-pipeline-test";
         Path pipelineFile = sourceDir.resolve("pipeline.json");

@@ -24,6 +24,8 @@ import java.util.concurrent.Callable;
         subcommands = {
                 ModelListCommand.class,
                 ModelDownloadCommand.class,
+                ModelConvertCommand.class,
+                ModelOptimizeCommand.class,
                 ModelCloneCommand.class,
                 ModelInfoCommand.class,
                 ModelExportCommand.class,
@@ -33,7 +35,7 @@ import java.util.concurrent.Callable;
         },
         mixinStandardHelpOptions = true,
         usageHelpAutoWidth = true,
-        description = "Model lifecycle management: list, download, convert, info, export, import, archive, serve.")
+        description = "Model lifecycle management: list, download, convert, optimize, info, export, import, archive, serve.")
 public class ModelCliMain implements Callable<Integer> {
 
     @Override

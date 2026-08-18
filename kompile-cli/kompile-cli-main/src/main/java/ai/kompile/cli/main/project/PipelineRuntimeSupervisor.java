@@ -10,6 +10,7 @@ import ai.kompile.pipeline.serving.definition.PipelineDefinitionIdentity;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.launcher.PipelineRuntimeSession;
 import ai.kompile.pipeline.serving.launcher.PipelineSubprocessLauncher;
+import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
@@ -148,6 +149,20 @@ public final class PipelineRuntimeSupervisor {
         try (Lease runtime = acquire(definition, timeout)) {
             return runtime.execute(input, timeout);
         }
+    }
+
+    /** Preserve subprocess diagnostics while providing the same shape for parent-side failures. */
+    public static Map<String, Object> diagnostic(Throwable failure, String fallbackStage) {
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 16; depth++) {
+            if (current instanceof PipelineRuntimeSession.RuntimeFailure runtimeFailure) {
+                return runtimeFailure.diagnostic();
+            }
+            Throwable next = current.getCause();
+            if (next == current) break;
+            current = next;
+        }
+        return PipelineRuntimeProtocol.diagnostic(fallbackStage, failure);
     }
 
     static RuntimeKey key(UnifiedPipelineDefinition definition) {

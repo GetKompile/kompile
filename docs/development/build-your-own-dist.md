@@ -1,9 +1,9 @@
 # Build Your Own Distribution (AOT native spins)
 
 How to go from a clone of this repo to an installable distribution with AOT
-(GraalVM native-image) binaries — `bin/kompile` (CLI), `bin/kompile-server`
-(app-main), `bin/kompile-model-staging` — plus a jlink `runtime/` for the
-jar-tier fallback. Covers CPU and CUDA spins.
+(GraalVM native-image) binaries — `bin/kompile` (main CLI), `bin/kompile-model`
+(model CLI), `bin/kompile-server` (app-main), and `bin/kompile-model-staging` —
+plus a jlink `runtime/` for the JAR-tier fallback. Covers CPU and CUDA spins.
 
 ## Prerequisites
 
@@ -75,9 +75,11 @@ exec-jar, and all native-image steps).
 
 The `--jars-only` lane is the JVM version of the distribution boundary: it skips
 native-image compilation, writes the CLI uber JAR to `lib/kompile-cli.jar`, packages
-the delegated CLI JARs and executable service JARs beside it, and installs
-`bin/kompile` as a JBang-first wrapper. The document-model/VLM worker is currently
-native-only and is omitted from this lane.
+the delegated CLI JARs (including `lib/kompile-model.jar`) and executable service JARs
+beside it, and installs `bin/kompile` as a JBang-first wrapper. Staging-enabled
+variants also package `lib/kompile-model-staging.jar`; the model CLI uses that
+executable-JAR path for `convert`. Native variants use the corresponding
+`bin/kompile-model` and `bin/kompile-model-staging` images.
 
 Output includes both
 `dist/kompile-dist-<version>-<variant>-<release-lane>.zip` and `.tar.gz`.
@@ -127,8 +129,12 @@ self-contained at the cost of ~3 GB.
 ## Manual per-component spins
 
 ```bash
-# CLI
+# Main CLI
 mvn -f kompile-cli/kompile-cli-main/pom.xml package -Pnative -DskipTests
+
+# Standalone model CLI (native distribution child)
+mvn -f kompile-cli/kompile-model-cli/pom.xml package \
+    -Dkompile.dist=true -DskipTests
 
 # app-main → target/kompile-app (+ exec jar co-built)
 mvn -f kompile-app/kompile-app-parent/kompile-app-main/pom.xml package \

@@ -206,6 +206,11 @@
             <artifactId>samediff-pipeline-core</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-pipeline-safetensors</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
 
         <!-- MCP SDK for server transport -->
         <dependency>

@@ -34,7 +34,8 @@ import org.springframework.web.client.ResourceAccessException;
  * <p>Run a single source (local file path, URL, or inline text) through the real unified-crawl
  * pipeline into the project-local knowledge graph, or through
  * {@code POST /api/unified-crawl/single-source} when a remote URL is explicitly configured.
- * Pass {@code dryRun=true} for a synchronous extraction preview with zero persistence.
+ * Non-preview local calls return a pollable job handle immediately; pass {@code async=false} only
+ * for blocking compatibility. Pass {@code dryRun=true} for a synchronous extraction preview with zero persistence.
  * The {@code steps} parameter selects which pipeline stages to execute; dependency resolution
  * ensures required predecessors are always included.</p>
  */
@@ -61,8 +62,9 @@ public class CrawlSourceTool implements CliTool {
     @Override
     public String description() {
         return "Run ONE source through the crawl backend. Without a configured manager, local paths "
-                + "and inline text are persisted in the project knowledge base; with a manager, paths and URLs "
-                + "can run the full distributed pipeline and persist extracted entities and relations. "
+                + "and inline text are submitted to an MCP-owned asynchronous job by default; with a manager, paths and URLs "
+                + "can run the full distributed pipeline and persist extracted entities and relations. Poll crawl_control "
+                + "operation=status with the returned jobId, then call crawl_result when terminal=true. "
                 + "Use dryRun=true for a synchronous LLM-extraction preview with ZERO persistence. "
                 + "The steps parameter selects which pipeline stages execute "
                 + "(PREPROCESSING, GRAPH_EXTRACTION, ENTITY_RESOLUTION, EDGE_COMPUTATION, "
@@ -76,8 +78,8 @@ public class CrawlSourceTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Crawl one path|url|text into the current folder. dryRun=true previews; "
-                + "steps=[...] selects stages; factSheetId is an optional remote override; 900s default.";
+        return "Crawl one path|url|text. Returns jobId; poll crawl_control status with pollAfterMs, "
+                + "then crawl_result. dryRun previews; async=false blocks; steps selects stages.";
     }
 
     @Override
@@ -99,7 +101,16 @@ public class CrawlSourceTool implements CliTool {
                 .put("description", "Optional label / document title for inline text.");
         props.putObject("dryRun")
                 .put("type", "boolean")
+                .put("default", false)
                 .put("description", "true = synchronous extraction preview with zero persistence.");
+        props.putObject("async")
+                .put("type", "boolean")
+                .put("default", true)
+                .put("description", "Return immediately with a pollable jobId; use crawl_control status and crawl_result.");
+        props.putObject("waitForCompletion")
+                .put("type", "boolean")
+                .put("default", false)
+                .put("description", "Blocking compatibility alias for async=false.");
         ObjectNode stepsNode = props.putObject("steps");
         stepsNode.put("type", "array");
         stepsNode.putObject("items").put("type", "string");

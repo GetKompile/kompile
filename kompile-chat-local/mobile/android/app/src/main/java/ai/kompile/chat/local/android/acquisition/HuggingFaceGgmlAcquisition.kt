@@ -21,19 +21,27 @@ import java.util.Locale
 
 /**
  * Direct public Hugging Face GGUF/GGML acquisition. Every reference, including an
- * exact blob/resolve URL, is resolved through the Hugging Face model API so the model
- * uses the repository's canonical tokenizer and configuration assets. Kompile staging
- * is never consulted.
+ * exact blob/resolve URL, is resolved through the Hugging Face model API. Weight-only
+ * quantized repositories resolve canonical tokenizer/configuration assets through the
+ * explicit cardData.base_model chain. Every contributing repository is independently pinned.
+ * Kompile staging is never consulted.
  */
 object HuggingFaceGgmlAcquisition {
     private const val CONNECT_TIMEOUT_MS = 30_000
     private const val READ_TIMEOUT_MS = 30_000
     private const val MAX_RESPONSE_CHARS = 4 * 1024 * 1024
     private const val MAX_MODEL_CANDIDATES = 256
+    private const val MAX_UPSTREAM_REPOSITORIES = 32
     private const val MAX_TOKENIZER_ASSET_BYTES = 256L * 1024L * 1024L
-    private val REQUIRED_HUGGINGFACE_ASSETS = setOf(
+    private val REQUIRED_HUGGINGFACE_ASSETS = listOf(
         "tokenizer.json", "tokenizer_config.json", "config.json"
     )
+    private val OPTIONAL_HUGGINGFACE_ASSETS = listOf(
+        "special_tokens_map.json", "added_tokens.json", "chat_template.jinja",
+        "generation_config.json", "text-generation.json"
+    )
+    private val SUPPORTED_HUGGINGFACE_ASSETS =
+        (REQUIRED_HUGGINGFACE_ASSETS + OPTIONAL_HUGGINGFACE_ASSETS).toSet()
     private const val MAX_REDIRECTS = 4
     const val DEFAULT_MAX_DOWNLOAD_BYTES = 20L * 1024L * 1024L * 1024L
     const val DEFAULT_MAX_ATTEMPTS = 4
@@ -78,6 +86,43 @@ object HuggingFaceGgmlAcquisition {
         val reusedCount: Int
     )
 
+    /**
+     * One structurally resolved asset map shared by every GGUF/GGML candidate. Model files may
+     * have many flavors; each tokenizer/configuration companion is resolved exactly once from the
+     * nearest immutable repository in the explicit Hugging Face base-model chain.
+     *
+     * This mirrors the staging asset-map contract, but deliberately reflects the stricter
+     * requirements of the mobile GGUF AOT importer today: tokenizer.json,
+     * tokenizer_config.json, and config.json must all be present. No GGUF metadata or guessed
+     * tokenizer configuration is substituted for a missing canonical Hugging Face asset.
+     */
+    data class ResolvedRepositoryConfiguration(
+        val repository: String,
+        val immutableRevision: String,
+        val assetSources: List<HuggingFaceGgmlResolver.AssetSource>,
+        val modelCandidatePaths: List<String>,
+        val requiredAssets: Map<String, HuggingFaceGgmlResolver.TokenizerAsset>,
+        val optionalAssets: Map<String, HuggingFaceGgmlResolver.TokenizerAsset>
+    ) {
+        val assets: List<HuggingFaceGgmlResolver.TokenizerAsset> =
+            (requiredAssets.values + optionalAssets.values).toList()
+        val assetNames: List<String> = assets.map { it.name }
+    }
+
+    private data class ValidatedCandidateConfiguration(
+        val requiredAssets: Map<String, HuggingFaceGgmlResolver.TokenizerAsset>,
+        val optionalAssets: Map<String, HuggingFaceGgmlResolver.TokenizerAsset>
+    ) {
+        val assets: List<HuggingFaceGgmlResolver.TokenizerAsset> =
+            (requiredAssets.values + optionalAssets.values).toList()
+    }
+
+    private data class RepositoryDescription(
+        val revision: String,
+        val files: List<HuggingFaceGgmlResolver.RepositoryFile>,
+        val baseModelRepositories: List<String>
+    )
+
     private val sharedDownloadPolicy = ResumableModelDownloader.DownloadPolicy.builder()
         .maxAttempts(DEFAULT_MAX_ATTEMPTS)
         .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
@@ -105,6 +150,86 @@ object HuggingFaceGgmlAcquisition {
     fun reference(raw: String): HuggingFaceGgmlResolver.Reference =
         HuggingFaceGgmlResolver.parse(raw)
 
+    /** Resolve and validate one canonical repository configuration before any model transfer. */
+    fun resolveRepositoryConfiguration(
+        discovery: HuggingFaceGgmlResolver.Discovery
+    ): ResolvedRepositoryConfiguration {
+        require(discovery.candidates.isNotEmpty()) {
+            "Hugging Face repository resolution contains no model candidates."
+        }
+        val firstCandidate = discovery.candidates.first()
+        val first = validateCandidateConfiguration(firstCandidate)
+        val expectedAssets = first.assets.map(::assetIdentity)
+        discovery.candidates.drop(1).forEach { candidate ->
+            val actualAssets = validateCandidateConfiguration(candidate).assets.map(::assetIdentity)
+            require(actualAssets == expectedAssets) {
+                "Hugging Face repository assigned different tokenizer/configuration assets to " +
+                    "${firstCandidate.path} and ${candidate.path}. Repository configuration must be shared."
+            }
+        }
+        return ResolvedRepositoryConfiguration(
+            repository = discovery.reference.repository,
+            immutableRevision = discovery.resolvedRevision,
+            assetSources = discovery.assetSources,
+            modelCandidatePaths = discovery.candidates.map { it.path },
+            requiredAssets = first.requiredAssets,
+            optionalAssets = first.optionalAssets
+        )
+    }
+
+    private fun validateCandidateConfiguration(
+        candidate: HuggingFaceGgmlResolver.Candidate
+    ): ValidatedCandidateConfiguration {
+        require(candidate.isCommitPinned) {
+            "Hugging Face model ${candidate.path} is not pinned to an immutable repository commit."
+        }
+        requireHuggingFaceDownloadUri(candidate.downloadUri)
+
+        val duplicateNames = candidate.tokenizerAssets
+            .groupingBy { it.name }
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
+        require(duplicateNames.isEmpty()) {
+            "Hugging Face model ${candidate.path} resolved duplicate configuration assets: " +
+                duplicateNames.sorted().joinToString(", ")
+        }
+
+        candidate.tokenizerAssets.forEach { asset ->
+            require(asset.name in SUPPORTED_HUGGINGFACE_ASSETS) {
+                "Unsupported Hugging Face configuration asset: ${asset.name}"
+            }
+            require(asset.size < 0L || asset.size <= MAX_TOKENIZER_ASSET_BYTES) {
+                "${asset.name} exceeds the ${MAX_TOKENIZER_ASSET_BYTES}-byte configuration asset limit."
+            }
+            requireHuggingFaceDownloadUri(asset.downloadUri)
+        }
+
+        val byName = candidate.tokenizerAssets.associateBy { it.name }
+        val missingNames = REQUIRED_HUGGINGFACE_ASSETS.filterNot(byName::containsKey)
+        require(missingNames.isEmpty()) {
+            "Hugging Face repository is missing canonical configuration assets: " +
+                missingNames.joinToString(", ") +
+                ". Mobile GGUF import does not infer or reconstruct missing tokenizer/model configuration."
+        }
+
+        val required = linkedMapOf<String, HuggingFaceGgmlResolver.TokenizerAsset>()
+        REQUIRED_HUGGINGFACE_ASSETS.forEach { name -> required[name] = byName.getValue(name) }
+        val optional = linkedMapOf<String, HuggingFaceGgmlResolver.TokenizerAsset>()
+        OPTIONAL_HUGGINGFACE_ASSETS.forEach { name ->
+            byName[name]?.let { optional[name] = it }
+        }
+        return ValidatedCandidateConfiguration(required.toMap(), optional.toMap())
+    }
+
+    private fun assetIdentity(asset: HuggingFaceGgmlResolver.TokenizerAsset): List<Any?> = listOf(
+        asset.name,
+        asset.path,
+        asset.size,
+        asset.sha256,
+        asset.downloadUri.toASCIIString()
+    )
+
     /**
      * Resolve a repository reference to its GGUF/GGML candidates. The loader parameter
      * keeps parsing and selection deterministic in tests while production uses only the
@@ -115,10 +240,77 @@ object HuggingFaceGgmlAcquisition {
         repositoryJson: (URI) -> String = ::fetchRepositoryJson
     ): HuggingFaceGgmlResolver.Discovery {
         val parsed = reference(raw)
-        // Even exact blob/resolve URLs must use the repository API. The GGUF is only
-        // the weight artifact; tokenizer.json, tokenizer_config.json, config.json, and
-        // the chat template are authoritative Hugging Face siblings.
-        val document = repositoryJson(HuggingFaceGgmlResolver.apiUri(parsed))
+        // Even exact blob/resolve URLs use the repository API. GGUF repositories frequently
+        // contain only quantized weights, while the explicit cardData.base_model chain carries
+        // their canonical tokenizer/configuration assets.
+        val modelDescription = repositoryDescription(
+            repositoryJson(HuggingFaceGgmlResolver.apiUri(parsed))
+        )
+        val snapshots = mutableListOf(
+            HuggingFaceGgmlResolver.RepositorySnapshot(
+                parsed.repository,
+                modelDescription.revision,
+                modelDescription.files
+            )
+        )
+        val visitedRepositories = linkedSetOf(parsed.repository)
+        var currentRepository = parsed.repository
+        var currentDescription = modelDescription
+        var discovery = HuggingFaceGgmlResolver.resolve(
+            parsed,
+            modelDescription.revision,
+            modelDescription.files,
+            snapshots
+        )
+        while (missingSupportedAssets(discovery.candidates.first()).isNotEmpty()) {
+            val baseModels = currentDescription.baseModelRepositories
+            if (baseModels.isEmpty()) {
+                break
+            }
+            val missingRequired = missingRequiredAssets(discovery.candidates.first())
+            if (baseModels.size != 1) {
+                require(missingRequired.isEmpty()) {
+                    "Hugging Face repository $currentRepository is missing canonical configuration " +
+                        "assets (${missingRequired.joinToString(", ")}) and declares multiple " +
+                        "cardData.base_model repositories: ${baseModels.joinToString(", ")}. " +
+                        "An unambiguous upstream repository is required; no repository is guessed."
+                }
+                break
+            }
+            val upstreamRepository = baseModels.single()
+            require(visitedRepositories.add(upstreamRepository)) {
+                "Hugging Face cardData.base_model contains a repository cycle: " +
+                    (visitedRepositories + upstreamRepository).joinToString(" -> ")
+            }
+            require(visitedRepositories.size <= MAX_UPSTREAM_REPOSITORIES) {
+                "Hugging Face cardData.base_model chain exceeds $MAX_UPSTREAM_REPOSITORIES repositories."
+            }
+            val upstreamReference = HuggingFaceGgmlResolver.parse(upstreamRepository)
+            val upstreamDescription = repositoryDescription(
+                repositoryJson(HuggingFaceGgmlResolver.apiUri(upstreamReference))
+            )
+            snapshots += HuggingFaceGgmlResolver.RepositorySnapshot(
+                upstreamRepository,
+                upstreamDescription.revision,
+                upstreamDescription.files
+            )
+            currentRepository = upstreamRepository
+            currentDescription = upstreamDescription
+            discovery = HuggingFaceGgmlResolver.resolve(
+                parsed,
+                modelDescription.revision,
+                modelDescription.files,
+                snapshots
+            )
+        }
+        require(discovery.candidates.size <= MAX_MODEL_CANDIDATES) {
+            "Hugging Face repository exposes too many GGUF/GGML files. " +
+                "Use a tree URL to narrow discovery to one directory."
+        }
+        return discovery
+    }
+
+    private fun repositoryDescription(document: String): RepositoryDescription {
         val root = try {
             MiniJson.parseObject(document)
         } catch (failure: IllegalArgumentException) {
@@ -152,12 +344,42 @@ object HuggingFaceGgmlAcquisition {
                 lfsSha256
             )
         }
-        val discovery = HuggingFaceGgmlResolver.resolve(parsed, revision, files)
-        require(discovery.candidates.size <= MAX_MODEL_CANDIDATES) {
-            "Hugging Face repository exposes too many GGUF/GGML files. " +
-                "Use a tree URL to narrow discovery to one directory."
+        val cardData = when (val value = root["cardData"]) {
+            null -> null
+            is Map<*, *> -> value
+            else -> throw IllegalArgumentException(
+                "Hugging Face repository cardData is not an object."
+            )
         }
-        return discovery
+        val baseModels = when (val value = cardData?.get("base_model")) {
+            null -> emptyList()
+            is String -> listOf(value)
+            is List<*> -> value.mapIndexed { index, item ->
+                item as? String ?: throw IllegalArgumentException(
+                    "Hugging Face cardData.base_model[$index] is not a repository identifier."
+                )
+            }
+            else -> throw IllegalArgumentException(
+                "Hugging Face cardData.base_model is not a repository identifier or list."
+            )
+        }.map { repository ->
+            HuggingFaceGgmlResolver.requireRepositoryId(repository.trim())
+        }.distinct()
+        return RepositoryDescription(revision, files, baseModels)
+    }
+
+    private fun missingRequiredAssets(
+        candidate: HuggingFaceGgmlResolver.Candidate
+    ): List<String> {
+        val names = candidate.tokenizerAssets.mapTo(mutableSetOf()) { it.name }
+        return REQUIRED_HUGGINGFACE_ASSETS.filterNot(names::contains)
+    }
+
+    private fun missingSupportedAssets(
+        candidate: HuggingFaceGgmlResolver.Candidate
+    ): List<String> {
+        val names = candidate.tokenizerAssets.mapTo(mutableSetOf()) { it.name }
+        return SUPPORTED_HUGGINGFACE_ASSETS.filterNot(names::contains)
     }
 
     /** Retained exact-file helper for callers that already hold a blob/resolve URL. */
@@ -325,14 +547,7 @@ object HuggingFaceGgmlAcquisition {
         require(Files.isRegularFile(model, LinkOption.NOFOLLOW_LINKS)) {
             "Verified model is unavailable while preparing tokenizer assets: $model"
         }
-        val assets = candidate.tokenizerAssets
-        val availableNames = assets.map { it.name }.toSet()
-        val missingNames = REQUIRED_HUGGINGFACE_ASSETS - availableNames
-        require(missingNames.isEmpty()) {
-            "Hugging Face model ${candidate.path} is missing canonical assets: " +
-                missingNames.sorted().joinToString(", ") +
-                ". GGUF-embedded tokenizer reconstruction is disabled."
-        }
+        val assets = validateCandidateConfiguration(candidate).assets
 
         val paths = linkedMapOf<String, Path>()
         var reused = 0
@@ -440,10 +655,9 @@ object HuggingFaceGgmlAcquisition {
     }
 
     internal fun tokenizerAssetPath(modelPath: Path, assetName: String): Path {
-        require(assetName in setOf(
-            "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-            "generation_config.json", "config.json", "chat_template.jinja"
-        )) { "Unsupported tokenizer asset name: $assetName" }
+        require(assetName in SUPPORTED_HUGGINGFACE_ASSETS) {
+            "Unsupported tokenizer/configuration asset name: $assetName"
+        }
         val model = modelPath.toAbsolutePath().normalize()
         return model.resolveSibling("${model.fileName}.$assetName").normalize().also { path ->
             require(path.parent == model.parent) { "Invalid tokenizer asset destination: $path" }
@@ -462,16 +676,13 @@ object HuggingFaceGgmlAcquisition {
     }
 
     fun tokenizerAssetPathsForModel(modelPath: Path): List<Path> =
-        listOf(
-            "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
-            "generation_config.json", "config.json", "chat_template.jinja"
-        ).map { tokenizerAssetPath(modelPath, it) }
+        SUPPORTED_HUGGINGFACE_ASSETS.map { tokenizerAssetPath(modelPath, it) }
 
     /** Total bytes for the model plus every pinned tokenizer/config companion, when all are known. */
     fun expectedImportBytes(candidate: HuggingFaceGgmlResolver.Candidate): Long? {
         var total = candidate.size
         if (total < 0L) return null
-        candidate.tokenizerAssets.forEach { asset ->
+        validateCandidateConfiguration(candidate).assets.forEach { asset ->
             if (asset.size < 0L) return null
             require(asset.size <= MAX_TOKENIZER_ASSET_BYTES) {
                 "${asset.name} exceeds the ${MAX_TOKENIZER_ASSET_BYTES}-byte tokenizer asset limit."
@@ -493,7 +704,7 @@ object HuggingFaceGgmlAcquisition {
         val model = modelPath.toAbsolutePath().normalize()
         val downloader = ResumableModelDownloader()
         var total = 0L
-        candidate.tokenizerAssets.forEach { asset ->
+        validateCandidateConfiguration(candidate).assets.forEach { asset ->
             val destination = tokenizerAssetPath(model, asset.name)
             val reusable = if (isReusableTokenizerAsset(asset, destination)) {
                 Files.size(destination)

@@ -71,6 +71,7 @@ class LocalProjectGraphBackendTest {
                 StandardCharsets.UTF_8);
 
         ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
         request.putArray("documents").addObject().put("path", "docs");
         request.putObject("knowledgeBase").put("id", 41);
         request.putArray("steps").add("ENRICHMENT");
@@ -187,6 +188,7 @@ class LocalProjectGraphBackendTest {
         server.start();
         try {
             ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
             request.putArray("documents").addObject().put("path", "semantic-docs");
             request.putObject("knowledgeBase").put("id", 118);
             request.putObject("embeddingTraining").put("enabled", false);
@@ -255,6 +257,7 @@ class LocalProjectGraphBackendTest {
         server.start();
         try {
             ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
             request.putArray("documents").addObject().put("path", "identity-docs");
             request.putObject("knowledgeBase").put("id", 119);
             request.putObject("embeddingTraining").put("enabled", false);
@@ -325,6 +328,7 @@ class LocalProjectGraphBackendTest {
                 """, StandardCharsets.UTF_8);
 
         ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
         request.putArray("codeProjects").add("*");
         request.putObject("knowledgeBase").put("id", 73);
         request.putObject("embeddingTraining").put("enabled", false);
@@ -363,6 +367,7 @@ class LocalProjectGraphBackendTest {
         store.init(projectRoot, init);
 
         ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
         request.putArray("codeProjects").add("app");
         request.putObject("knowledgeBase").put("id", 91);
         request.putObject("embeddingTraining").put("enabled", false);

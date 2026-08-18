@@ -36,6 +36,19 @@ public final class OAuthCredentialManager {
                 new OAuthProviderRegistry());
     }
 
+    /**
+     * Legacy setup stored an OpenAI Codex subscription access token in the API-key
+     * slot. Keep that credential selectable and resolve it with subscription headers.
+     */
+    public static boolean isLegacyOpenAiCodexApiKey(
+            String providerId,
+            ManagedCredential credential) {
+        return "openai-codex".equalsIgnoreCase(providerId)
+                && credential != null
+                && credential.isApiKey()
+                && OpenAiCodexOAuthFlow.isLegacyAccessToken(credential.getKey());
+    }
+
     public ManagedCredential login(
             String providerId,
             OAuthProviderFlow.LoginOptions options,
@@ -81,7 +94,13 @@ public final class OAuthCredentialManager {
         }
         if (credential.isApiKey()) {
             String key = store.resolveApiKey(providerId);
-            return key == null ? null : OAuthProviderFlow.RequestAuth.apiKey(key);
+            if (key == null) {
+                return null;
+            }
+            if (isLegacyOpenAiCodexApiKey(providerId, credential)) {
+                return OpenAiCodexOAuthFlow.toRequestAuthFromAccessToken(key);
+            }
+            return OAuthProviderFlow.RequestAuth.apiKey(key);
         }
 
         OAuthProviderFlow flow = registry.require(providerId);

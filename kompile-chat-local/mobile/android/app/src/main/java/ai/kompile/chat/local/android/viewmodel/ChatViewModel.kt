@@ -147,6 +147,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val recoveredImportOperation = recoveredNativeOperations.firstOrNull {
+        it.diagnostic.severity == ImportDiagnosticSeverity.ERROR &&
         !recoveredOperationTargetsActiveSelection(it) &&
             (
                 it.attempt.operation.recoveryTarget == NativeOperationRecoveryTarget.HUGGING_FACE_IMPORT ||
@@ -383,6 +384,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         MutableStateFlow<HuggingFaceGgmlResolver.Candidate?>(null)
     val huggingFaceSelection: StateFlow<HuggingFaceGgmlResolver.Candidate?> =
         _huggingFaceSelection.asStateFlow()
+
+    private val _huggingFaceConfigurationState =
+        MutableStateFlow<HuggingFaceConfigurationUiState>(HuggingFaceConfigurationUiState.Idle)
+    val huggingFaceConfigurationState: StateFlow<HuggingFaceConfigurationUiState> =
+        _huggingFaceConfigurationState.asStateFlow()
 
     /** Durable, bounded, sanitized import/activation/execution history shown in the app. */
     private val _importDiagnostics = MutableStateFlow(
@@ -695,7 +701,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         protocolErrors: List<String>
                     ) {
                         mutateStreaming {
-                            it.copy(protocolExchangeCount = it.protocolExchangeCount + 1)
+                            it.copy(
+                                protocolExchangeCount = it.protocolExchangeCount + 1,
+                                protocolExchanges = (
+                                    it.protocolExchanges + ProtocolExchangeUi(
+                                        requestJson = requestJson,
+                                        rawResponse = rawResponse,
+                                        protocolErrors = protocolErrors
+                                    )
+                                ).takeLast(32)
+                            )
                         }
                     }
 
@@ -820,6 +835,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelGeneration() {
         localModel?.cancel()
+    }
+
+    /**
+     * Stop the active response and retire the model runtime in one lifecycle-safe action.
+     *
+     * Native generation is non-interruptible from the coroutine's perspective, so request
+     * cancellation first and then let [unloadActiveModel] wait for the engine lease to be
+     * released before closing the provider session and clearing the active model.
+     */
+    suspend fun stopResponseAndUnloadModel(): Result<Unit> {
+        var cancellationFailure: Throwable? = null
+        try {
+            withContext(Dispatchers.IO) {
+                localModel?.cancel()
+            }
+        } catch (failure: Throwable) {
+            if (failure is CancellationException) throw failure
+            cancellationFailure = failure
+            Log.w(TAG, "Native response cancellation reported a failure; continuing with model unload", failure)
+        }
+
+        val unloadResult = unloadActiveModel()
+        val cancellation = cancellationFailure
+        if (cancellation != null) {
+            unloadResult.exceptionOrNull()?.addSuppressed(cancellation)
+        }
+        return unloadResult
     }
 
     /** Run a bounded real decode through the active SDX/provider session. */
@@ -1760,8 +1802,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         prefs.huggingFaceReference = rawReference
         _huggingFaceDiscovery.value = null
         _huggingFaceSelection.value = null
+        _huggingFaceConfigurationState.value = HuggingFaceConfigurationUiState.Idle
         if (_huggingFaceImportState.value !is HuggingFaceImportUiState.Active) {
             _huggingFaceImportState.value = HuggingFaceImportUiState.Idle
+        }
+    }
+
+    private fun resolveHuggingFaceRepositoryConfiguration(
+        discovery: HuggingFaceGgmlResolver.Discovery
+    ): HuggingFaceGgmlAcquisition.ResolvedRepositoryConfiguration {
+        val repository = discovery.reference.repository
+        _huggingFaceConfigurationState.value =
+            HuggingFaceConfigurationUiState.Resolving(repository)
+        return try {
+            HuggingFaceGgmlAcquisition.resolveRepositoryConfiguration(discovery).also { resolved ->
+                _huggingFaceConfigurationState.value =
+                    HuggingFaceConfigurationUiState.Resolved(resolved)
+            }
+        } catch (failure: Exception) {
+            _huggingFaceConfigurationState.value = HuggingFaceConfigurationUiState.Failed(
+                repository = repository,
+                message = failure.message ?: failure.javaClass.name
+            )
+            throw failure
         }
     }
 
@@ -1805,8 +1868,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         prefs.huggingFaceReference = rawReference
         _huggingFaceDiscovery.value = null
         _huggingFaceSelection.value = null
+        _huggingFaceConfigurationState.value = HuggingFaceConfigurationUiState.Idle
         val discovery = discoverHuggingFaceAcquisitionExclusively(rawReference)
         _huggingFaceDiscovery.value = discovery
+        resolveHuggingFaceRepositoryConfiguration(discovery)
         if (discovery.requiresSelection()) {
             _huggingFaceImportState.value = HuggingFaceImportUiState.SelectionRequired(
                 discovery.reference.repository,
@@ -1823,6 +1888,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (huggingFaceJob?.isActive == true) return false
         val candidate = _huggingFaceSelection.value ?: return false
         return launchHuggingFaceOperation {
+            val resolved = _huggingFaceConfigurationState.value
+                as? HuggingFaceConfigurationUiState.Resolved
+                ?: throw IllegalStateException(
+                    "Resolve the repository tokenizer/configuration before importing a model."
+                )
+            require(candidate.path in resolved.configuration.modelCandidatePaths) {
+                "The selected model is not part of the resolved repository configuration."
+            }
             clearHuggingFacePreparedImport(deleteAbandonedUnpinnedBytes = true)
             importHuggingFaceModelAndActivate(candidate, null)
         }
@@ -1836,9 +1909,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         prefs.huggingFaceReference = checkpoint.rawReference
         _huggingFaceDiscovery.value = null
         _huggingFaceSelection.value = null
+        _huggingFaceConfigurationState.value = HuggingFaceConfigurationUiState.Idle
 
         val discovery = discoverHuggingFaceAcquisitionExclusively(checkpoint.rawReference)
         _huggingFaceDiscovery.value = discovery
+        resolveHuggingFaceRepositoryConfiguration(discovery)
         val candidate = checkpoint.matchingCandidate(discovery)
         if (candidate == null) {
             check(clearHuggingFaceImportCheckpoint()) {
@@ -2592,6 +2667,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         blocked = { reason -> throw IllegalStateException(reason) }
     ) {
         withContext(Dispatchers.IO) {
+            val resolvedConfiguration = _huggingFaceConfigurationState.value
+                as? HuggingFaceConfigurationUiState.Resolved
+                ?: throw IllegalStateException(
+                    "Resolve the repository tokenizer/configuration before importing a model."
+                )
+            require(candidate.path in resolvedConfiguration.configuration.modelCandidatePaths) {
+                "The selected model is not part of the resolved repository configuration."
+            }
             val preparationOptions = _modelPreparationOptions.value
             if (preparedRetry == null) {
                 persistHuggingFaceImportCheckpoint(
@@ -2719,7 +2802,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _huggingFaceImportState.value = HuggingFaceImportUiState.Working(
                     huggingFaceProgress(
                         step = phase,
-                        message = "Preparing ${candidate.tokenizerAssets.size} canonical Hugging Face tokenizer/config assets pinned to the same commit",
+                        message = "Preparing ${candidate.tokenizerAssets.size} canonical Hugging Face tokenizer/config assets from the pinned configuration repository",
                         retryWillResumeOrReuse = true
                     )
                 )
@@ -2739,7 +2822,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     "hugging face model",
                     HuggingFaceImportStep.TOKENIZER_ASSETS.label.lowercase(),
                     ImportDiagnosticSeverity.SUCCESS,
-                    "Verified ${tokenizerAssets.paths.size} canonical tokenizer/config asset(s) from the model's immutable revision.",
+                    "Verified ${tokenizerAssets.paths.size} canonical tokenizer/config asset(s) from the independently pinned configuration revision.",
                     "SDX now has the tokenizer, special-token, generation, configuration, and chat-template metadata available for load."
                 )
                 persistHuggingFaceImportCheckpoint(

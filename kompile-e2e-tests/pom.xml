@@ -16,6 +16,8 @@
 
   <properties>
     <surefire.excludedGroups>integration,e2e,subprocess,pipeline</surefire.excludedGroups>
+    <!-- Test-only backend selector; distribution builds keep their existing backend wiring. -->
+    <backend.artifactId>${nd4j.backend}</backend.artifactId>
   </properties>
 
   <dependencyManagement>
@@ -319,18 +321,18 @@
     </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- ND4J runtime — resolved from ${nd4j.backend} (CPU by default)   -->
-    <!-- like every other module; GPU lanes opt in via                   -->
-    <!-- -Dkompile.backend=cuda-12.9 (root-pom backend profiles).        -->
+    <!-- ND4J runtime for tests; override only the artifact id with
+         -Dbackend.artifactId=nd4j-cuda-12.9. Distribution backend selection remains
+         owned by the existing root/distribution profiles. -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>${nd4j.backend}</artifactId>
+      <artifactId>${backend.artifactId}</artifactId>
       <version>${nd4j.version}</version>
     </dependency>
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>${nd4j.native.backend}</artifactId>
+      <artifactId>${backend.artifactId}</artifactId>
       <version>${nd4j.version}</version>
       <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
     </dependency>

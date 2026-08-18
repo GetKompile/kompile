@@ -55,6 +55,8 @@ public final class CrawlDiscoveryTool implements CliTool {
                 + "standard pipeline kinds, installed loaders and chunkers, processing routes/backends, "
                 + "capacity, runtime settings, folder-registered models, knowledge bases, registered Kompile code projects, "
                 + "and a concise request-shape guide. "
+                + "It also documents the default asynchronous crawl lifecycle: start returns a jobId, "
+                + "crawl_control status is polled using pollAfterMs, and crawl_result is read after terminal state. "
                 + "Use section to limit the response.";
     }
 

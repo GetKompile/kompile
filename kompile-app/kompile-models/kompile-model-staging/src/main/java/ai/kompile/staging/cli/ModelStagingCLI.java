@@ -35,6 +35,7 @@ import java.util.concurrent.Callable;
         BootstrapCommand.class,
         DownloadCommand.class,
         ConvertCommand.class,
+        OptimizeCommand.class,
         PromoteCommand.class,
         ListCommand.class,
         ExportCommand.class,
@@ -55,6 +56,7 @@ public class ModelStagingCLI implements Callable<Integer> {
         System.out.println("Examples:");
         System.out.println("  kompile-staging download --source=huggingface --repo=BAAI/bge-base-en-v1.5");
         System.out.println("  kompile-staging convert --input=model.onnx --output=model.sdz");
+        System.out.println("  kompile-staging optimize --input=model.sdz --output=model.optimized.sdz");
         System.out.println("  kompile-staging promote --model=bge-base-en-v1.5");
         System.out.println("  kompile-staging list");
         System.out.println("  kompile-staging export --models=bge-base-en-v1.5 --output=bundle.tar.gz");

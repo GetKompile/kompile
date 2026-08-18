@@ -27,10 +27,12 @@ import java.util.Set;
  * Folder-local model lifecycle surface for stdio MCP agents.
  */
 public final class ModelRuntimeTool implements CliTool {
-    private static final Set<String> ACTIONS = Set.of("status", "bootstrap", "import");
+    private static final Set<String> ACTIONS = Set.of("status", "bootstrap", "import", "convert", "optimize");
     private static final String[] OPTION_FIELDS = {
             "autoBootstrap", "forceBootstrap", "localPath", "source", "repository",
             "revision", "format", "type", "stagingExecutable", "stagingJar",
+            "modelExecutable", "modelJar", "outputPath", "profile", "maxIterations",
+            "quantizationType", "force", "createBackup", "dryRun", "selectedPasses",
             "servingExecutable", "servingJar", "javaExecutable", "heapSize",
             "timeoutMinutes"
     };
@@ -48,16 +50,23 @@ public final class ModelRuntimeTool implements CliTool {
 
     @Override
     public String description() {
-        return "Inspect, bootstrap, or import a model into the current folder's Kompile project. "
-                + "Native Kompile runs model staging as a request-scoped native child; JVM development "
-                + "may use the equivalent executable-JAR ABI. "
-                + "artifacts are registered under the folder's data/models tree for automatic use by "
-                + "MCP-owned reusable pipeline runtimes. No application server or caller-managed process is required.";
+        return "Inspect, bootstrap, import, convert, or optimize a model in the current folder's Kompile project. "
+                + "bootstrap is the configured remote acquisition/download operation; import forces provisioning "
+                + "from localPath or a configured remote source. Native-image distributions run model staging as a "
+                + "request-scoped native child; JAR distributions use the equivalent executable-JAR ABI. "
+                + "Acquired artifacts are stored under the folder's data/models tree for automatic use by "
+                + "MCP-owned reusable pipeline runtimes; an existing localPath can be consumed in place. "
+                + "convert invokes the standalone kompile-model convert command for local ONNX, TensorFlow/Keras, "
+                + "GGUF/GGML, or SafeTensors files; optimize invokes its provider-neutral GraphOptimizer "
+                + "with configurable passes/profiles for local or catalog SameDiff artifacts. No application server "
+                + "or caller-managed process is required.";
     }
 
     @Override
     public String compactHint() {
-        return "Folder model lifecycle: action=status|bootstrap|import; artifacts stay under data/models and pipeline runtimes consume them automatically.";
+        return "Folder model lifecycle: status=inventory, bootstrap=remote acquisition/download, import=forced provisioning, "
+                + "convert=local format conversion, optimize=explicit GraphOptimizer execution through kompile-model; "
+                + "bind returned artifacts/model ids in pipeline definitions.";
     }
 
     @Override
@@ -77,23 +86,42 @@ public final class ModelRuntimeTool implements CliTool {
         properties.putObject("autoBootstrap").put("type", "boolean").put("default", true);
         properties.putObject("forceBootstrap").put("type", "boolean").put("default", false);
         properties.putObject("localPath").put("type", "string")
-                .put("description", "Local model file or directory to import through model staging.");
+                .put("description", "Existing local model file or directory. With import, this is consumed as the "
+                        + "local artifact and does not require a download; pipeline modelDefinitions can use it directly "
+                        + "for a local-only run.");
         properties.putObject("source").put("type", "string")
-                .put("description", "Configured remote source supported by model staging.");
+                .put("description", "Configured remote source used by bootstrap or import acquisition.");
         properties.putObject("repository").put("type", "string");
         properties.putObject("revision").put("type", "string");
         properties.putObject("format").put("type", "string");
+        properties.putObject("outputPath").put("type", "string")
+                .put("description", "Destination artifact path for action=convert or optimize; optimize may omit it to update in place.");
+        properties.putObject("profile").put("type", "string").put("default", "BASIC")
+                .put("description", "Optimizer profile used when selectedPasses is omitted: FULL, BASIC, TRANSFORMER, GPU, or NONE.");
+        ObjectNode selectedPasses = properties.putObject("selectedPasses");
+        selectedPasses.put("type", "array");
+        selectedPasses.set("items", mapper.createObjectNode().put("type", "string"));
+        selectedPasses.put("description", "Explicit GraphOptimizer pass ids; overrides profile when supplied.");
+        properties.putObject("maxIterations").put("type", "integer").put("default", 3);
+        properties.putObject("quantizationType").put("type", "string");
+        properties.putObject("force").put("type", "boolean").put("default", false);
+        properties.putObject("createBackup").put("type", "boolean").put("default", true);
+        properties.putObject("dryRun").put("type", "boolean").put("default", false);
         properties.putObject("type").put("type", "string")
                 .put("description", "Registry model type such as llm_ggml, encoder, or vlm_pipeline.");
 
         properties.putObject("stagingExecutable").put("type", "string")
                 .put("description", "Optional standalone native kompile-model-staging binary.");
         properties.putObject("stagingJar").put("type", "string")
-                .put("description", "Optional packaged executable model-staging JAR for JVM-mode development; rejected by the native CLI.");
+                .put("description", "Optional packaged executable model-staging JAR for the JAR distribution/JVM mode; rejected by a native parent.");
+        properties.putObject("modelExecutable").put("type", "string")
+                .put("description", "Optional standalone native kompile-model CLI binary used by action=convert or optimize.");
+        properties.putObject("modelJar").put("type", "string")
+                .put("description", "Optional packaged executable kompile-model JAR used by action=convert or optimize in the JAR distribution/JVM mode.");
         properties.putObject("servingExecutable").put("type", "string")
                 .put("description", "Optional standalone native kompile-model-serving binary used by crawls.");
         properties.putObject("servingJar").put("type", "string")
-                .put("description", "Optional packaged executable model-serving JAR for JVM-mode development; rejected by the native CLI.");
+                .put("description", "Optional packaged executable model-serving JAR for the JAR distribution/JVM mode; rejected by a native parent.");
         properties.putObject("javaExecutable").put("type", "string")
                 .put("description", "Optional Java runtime for executable-JAR tiers; native tiers ignore it.");
         properties.putObject("heapSize").put("type", "string");
@@ -129,9 +157,11 @@ public final class ModelRuntimeTool implements CliTool {
             response.put("storage", projectRoot.resolve("data/models").toString());
             boolean nativeChildren = CliProcessLauncher.requiresNativeChildren();
             response.putObject("runtimeContract")
-                    .put("mode", nativeChildren ? "native-only" : "jvm-development")
-                    .put("preferred", nativeChildren ? "native executable" : "executable JAR or native executable")
-                    .put("fallback", nativeChildren ? "disabled: native parent requires native children" : "packaged executable JAR")
+                    .put("mode", nativeChildren ? "native-image" : "jar-or-native")
+                    .put("preferred", nativeChildren ? "native executable" : "native executable or packaged executable JAR")
+                    .put("fallback", nativeChildren
+                            ? "disabled: JAR children are incompatible with a native-image parent"
+                            : "native executable or packaged executable JAR")
                     .put("developmentClasspath", false)
                     .put("centralizedService", false)
                     .put("lifecycle", "request-scoped subprocess with guaranteed teardown");
@@ -141,6 +171,11 @@ public final class ModelRuntimeTool implements CliTool {
                     .put("startup", "on-demand")
                     .put("reuse", "bounded pooled sessions")
                     .put("callerConfigurationRequired", false);
+            response.putObject("readinessSemantics")
+                    .put("artifactReady", "A supported local artifact was found.")
+                    .put("runtimeStatus", "NOT_PROBED until pipeline initialization is attempted.")
+                    .put("ready", "Legacy alias for artifactReady; not a runtime-health guarantee.")
+                    .put("diagnostics", "pipeline test/run reports failureStage, exception chain, and stack trace.");
 
             if ("status".equals(action)) {
                 response.set("models", mapper.valueToTree(LocalProjectModelBootstrap.inventory(projectRoot)));
@@ -149,6 +184,42 @@ public final class ModelRuntimeTool implements CliTool {
             }
 
             Map<String, Object> options = runtimeOptions(params);
+            if ("convert".equals(action)) {
+                String inputPath = text(params, "localPath");
+                String outputPath = text(params, "outputPath");
+                if (inputPath == null || outputPath == null) {
+                    return ToolResult.error("action=convert requires localPath (input) and outputPath (.sdz destination)");
+                }
+                Map<String, Object> conversion = LocalProjectModelBootstrap.convert(
+                        projectRoot,
+                        projectRoot.resolve(inputPath).normalize(),
+                        projectRoot.resolve(outputPath).normalize(),
+                        text(params, "format"),
+                        options);
+                response.set("conversion", mapper.valueToTree(conversion));
+                return ToolResult.success("model_runtime convert", response.toPrettyString(),
+                        Map.of("action", action, "projectRoot", projectRoot.toString(),
+                                "inputPath", inputPath, "outputPath", outputPath));
+            }
+            if ("optimize".equals(action)) {
+                String inputPath = text(params, "localPath");
+                String outputPath = text(params, "outputPath");
+                String modelId = text(params, "modelId");
+                if (inputPath == null && modelId == null) {
+                    return ToolResult.error("action=optimize requires localPath or modelId");
+                }
+                Map<String, Object> optimization = LocalProjectModelBootstrap.optimize(
+                        projectRoot,
+                        inputPath == null ? null : projectRoot.resolve(inputPath).normalize(),
+                        outputPath == null ? null : projectRoot.resolve(outputPath).normalize(),
+                        modelId,
+                        options);
+                response.set("optimization", mapper.valueToTree(optimization));
+                return ToolResult.success("model_runtime optimize", response.toPrettyString(),
+                        Map.of("action", action, "projectRoot", projectRoot.toString(),
+                                "inputPath", inputPath == null ? "" : inputPath,
+                                "outputPath", outputPath == null ? "" : outputPath));
+            }
             if ("import".equals(action)) {
                 if (firstNonBlank(params, "localPath", "source", "repository") == null) {
                     return ToolResult.error("action=import requires localPath, source, or repository");
@@ -192,6 +263,8 @@ public final class ModelRuntimeTool implements CliTool {
                 options.put(field, value.booleanValue());
             } else if (value.isIntegralNumber()) {
                 options.put(field, value.longValue());
+            } else if (value.isArray()) {
+                options.put(field, mapper.convertValue(value, new TypeReference<java.util.List<String>>() { }));
             } else {
                 options.put(field, value.asText());
             }

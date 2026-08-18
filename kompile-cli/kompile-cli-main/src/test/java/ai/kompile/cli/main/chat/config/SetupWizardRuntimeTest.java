@@ -1,8 +1,12 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -56,6 +60,33 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
+    void pickerReusesSetupVendorAuthenticationAndModelSources() {
+        List<String> pickerProviders = SetupWizard.providerPickerOrder();
+        assertEquals("ollama", pickerProviders.get(0));
+        assertEquals("custom", pickerProviders.get(1));
+        assertTrue(pickerProviders.containsAll(SetupWizard.directVendorOrder()));
+        assertFalse(pickerProviders.contains("openai-codex"));
+
+        assertEquals("openai", SetupWizard.vendorForProvider("openai-codex"));
+        assertEquals(SetupWizard.AuthMethod.OAUTH,
+                SetupWizard.authMethodForProvider("openai-codex"));
+        assertEquals(List.of(SetupWizard.AuthMethod.NONE),
+                SetupWizard.authMethodsForPicker("ollama"));
+        assertEquals(List.of(ChatConfig.getDefaultModels("openai")),
+                SetupWizard.modelOptions("openai"));
+        assertEquals(List.of(ChatConfig.getDefaultModels("xai")),
+                SetupWizard.modelOptions("xai"));
+        assertEquals(List.of(ChatConfig.getDefaultModels("github-copilot")),
+                SetupWizard.modelOptions("github-copilot"));
+        assertTrue(SetupWizard.modelOptions("openai-codex").contains("gpt-5.6-terra"));
+        assertTrue(SetupWizard.modelOptions("openai-codex").contains("gpt-5.6-sol"));
+
+        ChatConfig config = new ChatConfig("openai", null, "gpt-4o", null);
+        config.addModelToCatalog("openai", "new-model-id");
+        assertTrue(SetupWizard.modelOptions("openai", config).contains("new-model-id"));
+    }
+
+    @Test
     void standardChatOnlyOffersCredentialsMatchingTheSelectedAuthMethod() {
         List<CredentialStore.CredentialInfo> credentials = List.of(
                 new CredentialStore.CredentialInfo("anthropic", "personal", "api_key", true),
@@ -69,6 +100,19 @@ class SetupWizardRuntimeTest {
                         credentials, SetupWizard.AuthMethod.OAUTH).stream()
                 .map(CredentialStore.CredentialInfo::credentialName)
                 .toList());
+    }
+
+    @Test
+    void legacyOpenAiCodexAccessTokenRemainsASelectableSubscription() {
+        String payload = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                ("{\"https://api.openai.com/auth\":{\"chatgpt_account_id\":\"acct-test\"}}")
+                        .getBytes(StandardCharsets.UTF_8));
+        ManagedCredential legacy = ManagedCredential.apiKey("header." + payload + ".signature");
+
+        assertTrue(OAuthCredentialManager.isLegacyOpenAiCodexApiKey("openai-codex", legacy));
+        assertFalse(OAuthCredentialManager.isLegacyOpenAiCodexApiKey("openai", legacy));
+        assertFalse(OAuthCredentialManager.isLegacyOpenAiCodexApiKey(
+                "openai-codex", ManagedCredential.apiKey("not-a-codex-token")));
     }
 
     @Test

@@ -21,6 +21,8 @@ import org.nd4j.autodiff.samediff.serde.SDZSerializer;
 import org.eclipse.deeplearning4j.vlm.model.loading.OnnxModelCache;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
+import org.eclipse.deeplearning4j.pipeline.PipelineLoader;
+import org.eclipse.deeplearning4j.safetensors.SafeTensorsPipelineLoader;
 import ai.kompile.staging.download.StagingCancellation;
 import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
 import org.nd4j.samediff.frameworkimport.tensorflow.importer.TensorflowFrameworkImporter;
@@ -44,7 +46,8 @@ import java.util.concurrent.CancellationException;
 
 /**
  * Service for converting models from various formats to SameDiff.
- * Supports ONNX and TensorFlow formats.
+ * Supports the format loaders shipped by the staging distribution: ONNX, TensorFlow,
+ * GGUF/GGML, and SafeTensors.
  */
 @Service
 public class ConversionService {
@@ -57,7 +60,7 @@ public class ConversionService {
      *
      * @param inputPath Path to the input model file
      * @param outputPath Path for the output .sd file
-     * @param format Original format: "onnx", "tensorflow"
+     * @param format Original format: "onnx", "tensorflow", "gguf", or "safetensors"
      * @return Result of the conversion
      */
     public ConversionResult convert(Path inputPath, Path outputPath, String format) {
@@ -224,8 +227,13 @@ public class ConversionService {
             case "tensorflow":
             case "tf":
             case "pb":
+            case "keras":
+            case "h5":
             case "gguf":
             case "ggml":
+            case "safetensors":
+            case "safetensor":
+            case "safe_tensors":
                 return true;
             default:
                 return false;
@@ -244,9 +252,10 @@ public class ConversionService {
         String name = inputPath.getFileName().toString().toLowerCase();
         if (name.endsWith(".gguf")) return "gguf";
         if (name.endsWith(".ggml")) return "ggml";
+        if (name.endsWith(".safetensors")) return "safetensors";
         if (name.endsWith(".onnx")) return "onnx";
         if (name.endsWith(".pb")) return "tensorflow";
-        if (name.endsWith(".h5")) return "tensorflow";
+        if (name.endsWith(".h5") || name.endsWith(".keras")) return "tensorflow";
         // Fall back to whatever the caller supplied; importModel will throw if unknown.
         return format == null ? "" : format.toLowerCase();
     }
@@ -261,10 +270,16 @@ public class ConversionService {
             case "tensorflow":
             case "tf":
             case "pb":
+            case "keras":
+            case "h5":
                 return importTensorFlow(inputPath);
             case "gguf":
             case "ggml":
                 return importGgml(inputPath);
+            case "safetensors":
+            case "safetensor":
+            case "safe_tensors":
+                return importSafeTensors(inputPath);
             default:
                 throw new IllegalArgumentException("Unsupported format: " + format);
         }
@@ -311,6 +326,17 @@ public class ConversionService {
                 .useMemoryMapping(true)
                 .build();
         return GGMLModelImport.importModel(inputPath.toFile(), options);
+    }
+
+    /**
+     * Import a SafeTensors weight file through the upstream pipeline loader. The
+     * loader keeps format ownership in deeplearning4j and uses the configured
+     * ND4J inference data type; no provider or backend is selected here.
+     */
+    private SameDiff importSafeTensors(Path inputPath) throws Exception {
+        log.debug("Importing SafeTensors model from: {}", inputPath);
+        PipelineLoader.LoadConfig config = PipelineLoader.LoadConfig.defaults();
+        return new SafeTensorsPipelineLoader().loadModel(inputPath.toFile(), config);
     }
 
     /**

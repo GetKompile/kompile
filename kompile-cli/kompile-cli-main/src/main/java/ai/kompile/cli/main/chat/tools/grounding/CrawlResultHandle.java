@@ -25,6 +25,7 @@ import java.util.Set;
  */
 final class CrawlResultHandle {
     private static final String SCHEMA = "kompile-crawl-result/v1";
+    private static final long DEFAULT_POLL_AFTER_MS = 1_000L;
     private static final Set<String> TERMINAL_STATUSES = Set.of(
             "COMPLETED", "COMPLETED_WITH_ERRORS", "SUCCESS", "SUCCEEDED",
             "FAILED", "CANCELLED", "CANCELED", "SKIPPED");
@@ -34,6 +35,7 @@ final class CrawlResultHandle {
     private final String knowledgeBase;
     private final Long factSheetId;
     private final String status;
+    private final Long pollAfterMs;
     private final String graphPath;
 
     private CrawlResultHandle(String backend,
@@ -41,12 +43,14 @@ final class CrawlResultHandle {
                               String knowledgeBase,
                               Long factSheetId,
                               String status,
+                              Long pollAfterMs,
                               String graphPath) {
         this.backend = nonBlank(backend, "unknown");
         this.jobId = blankToNull(jobId);
         this.knowledgeBase = blankToNull(knowledgeBase);
         this.factSheetId = factSheetId;
         this.status = nonBlank(status, "UNKNOWN").toUpperCase(Locale.ROOT);
+        this.pollAfterMs = pollAfterMs;
         this.graphPath = blankToNull(graphPath);
     }
 
@@ -80,6 +84,7 @@ final class CrawlResultHandle {
                 knowledgeBase,
                 factSheetId,
                 status,
+                pollAfterMs(source),
                 firstText(source, "graphPath", "graph_path"));
     }
 
@@ -96,6 +101,7 @@ final class CrawlResultHandle {
         putIfPresent(value, "factSheetId", factSheetId);
         value.put("status", status);
         value.put("terminal", terminal());
+        putIfPresent(value, "pollAfterMs", pollAfterMs);
         putIfPresent(value, "graphPath", graphPath);
         value.put("nextActions", nextActions());
         return value;
@@ -104,8 +110,13 @@ final class CrawlResultHandle {
     List<Map<String, Object>> nextActions() {
         List<Map<String, Object>> actions = new ArrayList<>();
         if (jobId != null && !terminal()) {
-            actions.add(action("monitor", "crawl_control",
-                    Map.of("operation", "status", "jobId", jobId), List.of()));
+            Map<String, Object> monitorArguments = new LinkedHashMap<>();
+            monitorArguments.put("operation", "status");
+            monitorArguments.put("jobId", jobId);
+            if (pollAfterMs != null) monitorArguments.put("pollAfterMs", pollAfterMs);
+            actions.add(action("monitor", "crawl_control", monitorArguments, List.of()));
+            actions.add(action("cancel", "crawl_control",
+                    Map.of("operation", "cancel", "jobId", jobId), List.of()));
         }
         if (jobId != null) {
             actions.add(action("inspectResult", "crawl_result",
@@ -189,6 +200,11 @@ final class CrawlResultHandle {
             }
         }
         return null;
+    }
+
+    private static Long pollAfterMs(JsonNode source) {
+        Long configured = firstLong(source, "pollAfterMs", "poll_after_ms");
+        return configured == null ? DEFAULT_POLL_AFTER_MS : configured;
     }
 
     private static Long firstLong(JsonNode source, String... fields) {

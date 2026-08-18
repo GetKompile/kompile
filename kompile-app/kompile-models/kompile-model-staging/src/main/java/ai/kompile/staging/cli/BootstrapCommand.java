@@ -136,7 +136,7 @@ public class BootstrapCommand implements Callable<Integer> {
         String effectiveSource = firstNonBlank(source, catalog == null ? null : catalog.getSource());
         String effectiveRepository =
                 firstNonBlank(repository, catalog == null ? null : catalog.getRepo());
-        String effectiveFormat = firstNonBlank(format, catalog == null ? null : catalog.getFormat(), "onnx");
+        String effectiveFormat = firstNonBlank(format, catalog == null ? null : catalog.getFormat(), "auto");
         String effectiveType = firstNonBlank(type, catalog == null ? null : catalog.getModelType());
         if (effectiveType == null && "gguf".equalsIgnoreCase(effectiveFormat)) {
             effectiveType = ModelType.LLM_GGML.getValue();
@@ -264,6 +264,9 @@ public class BootstrapCommand implements Callable<Integer> {
         String name = artifact.getFileName().toString().toLowerCase();
         if (name.endsWith(".gguf") || name.endsWith(".ggml")) {
             return "gguf";
+        }
+        if (name.endsWith(".safetensors")) {
+            return "safetensors";
         }
         if (name.endsWith(".sdz") || name.endsWith(".fb")) {
             return "samediff";

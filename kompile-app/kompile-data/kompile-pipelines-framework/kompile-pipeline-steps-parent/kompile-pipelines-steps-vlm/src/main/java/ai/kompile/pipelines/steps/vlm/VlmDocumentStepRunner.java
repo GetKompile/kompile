@@ -17,6 +17,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -45,6 +46,11 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
         File document = Path.of(filePath).toAbsolutePath().normalize().toFile();
         if (!document.isFile()) {
             throw new IllegalArgumentException("VLM document does not exist: " + document);
+        }
+        if (!document.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            throw new IllegalArgumentException(
+                    "VLM_DOCUMENT supports application/pdf (.pdf) input only; direct raster-image "
+                            + "paths are not supported: " + document);
         }
 
         ResolvedModel model = resolvedModel(input);

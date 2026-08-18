@@ -425,7 +425,7 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
         if [ "${JARS_ONLY}" = true ]; then
             BUILD_CMD+=(-pl :kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli -am)
         else
-            BUILD_CMD+=(-pl :kompile-cli-main -am)
+            BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-cli -am)
         fi
     elif [ "${VARIANT}" = "local" ]; then
         # Keep the Java reactor at the local execution boundary. app-main is
@@ -433,7 +433,7 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
         # the combined staging REST/CLI application is intentionally excluded.
         # Upstream Kompile/DL4J artifacts must already be installed; do not widen
         # this focused build with Maven's also-make reactor expansion.
-        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main)
+        BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-cli,:kompile-app-subprocess-serving,:kompile-pipeline-serving,:kompile-app-main)
     fi
     # When building JARs (not native), produce exec JARs for app-main
     if { [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; } \
@@ -559,6 +559,24 @@ if [ "${SKIP_NATIVE}" = false ]; then
                 cd kompile-cli/kompile-cli-main
                 "${MVN}" package "${NATIVE_BUILD_FLAG}" -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
                     2>&1 | tee /tmp/kompile-cli-native.log
+            ) &
+            PIDS+=($!)
+            throttle_native_build
+        fi
+    fi
+
+    # Standalone model CLI native. The main CLI delegates model operations to this
+    # sibling process; a native parent must have the native child in the same distro.
+    if [ "${CLI_NATIVE}" = true ]; then
+        MODEL_CLI_TARGET="kompile-cli/kompile-model-cli/target/kompile-model${EXE_SUFFIX}"
+        if [ -f "${MODEL_CLI_TARGET}" ] && [ "${SKIP_JAVA_BUILD}" = true ]; then
+            echo "  kompile-model: using existing binary"
+        else
+            echo "  kompile-model: building native image..."
+            (
+                cd kompile-cli/kompile-model-cli
+                "${MVN}" package "${NATIVE_BUILD_FLAG}" -DskipTests "${MAVEN_BUILD_ARGS[@]}" \
+                    2>&1 | tee /tmp/kompile-model-native.log
             ) &
             PIDS+=($!)
             throttle_native_build
@@ -792,6 +810,21 @@ if [ "${CLI_NATIVE}" = true ] && [ -f "${CLI_BIN}" ]; then
 fi
 if [ "${CLI_NATIVE}" = true ] && [ ! -x "${DIST_DIR}/bin/kompile${EXE_SUFFIX}" ]; then
     echo "  ERROR: required CLI native binary is missing: ${CLI_BIN}" >&2
+    exit 1
+fi
+
+# The model CLI is a sibling native image, not a classpath entry. Native
+# distributions must ship it beside the main CLI for model commands and MCP conversion
+# to stay on the native child-process ABI.
+MODEL_CLI_BIN="kompile-cli/kompile-model-cli/target/kompile-model${EXE_SUFFIX}"
+if [ "${CLI_NATIVE}" = true ] && [ -f "${MODEL_CLI_BIN}" ]; then
+    cp "${MODEL_CLI_BIN}" "${DIST_DIR}/bin/kompile-model${EXE_SUFFIX}"
+    chmod +x "${DIST_DIR}/bin/kompile-model${EXE_SUFFIX}"
+    normalize_elf_portability "${DIST_DIR}/bin/kompile-model${EXE_SUFFIX}"
+    echo "  bin/kompile-model${EXE_SUFFIX} ($(du -h "${MODEL_CLI_BIN}" | cut -f1))"
+fi
+if [ "${CLI_NATIVE}" = true ] && [ ! -x "${DIST_DIR}/bin/kompile-model${EXE_SUFFIX}" ]; then
+    echo "  ERROR: required model CLI native binary is missing: ${MODEL_CLI_BIN}" >&2
     exit 1
 fi
 
@@ -1063,6 +1096,9 @@ require_native_component() {
     fi
 }
 
+if [ "${CLI_NATIVE}" = true ]; then
+    require_native_component "model CLI" "kompile-model"
+fi
 if [ "${APP_NATIVE}" = true ]; then
     require_component_forms "server" "kompile-server" "kompile-server.jar"
     require_component_forms "chat" "kompile-chat" "kompile-chat.jar"
@@ -1208,7 +1244,6 @@ fi
 if [ "${JARS_ONLY}" = false ] && [ "${SERVER_JARS_ONLY}" = false ]; then
     for extra in kompile-cli/kompile-agent-cli/target/kompile-agent \
                  kompile-cli/kompile-app-cli/target/kompile-app-cli \
-                 kompile-cli/kompile-model-cli/target/kompile-model \
                  kompile-cli/kompile-component-cli/target/kompile-component; do
         if [ -f "${extra}" ]; then
             BNAME=$(basename "${extra}")
@@ -1403,6 +1438,7 @@ cat > "${DIST_DIR}/.dist-info.json" << EOF
   "buildDate": "$(date -Iseconds)",
   "components": {
     "cli": $(component_forms kompile kompile-cli.jar),
+    "model-cli": $(component_forms kompile-model kompile-model.jar),
     "server": $(component_forms kompile-server kompile-server.jar),
     "model-staging": $(component_forms kompile-model-staging kompile-model-staging.jar),
     "model-serving": $(component_forms kompile-model-serving kompile-model-serving.jar),

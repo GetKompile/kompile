@@ -76,7 +76,7 @@ class CrawlDocumentsToolTest {
     void missingDocumentsAndCodeProjectsBootstrapsTheFolder() throws Exception {
         CrawlDocumentsTool tool = new CrawlDocumentsTool((String) null, mapper);
 
-        ToolResult result = tool.execute(mapper.createObjectNode(), context);
+        ToolResult result = tool.execute(mapper.createObjectNode().put("async", false), context);
 
         assertFalse(result.isError(), result.getOutput());
         assertEquals("project-local", result.getMetadata().get("backend"));

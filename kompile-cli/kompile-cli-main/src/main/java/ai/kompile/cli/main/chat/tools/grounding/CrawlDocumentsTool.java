@@ -91,8 +91,9 @@ public final class CrawlDocumentsTool implements CliTool {
                 + "With no documents, codeProjects, or knowledgeBase selector, the local stdio backend "
                 + "indexes the current project folder into a deterministic folder-scoped knowledge base. "
                 + "Explicit documents and code projects can be added when narrower control is needed. "
-                + "With a configured crawl manager this schedules an asynchronous distributed crawl; "
-                + "otherwise the same MCP call updates a synchronous project-local knowledge base. Each document may select a named pipeline, "
+                + "This tool returns an asynchronous job handle by default for both managed and project-local crawls; "
+                + "poll crawl_control operation=status and then call crawl_result when terminal=true. Set async=false "
+                + "only when an embedding explicitly needs the legacy blocking local behavior. Each document may select a named pipeline, "
                 + "loader, chunker, limits, filters, and properties. The request can also configure custom "
                 + "pipelines, routing rules, graph extraction, chunking, vector indexing, runtime, "
                 + "hydration, distribution, enabled/archived steps, and ontology derivation. Call "
@@ -102,11 +103,8 @@ public final class CrawlDocumentsTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Use {} to auto-configure and bootstrap the current directory locally, or provide "
-                + "documents=[{path|url,...}], explicit additional codeProjects=[id|name|*], and an optional "
-                + "knowledgeBase={id|name}. For reusable pipelines, call crawl_discover section=pipelines and "
-                + "follow its wiringRecipe; set dryRun=true to validate and preview the composed crawl "
-                + "without creating or changing a knowledge base. Local runs complete synchronously.";
+        return "Crawl documents or auto-configure this folder. Returns jobId; poll crawl_control "
+                + "status using pollAfterMs, then crawl_result. dryRun previews; async=false blocks.";
     }
 
     @Override
@@ -122,6 +120,14 @@ public final class CrawlDocumentsTool implements CliTool {
                 .put("type", "boolean")
                 .put("default", false)
                 .put("description", "Validate and preview the complete composed crawl, including pipeline and worker resolution, without persisting a knowledge base, graph, or crawl artifacts.");
+        props.putObject("async")
+                .put("type", "boolean")
+                .put("default", true)
+                .put("description", "Return immediately with a pollable jobId. Use crawl_control operation=status and respect pollAfterMs, then crawl_result when terminal=true. Set false only for explicit blocking compatibility.");
+        props.putObject("waitForCompletion")
+                .put("type", "boolean")
+                .put("default", false)
+                .put("description", "Blocking compatibility alias for async=false; ignored for dryRun previews.");
 
         ObjectNode documents = props.putObject("documents");
         documents.put("type", "array");
@@ -243,9 +249,13 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineProperties.putObject("chunkSize").put("type", "integer").put("minimum", 1);
         pipelineProperties.putObject("chunkOverlap").put("type", "integer").put("minimum", 0);
         pipelineProperties.putObject("modelId").put("type", "string")
-                .put("description", "Single model selection, commonly used by VLM/OCR or a generic model step.");
-        pipelineProperties.putObject("vlmModel").put("type", "string");
-        pipelineProperties.putObject("modelSetId").put("type", "string");
+                .put("description", "Explicit default model shorthand. Used only when modelBindings is empty; "
+                        + "must agree with vlmModel when both are supplied.");
+        pipelineProperties.putObject("vlmModel").put("type", "string")
+                .put("description", "Deprecated VLM-specific alias for modelId. Conflicting aliases are rejected.");
+        pipelineProperties.putObject("modelSetId").put("type", "string")
+                .put("description", "Legacy/default model selection after modelId and vlmModel; "
+                        + "modelBindings remains authoritative.");
         pipelineProperties.putObject("modelBindings").put("type", "object")
                 .put("description", "Role-to-model id map; values may reference pipelineRegistry.models or project models.")
                 .putObject("additionalProperties").put("type", "string");
@@ -285,9 +295,17 @@ public final class CrawlDocumentsTool implements CliTool {
         processorProperties.putObject("pipelineDefinitionId").put("type", "string");
         processorProperties.putObject("timeoutMinutes").put("type", "integer").put("minimum", 1);
         pipeline.putArray("required").add("pipelineId");
+        ObjectNode modelSelection = schema.putObject("modelSelection");
+        modelSelection.putArray("precedence")
+                .add("modelBindings.default").add("modelId").add("vlmModel").add("modelSetId");
+        modelSelection.put("conflicts",
+                "Different modelId and vlmModel values are rejected; explicit modelBindings are authoritative.");
+        modelSelection.put("resolution",
+                "Bindings resolve through pipelineRegistry.models and then kompile.project.json.");
         ObjectNode pipelineTypeGuide = schema.putObject("pipelineTypeGuide");
         pipelineTypeGuide.put("VLM/OCR",
-                "pipelineType + modelId/modelBindings compiled to UnifiedPipelineDefinition.");
+                "pipelineType + modelId/modelBindings compiled to UnifiedPipelineDefinition and PDF compatibility worker; "
+                        + "the worker is launched inside the selected asynchronous crawl job.");
         pipelineTypeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
                 "pipelineType + loaderName/chunkerName/options; model steps use the same runtime contract.");
         pipelineTypeGuide.put("CUSTOM",
@@ -452,7 +470,7 @@ public final class CrawlDocumentsTool implements CliTool {
         processingRoute.put("description", "Request-scoped model execution chain. The local MCP path "
                 + "launches Kompile's serving subprocess for LOCAL_MODEL, launches CLI_AGENT subprocesses, "
                 + "or calls API_AGENT endpoints without a running app server. Every local subprocess is "
-                + "stopped before the MCP command returns.");
+                + "stopped when the crawl job reaches a terminal state; poll instead of waiting in the tool call.");
         ObjectNode routeProperties = processingRoute.putObject("properties");
         routeProperties.putObject("fallbackEnabled").put("type", "boolean");
         routeProperties.putObject("servingLaneEnabled").put("type", "boolean");

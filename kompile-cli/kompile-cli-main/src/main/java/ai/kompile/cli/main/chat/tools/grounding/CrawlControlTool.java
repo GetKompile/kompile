@@ -47,8 +47,10 @@ public final class CrawlControlTool implements CliTool {
 
     @Override
     public String description() {
-        return "Inspect or control a crawl through the configured backend. Project-local crawls support "
-                + "preflight, start, status, list, transcript, source_types, graph_stats, and runtime_config; "
+        return "Inspect or control a crawl through the configured backend. Project-local starts return immediately "
+                + "with a pollable jobId; call operation=status with that id (respect pollAfterMs) until terminal=true, "
+                + "then call crawl_result. Project-local crawls support "
+                + "preflight, start, status, list, transcript, cancel, source_types, graph_stats, and runtime_config; "
                 + "a distributed manager additionally supports clear_graph, cancel, retry, run_step, and archive_step. "
                 + "After a terminal status, call crawl_result with the same jobId for a structured result handle "
                 + "and executable knowledge/graph follow-up actions.";
@@ -56,8 +58,9 @@ public final class CrawlControlTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Unified crawl lifecycle: operation=preflight|clear_graph|start|status|list|cancel|retry|"
-                + "run_step|archive_step|transcript|source_types|graph_stats|runtime_config.";
+        return "Unified crawl lifecycle: start returns jobId immediately; poll operation=status (respect pollAfterMs), "
+                + "then crawl_result. operation=preflight|clear_graph|start|status|list|cancel|retry|run_step|archive_step|"
+                + "transcript|source_types|graph_stats|runtime_config.";
     }
 
     @Override
@@ -66,7 +69,10 @@ public final class CrawlControlTool implements CliTool {
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
         props.putObject("operation").put("type", "string")
-                .put("description", "Lifecycle operation.");
+                .put("description", "Lifecycle operation. For long crawls use status polling instead of waiting in start.")
+                .putArray("enum").add("preflight").add("start").add("status").add("list")
+                .add("cancel").add("retry").add("run_step").add("archive_step").add("transcript")
+                .add("source_types").add("graph_stats").add("runtime_config").add("clear_graph");
         props.putObject("jobId").put("type", "string")
                 .put("description", "Backend unified-crawl job id.");
         props.putObject("stepId").put("type", "string")
@@ -77,6 +83,10 @@ public final class CrawlControlTool implements CliTool {
         props.putObject("size").put("type", "integer");
         props.putObject("factSheetId").put("type", "integer")
                 .put("description", "Optional remote/legacy selector; local crawl jobs are folder-scoped.");
+        props.putObject("async").put("type", "boolean")
+                .put("description", "For start requests, request asynchronous execution (default true). Local starts are always pollable.");
+        props.putObject("pollAfterMs").put("type", "integer")
+                .put("description", "Optional client hint; status responses return the server's recommended delay.");
         return schema;
     }
 

@@ -12,6 +12,7 @@ import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import org.json.JSONObject
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -33,6 +34,34 @@ internal interface SdxOwnedPlatformChatSession {
     fun cancel(operation: NativeOperationTransaction)
 
     fun close(operation: NativeOperationTransaction)
+}
+
+private const val TRACE_UTF8_HEX_PREFIX_BYTES = 256
+private const val TRACE_TEXT_PREVIEW_CHARS = 512
+
+private fun utf8Sha256(value: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(
+        value.toByteArray(StandardCharsets.UTF_8)
+    )
+    val hex = StringBuilder(digest.size * 2)
+    digest.forEach { byte ->
+        val unsigned = byte.toInt() and 0xff
+        hex.append("0123456789abcdef"[unsigned ushr 4])
+        hex.append("0123456789abcdef"[unsigned and 0x0f])
+    }
+    return hex.toString()
+}
+
+private fun utf8HexPrefix(value: String, maxBytes: Int = TRACE_UTF8_HEX_PREFIX_BYTES): String {
+    val bytes = value.toByteArray(StandardCharsets.UTF_8)
+    val count = bytes.size.coerceAtMost(maxBytes)
+    val hex = StringBuilder(count * 2)
+    for (index in 0 until count) {
+        val unsigned = bytes[index].toInt() and 0xff
+        hex.append("0123456789abcdef"[unsigned ushr 4])
+        hex.append("0123456789abcdef"[unsigned and 0x0f])
+    }
+    return hex.toString()
 }
 
 /**
@@ -375,6 +404,9 @@ internal object SdxPlatformRuntimeOwner {
                 attemptId,
                 mapOf(
                     "prompt_chars" to prompt.length,
+                    "prompt_utf8_bytes" to prompt.toByteArray(StandardCharsets.UTF_8).size,
+                    "prompt_utf8_sha256" to utf8Sha256(prompt),
+                    "prompt_utf8_hex_prefix" to utf8HexPrefix(prompt),
                     "prompt_tokens" to tokenCount.count,
                     "max_prompt_tokens" to maxPromptTokens
                 )
@@ -400,11 +432,18 @@ internal object SdxPlatformRuntimeOwner {
                             val chars = chunkChars.addAndGet(text.length.toLong())
                             onChunk?.accept(text)
                             if (count == 1 || count % 16 == 0) {
-                                trace.record(
-                                    "native_chunk",
-                                    attemptId,
-                                    mapOf("chunk_count" to count, "chunk_chars" to chars)
+                                val chunkFields = mutableMapOf<String, Any?>(
+                                    "chunk_count" to count,
+                                    "chunk_chars" to chars,
+                                    "chunk_utf8_bytes" to
+                                        text.toByteArray(StandardCharsets.UTF_8).size
                                 )
+                                if (count == 1) {
+                                    chunkFields["chunk_text"] = text
+                                    chunkFields["chunk_utf8_sha256"] = utf8Sha256(text)
+                                    chunkFields["chunk_utf8_hex_prefix"] = utf8HexPrefix(text)
+                                }
+                                trace.record("native_chunk", attemptId, chunkFields)
                             }
                         }
                     } catch (failure: Throwable) {
@@ -419,7 +458,13 @@ internal object SdxPlatformRuntimeOwner {
             trace.record(
                 "native_generate_enter",
                 attemptId,
-                mapOf("max_tokens" to opts.maxTokens(), "pid" to android.os.Process.myPid())
+                mapOf(
+                    "max_tokens" to opts.maxTokens(),
+                    "pid" to android.os.Process.myPid(),
+                    "prompt_utf8_bytes" to prompt.toByteArray(StandardCharsets.UTF_8).size,
+                    "prompt_utf8_sha256" to utf8Sha256(prompt),
+                    "options_json" to opts.toOptionsJson()
+                )
             )
             val heartbeat = trace.startHeartbeat(attemptId, "sdxLlmGenerateStreaming")
             val generationStatus: Int
@@ -491,7 +536,8 @@ internal object SdxPlatformRuntimeOwner {
                         "prompt_token_ids" to
                             (report.optJSONArray("promptTokenIds")?.toString() ?: "[]"),
                         "generated_token_ids" to
-                            (report.optJSONArray("generatedTokenIds")?.toString() ?: "[]")
+                            (report.optJSONArray("generatedTokenIds")?.toString() ?: "[]"),
+                        "report_json" to report.toString()
                     )
                 )
             } else {
@@ -528,6 +574,14 @@ internal object SdxPlatformRuntimeOwner {
                 attemptId,
                 mapOf(
                     "output_chars" to decoded.length,
+                    "output_utf8_bytes" to decoded.toByteArray(StandardCharsets.UTF_8).size,
+                    "output_utf8_sha256" to utf8Sha256(decoded),
+                    "output_utf8_hex_prefix" to utf8HexPrefix(decoded),
+                    "output_preview" to decoded.take(TRACE_TEXT_PREVIEW_CHARS),
+                    "raw_decoded_chars" to rawDecoded.length,
+                    "raw_decoded_utf8_bytes" to rawDecoded.toByteArray(StandardCharsets.UTF_8).size,
+                    "raw_decoded_utf8_sha256" to utf8Sha256(rawDecoded),
+                    "raw_decoded_utf8_hex_prefix" to utf8HexPrefix(rawDecoded),
                     "tool_calls" to structured.getJSONArray("toolCalls").length(),
                     "protocol_errors" to structured.getJSONArray("protocolErrors").length(),
                     "chunk_count" to chunkCount.get(),

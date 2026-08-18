@@ -42,7 +42,7 @@ public class ConvertCommand implements Callable<Integer> {
     private ConversionService conversionService;
 
     @Option(names = {"-i", "--input"}, required = true,
-            description = "Input model file (ONNX, TensorFlow, Keras)")
+            description = "Input model file (ONNX, TensorFlow, Keras, GGUF/GGML, or SafeTensors)")
     private String input;
 
     @Option(names = {"-o", "--output"}, required = true,
@@ -50,7 +50,7 @@ public class ConvertCommand implements Callable<Integer> {
     private String output;
 
     @Option(names = {"-f", "--format"},
-            description = "Input format: onnx, tensorflow, keras (auto-detected if not specified)")
+            description = "Input format: onnx, tensorflow, keras, gguf, ggml, safetensors (auto-detected if not specified)")
     private String format;
 
     @Override
@@ -68,6 +68,10 @@ public class ConvertCommand implements Callable<Integer> {
                 detectedFormat = "tensorflow";
             } else if (fileName.endsWith(".h5") || fileName.endsWith(".keras")) {
                 detectedFormat = "keras";
+            } else if (fileName.endsWith(".gguf") || fileName.endsWith(".ggml")) {
+                detectedFormat = "gguf";
+            } else if (fileName.endsWith(".safetensors")) {
+                detectedFormat = "safetensors";
             } else {
                 System.err.println("Cannot auto-detect format. Please specify --format");
                 return 1;

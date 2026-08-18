@@ -33,7 +33,7 @@ class CrawlResultHandleTest {
 
         assertEquals("kompile-crawl-result/v1", result.get("schema"));
         assertEquals(false, result.get("terminal"));
-        assertEquals(Map.of("operation", "status", "jobId", "crawl-123"),
+        assertEquals(Map.of("operation", "status", "jobId", "crawl-123", "pollAfterMs", 1_000L),
                 action(handle, "monitor").get("arguments"));
         assertEquals(Map.of("factSheetId", 42L, "operation", "OVERVIEW"),
                 action(handle, "inspectGraph").get("arguments"));

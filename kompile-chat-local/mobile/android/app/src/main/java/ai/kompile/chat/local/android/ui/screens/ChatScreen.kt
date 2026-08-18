@@ -1,6 +1,7 @@
 package ai.kompile.chat.local.android.ui.screens
 
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -105,6 +106,31 @@ internal fun shouldShowHuggingFaceImportOnChat(
     modelState: ModelUiState
 ): Boolean = modelState !is ModelUiState.Ready && state is HuggingFaceImportUiState.Observable
 
+private const val DEBUG_CLIPBOARD_MAX_BYTES = 192 * 1024
+private const val DEBUG_EXPORT_TAG = "ChatDebugExport"
+
+/**
+ * Keep clipboard writes below Android's Binder transaction limit. The native trace can
+ * contain several rotated files, so this is intentionally enforced on the final UTF-8
+ * payload rather than relying on the individual trace-file bounds.
+ */
+private fun boundDebugClipboardText(value: String): String {
+    val utf8 = value.toByteArray(Charsets.UTF_8)
+    if (utf8.size <= DEBUG_CLIPBOARD_MAX_BYTES) return value
+
+    var charCount = 0
+    var byteCount = 0
+    while (charCount < value.length) {
+        val codePoint = value.codePointAt(charCount)
+        val codePointBytes = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8).size
+        if (byteCount + codePointBytes > DEBUG_CLIPBOARD_MAX_BYTES) break
+        byteCount += codePointBytes
+        charCount += Character.charCount(codePoint)
+    }
+    return value.substring(0, charCount) +
+        "\\n[debug log truncated for clipboard safety; original_utf8_bytes=${utf8.size}]"
+}
+
 internal fun copyableChatTranscript(
     messages: List<UiMessage>,
     route: String,
@@ -152,6 +178,16 @@ internal fun copyableChatTranscript(
             appendLine("streaming.tool[${index}].result:")
             appendLine(activity.resultJson)
         }
+        live.protocolExchanges.forEachIndexed { index, exchange ->
+            appendLine("streaming.protocol[${index}].request_json:")
+            appendLine(exchange.requestJson)
+            appendLine("streaming.protocol[${index}].raw_response:")
+            appendLine(exchange.rawResponse)
+            if (exchange.protocolErrors.isNotEmpty()) {
+                appendLine("streaming.protocol[${index}].errors:")
+                exchange.protocolErrors.forEach { appendLine(it) }
+            }
+        }
     }
     if (!error.isNullOrBlank()) {
         appendLine()
@@ -163,6 +199,55 @@ internal fun copyableChatTranscript(
         appendLine(errorStackTrace)
     }
 }.trimEnd()
+
+internal fun copyableChatDebugTranscript(
+    messages: List<UiMessage>,
+    route: String,
+    modelState: ModelUiState,
+    graphState: GraphUiState,
+    importOperation: ImportOperationKind,
+    modelLoadProgress: ModelLoadProgressUi?,
+    diagnostics: List<ImportDiagnostic>,
+    error: String?,
+    errorStackTrace: String?,
+    streaming: StreamingUiState?,
+    smokeDecodeTrace: String,
+    capturedAtEpochMillis: Long = System.currentTimeMillis()
+): String = buildString {
+    appendLine("Kompile Chat debug transcript")
+    appendLine("captured_at_epoch_ms=${capturedAtEpochMillis}")
+    appendLine("route=${route}")
+    appendLine("model_state=${modelState.debugDescription()}")
+    appendLine("graph_state=${graphState.debugDescription()}")
+    appendLine("import_operation=${importOperation.name}")
+    modelLoadProgress?.let {
+        appendLine("model_load_progress.title=${it.title}")
+        appendLine("model_load_progress.detail=${it.detail}")
+    }
+    appendLine()
+    appendLine("=== raw transcript ===")
+    appendLine(copyableChatTranscript(messages, route, error, errorStackTrace, streaming))
+    appendLine()
+    appendLine("=== import diagnostics ===")
+    appendLine(ImportDiagnosticPolicy.copyText(diagnostics).ifBlank { "none" })
+    appendLine()
+    appendLine("=== persisted smoke/native trace ===")
+    appendLine(smokeDecodeTrace.trimEnd().ifBlank { "none" })
+}.trimEnd().let(::boundDebugClipboardText)
+
+private fun ModelUiState.debugDescription(): String = when (this) {
+    ModelUiState.Checking -> "Checking"
+    ModelUiState.Missing -> "Missing"
+    is ModelUiState.Ready -> "Ready(path=${path},route=${route})"
+    is ModelUiState.Failed -> "Failed(path=${path},message=${message})"
+}
+
+private fun GraphUiState.debugDescription(): String = when (this) {
+    GraphUiState.WaitingForModel -> "WaitingForModel"
+    GraphUiState.Checking -> "Checking"
+    is GraphUiState.Ready -> "Ready(path=${path})"
+    is GraphUiState.Failed -> "Failed(path=${path},message=${message})"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -180,31 +265,63 @@ fun ChatScreen(
     val modelLoadProgress by vm.modelLoadProgress.collectAsState()
     val graphState by vm.graphState.collectAsState()
     val diagnostics by vm.importDiagnostics.collectAsState()
+    val importOperation by vm.importOperation.collectAsState()
+    val huggingFaceImportState by vm.huggingFaceImportState.collectAsState()
     val clipboard = LocalClipboardManager.current
     val traceContext = LocalContext.current
     val copySmokeDecodeTrace = {
         clipboard.setText(AnnotatedString(SmokeDecodeTraceLog(traceContext).readContents()))
     }
     val copyTranscript = {
-        val transcript = copyableChatTranscript(messages, route, error, errorStackTrace)
-        val liveTranscript = streaming?.let {
-            copyableChatTranscript(emptyList(), route, null, null, it)
-        }
         clipboard.setText(
             AnnotatedString(
-                if (liveTranscript.isNullOrBlank()) transcript
-                else "$transcript\n\n$liveTranscript"
+                copyableChatTranscript(messages, route, error, errorStackTrace, streaming)
             )
         )
+    }
+    val copyDebugTranscript: () -> Unit = {
+        runCatching {
+            val debugText = copyableChatDebugTranscript(
+                messages = messages,
+                route = route,
+                modelState = modelState,
+                graphState = graphState,
+                importOperation = importOperation,
+                modelLoadProgress = modelLoadProgress,
+                diagnostics = diagnostics,
+                error = error,
+                errorStackTrace = errorStackTrace,
+                streaming = streaming,
+                smokeDecodeTrace = SmokeDecodeTraceLog(traceContext).readContents()
+            )
+            clipboard.setText(AnnotatedString(debugText))
+        }.onFailure { failure ->
+            // A clipboard/Binder failure must never take down the chat screen.
+            Log.e(DEBUG_EXPORT_TAG, "Unable to copy debug transcript", failure)
+        }
+        Unit
     }
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val importOperation by vm.importOperation.collectAsState()
-    val huggingFaceImportState by vm.huggingFaceImportState.collectAsState()
     val importing = importOperation != ImportOperationKind.NONE
     var importError by remember { mutableStateOf<String?>(null) }
     var importErrorStackTrace by remember { mutableStateOf<String?>(null) }
+    var stopUnloadInProgress by remember { mutableStateOf(false) }
+    val showStopAndUnload = modelState is ModelUiState.Ready || thinking
+    val stopAndUnloadLabel = if (thinking) "Stop & unload" else "Unload model"
+    val stopAndUnload: () -> Unit = {
+        if (!stopUnloadInProgress) {
+            stopUnloadInProgress = true
+            scope.launch {
+                try {
+                    vm.stopResponseAndUnloadModel()
+                } finally {
+                    stopUnloadInProgress = false
+                }
+            }
+        }
+    }
 
     val projectPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -282,6 +399,19 @@ fun ChatScreen(
                     ) {
                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy transcript")
                     }
+                    OutlinedButton(
+                        onClick = copyDebugTranscript,
+                        modifier = Modifier.testTag("copy_debug_log_button"),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Build,
+                            contentDescription = "Copy debug log",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Debug log", maxLines = 1)
+                    }
                     // Small local context windows make resetting the conversation a
                     // first-class action, not a hidden side effect of Settings changes.
                     IconButton(
@@ -310,6 +440,10 @@ fun ChatScreen(
                 modelState = modelState,
                 importOperation = importOperation,
                 loadProgress = modelLoadProgress,
+                onStopAndUnload = if (showStopAndUnload) stopAndUnload else null,
+                stopAndUnloadEnabled = showStopAndUnload && !importing && !stopUnloadInProgress,
+                stopAndUnloadInProgress = stopUnloadInProgress,
+                stopAndUnloadLabel = stopAndUnloadLabel,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             )
             ToolUsageIndicator(
@@ -430,6 +564,10 @@ internal fun ModelStatusHeader(
     modelState: ModelUiState,
     importOperation: ImportOperationKind,
     loadProgress: ModelLoadProgressUi? = null,
+    onStopAndUnload: (() -> Unit)? = null,
+    stopAndUnloadEnabled: Boolean = false,
+    stopAndUnloadInProgress: Boolean = false,
+    stopAndUnloadLabel: String = "Unload model",
     modifier: Modifier = Modifier,
 ) {
     val status = modelStatusUi(modelState, importOperation, loadProgress)
@@ -479,6 +617,27 @@ internal fun ModelStatusHeader(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                onStopAndUnload?.let { onClick ->
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = onClick,
+                        enabled = stopAndUnloadEnabled,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.testTag("stop_unload_model_button"),
+                    ) {
+                        if (stopAndUnloadInProgress) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text(
+                                text = stopAndUnloadLabel,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
             if (status.loading) {

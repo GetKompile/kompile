@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -72,7 +74,7 @@ class LocalProjectCrawlBackendTest {
         assertFalse(crawl.parameterSchema().has("anyOf"),
                 "The local folder bootstrap must not require documents or codeProjects selectors.");
 
-        ToolResult bootstrapped = crawl.execute(mapper.createObjectNode(), context);
+        ToolResult bootstrapped = crawl.execute(mapper.createObjectNode().put("async", false), context);
 
         assertFalse(bootstrapped.isError(), bootstrapped.getOutput());
         assertEquals("project-local", bootstrapped.getMetadata().get("backend"));
@@ -270,6 +272,7 @@ class LocalProjectCrawlBackendTest {
                 """, StandardCharsets.UTF_8);
 
         ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
         request.putArray("codeProjects").add("*");
         request.putObject("knowledgeBase").put("name", "source-code");
 
@@ -319,6 +322,7 @@ class LocalProjectCrawlBackendTest {
     @Test
     void indexesInlineKnowledgeThroughCrawlSource() throws Exception {
         ObjectNode params = mapper.createObjectNode();
+        params.put("async", false);
         params.put("text", "The cobalt kestrel policy expires after seven rotations.");
         params.put("title", "Operational note");
         params.put("factSheetId", 23);
@@ -447,6 +451,48 @@ class LocalProjectCrawlBackendTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void explicitDryRunIsIsolatedAndReportsTheEffectivePlanWithoutWrites() throws Exception {
+        Files.writeString(projectRoot.resolve("old.md"), "old source\n", StandardCharsets.UTF_8);
+        Files.writeString(projectRoot.resolve("new.md"), "new source\n", StandardCharsets.UTF_8);
+        CrawlDocumentsTool tool = new CrawlDocumentsTool((String) null, mapper);
+
+        ToolResult seeded = tool.execute(documentRequest("old.md", "preview-kb"), context);
+        assertFalse(seeded.isError(), seeded.getOutput());
+        Path manifest = projectRoot.resolve("kompile.project.json");
+        String manifestBefore = Files.readString(manifest);
+        String crawlBefore = Files.readString(projectRoot.resolve(
+                "data/crawls/preview-kb/crawl-result.json"));
+
+        ObjectNode previewRequest = documentRequest("new.md", "preview-kb");
+        previewRequest.put("dryRun", true);
+        ToolResult preview = tool.execute(previewRequest, context);
+
+        assertFalse(preview.isError(), preview.getOutput());
+        Map<String, Object> plan = (Map<String, Object>) preview.getMetadata().get("preview");
+        assertEquals(false, plan.get("persistentWrites"));
+        assertEquals(true, plan.get("isolatedExplicitPreview"));
+        List<String> sources = (List<String>) plan.get("sources");
+        assertEquals(List.of(projectRoot.resolve("new.md").toString()), sources);
+        List<Map<String, Object>> documents =
+                (List<Map<String, Object>>) plan.get("effectiveDocuments");
+        assertEquals(1, documents.size());
+        assertEquals(projectRoot.resolve("new.md").toString(), documents.get(0).get("path"));
+        assertTrue(plan.containsKey("pipelineResolution"));
+        List<Map<String, Object>> resolved =
+                (List<Map<String, Object>>) plan.get("resolvedDocuments");
+        assertEquals(1, resolved.size());
+        assertEquals("RESOLVED", resolved.get(0).get("resolutionStatus"));
+        assertEquals("standard-text", resolved.get(0).get("routeDecision"));
+        assertEquals("markdown", resolved.get(0).get("loader"));
+        assertEquals("recursive-character", resolved.get(0).get("chunker"));
+        assertTrue(resolved.get(0).containsKey("modelResolution"));
+        assertEquals(manifestBefore, Files.readString(manifest));
+        assertEquals(crawlBefore, Files.readString(
+                projectRoot.resolve("data/crawls/preview-kb/crawl-result.json")));
+    }
+
+    @Test
     void rejectsAnUnavailableLocalLoaderBeforeStartingTheWorker() throws Exception {
         Files.writeString(projectRoot.resolve("unknown-loader.md"), "loader validation\n",
                 StandardCharsets.UTF_8);
@@ -492,6 +538,7 @@ class LocalProjectCrawlBackendTest {
         ObjectNode request = mapper.createObjectNode();
         request.putArray("documents").addObject().put("path", path);
         request.putObject("knowledgeBase").put("name", knowledgeBase);
+        request.put("async", false);
         return request;
     }
 }

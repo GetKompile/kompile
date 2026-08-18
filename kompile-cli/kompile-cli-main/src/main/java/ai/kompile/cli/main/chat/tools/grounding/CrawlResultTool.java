@@ -43,7 +43,8 @@ public final class CrawlResultTool implements CliTool {
 
     @Override
     public String description() {
-        return "Read a completed or in-progress crawl result by jobId. Returns the raw lifecycle result "
+        return "Read a crawl result by jobId after starting an asynchronous crawl. If terminal=false, keep polling "
+                + "crawl_control operation=status using the returned pollAfterMs; do not start the crawl again. Returns the raw lifecycle result "
                 + "plus a stable crawlResult handle with executable nextActions for monitoring, knowledge "
                 + "search, graph inspection, reasoning, and graph updates. Uses the current folder locally "
                 + "over stdio; a configured crawl URL is an optional managed override.";
@@ -51,7 +52,8 @@ public final class CrawlResultTool implements CliTool {
 
     @Override
     public String compactHint() {
-        return "Read-only crawl handoff: pass jobId; use crawlResult.nextActions to inspect or act on the corpus and graph.";
+        return "Read-only crawl handoff: pass jobId after status reaches terminal=true; while running, use crawl_control status "
+                + "and respect pollAfterMs. Then use crawlResult.nextActions to inspect or act on the corpus and graph.";
     }
 
     @Override

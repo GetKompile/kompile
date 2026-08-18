@@ -31,7 +31,7 @@ import java.util.Objects;
  * Fuses vision and text embeddings by replacing image token embeddings with
  * actual vision encoder outputs.
  *
- * This follows the Idefics3/SmolDocling pattern where special &lt;image&gt; tokens
+ * This follows the common multimodal pattern where special &lt;image&gt; tokens
  * in the text sequence are replaced by the corresponding vision encoder outputs.
  *
  * Input Data keys:
@@ -109,12 +109,29 @@ public class VisionTextFusionStepRunner implements PipelineStepRunner {
             fusedEmbeds.close();
 
             Data output = Data.empty();
-            output.put(VLMConstants.KEY_INPUTS_EMBEDS, VLMSameDiffUtils.fromINDArray(result, VLMConstants.KEY_INPUTS_EMBEDS));
+            output.put(VLMConstants.KEY_INPUTS_EMBEDS,
+                    VLMSameDiffUtils.fromINDArray(result, VLMConstants.KEY_INPUTS_EMBEDS));
+
+            /*
+             * Preserve the decoder control tensors across the fusion boundary.
+             * The graph loop consumes fusion output as its initial state, so
+             * input_ids, attention_mask, and position_ids must travel with the
+             * fused embeddings instead of being stranded on pipeline_input.
+             */
+            copyIfPresent(input, output, VLMConstants.KEY_INPUT_IDS);
+            copyIfPresent(input, output, VLMConstants.KEY_ATTENTION_MASK);
+            copyIfPresent(input, output, VLMConstants.KEY_POSITION_IDS);
 
             return output;
         } finally {
             // Don't close arrays that came from input NDArrays (they may be reused)
             // Only close arrays we explicitly created
+        }
+    }
+
+    private static void copyIfPresent(Data input, Data output, String key) {
+        if (input.has(key)) {
+            output.put(key, (Object) input.get(key));
         }
     }
 

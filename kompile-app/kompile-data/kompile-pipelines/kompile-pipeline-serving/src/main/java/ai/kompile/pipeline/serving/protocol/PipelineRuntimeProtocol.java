@@ -12,6 +12,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Versioned bidirectional stdio protocol used by every reusable pipeline runtime. */
@@ -50,10 +53,64 @@ public final class PipelineRuntimeProtocol {
     }
 
     public static Message error(String requestId, String pipelineId, Throwable error) {
-        String detail = error == null ? "Unknown pipeline runtime error"
-                : error.getMessage() == null ? error.getClass().getName() : error.getMessage();
-        return new Message(VERSION, ERROR, requestId, pipelineId, Map.of(), detail,
+        return error(requestId, pipelineId, "RUNTIME", error);
+    }
+
+    public static Message error(String requestId, String pipelineId,
+                                String failureStage, Throwable error) {
+        Map<String, Object> diagnostic = diagnostic(failureStage, error);
+        String detail = String.valueOf(diagnostic.get("summary"));
+        return new Message(VERSION, ERROR, requestId, pipelineId, diagnostic, detail,
                 Instant.now().toString());
+    }
+
+    /** Build a bounded, transport-safe diagnostic without losing the causal exception chain. */
+    public static Map<String, Object> diagnostic(String failureStage, Throwable error) {
+        Map<String, Object> diagnostic = new LinkedHashMap<>();
+        diagnostic.put("failureStage", failureStage == null || failureStage.isBlank()
+                ? "UNKNOWN" : failureStage);
+        if (error == null) {
+            diagnostic.put("summary", "Unknown pipeline runtime error");
+            diagnostic.put("exceptionClass", "unknown");
+            diagnostic.put("exceptionChain", List.of());
+            diagnostic.put("stackTrace", List.of());
+            return Map.copyOf(diagnostic);
+        }
+
+        Throwable root = error;
+        for (int depth = 0; root.getCause() != null
+                && root.getCause() != root && depth < 15; depth++) {
+            root = root.getCause();
+        }
+        String summary = root.getMessage() == null || root.getMessage().isBlank()
+                ? root.getClass().getName()
+                : root.getMessage();
+        diagnostic.put("summary", summary);
+        diagnostic.put("exceptionClass", error.getClass().getName());
+        if (error.getMessage() != null) diagnostic.put("exceptionMessage", error.getMessage());
+        diagnostic.put("rootCauseClass", root.getClass().getName());
+        if (root.getMessage() != null) diagnostic.put("rootCauseMessage", root.getMessage());
+
+        List<Map<String, String>> chain = new ArrayList<>();
+        Throwable current = error;
+        for (int depth = 0; current != null && depth < 16; depth++) {
+            Map<String, String> item = new LinkedHashMap<>();
+            item.put("exceptionClass", current.getClass().getName());
+            if (current.getMessage() != null) item.put("exceptionMessage", current.getMessage());
+            chain.add(Map.copyOf(item));
+            Throwable next = current.getCause();
+            if (next == current) break;
+            current = next;
+        }
+        diagnostic.put("exceptionChain", List.copyOf(chain));
+
+        List<String> stack = new ArrayList<>();
+        for (StackTraceElement frame : error.getStackTrace()) {
+            if (stack.size() >= 80) break;
+            stack.add(frame.toString());
+        }
+        diagnostic.put("stackTrace", List.copyOf(stack));
+        return Map.copyOf(diagnostic);
     }
 
     public static String encode(Message message) throws IOException {

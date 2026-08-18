@@ -140,6 +140,38 @@ class KompileTuiContentViewTest {
     }
 
     @Test
+    void resumedTranscriptSurvivesTuiViewSwitchAndRepaint() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-resume-transcript-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(),
+                    processes,
+                    new MessageQueue("tui-resume-transcript-queue"),
+                    new TerminalRenderer(false));
+
+            // Managed passthrough resume records lines through the TUI state API
+            // while its cursor-safe renderer handles the immediate terminal write.
+            tui.recordInScrollRegion("── Resumed conversation (2 turns) ──");
+            tui.recordInScrollRegion("You: prior question");
+            tui.recordInScrollRegion("Assistant: prior answer");
+
+            tui.showActivityView("process:resume", "process resume", "working");
+            tui.showMainView();
+            tui.redrawContentView();
+
+            assertEquals(
+                    java.util.List.of(
+                            "── Resumed conversation (2 turns) ──",
+                            "You: prior question",
+                            "Assistant: prior answer"),
+                    tui.getContentViewLines());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void temporaryWindowOwnsRenderingAndRestoresActiveView() {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-temporary-window-test");

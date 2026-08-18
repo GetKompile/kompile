@@ -60,7 +60,7 @@ public class SetupWizard {
         KOMPILE
     }
 
-    enum AuthMethod {
+    public enum AuthMethod {
         NONE,
         OAUTH,
         API_KEY
@@ -68,8 +68,11 @@ public class SetupWizard {
 
     record ProviderSelection(String vendor, String provider, AuthMethod authMethod) {}
 
+    /** Authentication route selected for a vendor, including a transient API-key input. */
+    public record AuthenticationSelection(String provider, AuthMethod authMethod, String apiKey) {}
+
     /** Exact provider wire value plus the label shown in the setup wizard. */
-    record ThinkingOption(String value, String label) {}
+    public record ThinkingOption(String value, String label) {}
 
     private static final List<String> STANDARD_RUNTIME_OPTIONS = List.of(
             "Kompile local model — start the packaged first-party serving subprocess (no full Kompile instance)",
@@ -117,6 +120,9 @@ public class SetupWizard {
     public static ChatConfig run(ChatConfig.Scope scope, Path projectRoot) {
         ChatConfig.Scope targetScope = scope != null ? scope : ChatConfig.Scope.PROJECT;
         Path targetPath = ChatConfig.configPath(targetScope, projectRoot).toAbsolutePath().normalize();
+        ChatConfig existingConfig = targetScope == ChatConfig.Scope.GLOBAL
+                ? ChatConfig.loadGlobal()
+                : ChatConfig.loadProject(projectRoot);
         Terminal terminal = null;
         try {
             terminal = TerminalBuilder.builder().system(true).build();
@@ -225,34 +231,14 @@ public class SetupWizard {
             if ("standard".equals(chatMode)) {
                 providerSelection = selectStandardProvider(reader);
                 if (providerSelection == null) return null;
-                provider = providerSelection.provider();
-
-                if (providerSelection.authMethod() != AuthMethod.NONE
-                        && !selectManagedCredential(reader, provider, providerSelection.authMethod())) {
-                    return null;
-                }
-
-                if (providerSelection.authMethod() == AuthMethod.OAUTH) {
-                    OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
-                    if (existing != null && existing.oauth()) {
-                        System.out.println(GREEN + "  ✓ Using existing OAuth credential for "
-                                + vendorLabel(providerSelection.vendor()) + RESET);
-                    } else if (!loginWithOAuth(reader, provider)) {
-                        return null;
-                    }
-                } else if (providerSelection.authMethod() == AuthMethod.API_KEY) {
-                    OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
-                    if (existing != null && !existing.oauth()) {
-                        System.out.println(GREEN + "  ✓ Using existing managed/environment API key for "
-                                + vendorLabel(providerSelection.vendor()) + RESET);
-                    } else {
-                        apiKey = promptApiKey(reader, provider);
-                        if (apiKey == null) return null;
-                    }
-                }
+                AuthenticationSelection authentication = authenticate(
+                        reader, providerSelection.vendor(), providerSelection.authMethod());
+                if (authentication == null) return null;
+                provider = authentication.provider();
+                apiKey = authentication.apiKey();
 
                 if (!"kompile".equals(provider)) {
-                    model = selectModel(reader, provider);
+                    model = selectModel(reader, provider, existingConfig);
                     if (model == null) return null;
 
                     if (supportsThinkingSelection(provider, model)) {
@@ -266,6 +252,9 @@ public class SetupWizard {
 
             // Build and save config
             ChatConfig config = new ChatConfig(provider, apiKey, model, baseUrl);
+            if (existingConfig != null) {
+                config.setModelCatalog(existingConfig.getModelCatalog());
+            }
             config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
@@ -452,7 +441,7 @@ public class SetupWizard {
         return EXTERNAL_LOCAL_OPTIONS;
     }
 
-    static List<String> directVendorOrder() {
+    public static List<String> directVendorOrder() {
         List<String> vendorKeys = new ArrayList<>();
         for (String key : ChatConfig.PROVIDER_ORDER) {
             if (!"kompile".equals(key)
@@ -464,7 +453,7 @@ public class SetupWizard {
         return List.copyOf(vendorKeys);
     }
 
-    static List<String> authOptions(String vendor) {
+    public static List<String> authOptions(String vendor) {
         List<String> options = new ArrayList<>();
         for (AuthMethod method : authMethods(vendor)) {
             options.add(authMethodLabel(method));
@@ -472,7 +461,7 @@ public class SetupWizard {
         return List.copyOf(options);
     }
 
-    static String resolveProviderForAuth(String vendor, AuthMethod authMethod) {
+    public static String resolveProviderForAuth(String vendor, AuthMethod authMethod) {
         if (vendor == null || vendor.isBlank()) {
             throw new IllegalArgumentException("Vendor is required");
         }
@@ -492,6 +481,113 @@ public class SetupWizard {
                 yield vendor;
             }
         };
+    }
+
+    /**
+     * Provider choices shared by setup and the in-session picker. These are
+     * user-facing vendor keys, never provider wire IDs such as openai-codex.
+     */
+    public static List<String> providerPickerOrder() {
+        List<String> providers = new ArrayList<>();
+        providers.add("ollama");
+        providers.add("custom");
+        providers.addAll(directVendorOrder());
+        return List.copyOf(providers);
+    }
+
+    /** Authentication methods for a provider shown in the picker. */
+    public static List<AuthMethod> authMethodsForPicker(String vendor) {
+        if ("ollama".equalsIgnoreCase(vendor) || "custom".equalsIgnoreCase(vendor)) {
+            return List.of(AuthMethod.NONE);
+        }
+        return authMethods(vendor);
+    }
+
+    /** Resolve a wire provider back to the vendor shown to users. */
+    public static String vendorForProvider(String provider) {
+        if (provider == null || provider.isBlank()) {
+            return provider;
+        }
+        if ("openai-codex".equalsIgnoreCase(provider)) {
+            return "openai";
+        }
+        return provider;
+    }
+
+    /** Return the existing setup model source without adding another catalog. */
+    public static List<String> modelOptions(String provider) {
+        return List.of(ChatConfig.getDefaultModels(provider));
+    }
+
+    /**
+     * Return the startup catalog plus user-added model ids from the active
+     * location-scoped chat configuration.
+     */
+    public static List<String> modelOptions(String provider, ChatConfig config) {
+        return config == null ? modelOptions(provider) : config.getConfiguredModels(provider);
+    }
+
+    /** Resolve the active wire provider's current authentication route. */
+    public static AuthMethod authMethodForProvider(String provider) {
+        String vendor = vendorForProvider(provider);
+        List<AuthMethod> methods = authMethodsForPicker(vendor);
+        for (AuthMethod method : methods) {
+            try {
+                if (resolveProviderForAuth(vendor, method).equalsIgnoreCase(provider)) {
+                    return method;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Keep checking the configured methods.
+            }
+        }
+        return methods.isEmpty() ? AuthMethod.NONE : methods.get(0);
+    }
+
+    /**
+     * Reuse the startup authentication flow for any provider/model selector.
+     * This selects an existing managed credential, performs subscription OAuth
+     * when needed, or collects a transient API key for the candidate config.
+     */
+    public static AuthenticationSelection authenticate(
+            LineReader reader, String vendor, AuthMethod authMethod) {
+        if (vendor == null || vendor.isBlank() || authMethod == null) {
+            return null;
+        }
+        final String provider;
+        try {
+            provider = resolveProviderForAuth(vendor, authMethod);
+        } catch (IllegalArgumentException e) {
+            System.err.println("  Authentication route unavailable: " + e.getMessage());
+            return null;
+        }
+        if (authMethod == AuthMethod.NONE) {
+            return new AuthenticationSelection(provider, authMethod, null);
+        }
+        if (!selectManagedCredential(reader, provider, authMethod)) {
+            return null;
+        }
+
+        OAuthProviderFlow.RequestAuth existing = resolveExistingCredential(provider);
+        if (authMethod == AuthMethod.OAUTH) {
+            if (existing != null && existing.oauth()) {
+                System.out.println(GREEN + "  ✓ Using existing OAuth credential for "
+                        + vendorLabel(vendor) + RESET);
+                return new AuthenticationSelection(provider, authMethod, null);
+            }
+            return loginWithOAuth(reader, provider)
+                    ? new AuthenticationSelection(provider, authMethod, null)
+                    : null;
+        }
+
+        if (existing != null && !existing.oauth()) {
+            System.out.println(GREEN + "  ✓ Using existing managed/environment API key for "
+                    + vendorLabel(vendor) + RESET);
+            return new AuthenticationSelection(provider, authMethod, null);
+        }
+        String apiKey = promptApiKey(reader, provider);
+        return apiKey == null || apiKey.isBlank()
+                ? null
+                : new AuthenticationSelection(provider, authMethod, apiKey);
     }
 
     private static ProviderSelection selectStandardProvider(LineReader reader) {
@@ -592,14 +688,14 @@ public class SetupWizard {
         return new OAuthProviderRegistry().supportsApiKey(vendor);
     }
 
-    private static String vendorLabel(String vendor) {
+    public static String vendorLabel(String vendor) {
         if ("openai".equalsIgnoreCase(vendor)) {
             return "OpenAI";
         }
         return ChatConfig.PROVIDERS.getOrDefault(vendor, vendor);
     }
 
-    private static String authMethodLabel(AuthMethod authMethod) {
+    public static String authMethodLabel(AuthMethod authMethod) {
         return switch (authMethod) {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "API key";
@@ -609,7 +705,7 @@ public class SetupWizard {
 
     // ── Model selection ─────────────────────────────────────────────────────
 
-    static List<ThinkingOption> thinkingOptions(String provider, String model) {
+    public static List<ThinkingOption> thinkingOptions(String provider, String model) {
         if (provider == null || model == null || model.isBlank()) {
             return List.of();
         }
@@ -685,7 +781,7 @@ public class SetupWizard {
         return List.copyOf(options);
     }
 
-    static boolean supportsThinkingSelection(String provider, String model) {
+    public static boolean supportsThinkingSelection(String provider, String model) {
         return thinkingOptions(provider, model).size() > 1;
     }
 
@@ -715,24 +811,28 @@ public class SetupWizard {
     }
 
     private static String selectModel(LineReader reader, String provider) {
-        String[] defaults = ChatConfig.getDefaultModels(provider);
+        return selectModel(reader, provider, null);
+    }
 
-        if (defaults.length == 0) {
+    private static String selectModel(LineReader reader, String provider, ChatConfig config) {
+        List<String> defaults = modelOptions(provider, config);
+
+        if (defaults.isEmpty()) {
             return promptManual(reader, "  Model name: ");
         }
 
         List<String> models = new ArrayList<>();
-        for (int i = 0; i < defaults.length; i++) {
+        for (int i = 0; i < defaults.size(); i++) {
             String suffix = (i == 0) ? " (recommended)" : "";
-            models.add(defaults[i] + suffix);
+            models.add(defaults.get(i) + suffix);
         }
         models.add("Custom...");
 
         int selected = selectNumbered(reader, "Select Model:", models);
         if (selected < 0) return null;
 
-        if (selected < defaults.length) {
-            String model = defaults[selected];
+        if (selected < defaults.size()) {
+            String model = defaults.get(selected);
             System.out.println("  → " + GREEN + model + RESET);
             System.out.println();
             return model;
@@ -774,22 +874,32 @@ public class SetupWizard {
             AuthMethod authMethod) {
         try {
             CredentialStore store = CredentialStore.create();
-            List<CredentialStore.CredentialInfo> credentials = compatibleCredentials(
-                    store.list(provider),
-                    authMethod);
+            List<CredentialStore.CredentialInfo> allCredentials = store.list(provider);
+            List<CredentialStore.CredentialInfo> credentials = new ArrayList<>(
+                    compatibleCredentials(allCredentials, authMethod));
+            if (authMethod == AuthMethod.OAUTH
+                    && "openai-codex".equalsIgnoreCase(provider)) {
+                allCredentials.stream()
+                        .filter(info -> ManagedCredential.API_KEY.equals(info.type()))
+                        .filter(info -> isLegacyOpenAiCodexCredential(store, provider, info))
+                        .forEach(credentials::add);
+            }
             if (credentials.isEmpty()) {
                 return true;
             }
-            int selected = 0;
-            if (credentials.size() > 1) {
-                List<String> labels = credentials.stream()
-                        .map(info -> info.credentialName() + " — " + info.type()
-                                + (info.active() ? " (active)" : ""))
-                        .toList();
-                selected = selectNumbered(reader, "Select Stored Credential:", labels);
-                if (selected < 0) {
-                    return false;
-                }
+            List<String> labels = credentials.stream()
+                    .map(info -> info.credentialName() + " — "
+                            + (isLegacyOpenAiCodexCredential(store, provider, info)
+                            ? ManagedCredential.OAUTH
+                            : info.type())
+                            + (info.active() ? " (active)" : ""))
+                    .toList();
+            String prompt = authMethod == AuthMethod.OAUTH
+                    ? "Select Subscription:"
+                    : "Select Stored Credential:";
+            int selected = selectNumbered(reader, prompt, labels);
+            if (selected < 0) {
+                return false;
             }
             CredentialStore.CredentialInfo selectedCredential = credentials.get(selected);
             String credentialName = selectedCredential.credentialName();
@@ -805,6 +915,23 @@ public class SetupWizard {
             return true;
         } catch (IOException e) {
             System.err.println("  Could not read managed credentials: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static boolean isLegacyOpenAiCodexCredential(
+            CredentialStore store,
+            String provider,
+            CredentialStore.CredentialInfo info) {
+        if (!"openai-codex".equalsIgnoreCase(provider)
+                || !ManagedCredential.API_KEY.equals(info.type())) {
+            return false;
+        }
+        try {
+            return OAuthCredentialManager.isLegacyOpenAiCodexApiKey(
+                    provider,
+                    store.read(provider, info.credentialName()));
+        } catch (IOException e) {
             return false;
         }
     }

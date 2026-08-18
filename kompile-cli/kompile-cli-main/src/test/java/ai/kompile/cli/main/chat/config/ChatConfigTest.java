@@ -176,6 +176,36 @@ class ChatConfigTest {
     }
 
     @Test
+    void userModelCatalogMergesDefaultsAndPersistsAtTheLoadedScope() throws Exception {
+        Path project = tempDir.resolve("model-catalog-project");
+        ChatConfig config = new ChatConfig("openai-codex", null, "gpt-5.6-terra", null);
+
+        assertTrue(config.addModelToCatalog("openai-codex", "my-new-upstream-model"));
+        assertFalse(config.addModelToCatalog("openai-codex", "my-new-upstream-model"));
+        assertTrue(config.getConfiguredModels("openai-codex").contains("gpt-5.6-terra"));
+        assertTrue(config.getConfiguredModels("openai-codex").contains("my-new-upstream-model"));
+
+        config.saveProject(project);
+        ChatConfig loaded = ChatConfig.loadProject(project);
+
+        assertNotNull(loaded);
+        assertTrue(loaded.getConfiguredModels("openai-codex").contains("my-new-upstream-model"));
+        assertTrue(Files.readString(ChatConfig.projectConfigPath(project))
+                .contains("my-new-upstream-model"));
+    }
+
+    @Test
+    void providerSwitchCarriesTheUserModelCatalogOverlay() {
+        ChatConfig active = new ChatConfig("ollama", null, "llama3", null);
+        ChatConfig selected = new ChatConfig("custom", null, "my-model", "http://localhost:9000/v1");
+        selected.addModelToCatalog("custom", "my-model");
+
+        active.applyLlmSettingsFrom(selected);
+
+        assertTrue(active.getConfiguredModels("custom").contains("my-model"));
+    }
+
+    @Test
     void passthroughAgentOrderComesFromPackagedCliAgentRegistry() {
         assertTrue(ChatConfig.getPassthroughAgentOrder().contains("codex"),
                 "setup wizard must be able to offer Codex when codex is on PATH");

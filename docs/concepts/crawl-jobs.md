@@ -207,7 +207,7 @@ When `--multimodal` is set on the CLI, the system automatically constructs
 four pipelines and route rules:
 
 1. **text** pipeline (`STANDARD_TEXT`) -- default
-2. **visual** pipeline (`VLM`) -- PDFs + images routed here (priority 10)
+2. **visual** pipeline (`VLM`) -- PDF documents, including scanned/image-heavy PDFs (priority 10); the `VLM_DOCUMENT` runner does not accept standalone raster-image files
 3. **tables** pipeline (`TABLE_AWARE`) -- spreadsheets + CSV (priority 20)
 4. **email** pipeline (`STANDARD_TEXT`) -- email formats (priority 30)
 

@@ -844,7 +844,15 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     }
 
     private void appendScrollbackLineLocked(String text) {
-        scrollbackLines.add(text == null ? "" : text);
+        String line = text == null ? "" : text;
+        scrollbackLines.add(line);
+        // Keep KompileTui's retained transcript authoritative. The managed
+        // passthrough renderer still owns cursor-safe repainting for the live
+        // terminal, but resume replay (and every other managed line) must also
+        // survive a TUI view switch or repaint.
+        if (tui != null) {
+            tui.recordInScrollRegion(line);
+        }
         if (scrollViewportOffset > 0) {
             scrollViewportOffset++;
         }

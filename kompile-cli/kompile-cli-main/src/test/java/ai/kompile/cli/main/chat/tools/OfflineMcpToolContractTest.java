@@ -60,6 +60,7 @@ class OfflineMcpToolContractTest {
     void everyFormerlyServiceGatedToolUsesItsLocalBackendWhenNoUrlIsConfigured() throws Exception {
         var conjunctArray = mapper.createArrayNode().add("related(a,b)");
         ObjectNode missingDocument = params();
+        missingDocument.put("async", false);
         missingDocument.putArray("documents").addObject().put("path", "missing-document.txt");
 
         List<Invocation> invocations = List.of(
@@ -89,7 +90,8 @@ class OfflineMcpToolContractTest {
                 call(new CrawlDiscoveryTool(null, mapper), params("section", "all")),
                 call(new CrawlControlTool(null, mapper), params("action", "status")),
                 call(new CrawlDocumentsTool(null, mapper), missingDocument),
-                call(new CrawlSourceTool(null, mapper), params("path", "missing-source.txt")),
+                call(new CrawlSourceTool(null, mapper),
+                        params("path", "missing-source.txt", "async", false)),
                 call(new AskGraphVerifyTool(null, mapper), params("atom", "related(a,b)")),
                 call(new AskGraphSynthesizeTool(null, mapper), params("query", "What is related?")),
                 call(new AskGraphSubscribeTool(null, mapper),

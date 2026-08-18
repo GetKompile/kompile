@@ -39,7 +39,7 @@ class SdxRawGgufContractTest {
         )
 
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v4\"," +
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v5\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
@@ -52,7 +52,7 @@ class SdxRawGgufContractTest {
             )
         )
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v4\"," +
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v5\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +

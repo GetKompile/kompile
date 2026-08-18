@@ -1,5 +1,6 @@
 package ai.kompile.chat.local.android.viewmodel
 
+import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.prefs.HuggingFaceImportCheckpoint
@@ -46,7 +47,9 @@ data class StreamingUiState(
     val reasoning: String = "",
     val content: String = "",
     val toolActivities: List<ToolActivityUi> = emptyList(),
-    val protocolExchangeCount: Int = 0
+    val protocolExchangeCount: Int = 0,
+    /** Raw request/response pairs observed before a turn is committed to history. */
+    val protocolExchanges: List<ProtocolExchangeUi> = emptyList()
 )
 
 /** Explicit local-model lifecycle state; expected first-run setup is not an error. */
@@ -345,6 +348,22 @@ data class HuggingFaceImportProgress(
 
     val percent: Int?
         get() = safePercent(determinateFraction)
+}
+
+/**
+ * Configuration resolution for the exact selected repository candidate. This remains separate
+ * from transfer progress so a missing tokenizer/config asset is visible before import can start.
+ */
+sealed interface HuggingFaceConfigurationUiState {
+    data object Idle : HuggingFaceConfigurationUiState
+    data class Resolving(val repository: String) : HuggingFaceConfigurationUiState
+    data class Resolved(
+        val configuration: HuggingFaceGgmlAcquisition.ResolvedRepositoryConfiguration
+    ) : HuggingFaceConfigurationUiState
+    data class Failed(
+        val repository: String,
+        val message: String
+    ) : HuggingFaceConfigurationUiState
 }
 
 /** End-to-end public Hugging Face acquisition state, including SDX activation. */

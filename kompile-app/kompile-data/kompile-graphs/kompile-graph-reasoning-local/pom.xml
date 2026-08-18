@@ -296,10 +296,11 @@
                 -->
                 <kompile.android.ndk>${mobile.android.ndk}</kompile.android.ndk>
                 <kompile.android.graalvm>${mobile.graalvm.home}</kompile.android.graalvm>
-                <kompile.android.jobs>12</kompile.android.jobs>
+                <kompile.android.jobs>2</kompile.android.jobs>
                 <kompile.android.work.dir>${project.build.directory}/android-ndk-aot</kompile.android.work.dir>
                 <kompile.android.output.dir>${project.build.directory}/android-aot</kompile.android.output.dir>
                 <kompile.android.classpath.file>${project.build.directory}/android-aot-classpath.txt</kompile.android.classpath.file>
+                <kompile.android.reuse.support.dir>${project.build.directory}/android-ndk-aot/clibraries/bionic</kompile.android.reuse.support.dir>
             </properties>
             <build>
                 <plugins>
@@ -352,6 +353,8 @@
                                         <argument>${project.build.outputDirectory}</argument>
                                         <argument>--classpath-file</argument>
                                         <argument>${kompile.android.classpath.file}</argument>
+                                        <argument>--reuse-support-if-present</argument>
+                                        <argument>${kompile.android.reuse.support.dir}</argument>
                                     </arguments>
                                 </configuration>
                             </execution>

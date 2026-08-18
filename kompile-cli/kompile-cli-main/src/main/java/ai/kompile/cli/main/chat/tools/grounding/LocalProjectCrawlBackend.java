@@ -14,6 +14,7 @@ import ai.kompile.cli.main.project.LocalModelPipelineRunner;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import ai.kompile.cli.main.project.ProjectAutoDetection;
 import ai.kompile.cli.main.project.ProjectCrawlCommand;
+import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.project.KompileCodingProject;
 import ai.kompile.project.KompileProjectCrawlProfile;
 import ai.kompile.project.KompileProjectInitRequest;
@@ -49,14 +50,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
-/**
- * Project-local implementation of the crawl MCP contract.
- *
- * <p>The distributed crawl manager and this class deliberately share the agent-facing tools.
- * When no manager URL is configured, selected files are indexed synchronously into the existing
- * {@code data/crawls/<knowledge-base>} artifact format. Repeated calls merge source roots, so
- * {@code crawl_documents} has additive "put these documents in this KB" semantics.</p>
- */
+    /**
+     * Project-local implementation of the crawl MCP contract.
+     *
+     * <p>The distributed crawl manager and this class deliberately share the agent-facing tools.
+     * When no manager URL is configured, selected files are indexed by a bounded MCP-owned
+     * asynchronous job. Repeated calls merge source roots, so {@code crawl_documents} has additive
+     * "put these documents in this KB" semantics. Set {@code async=false} when a JVM embedder
+     * explicitly needs the legacy blocking behavior.</p>
+     */
 public final class LocalProjectCrawlBackend {
     private static final int MAX_REMOTE_SOURCE_BYTES = 25 * 1024 * 1024;
     private static final List<String> DEFAULT_CODE_EXCLUDES = List.of(
@@ -100,7 +102,85 @@ public final class LocalProjectCrawlBackend {
         this.modelPipelineExecutor = modelPipelineExecutor;
     }
 
+    private boolean asyncRequested(JsonNode params) {
+        if (params == null || params.path("_asyncWorker").asBoolean(false)
+                || params.path("dryRun").asBoolean(false)) {
+            return false;
+        }
+        if (params.has("waitForCompletion") && params.path("waitForCompletion").asBoolean(false)) {
+            return false;
+        }
+        return !params.has("async") || params.path("async").asBoolean(true);
+    }
+
+    private ToolResult submitAsync(JsonNode params, ToolContext context) {
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        String knowledgeBase = knowledgeBaseHint(params);
+        ObjectNode workerParams = params.deepCopy();
+        workerParams.put("_asyncWorker", true);
+        workerParams.remove("async");
+        workerParams.remove("waitForCompletion");
+
+        // A queued crawl outlives the initiating tool call. Give it a request-scoped context so
+        // cancelling this job cannot abort the agent session (or another concurrently running job).
+        ToolContext workerContext = new ToolContext(
+                context.getSessionId(),
+                context.getAgent(),
+                context.getPermissionService(),
+                context.getWorkingDirectory(),
+                context.getToolRegistry());
+        workerContext.setAutoApproveAll(context.isAutoApproveAll());
+        workerContext.setOutputConsumer(context.getOutputConsumer());
+        LocalCrawlJobRegistry.submit(jobId, knowledgeBase, workerContext::abort,
+                () -> crawlDocuments(workerParams, workerContext));
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("backend", "project-local");
+        metadata.put("jobId", jobId);
+        metadata.put("status", "QUEUED");
+        metadata.put("terminal", false);
+        metadata.put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
+        ObjectNode payload = mapper.createObjectNode()
+                .put("schema", "kompile-crawl-result/v1")
+                .put("backend", "project-local")
+                .put("jobId", jobId)
+                .put("status", "QUEUED")
+                .put("terminal", false)
+                .put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
+        if (knowledgeBase != null) {
+            payload.put("knowledgeBase", knowledgeBase);
+            metadata.put("knowledgeBase", knowledgeBase);
+        }
+        CrawlResultHandle.from(payload, "project-local", jobId, knowledgeBase).attachTo(metadata);
+        String output;
+        try {
+            output = "Project-local crawl accepted asynchronously. Poll crawl_control with operation=status "
+                    + "and jobId=" + jobId + " (pollAfterMs="
+                    + LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS + "), then call crawl_result "
+                    + "with the same jobId after terminal=true.\n"
+                    + mapper.writerWithDefaultPrettyPrinter().writeValueAsString(metadata.get("crawlResult"));
+        } catch (Exception e) {
+            output = "Project-local crawl accepted asynchronously; jobId=" + jobId
+                    + ". Poll crawl_control operation=status.";
+        }
+        return ToolResult.success("crawl_documents", output, metadata);
+    }
+
+    private String knowledgeBaseHint(JsonNode params) {
+        JsonNode value = params == null ? null : params.get("knowledgeBase");
+        if (value == null || value.isNull()) return null;
+        if (value.isTextual() || value.isNumber()) return value.asText();
+        if (value.isObject()) {
+            String id = text(value, "id");
+            return firstNonBlank(id, text(value, "name"));
+        }
+        return null;
+    }
+
     public ToolResult crawlDocuments(JsonNode params, ToolContext context) {
+        if (asyncRequested(params)) {
+            return submitAsync(params, context);
+        }
         List<Path> temporarySources = new ArrayList<>();
         try {
             ProjectState project = dryRun(params)
@@ -115,12 +195,21 @@ public final class LocalProjectCrawlBackend {
             LinkedHashSet<String> includePatterns = new LinkedHashSet<>();
             LinkedHashSet<String> excludePatterns = new LinkedHashSet<>();
             List<String> warnings = new ArrayList<>();
-            ObjectNode previous = readSummary(project.root(), knowledgeBase.id());
-            mergePrevious(previous, sources, includePatterns, excludePatterns, warnings);
-            LinkedHashMap<String, ObjectNode> sourceConfigs = previousSourceConfigs(
-                    project.root(), knowledgeBase.id(), previous, sources);
-
             JsonNode documents = params.get("documents");
+            boolean isolatedExplicitPreview = dryRun(params)
+                    && documents != null && documents.isArray() && !documents.isEmpty();
+            ObjectNode previous = isolatedExplicitPreview
+                    ? mapper.createObjectNode()
+                    : readSummary(project.root(), knowledgeBase.id());
+            LinkedHashMap<String, ObjectNode> sourceConfigs = new LinkedHashMap<>();
+            if (isolatedExplicitPreview) {
+                warnings.add("Explicit dry-run documents are isolated from prior crawl sources.");
+            } else {
+                mergePrevious(previous, sources, includePatterns, excludePatterns, warnings);
+                sourceConfigs.putAll(previousSourceConfigs(
+                        project.root(), knowledgeBase.id(), previous, sources));
+            }
+
             int explicitDocuments = 0;
             boolean unrestrictedSource = false;
             if (documents != null && documents.isArray()) {
@@ -284,7 +373,8 @@ public final class LocalProjectCrawlBackend {
                     }
                 }
                 ObjectNode summary = dryRun
-                        ? dryRunSummary(profile, execution)
+                        ? dryRunSummary(project.root(), profile, execution, executionRequest,
+                                warnings, explicitDocuments, isolatedExplicitPreview)
                         : readSummary(project.root(), knowledgeBase.id());
                 String effectiveStatus = execution.status();
                 if (graphUpdate != null && !graphUpdate.semanticExtractionErrors().isEmpty()
@@ -354,6 +444,10 @@ public final class LocalProjectCrawlBackend {
                     metadata.put("mebnFragmentCount", graphUpdate.mebnFragmentCount());
                 }
                 metadata.put("warnings", warnings);
+                if (dryRun) {
+                    metadata.put("preview", mapper.convertValue(summary,
+                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { }));
+                }
                 metadata.put("nextTools", List.of(
                         "knowledge_search", "knowledge_status", "crawl_control", "crawl_result",
                         "graph_reasoning_query", "graph_reason", "ask_graph_mebn", "graph_embeddings",
@@ -403,8 +497,8 @@ public final class LocalProjectCrawlBackend {
                         output.append("\n- ").append(error);
                     }
                 }
-                output.append(" Backend: synchronous project-local MCP host ("
-                        + LocalCrawlRunner.executionMode() + ").");
+                output.append(" Backend: project-local MCP host ("
+                        + LocalCrawlRunner.executionMode() + ", blocking compatibility mode).");
                 if (!warnings.isEmpty()) {
                     output.append(" Warnings: ").append(String.join(" ", warnings));
                 }
@@ -576,10 +670,13 @@ public final class LocalProjectCrawlBackend {
             if (matches(section, "runtime")) {
                 catalog.putObject("processingCapacity")
                         .put("backend", "project-local")
-                        .put("synchronous", true)
+                        .put("synchronousCompatibility", true)
+                        .put("asynchronousDefault", true)
                         .put("distributed", false)
                         .put("runtimePool", "bounded reusable stdio sessions")
-                        .put("runtimeProcesses", "started on demand and hidden from callers")
+                        .put("runtimeProcesses", "started on demand and owned until the crawl job reaches terminal state")
+                        .put("jobLifecycle", "crawl_documents/crawl_source return jobId; crawl_control status polls; crawl_result retrieves terminal output")
+                        .put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS)
                         .put("registeredProjectPipelines", projectPipelineDefaults(project).size())
                         .put("executionMode", LocalCrawlRunner.executionMode());
                 catalog.putObject("runtimeConfig")
@@ -600,7 +697,7 @@ public final class LocalProjectCrawlBackend {
                 boolean nativeChildren = CliProcessLauncher.requiresNativeChildren();
                 catalog.putObject("modelRuntime")
                         .put("tool", "model_runtime")
-                        .put("artifactMode", nativeChildren ? "native-only" : "jvm-development")
+                        .put("artifactMode", nativeChildren ? "native-image" : "jar-or-native")
                         .put("artifactTiers", nativeChildren
                                 ? "native child executables required"
                                 : "native executable or packaged executable JAR")
@@ -636,8 +733,11 @@ public final class LocalProjectCrawlBackend {
             return ToolResult.error("operation is required");
         }
         try {
-            ProjectState project = project(context.getWorkingDirectory());
             String jobId = text(params, "jobId");
+            boolean registryJob = jobId != null && LocalCrawlJobRegistry.get(jobId) != null;
+            ProjectState project = (registryJob
+                    && ("status".equals(operation) || "cancel".equals(operation)))
+                    ? null : project(context.getWorkingDirectory());
             switch (operation) {
                 case "preflight":
                     return discover("all", context.getWorkingDirectory());
@@ -647,15 +747,25 @@ public final class LocalProjectCrawlBackend {
                     if (jobId == null) {
                         ObjectNode active = mapper.createObjectNode();
                         active.put("backend", "project-local");
-                        active.put("activeJobs", 0);
-                        active.put("reason", "Local crawls execute synchronously.");
+                        active.put("activeJobs", LocalCrawlJobRegistry.activeCount());
+                        active.set("trackedJobs", mapper.valueToTree(
+                                LocalCrawlJobRegistry.activeSummary().get("trackedJobs")));
+                        active.put("pollable", true);
+                        active.put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
+                        active.put("reason", "Start returns immediately; poll this operation with the returned jobId.");
                         return ToolResult.success("crawl_status", active.toPrettyString());
+                    }
+                    LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
+                    if (asyncJob != null) {
+                        return LocalCrawlJobRegistry.status(jobId, mapper);
                     }
                     return localJobResult("status", project.root(), jobId);
                 case "list": {
                     ObjectNode result = mapper.createObjectNode();
                     result.put("backend", "project-local");
-                    result.put("activeJobs", 0);
+                    result.put("activeJobs", LocalCrawlJobRegistry.activeCount());
+                    result.put("pollable", true);
+                    result.put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
                     result.set("jobs", listKnowledgeBases(project.root()));
                     return ToolResult.success("crawl_list", result.toPrettyString());
                 }
@@ -681,13 +791,23 @@ public final class LocalProjectCrawlBackend {
                     return ToolResult.success("crawl_graph_stats", graph.toPrettyString());
                 }
                 case "cancel":
+                    if (jobId == null) {
+                        return ToolResult.error("cancel requires jobId");
+                    }
+                    if (LocalCrawlJobRegistry.cancel(jobId)) {
+                        return LocalCrawlJobRegistry.status(jobId, mapper);
+                    }
+                    return ToolResult.error("Unknown or terminal project-local crawl job: " + jobId
+                            + ". synchronous project-local crawls cannot be cancelled; configure a distributed manager "
+                            + "for cancellable step-level control.");
                 case "retry":
                 case "run_step":
                 case "archive_step":
                 case "clear_graph":
                     return ToolResult.error("crawl_control " + operation
-                            + " is unavailable for synchronous project-local crawls. "
-                            + "Configure a crawl manager for distributed lifecycle control.");
+                            + " is unavailable for project-local jobs. Use operation=status/result/cancel "
+                            + "for the MCP-owned asynchronous lifecycle, or configure a distributed manager "
+                            + "for step-level control.");
                 default:
                     return ToolResult.error("Unknown operation: " + operation);
             }
@@ -700,6 +820,10 @@ public final class LocalProjectCrawlBackend {
     public ToolResult result(String jobId, ToolContext context) {
         if (jobId == null || jobId.isBlank()) {
             return ToolResult.error("crawl_result requires jobId");
+        }
+        LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
+        if (asyncJob != null) {
+            return LocalCrawlJobRegistry.result(jobId, mapper);
         }
         try {
             ProjectState project = project(context.getWorkingDirectory());
@@ -925,6 +1049,7 @@ public final class LocalProjectCrawlBackend {
         }
         summary.put("backend", "project-local");
         summary.put("distributed", false);
+        summary.put("terminal", true);
         String normalizedJobId = slug(stripLocalPrefix(jobId));
         summary.put("jobId", normalizedJobId);
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -950,7 +1075,7 @@ public final class LocalProjectCrawlBackend {
         if (Files.isRegularFile(request)) {
             result.set("request", readJson(request));
         }
-        result.put("message", "Local crawls are synchronous; request and result replace a worker transcript.");
+        result.put("message", "Project-local crawl jobs are asynchronous by default; this transcript contains the persisted request and terminal result.");
         return ToolResult.success("crawl_transcript", result.toPrettyString());
     }
 
@@ -1316,7 +1441,8 @@ public final class LocalProjectCrawlBackend {
                             "projectRoot", project.root().toString(),
                             "graphPath", graph.toString(), "bootstrapped", false));
         }
-        return crawlDocuments(mapper.createObjectNode(), context);
+        ObjectNode bootstrapRequest = mapper.createObjectNode().put("async", false);
+        return crawlDocuments(bootstrapRequest, context);
     }
 
     private KnowledgeBaseRef knowledgeBase(JsonNode selected, ProjectState project) {
@@ -1428,17 +1554,106 @@ public final class LocalProjectCrawlBackend {
                 .writeValue(outputDirectory.resolve("mcp-request.json").toFile(), request);
     }
 
-    private ObjectNode dryRunSummary(KompileProjectCrawlProfile profile,
-                                     ProjectCrawlCommand.LocalCrawlExecution execution) {
+    private ObjectNode dryRunSummary(Path projectRoot,
+                                     KompileProjectCrawlProfile profile,
+                                     ProjectCrawlCommand.LocalCrawlExecution execution,
+                                     ObjectNode executionRequest,
+                                     List<String> warnings,
+                                     int explicitDocuments,
+                                     boolean isolatedExplicitPreview) {
         ObjectNode result = mapper.createObjectNode();
         result.put("profileId", profile.getId());
         result.put("name", profile.getName());
         result.put("status", "DRY_RUN");
+        result.put("persistentWrites", false);
+        result.put("isolatedExplicitPreview", isolatedExplicitPreview);
+        result.put("requestedDocumentCount", explicitDocuments);
         result.set("sources", mapper.valueToTree(profile.getSources()));
+        result.set("effectiveDocuments", executionRequest.path("documents").deepCopy());
+        result.set("resolvedDocuments",
+                resolvedDryRunDocuments(projectRoot, profile, executionRequest));
         result.put("collection", profile.getCollection());
         result.put("outputPath", execution.outputDirectory().toString());
         result.put("markdownPath", execution.markdownDirectory().toString());
+        result.set("warnings", mapper.valueToTree(warnings));
+
+        ObjectNode pipelineResolution = result.putObject("pipelineResolution");
+        copyIfPresent(executionRequest, pipelineResolution, "defaultPipelineId");
+        copyIfPresent(executionRequest, pipelineResolution, "pipelines");
+        copyIfPresent(executionRequest, pipelineResolution, "pipelineRegistry");
+        copyIfPresent(executionRequest, pipelineResolution, "processingRoute");
+        copyIfPresent(executionRequest, pipelineResolution, "modelRuntime");
+        copyIfPresent(executionRequest, pipelineResolution, "modelId");
+        copyIfPresent(executionRequest, pipelineResolution, "vlmModel");
+
+        ObjectNode wouldWrite = result.putObject("wouldWrite");
+        wouldWrite.put("crawlArtifacts", false);
+        wouldWrite.put("projectManifest", false);
+        wouldWrite.put("modelManifest", false);
+        wouldWrite.put("targetOutputPath", execution.outputDirectory().toString());
+        wouldWrite.put("targetMarkdownPath", execution.markdownDirectory().toString());
+        result.set("effectiveRequest", executionRequest.deepCopy());
         return result;
+    }
+
+    private ArrayNode resolvedDryRunDocuments(
+            Path projectRoot, KompileProjectCrawlProfile profile, ObjectNode request) {
+        ArrayNode result = mapper.createArrayNode();
+        JsonNode documents = request.path("documents");
+        if (!documents.isArray()) return result;
+        for (JsonNode document : documents) {
+            ObjectNode preview = result.addObject();
+            preview.set("document", document.deepCopy());
+            String configuredPath = text(document, "path");
+            if (configuredPath == null) {
+                preview.put("resolutionStatus", "UNAVAILABLE");
+                preview.put("resolutionError", "Normalized document has no local path.");
+                continue;
+            }
+            Path file = Path.of(configuredPath).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(file)) {
+                preview.put("resolutionStatus", Files.isDirectory(file)
+                        ? "DEFERRED_UNTIL_FILE_ENUMERATION" : "UNAVAILABLE");
+                continue;
+            }
+            try {
+                Path sourceRoot = file.getParent() == null ? projectRoot : file.getParent();
+                LocalCrawlCapabilities.ResolvedPipeline pipeline =
+                        LocalCrawlCapabilities.resolve(request, profile, sourceRoot, file);
+                preview.put("resolutionStatus", "RESOLVED");
+                preview.set("resolvedPipeline", mapper.valueToTree(pipeline));
+                preview.put("routeDecision", pipeline.pipelineId());
+                preview.put("loader", pipeline.loaderName());
+                preview.put("chunker", pipeline.chunkerName());
+
+                Object inline = pipeline.processor().get("pipelineDefinition");
+                UnifiedPipelineDefinition definition = inline == null ? null
+                        : mapper.convertValue(inline, UnifiedPipelineDefinition.class);
+                LocalModelPipelineRunner.ResolvedModelContext models =
+                        LocalModelPipelineRunner.resolveBoundModels(
+                                projectRoot, pipeline, definition, false);
+                ObjectNode modelResolution = preview.putObject("modelResolution");
+                modelResolution.put("status", "RESOLVED");
+                modelResolution.set("bindings", mapper.valueToTree(models.bindings()));
+                modelResolution.set("resolvedModels", mapper.valueToTree(models.resolvedModels()));
+            } catch (Exception failure) {
+                String error = firstNonBlank(failure.getMessage(), failure.getClass().getName());
+                if (!preview.has("resolutionStatus")) {
+                    preview.put("resolutionStatus", "UNAVAILABLE");
+                    preview.put("resolutionError", error);
+                } else {
+                    ObjectNode modelResolution = preview.putObject("modelResolution");
+                    modelResolution.put("status", "UNAVAILABLE");
+                    modelResolution.put("error", error);
+                }
+            }
+        }
+        return result;
+    }
+
+    private static void copyIfPresent(ObjectNode source, ObjectNode target, String field) {
+        JsonNode value = source.get(field);
+        if (value != null && !value.isNull()) target.set(field, value.deepCopy());
     }
 
     private Map<String, String> documentSources(Path path) throws IOException {
@@ -1538,6 +1753,10 @@ public final class LocalProjectCrawlBackend {
             if (id != null && ids.add(id)) defaults.add(definition.deepCopy());
         }
         return null;
+    }
+
+    ArrayNode projectPipelineDefaults(Path projectRoot) {
+        return projectPipelineDefaults(project(projectRoot));
     }
 
     private ArrayNode projectPipelineDefaults(ProjectState project) {
@@ -1685,7 +1904,7 @@ public final class LocalProjectCrawlBackend {
         shape.put("routing", "document.pipelineId > routeRules > defaultPipelineId > automatic file routing");
         shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");
         shape.put("knowledgeBase", "knowledgeBase={name:<string>} or {id:<number>}; repeated calls add sources");
-        shape.put("execution", "synchronous MCP-host orchestration with reusable isolated model runtimes; status is COMPLETED, COMPLETED_WITH_ERRORS, or FAILED");
+        shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
         shape.put("embeddingTraining", "embeddingTraining={enabled?,algorithm:TRANSE|ROTATE,embeddingDim?,epochs?}");
         shape.put("reasoningLearning", "reasoningLearning={enabled?,pslSteps?,mebnEpochs?,consensusRounds?,consensusWeight?,maxRelationTypes?}; FOL/PSL/MEBN artifacts are stored in graph.kgraph");

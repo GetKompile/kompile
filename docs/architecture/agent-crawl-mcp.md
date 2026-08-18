@@ -152,8 +152,9 @@ and `.kgraph` export therefore share that fact-sheet ID. If a project already ha
 `crawl_documents` reuses it and rejects an explicitly conflicting `knowledgeBase.id`.
 
 Repeated calls targeting the same `knowledgeBase` are additive. The executor merges the stored source
-set with the newly selected sources and synchronously rebuilds that knowledge base. It returns
-`status: "COMPLETED"` only after the artifacts are ready for `knowledge_search`. The artifact layout is:
+set with the newly selected sources. `crawl_documents` and `crawl_source` return a job handle immediately
+(`async` defaults to `true`), so a large model-backed crawl never holds the MCP call open. The artifact
+layout is written as the job progresses and is ready for `knowledge_search` only after terminal status.
 
 ```text
 <project>/data/crawls/<knowledge-base-id>/
@@ -209,11 +210,23 @@ Use `knowledge_status` to list all project indexes or select one with `knowledge
 `knowledge_search` with `query`, optional `knowledgeBase`, and optional `limit` to run attributed
 lexical retrieval over the stored chunks.
 
-Local `crawl_control` supports synchronous operations that make sense without a coordinator:
-`preflight`, `start`, `status`, `list`, `transcript`, `source_types`, `runtime_config`, and
-`graph_stats`. There is no queued local job after a tool call returns. Cancellation, pause/resume,
-retry, step scheduling, archive, and graph mutation therefore return an explicit message that a
-distributed crawl manager is required.
+Local `crawl_control` exposes the same lifecycle without a coordinator. `start` and the crawl tools
+return a `jobId` with `status: QUEUED|RUNNING`, `terminal: false`, and a `pollAfterMs` hint. Poll
+`crawl_control` with `{"operation":"status","jobId":"<id>"}` until `terminal` is true, then call
+`crawl_result` with the same id. Never start the same crawl again while it is non-terminal. The local
+MCP host retains a bounded set of completed handles and supports `cancel`; `async=false` or
+`waitForCompletion=true` enables blocking compatibility for embedders. Step scheduling, archive,
+retry, and remote graph mutation still require a distributed crawl manager.
+
+A complete local handoff is:
+
+```json
+{"documents":[{"path":"docs/report.pdf"}],"async":true}
+// -> {"jobId":"local-...","status":"QUEUED","terminal":false,"pollAfterMs":1000}
+{"operation":"status","jobId":"local-..."}
+// repeat after pollAfterMs until terminal=true
+{"jobId":"local-..."} // crawl_result
+```
 
 The project knowledge base and Kompile memory are complementary stores:
 

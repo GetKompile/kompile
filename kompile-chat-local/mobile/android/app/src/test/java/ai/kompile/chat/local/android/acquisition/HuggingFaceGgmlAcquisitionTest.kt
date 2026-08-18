@@ -99,6 +99,199 @@ class HuggingFaceGgmlAcquisitionTest {
     }
 
     @Test
+    fun repositoryConfigurationIsResolvedOnceAndSharedAcrossModelChoices() {
+        val discovery = HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
+            """{
+              "sha":"$sha",
+              "siblings":[
+                {"rfilename":"a/model-Q4_K_M.gguf","size":200},
+                {"rfilename":"z/model-Q8_0.gguf","size":300},
+                {"rfilename":"tokenizer.json","size":100},
+                {"rfilename":"tokenizer_config.json","size":20},
+                {"rfilename":"config.json","size":42},
+                {"rfilename":"added_tokens.json","size":11},
+                {"rfilename":"generation_config.json","size":12},
+                {"rfilename":"text-generation.json","size":13}
+              ]
+            }"""
+        }
+
+        val configuration =
+            HuggingFaceGgmlAcquisition.resolveRepositoryConfiguration(discovery)
+        val expectedAssets = listOf(
+            "tokenizer.json", "tokenizer_config.json", "config.json",
+            "added_tokens.json", "generation_config.json", "text-generation.json"
+        )
+        assertEquals("acme/tiny-chat", configuration.repository)
+        assertEquals(sha, configuration.immutableRevision)
+        assertEquals("acme/tiny-chat", configuration.assetSources.single().repository)
+        assertEquals(sha, configuration.assetSources.single().resolvedRevision)
+        assertEquals(
+            listOf("a/model-Q4_K_M.gguf", "z/model-Q8_0.gguf"),
+            configuration.modelCandidatePaths
+        )
+        assertEquals(expectedAssets, configuration.assetNames)
+    }
+
+    @Test
+    fun qwenWeightRepositoryResolvesCanonicalAssetsFromPinnedBaseModel() {
+        val configurationSha = "cccccccccccccccccccccccccccccccccccccccc"
+        val requestedPaths = mutableListOf<String>()
+        val discovery = HuggingFaceGgmlAcquisition.discover(
+            "unsloth/Qwen3.5-0.8B-GGUF"
+        ) { uri ->
+            requestedPaths += uri.path
+            when (uri.path) {
+                "/api/models/unsloth/Qwen3.5-0.8B-GGUF/revision/main" -> """{
+                  "sha":"$sha",
+                  "cardData":{"base_model":["Qwen/Qwen3.5-0.8B"]},
+                  "siblings":[
+                    {"rfilename":"README.md","size":10},
+                    {"rfilename":"Qwen3.5-0.8B-Q4_K_M.gguf",
+                     "lfs":{"size":1234,"sha256":"$contentSha"}}
+                  ]
+                }"""
+                "/api/models/Qwen/Qwen3.5-0.8B/revision/main" -> """{
+                  "sha":"$configurationSha",
+                  "siblings":[
+                    {"rfilename":"tokenizer.json","size":100},
+                    {"rfilename":"tokenizer_config.json","size":20},
+                    {"rfilename":"config.json","size":42},
+                    {"rfilename":"chat_template.jinja","size":33}
+                  ]
+                }"""
+                else -> error("Unexpected Hugging Face API request: $uri")
+            }
+        }
+
+        val configuration =
+            HuggingFaceGgmlAcquisition.resolveRepositoryConfiguration(discovery)
+        val candidate = discovery.selectedCandidate().orElseThrow()
+        assertEquals(
+            listOf(
+                "/api/models/unsloth/Qwen3.5-0.8B-GGUF/revision/main",
+                "/api/models/Qwen/Qwen3.5-0.8B/revision/main"
+            ),
+            requestedPaths
+        )
+        assertEquals("unsloth/Qwen3.5-0.8B-GGUF", configuration.repository)
+        assertEquals(sha, configuration.immutableRevision)
+        assertEquals("Qwen/Qwen3.5-0.8B", configuration.assetSources.single().repository)
+        assertEquals(configurationSha, configuration.assetSources.single().resolvedRevision)
+        assertEquals(
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/$sha/" +
+                "Qwen3.5-0.8B-Q4_K_M.gguf?download=true",
+            candidate.downloadUri.toASCIIString()
+        )
+        assertEquals(
+            "https://huggingface.co/Qwen/Qwen3.5-0.8B/resolve/$configurationSha/" +
+                "tokenizer.json?download=true",
+            candidate.tokenizerAssets.first().downloadUri.toASCIIString()
+        )
+        assertEquals(
+            listOf("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja"),
+            configuration.assetNames
+        )
+    }
+
+    @Test
+    fun resolvesTokenizerAndCompanionAssetsAcrossThePinnedUpstreamChain() {
+        val configurationSha = "cccccccccccccccccccccccccccccccccccccccc"
+        val tokenizerSha = "dddddddddddddddddddddddddddddddddddddddd"
+        val requestedPaths = mutableListOf<String>()
+        val discovery = HuggingFaceGgmlAcquisition.discover("vendor/chat-GGUF") { uri ->
+            requestedPaths += uri.path
+            when (uri.path) {
+                "/api/models/vendor/chat-GGUF/revision/main" -> """{
+                  "sha":"$sha",
+                  "cardData":{"base_model":"vendor/chat-config"},
+                  "siblings":[
+                    {"rfilename":"chat-Q4.gguf","size":1234},
+                    {"rfilename":"generation_config.json","size":12}
+                  ]
+                }"""
+                "/api/models/vendor/chat-config/revision/main" -> """{
+                  "sha":"$configurationSha",
+                  "cardData":{"base_model":["vendor/chat-tokenizer"]},
+                  "siblings":[
+                    {"rfilename":"config.json","size":42},
+                    {"rfilename":"chat_template.jinja","size":20}
+                  ]
+                }"""
+                "/api/models/vendor/chat-tokenizer/revision/main" -> """{
+                  "sha":"$tokenizerSha",
+                  "siblings":[
+                    {"rfilename":"tokenizer.json","size":100},
+                    {"rfilename":"tokenizer_config.json","size":30},
+                    {"rfilename":"special_tokens_map.json","size":10},
+                    {"rfilename":"added_tokens.json","size":11}
+                  ]
+                }"""
+                else -> error("Unexpected Hugging Face API request: $uri")
+            }
+        }
+
+        val configuration =
+            HuggingFaceGgmlAcquisition.resolveRepositoryConfiguration(discovery)
+        val assets = configuration.assets.associateBy { it.name }
+        assertEquals(
+            listOf(
+                "/api/models/vendor/chat-GGUF/revision/main",
+                "/api/models/vendor/chat-config/revision/main",
+                "/api/models/vendor/chat-tokenizer/revision/main"
+            ),
+            requestedPaths
+        )
+        assertEquals(
+            listOf("vendor/chat-GGUF", "vendor/chat-config", "vendor/chat-tokenizer"),
+            configuration.assetSources.map { it.repository }
+        )
+        assertEquals("vendor/chat-tokenizer", assets.getValue("tokenizer.json").sourceRepository)
+        assertEquals(tokenizerSha, assets.getValue("tokenizer.json").sourceRevision)
+        assertEquals("vendor/chat-config", assets.getValue("config.json").sourceRepository)
+        assertEquals(configurationSha, assets.getValue("chat_template.jinja").sourceRevision)
+        assertEquals("vendor/chat-GGUF", assets.getValue("generation_config.json").sourceRepository)
+        assertEquals(sha, assets.getValue("generation_config.json").sourceRevision)
+    }
+
+    @Test
+    fun missingCanonicalConfigurationFailsBeforeModelTransferPlanning() {
+        val discovery = HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
+            """{
+              "sha":"$sha",
+              "siblings":[
+                {"rfilename":"model.gguf","size":1234},
+                {"rfilename":"tokenizer.json","size":100}
+              ]
+            }"""
+        }
+
+        val failure = runCatching {
+            HuggingFaceGgmlAcquisition.resolveRepositoryConfiguration(discovery)
+        }.exceptionOrNull()
+        assertTrue(failure?.message.orEmpty().contains("tokenizer_config.json"))
+        assertTrue(failure?.message.orEmpty().contains("config.json"))
+    }
+
+    @Test
+    fun ambiguousNestedTokenizerConfigurationFailsDuringRepositoryResolution() {
+        val failure = runCatching {
+            HuggingFaceGgmlAcquisition.discover("acme/tiny-chat") {
+                """{
+                  "sha":"$sha",
+                  "siblings":[
+                    {"rfilename":"model.gguf","size":1234},
+                    {"rfilename":"mobile/tokenizer.json","size":100},
+                    {"rfilename":"desktop/tokenizer.json","size":101}
+                  ]
+                }"""
+            }
+        }.exceptionOrNull()
+
+        assertTrue(failure?.message.orEmpty().contains("ambiguous tokenizer.json"))
+    }
+
+    @Test
     fun tokenizerAssetsUseTheModelCacheIdentityPrefix() {
         val directory = Files.createTempDirectory("hf-tokenizer-path")
         try {
@@ -163,8 +356,10 @@ class HuggingFaceGgmlAcquisitionTest {
     fun reusesOnlyMatchingCommitPinnedPublishedDownloads() {
         val bytes = "GGUF".toByteArray()
         val pinned = candidate("models/model.gguf", bytes.size.toLong(), sha256(bytes))
-        val unpinned = HuggingFaceGgmlAcquisition.discover(
-            "https://huggingface.co/acme/tiny-chat/resolve/main/model.gguf"
+        val unpinned = org.nd4j.dsp.model.HuggingFaceGgmlResolver.exact(
+            org.nd4j.dsp.model.HuggingFaceGgmlResolver.parse(
+                "https://huggingface.co/acme/tiny-chat/resolve/main/model.gguf"
+            )
         ).selectedCandidate().orElseThrow()
         val directory = Files.createTempDirectory("hf-pinned-reuse")
         val published = directory.resolve(

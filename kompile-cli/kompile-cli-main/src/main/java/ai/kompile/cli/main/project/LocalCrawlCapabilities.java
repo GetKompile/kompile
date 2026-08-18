@@ -41,14 +41,20 @@ import java.util.regex.PatternSyntaxException;
  */
 public final class LocalCrawlCapabilities {
     public static final String STANDARD_TEXT_PIPELINE = "standard-text";
+    /** Provider-neutral text -> local model -> text composition template. */
+    public static final String TEXT_MODEL_PIPELINE = "text-model-text";
+    public static final String TEXT_TO_TEXT_PIPELINE = TEXT_MODEL_PIPELINE;
     public static final String CODE_PIPELINE = "code";
     public static final String VLM_PIPELINE = "vlm-document";
+    /** Composed image preprocessing -> vision models -> text composition template. */
+    public static final String VISION_PIPELINE = "vision-multimodel";
+    public static final String VISION_COMPOSED_PIPELINE = VISION_PIPELINE;
     public static final String OCR_PIPELINE = "ocr-document";
     public static final String TABLE_AWARE_PIPELINE = "table-aware";
     public static final String KEYWORD_ONLY_PIPELINE = "keyword-only";
 
     private static final Set<String> BUILTIN_PIPELINE_TYPES = Set.of(
-            "STANDARD_TEXT", "VLM", "OCR", "CODE", "TABLE_AWARE", "KEYWORD_ONLY", "CUSTOM");
+            "STANDARD_TEXT", "LLM", "VLM", "OCR", "CODE", "TABLE_AWARE", "KEYWORD_ONLY", "CUSTOM");
     private static final Set<String> EXECUTOR_TYPES = Set.of("UNIFIED_PIPELINE");
     private static final Pattern PIPELINE_TYPE_PATTERN = Pattern.compile("[A-Za-z][A-Za-z0-9_.:-]*");
     private static final Set<String> SUPPORTED_STEPS = Set.of(
@@ -68,6 +74,20 @@ public final class LocalCrawlCapabilities {
         pipelineTemplate(templates, STANDARD_TEXT_PIPELINE, "STANDARD_TEXT", "auto",
                 "recursive-character", 2_000, 200,
                 "General filesystem documents with format-aware loading and recursive chunking.");
+        ObjectNode textModelTemplate = pipelineTemplate(templates, TEXT_MODEL_PIPELINE, "LLM", "text",
+                "sentence", 2_000, 200,
+                "Provider-neutral text input to a caller-selected local language model and text output.");
+        ObjectNode textModelConfiguration = textModelTemplate.putObject("configuration");
+        textModelConfiguration.put("modelSelection", "caller-configured");
+        textModelConfiguration.putArray("modelRoles").add("default");
+        textModelConfiguration.putArray("pipelineOptionFields")
+                .add("modelId").add("modelSetId").add("modelBindings")
+                .add("modelDefinitions").add("modelRefs").add("maxNewTokens")
+                .add("temperature").add("topK").add("timeoutMinutes");
+        textModelTemplate.put("executionModel", "unified-pipeline-runtime")
+                .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec")
+                .set("pipelineDefinition", mapper.valueToTree(builtinTextModelProcessor()
+                        .get("pipelineDefinition")));
         pipelineTemplate(templates, CODE_PIPELINE, "CODE", "code",
                 "recursive-character", 1_800, 180,
                 "Source code and project files with code validation and boundary-aware chunking.");
@@ -75,7 +95,8 @@ public final class LocalCrawlCapabilities {
                 "recursive-character", 2_000, 200,
                 "Model-backed PDF extraction through the reusable unified pipeline runtime.");
         ObjectNode vlmConfiguration = vlmTemplate.putObject("configuration");
-        vlmConfiguration.put("defaultModelId", "smoldocling-256m");
+        vlmConfiguration.put("modelSelection", "caller-configured");
+        vlmConfiguration.put("modelDefinitionTool", "vlm_model_definition");
         vlmConfiguration.putArray("pipelineOptionFields")
                 .add("modelId").add("vlmModel").add("modelSetId")
                 .add("outputFormat").add("maxPages").add("pageRange").add("maxNewTokens")
@@ -87,6 +108,23 @@ public final class LocalCrawlCapabilities {
                 .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec");
         vlmConfiguration.put("modelLifecycle",
                 "The MCP runtime resolves or bootstraps bound models and acquires a reusable isolated runtime automatically.");
+        ObjectNode visionTemplate = pipelineTemplate(templates, VISION_PIPELINE, "VLM", "auto",
+                "recursive-character", 2_000, 200,
+                "Composable image preprocessing, vision encoder, text embedding, fusion, decoding, and text output.");
+        ObjectNode visionConfiguration = visionTemplate.putObject("configuration");
+        visionConfiguration.put("modelSelection", "caller-configured");
+        visionConfiguration.putArray("modelRoles")
+                .add("visionEncoder").add("textEmbedding").add("decoder");
+        visionConfiguration.putArray("pipelineOptionFields")
+                .add("modelBindings").add("modelDefinitions").add("modelRefs")
+                .add("tileSize").add("maxTiles").add("imageTokenId")
+                .add("eosTokenId").add("maxNewTokens").add("timeoutMinutes");
+        visionTemplate.put("executionModel", "unified-pipeline-runtime")
+                .put("inputContract", "image preprocessing consumes pipeline input image data; the composed text path consumes input_ids "
+                        + "and optional attention_mask/position_ids (raw text needs a tokenizer/adapter step)")
+                .put("definitionFormat", "UnifiedPipelineDefinition with a concrete GraphPipeline pipelineSpec")
+                .set("pipelineDefinition", mapper.valueToTree(builtinVisionProcessor()
+                        .get("pipelineDefinition")));
         ObjectNode ocrTemplate = pipelineTemplate(templates, OCR_PIPELINE, "OCR", "pdf",
                 "recursive-character", 2_000, 200,
                 "PDF OCR/extraction through the reusable unified pipeline runtime.");
@@ -137,19 +175,32 @@ public final class LocalCrawlCapabilities {
                 .add("minSizeBytes").add("maxSizeBytes").add("contentPatterns");
         catalog.put("executionMode", executionMode);
         catalog.put("distributed", false);
+        catalog.putObject("asyncLifecycle")
+                .put("default", true)
+                .put("startTool", "crawl_documents or crawl_source")
+                .put("statusTool", "crawl_control")
+                .put("statusOperation", "status")
+                .put("resultTool", "crawl_result")
+                .put("cancelOperation", "cancel")
+                .put("pollAfterMs", 1000)
+                .put("terminalStatuses", "COMPLETED, COMPLETED_WITH_ERRORS, FAILED, CANCELLED")
+                .put("retention", "bounded MCP-host registry; completed handles expire after configured retention")
+                .put("agentRule", "Never repeat a start while terminal=false; poll the returned jobId and respect pollAfterMs.");
         ObjectNode systems = catalog.putObject("pipelineSystems");
         systems.putObject("unified")
                 .put("selector", "Every model-backed pipeline")
                 .put("definition", "UnifiedPipelineDefinition")
                 .put("pipelineSpec", "Concrete serialized Pipeline with @class, such as SequencePipeline or GraphPipeline")
                 .put("runtime", "MCP-owned pooled stdio runtime; no executable or process configuration is accepted from callers")
+                .put("modelRoleResolution", "modelRole and tokenizerRole parameters are resolved from caller modelBindings before launch")
                 .put("reuse", "Compatible definitions and resolved model artifacts share a bounded warm process");
 
         ObjectNode wiring = catalog.putObject("wiringRecipe");
         wiring.put("workflow",
                 "1) crawl_discover section=pipelines; 2) model_runtime status/bootstrap/import; "
                         + "3) choose a pipelineId and bind a model; 4) crawl_documents dryRun=true; "
-                        + "5) rerun with dryRun=false.");
+                        + "5) start asynchronously; 6) poll crawl_control operation=status using jobId and pollAfterMs; "
+                        + "7) call crawl_result when terminal=true.");
         wiring.put("modelBinding",
                 "Use pipeline.modelId/vlmModel for one model, modelBindings for role-to-model ids, "
                         + "or modelRefs for project manifest models.");
@@ -161,13 +212,27 @@ public final class LocalCrawlCapabilities {
         minimumRequest.putArray("pipelines").addObject()
                 .put("pipelineId", "pdf-vlm")
                 .put("pipelineType", "VLM")
-                .put("modelId", "smoldocling-256m");
+                .put("modelId", "<configured-model-id>");
+        minimumRequest.put("modelDefinitionTool", "vlm_model_definition");
         minimumRequest.put("defaultPipelineId", "pdf-vlm").put("dryRun", true);
         minimumRequest.putObject("modelRuntime").put("autoBootstrap", true);
+        wiring.putObject("textModelText")
+                .put("pipelineId", TEXT_MODEL_PIPELINE)
+                .put("contract", "text input + modelBindings.default + local model resolution + text output");
+        wiring.putObject("visionMultimodel")
+                .put("pipelineId", VISION_PIPELINE)
+                .put("contract", "image preprocessing + role-bound visionEncoder/textEmbedding/decoder models + text output");
+        wiring.putObject("customDefinition")
+                .put("sources", "pipelineDefinition inline, pipelineDefinitionPath, pipelineDefinitionId, pipelineRegistry.definitions, or registeredPipelines")
+                .put("contract", "caller owns the concrete SequencePipeline or GraphPipeline composition; no model/provider is inferred");
 
         ObjectNode typeGuide = catalog.putObject("pipelineTypeGuide");
         typeGuide.put("VLM/OCR",
                 "UnifiedPipelineDefinition + modelId/modelBindings; MCP manages runtime acquisition and reuse.");
+        typeGuide.put("LLM",
+                "Use the text-model-text composition or provide a custom UnifiedPipelineDefinition with a caller-selected model binding.");
+        typeGuide.put("COMPOSED_VISION",
+                "Use vision-multimodel for image_preprocess plus role-bound visionEncoder, textEmbedding, and decoder steps; replace it with a custom graph when needed.");
         typeGuide.put("STANDARD_TEXT/CODE/TABLE_AWARE/KEYWORD_ONLY",
                 "pipelineType + loaderName/chunkerName/options; model-backed steps still use the same unified runtime.");
         typeGuide.put("CUSTOM",
@@ -181,6 +246,7 @@ public final class LocalCrawlCapabilities {
                 .put("modelBindings", "pipeline.modelBindings role-to-model map")
                 .put("folderDefinitions", ".kompile/pipelines/unified/*.json")
                 .put("globalDefinitions", "${kompile.data.dir:-~/.kompile}/pipelines/unified/*.json")
+                .put("customDefinitionSources", "inline pipelineDefinition, pipelineDefinitionPath, pipelineDefinitionId, pipelineRegistry.definitions, registeredPipelines")
                 .put("arbitraryPipelineTypes", true);
         ArrayNode executorTypes = registry.putArray("executorTypes");
         EXECUTOR_TYPES.stream().sorted().forEach(executorTypes::add);
@@ -482,12 +548,16 @@ public final class LocalCrawlCapabilities {
         Map<String, PipelineDefinition> pipelines = new LinkedHashMap<>();
         pipelines.put(STANDARD_TEXT_PIPELINE, new PipelineDefinition(STANDARD_TEXT_PIPELINE,
                 "STANDARD_TEXT", "auto", "recursive-character", 2_000, 200, Map.of(), Map.of()));
+        pipelines.put(TEXT_MODEL_PIPELINE, new PipelineDefinition(TEXT_MODEL_PIPELINE,
+                "LLM", "text", "sentence", 2_000, 200, Map.of(), builtinTextModelProcessor()));
         pipelines.put(CODE_PIPELINE, new PipelineDefinition(CODE_PIPELINE,
                 "CODE", "code", "recursive-character", 1_800, 180,
                 Map.of("separators", List.of("\n\n", "\n", " ")), Map.of()));
         pipelines.put(VLM_PIPELINE, new PipelineDefinition(VLM_PIPELINE,
                 "VLM", "pdf", "recursive-character", 2_000, 200, Map.of(),
                 builtinModelProcessor("VLM")));
+        pipelines.put(VISION_PIPELINE, new PipelineDefinition(VISION_PIPELINE,
+                "VLM", "auto", "recursive-character", 2_000, 200, Map.of(), builtinVisionProcessor()));
         pipelines.put(OCR_PIPELINE, new PipelineDefinition(OCR_PIPELINE,
                 "OCR", "pdf", "recursive-character", 2_000, 200, Map.of(),
                 builtinModelProcessor("OCR")));
@@ -788,7 +858,7 @@ public final class LocalCrawlCapabilities {
                 ? "OCR document extraction" : "VLM document extraction");
         definition.put("kind", "VLM");
         definition.put("topology", "SEQUENCE");
-        definition.put("modelSetId", "smoldocling-256m");
+        definition.put("modelSelection", "caller-configured");
         definition.put("pipelineSpec", spec);
         definition.put("runtimeRequirements", Map.of(
                 "capabilities", List.of("document-understanding", "pdf"),
@@ -798,6 +868,160 @@ public final class LocalCrawlCapabilities {
         processor.put("type", "UNIFIED_PIPELINE");
         processor.put("pipelineDefinition", definition);
         return Map.copyOf(processor);
+    }
+
+    /**
+     * Canonical provider-neutral text-to-model-to-text composition. The model and tokenizer are
+     * deliberately represented as roles; {@link LocalModelPipelineRunner} materializes their local
+     * paths from the request's model bindings immediately before launch.
+     */
+    public static Map<String, Object> builtinTextModelProcessor() {
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("modelRole", "default");
+        parameters.put("tokenizerRole", "default");
+        parameters.put("promptInputName", "text");
+        parameters.put("responseOutputName", "output");
+        parameters.put("generationParameters", Map.of(
+                "maxNewTokens", 1024,
+                "temperature", 0.2));
+
+        Map<String, Object> step = new LinkedHashMap<>();
+        step.put("@class", "ai.kompile.pipelines.framework.api.llm.LLMStepConfig");
+        step.put("name", "text_model");
+        step.put("type", "SAMEDIFF_LANGUAGE_MODEL");
+        step.put("runnerClassName", "SAMEDIFF_LANGUAGE_MODEL");
+        step.putAll(parameters);
+
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline");
+        spec.put("id", TEXT_MODEL_PIPELINE);
+        spec.put("steps", List.of(step));
+
+        Map<String, Object> definition = new LinkedHashMap<>();
+        definition.put("schemaVersion", 1);
+        definition.put("definitionVersion", 1);
+        definition.put("pipelineId", TEXT_MODEL_PIPELINE);
+        definition.put("displayName", "Text model text");
+        definition.put("description", "Text input is passed to a caller-selected local model and returned as text.");
+        definition.put("kind", "LLM");
+        definition.put("topology", "SEQUENCE");
+        definition.put("modelSelection", "caller-configured");
+        definition.put("modelRoles", List.of("default"));
+        definition.put("pipelineSpec", spec);
+        definition.put("inputs", Map.of("text", Map.of(
+                "type", "string", "required", true, "description", "Text prompt or document content")));
+        definition.put("outputs", Map.of("output", Map.of(
+                "type", "string", "required", true, "description", "Generated text")));
+        definition.put("runtimeRequirements", Map.of(
+                "capabilities", List.of("text-generation", "local-model"),
+                "runnerTypes", List.of("SAMEDIFF_LANGUAGE_MODEL")));
+
+        Map<String, Object> processor = new LinkedHashMap<>();
+        processor.put("type", "UNIFIED_PIPELINE");
+        processor.put("pipelineDefinition", definition);
+        return Map.copyOf(processor);
+    }
+
+    /**
+     * Canonical composed vision graph. It mirrors the framework VLM builder's topology while
+     * leaving every model choice to role bindings supplied by the caller.
+     */
+    public static Map<String, Object> builtinVisionProcessor() {
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        nodes.add(graphNode("image_preprocess", List.of("pipeline_input"),
+                "ai.kompile.pipelines.steps.vlm.ImagePreprocessingStepRunner", Map.of(
+                        "tileSize", 364, "maxTiles", 5)));
+        nodes.add(graphNode("vision_encoder", List.of("image_preprocess"),
+                "ai.kompile.pipelines.steps.vlm.VisionEncoderStepRunner", Map.of(
+                        "modelRole", "visionEncoder", "outputNames", List.of("image_features"))));
+        nodes.add(graphNode("text_embedding", List.of("pipeline_input"),
+                "ai.kompile.pipelines.steps.vlm.TextEmbeddingStepRunner", Map.of(
+                        "modelRole", "textEmbedding", "outputNames", List.of("text_embeddings"))));
+        Map<String, Object> fusionParameters = new LinkedHashMap<>();
+        fusionParameters.put("imageTokenId", 49153);
+        fusionParameters.put("inputDataBindings", Map.of(
+                "image_features", "vision_encoder.image_features",
+                "text_embeddings", "text_embedding.text_embeddings",
+                "input_ids", "pipeline_input.input_ids",
+                "attention_mask", "pipeline_input.attention_mask",
+                "position_ids", "pipeline_input.position_ids"));
+        nodes.add(graphNode("fusion", List.of("vision_encoder", "text_embedding", "pipeline_input"),
+                "ai.kompile.pipelines.steps.vlm.VisionTextFusionStepRunner", fusionParameters));
+        nodes.add(graphNode("decoder_body", List.of("fusion"),
+                "ai.kompile.pipelines.steps.vlm.VLMDecoderStepRunner", Map.of(
+                        "modelRole", "decoder", "numKvLayers", 0, "numHeads", 32,
+                        "headDim", 96, "eosTokenId", 2)));
+        Map<String, Object> loop = new LinkedHashMap<>();
+        loop.put("@graphNodeType", "LOOP");
+        loop.put("name", "decoder_loop");
+        loop.put("inputs", List.of("fusion"));
+        loop.put("bodyStepName", "decoder_body");
+        loop.put("feedbackKeys", List.of("kv_cache", "input_ids", "attention_mask", "position_ids"));
+        loop.put("conditionClassName", "ai.kompile.pipelines.steps.vlm.AutoregressiveLoopCondition");
+        loop.put("accumulatorKey", "generated_tokens");
+        loop.put("accumulateFromKey", "next_token_id");
+        nodes.add(loop);
+        nodes.add(graphNode("token_decode", List.of("decoder_loop"),
+                "ai.kompile.pipelines.steps.vlm.TokenDecodingStepRunner", Map.of(
+                        "tokenizerRole", "decoder")));
+
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.graph.GraphPipeline");
+        spec.put("id", VISION_PIPELINE);
+        spec.put("nodes", nodes);
+        spec.put("inputNodeName", "pipeline_input");
+        spec.put("outputNodeName", "token_decode");
+
+        Map<String, Object> definition = new LinkedHashMap<>();
+        definition.put("schemaVersion", 1);
+        definition.put("definitionVersion", 1);
+        definition.put("pipelineId", VISION_PIPELINE);
+        definition.put("displayName", "Vision multimodel");
+        definition.put("description", "Image preprocessing followed by independently bound vision, embedding, and decoder models.");
+        definition.put("kind", "VLM");
+        definition.put("topology", "GRAPH");
+        definition.put("modelSelection", "caller-configured");
+        definition.put("modelRoles", List.of("visionEncoder", "textEmbedding", "decoder"));
+        definition.put("pipelineSpec", spec);
+        definition.put("inputs", Map.of(
+                "image", Map.of("type", "image", "required", true, "description", "Raster image or image tensor"),
+                "text", Map.of("type", "string", "required", false,
+                        "description", "Optional source prompt; an upstream tokenizer/adapter must materialize input_ids"),
+                "input_ids", Map.of("type", "int64 tensor", "required", true,
+                        "description", "Token ids consumed by text embedding, fusion, and decoder"),
+                "attention_mask", Map.of("type", "int64 tensor", "required", false,
+                        "description", "Attention mask forwarded to the decoder loop when supplied"),
+                "position_ids", Map.of("type", "int64 tensor", "required", false,
+                        "description", "Position ids forwarded to the decoder loop when supplied")));
+        definition.put("outputs", Map.of("generated_text", Map.of(
+                "type", "string", "required", true, "description", "Decoded model output")));
+        definition.put("runtimeRequirements", Map.of(
+                "capabilities", List.of("image-preprocessing", "vision-encoding", "text-embedding", "text-generation", "local-model"),
+                "runnerTypes", List.of(
+                        "ai.kompile.pipelines.steps.vlm.ImagePreprocessingStepRunner",
+                        "ai.kompile.pipelines.steps.vlm.VisionEncoderStepRunner",
+                        "ai.kompile.pipelines.steps.vlm.TextEmbeddingStepRunner",
+                        "ai.kompile.pipelines.steps.vlm.VLMDecoderStepRunner",
+                        "ai.kompile.pipelines.steps.vlm.TokenDecodingStepRunner")));
+
+        Map<String, Object> processor = new LinkedHashMap<>();
+        processor.put("type", "UNIFIED_PIPELINE");
+        processor.put("pipelineDefinition", definition);
+        return Map.copyOf(processor);
+    }
+
+    private static Map<String, Object> graphNode(String name, List<String> inputs,
+                                                 String runnerClassName, Map<String, Object> parameters) {
+        Map<String, Object> step = new LinkedHashMap<>();
+        step.put("@class", "ai.kompile.pipelines.framework.core.config.GenericStepConfig");
+        step.put("runnerClassName", runnerClassName);
+        step.put("parameters", parameters);
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("@graphNodeType", "STANDARD");
+        node.put("name", name);
+        node.put("inputs", inputs);
+        node.put("stepConfig", step);
+        return node;
     }
 
     private static JsonNode matchingDocument(JsonNode request, Path sourceRoot, Path file) {

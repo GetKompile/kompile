@@ -133,6 +133,7 @@ class CrawlSourceToolTest {
     void nullBaseUrl_usesLocalBackendAndReportsMissingSource() throws Exception {
         CrawlSourceTool tool = new CrawlSourceTool((String) null, om);
         ObjectNode params = om.createObjectNode();
+        params.put("async", false);
         params.put("path", "missing-file.txt");
         ToolResult result = tool.execute(params, ctx);
         assertTrue(result.isError());

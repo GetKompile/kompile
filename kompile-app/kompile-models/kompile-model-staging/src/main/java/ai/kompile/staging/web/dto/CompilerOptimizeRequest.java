@@ -44,4 +44,10 @@ public class CompilerOptimizeRequest {
     private boolean createBackup = true;
     @Builder.Default
     private boolean dryRun = false;
+
+    /** Optional absolute/local input path for provider-neutral, registry-free optimization. */
+    private String inputPath;
+
+    /** Optional output path; when omitted the input artifact is updated in place. */
+    private String outputPath;
 }

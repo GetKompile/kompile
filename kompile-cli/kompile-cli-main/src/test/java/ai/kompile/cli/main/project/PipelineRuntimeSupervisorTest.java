@@ -60,6 +60,20 @@ class PipelineRuntimeSupervisorTest {
     }
 
     @Test
+    void fallbackDiagnosticsRetainInitializerRootCause() {
+        Map<String, Object> diagnostic = PipelineRuntimeSupervisor.diagnostic(
+                new ExceptionInInitializerError(
+                        new IllegalStateException("native backend failed")),
+                "PIPELINE_TEST");
+
+        assertEquals("PIPELINE_TEST", diagnostic.get("failureStage"));
+        assertEquals("native backend failed", diagnostic.get("summary"));
+        assertEquals(IllegalStateException.class.getName(), diagnostic.get("rootCauseClass"));
+        assertFalse(((List<?>) diagnostic.get("exceptionChain")).isEmpty());
+        assertFalse(((List<?>) diagnostic.get("stackTrace")).isEmpty());
+    }
+
+    @Test
     void definitionChangesInvalidateReuse() throws Exception {
         AtomicInteger starts = new AtomicInteger();
         PipelineRuntimeSupervisor.setStarterForTests(definition -> {

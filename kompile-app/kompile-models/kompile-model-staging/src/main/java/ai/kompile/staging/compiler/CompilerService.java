@@ -296,7 +296,7 @@ public class CompilerService {
 
         try {
             String modelId = request.getModelId();
-            File modelFile = resolveModelFile(modelId);
+            File modelFile = resolveOptimizationInput(request, modelId);
             if (modelFile == null || !modelFile.exists()) {
                 return CompilerOptimizeResponse.builder()
                         .jobId(jobId)
@@ -367,7 +367,14 @@ public class CompilerService {
 
             // Save the optimized model - restore backup on failure
             String outputPath;
-            if (request.getOutputModelId() != null && !request.getOutputModelId().isEmpty()) {
+            if (request.getOutputPath() != null && !request.getOutputPath().isBlank()) {
+                outputPath = Path.of(request.getOutputPath()).toAbsolutePath().normalize().toString();
+                File outputFile = new File(outputPath);
+                File parent = outputFile.getParentFile();
+                if (parent != null) {
+                    parent.mkdirs();
+                }
+            } else if (request.getOutputModelId() != null && !request.getOutputModelId().isEmpty()) {
                 File outputDir = new File(modelsDir, request.getOutputModelId());
                 outputDir.mkdirs();
                 String ext = modelFile.getName().endsWith(".sdz") ? ".sdz" : ".fb";
@@ -416,10 +423,13 @@ public class CompilerService {
                     .dryRun(false)
                     .build();
 
-            // Update registry so catalog reflects optimization state
-            updateRegistryOptimization(modelId, System.currentTimeMillis() - startTime,
-                    passes, beforeOps, afterOps, beforeVars, afterVars,
-                    sizeBeforeBytes, sizeAfterBytes, reductionPercent, request);
+            // Registry updates apply only to catalog-owned model ids. Local path optimization
+            // remains local and does not invent provider/registry metadata.
+            if (modelId != null && !modelId.isBlank()) {
+                updateRegistryOptimization(modelId, System.currentTimeMillis() - startTime,
+                        passes, beforeOps, afterOps, beforeVars, afterVars,
+                        sizeBeforeBytes, sizeAfterBytes, reductionPercent, request);
+            }
 
             jobResults.put(jobId, response);
             return response;
@@ -1350,6 +1360,22 @@ public class CompilerService {
             log.warn("Failed to read magic bytes from {}", file.getName(), e);
         }
         return false;
+    }
+
+    /**
+     * Resolve either a catalog model id or an explicitly supplied local artifact.
+     * Local optimization intentionally bypasses the registry so agents can chain
+     * convert -> optimize entirely within a project directory.
+     */
+    private File resolveOptimizationInput(CompilerOptimizeRequest request, String modelId) {
+        if (request.getInputPath() != null && !request.getInputPath().isBlank()) {
+            Path path = Path.of(request.getInputPath()).toAbsolutePath().normalize();
+            if (Files.isRegularFile(path) && !Files.isSymbolicLink(path)) {
+                return path.toFile();
+            }
+            return null;
+        }
+        return resolveModelFile(modelId);
     }
 
     /**

@@ -286,6 +286,7 @@ class McpToolBusinessLogicTest {
 
     private ObjectNode crawlRequest() {
         ObjectNode request = mapper.createObjectNode();
+        request.put("async", false);
         request.put("name", "JVM MCP business logic test");
         request.putObject("knowledgeBase").put("name", KNOWLEDGE_BASE);
         request.putArray("documents").addObject()

@@ -516,12 +516,20 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
         }
 
         if (inputDataBindings.isEmpty()) {
-            if (inputNodeIds.size() == 1) {
-                String sourceNodeId = inputNodeIds.get(0);
-                String effectiveSourceNodeId = sourceNodeId.equals(graphPipeline.getInputNodeName()) ? PIPELINE_INPUT_ID : sourceNodeId;
+            /*
+             * A standard node with one predecessor receives that predecessor's
+             * data unchanged. For multiple predecessors, merge the upstream
+             * records in declaration order. This is the default handoff contract
+             * exposed by the MCP pipeline tool; inputDataBindings remains
+             * available when a step needs explicit slot-to-output selection.
+             */
+            for (String sourceNodeId : inputNodeIds) {
+                String effectiveSourceNodeId = sourceNodeId.equals(graphPipeline.getInputNodeName())
+                        ? PIPELINE_INPUT_ID
+                        : sourceNodeId;
                 Data sourceData = completedStepOutputs.get(effectiveSourceNodeId);
                 if (sourceData != null) {
-                    return sourceData.dup();
+                    stepInput.merge(sourceData);
                 }
             }
             return stepInput;

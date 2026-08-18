@@ -14,6 +14,7 @@ import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.grounding.CrawlDocumentsTool;
 import ai.kompile.cli.main.chat.tools.grounding.LocalProjectCrawlBackend;
+import ai.kompile.cli.main.chat.tools.grounding.PipelineTool;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.modelmanager.registry.RegistryService;
 import ai.kompile.ocr.OcrPipelineConfig;
@@ -202,6 +203,110 @@ class LocalMcpVlmPdfIT {
         } finally {
             pipeline.unloadModels();
         }
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.MINUTES)
+    void pipelineToolExecutesOrReturnsActionableRuntimeDiagnosticWithoutMetadataWrites()
+            throws Exception {
+        Path pdf = requiredExternalPdf();
+        Path sourceModelDirectory = requiredDirectory(MODEL_DIRECTORY_PROPERTY);
+        String modelId = System.getProperty(MODEL_PROPERTY, "smoldocling-256m");
+
+        Path linkedModelDirectory = Files.createDirectories(projectRoot.resolve(
+                "data/models/vlm-pipelines").resolve(modelId));
+        try (Stream<Path> files = Files.list(sourceModelDirectory)) {
+            for (Path source : files.filter(Files::isRegularFile).toList()) {
+                Files.createSymbolicLink(
+                        linkedModelDirectory.resolve(source.getFileName()),
+                        source.toAbsolutePath().normalize());
+            }
+        }
+        Files.writeString(projectRoot.resolve("kompile.project.json"), """
+                {
+                  "schemaVersion": 1,
+                  "projectId": "pipeline-vlm-probe",
+                  "name": "Pipeline VLM probe",
+                  "models": [{
+                    "id": "%s",
+                    "modelId": "%s",
+                    "registryModelId": "%s",
+                    "role": "VLM",
+                    "path": "data/models/vlm-pipelines/%s",
+                    "metadata": {"registry.type": "vlm_pipeline"}
+                  }]
+                }
+                """.formatted(modelId, modelId, modelId, modelId));
+        String manifestBefore = Files.readString(projectRoot.resolve("kompile.project.json"));
+
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        PermissionService permissions = new PermissionService();
+        permissions.setUserOverride("pipeline", PermissionService.PermissionLevel.ALLOW);
+        ToolContext context = new ToolContext(
+                "real-vlm-pipeline-probe",
+                AgentConfig.builder("real-vlm-pipeline-probe")
+                        .enabledTools(Set.of("pipeline")).build(),
+                permissions,
+                projectRoot,
+                new ToolRegistry(mapper));
+
+        ObjectNode definition = mapper.createObjectNode();
+        definition.put("schemaVersion", 1);
+        definition.put("pipelineId", "real-vlm-pipeline-probe");
+        definition.put("displayName", "Real VLM pipeline probe");
+        definition.put("kind", "VLM");
+        definition.put("topology", "SEQUENCE");
+        definition.putObject("modelBindings").put("default", modelId);
+        ObjectNode spec = definition.putObject("pipelineSpec");
+        spec.put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline");
+        spec.put("id", "real-vlm-pipeline-probe");
+        ObjectNode step = spec.putArray("steps").addObject();
+        step.put("@class", "ai.kompile.pipelines.framework.core.config.GenericStepConfig");
+        step.put("runnerClassName", "ai.kompile.pipelines.steps.vlm.VlmDocumentStepRunner");
+        step.putObject("parameters")
+                .put("outputFormat", "DOCTAGS")
+                .put("pdfRenderDpi", positiveInt(PDF_DPI_PROPERTY, 96))
+                .put("pageBatchSize", 1)
+                .put("maxPages", positiveInt(MAX_PAGES_PROPERTY, 1))
+                .put("maxNewTokens", positiveInt(MAX_TOKENS_PROPERTY, 128));
+
+        ObjectNode request = mapper.createObjectNode().put("action", "test")
+                .put("timeoutMinutes", positiveInt(TIMEOUT_PROPERTY, 30));
+        request.set("definition", definition);
+        request.putObject("input").put("filePath", pdf.toString());
+        ToolResult result = new PipelineTool(mapper).execute(request, context);
+        JsonNode output = mapper.readTree(result.getOutput());
+
+        if (result.isError()) {
+            JsonNode diagnostic = output.path("diagnostic");
+            System.out.println("PIPELINE_VLM_PROBE diagnostic stage="
+                    + diagnostic.path("failureStage").asText()
+                    + " rootCause=" + diagnostic.path("rootCauseClass").asText()
+                    + " summary=" + diagnostic.path("summary").asText());
+            String configuredBackendArtifact = System.getProperty(
+                    "backend.artifactId",
+                    System.getProperty("nd4j.backend", "nd4j-native"));
+            assertFalse(diagnostic.toString().contains("NoAvailableBackendException"),
+                    "Configured ND4J backend artifact " + configuredBackendArtifact
+                            + " was not visible to the pipeline runtime: " + result.getOutput());
+            assertFalse(diagnostic.path("failureStage").asText().isBlank(), result.getOutput());
+            assertFalse(diagnostic.path("summary").asText().isBlank(), result.getOutput());
+            assertTrue(diagnostic.path("exceptionChain").isArray(), result.getOutput());
+            assertTrue(diagnostic.path("stackTrace").isArray(), result.getOutput());
+            assertFalse(diagnostic.path("runId").asText().isBlank(), result.getOutput());
+            assertEquals("real-vlm-pipeline-probe",
+                    diagnostic.path("requestedDefinition").path("pipelineId").asText(),
+                    result.getOutput());
+        } else {
+            System.out.println("PIPELINE_VLM_PROBE completed runId="
+                    + output.path("runId").asText());
+            assertEquals("COMPLETED", output.path("status").asText(), result.getOutput());
+            assertFalse(output.path("runId").asText().isBlank(), result.getOutput());
+            assertFalse(output.path("output").isMissingNode(), result.getOutput());
+        }
+        assertEquals(manifestBefore,
+                Files.readString(projectRoot.resolve("kompile.project.json")));
+        assertFalse(Files.exists(projectRoot.resolve("data/pipelines/project-pipelines.json")));
     }
 
     @Test

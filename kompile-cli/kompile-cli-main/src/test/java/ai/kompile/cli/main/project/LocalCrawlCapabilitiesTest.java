@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,7 +37,9 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(catalog.path("chunkers").toString().contains("recursive-character"));
         assertTrue(catalog.path("chunkers").toString().contains("sentence"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("standard-text"));
+        assertTrue(catalog.path("pipelineTemplates").toString().contains("text-model-text"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("vlm-document"));
+        assertTrue(catalog.path("pipelineTemplates").toString().contains("vision-multimodel"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("ocr-document"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("table-aware"));
         assertTrue(catalog.path("pipelineTemplates").toString().contains("keyword-only"));
@@ -53,6 +56,8 @@ class LocalCrawlCapabilitiesTest {
                         .path("pipelineType").asText());
         assertTrue(catalog.path("pipelineTypeGuide").path("CUSTOM").asText()
                 .contains("UNIFIED_PIPELINE"));
+        assertTrue(catalog.path("wiringRecipe").path("customDefinition").path("sources").asText()
+                .contains("pipelineDefinitionPath"));
     }
 
     @Test
@@ -65,6 +70,56 @@ class LocalCrawlCapabilitiesTest {
         assertFalse(catalog.toString().contains("documentModelExecutable"));
         assertTrue(catalog.path("modelProcessing").path("callerDefinedUnifiedPipelines").asBoolean());
         assertTrue(catalog.path("pipelineRegistry").path("arbitraryPipelineTypes").asBoolean());
+    }
+
+    @Test
+    void builtinCompositionsExposeRoleBoundTextAndVisionGraphs() {
+        Map<?, ?> textProcessor = LocalCrawlCapabilities.builtinTextModelProcessor();
+        Map<?, ?> textDefinition = (Map<?, ?>) textProcessor.get("pipelineDefinition");
+        assertEquals("LLM", textDefinition.get("kind"));
+        assertEquals("SEQUENCE", textDefinition.get("topology"));
+        assertEquals("caller-configured", textDefinition.get("modelSelection"));
+        assertFalse(textDefinition.toString().contains("modelUri"));
+
+        Map<?, ?> visionProcessor = LocalCrawlCapabilities.builtinVisionProcessor();
+        Map<?, ?> visionDefinition = (Map<?, ?>) visionProcessor.get("pipelineDefinition");
+        assertEquals("GRAPH", visionDefinition.get("topology"));
+        Map<?, ?> spec = (Map<?, ?>) visionDefinition.get("pipelineSpec");
+        List<?> nodes = (List<?>) spec.get("nodes");
+        assertTrue(nodes.toString().contains("image_preprocess"));
+        assertTrue(nodes.toString().contains("vision_encoder"));
+        assertTrue(nodes.toString().contains("text_embedding"));
+        assertTrue(nodes.toString().contains("decoder_body"));
+        assertTrue(nodes.toString().contains("modelRole=visionEncoder"));
+        assertTrue(nodes.toString().contains("modelRole=textEmbedding"));
+        assertTrue(nodes.toString().contains("modelRole=decoder"));
+    }
+
+    @Test
+    void inlineCustomDefinitionIsPreservedAsTheExecutablePipeline() throws Exception {
+        ObjectNode customSpec = mapper.createObjectNode()
+                .put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline")
+                .put("id", "custom-definition");
+        customSpec.putArray("steps");
+        ObjectNode customDefinition = mapper.createObjectNode()
+                .put("schemaVersion", 1)
+                .put("pipelineId", "custom-definition")
+                .put("kind", "GENERIC")
+                .put("topology", "SEQUENCE")
+                .set("pipelineSpec", customSpec);
+        ObjectNode pipeline = mapper.createObjectNode()
+                .put("pipelineId", "custom-definition")
+                .put("pipelineType", "CUSTOM")
+                .set("pipelineDefinition", customDefinition);
+        ObjectNode request = mapper.createObjectNode();
+        request.putArray("pipelines").add(pipeline);
+        request.put("defaultPipelineId", "custom-definition");
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, tempDir.resolve("custom.txt"));
+        assertEquals("UNIFIED_PIPELINE", resolved.processor().get("type"));
+        assertEquals(customDefinition, mapper.valueToTree(resolved.processor().get("pipelineDefinition")));
     }
 
     @Test
@@ -151,7 +206,7 @@ class LocalCrawlCapabilitiesTest {
         ObjectNode request = (ObjectNode) mapper.readTree("""
                 {"documents":[{"path":"%s","pipelineId":"vision"}],
                  "pipelines":[
-                   {"pipelineId":"vision","pipelineType":"VLM","options":{"vlmModel":"smol"}},
+                   {"pipelineId":"vision","pipelineType":"VLM","options":{"vlmModel":"configured-model"}},
                    {"pipelineId":"keywords","pipelineType":"KEYWORD_ONLY"}
                  ]}
                 """.formatted(pdf.toString().replace("\\", "\\\\")));
@@ -159,7 +214,7 @@ class LocalCrawlCapabilitiesTest {
         LocalCrawlCapabilities.ResolvedPipeline vision =
                 LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
         assertTrue(LocalCrawlCapabilities.usesModelPipeline(vision));
-        assertEquals("smol", vision.chunkerOptions().get("vlmModel"));
+        assertEquals("configured-model", vision.chunkerOptions().get("vlmModel"));
 
         ((ObjectNode) request.withArray("documents").get(0)).put("pipelineId", "keywords");
         LocalCrawlCapabilities.ResolvedPipeline keywords =
@@ -176,7 +231,7 @@ class LocalCrawlCapabilitiesTest {
                   "modelRuntime": {
                     "autoBootstrap": true,
                     "source": "huggingface",
-                    "repository": "ds4sd/SmolDocling-256M-preview",
+                    "repository": "configured/provider-model",
                     "format": "vlm",
                     "type": "vlm_pipeline"
                   },
@@ -207,7 +262,7 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(resolved.processor().containsKey("pipelineDefinition"));
         Map<?, ?> modelRuntime = (Map<?, ?>) resolved.processor().get("modelRuntime");
         assertEquals(true, modelRuntime.get("autoBootstrap"));
-        assertEquals("ds4sd/SmolDocling-256M-preview", modelRuntime.get("repository"));
+        assertEquals("configured/provider-model", modelRuntime.get("repository"));
         assertEquals("vlm_pipeline", modelRuntime.get("type"));
     }
 

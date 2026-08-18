@@ -46,6 +46,20 @@
             <artifactId>kompile-pipelines-framework-runtime</artifactId>
         </dependency>
 
+        <!-- The standalone runtime owns ND4J initialization. Resolve the Java backend and
+             its classified native payload from the distribution's canonical backend properties. -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.native.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
+        </dependency>
+
         <!-- Runtime step plugins are packaged into the standalone runtime but are not
              propagated to MCP/CLI parents that depend on this launcher API. -->
         <dependency>

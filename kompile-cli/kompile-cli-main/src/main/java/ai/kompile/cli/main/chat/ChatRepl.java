@@ -121,6 +121,7 @@ public class ChatRepl {
     // Mode
     private final boolean localMode;
     private ChatConfig chatConfig; // non-null in local mode
+    private static final String ADD_MODEL_OPTION = "Add new model...";
 
     // Message queue for queued chats
     private final MessageQueue messageQueue;
@@ -1552,11 +1553,7 @@ public class ChatRepl {
             return "local";
         }
         String provider = chatConfig.getProvider().trim().toLowerCase(java.util.Locale.ROOT);
-        return switch (provider) {
-            case "openai-codex" -> "OpenAI Codex";
-            case "openai" -> "OpenAI";
-            default -> ChatConfig.PROVIDERS.getOrDefault(provider, provider);
-        };
+        return SetupWizard.vendorLabel(SetupWizard.vendorForProvider(provider));
     }
 
     String getAgentName() { return agentName; }
@@ -1645,16 +1642,17 @@ public class ChatRepl {
         }
 
         String selectedProvider = chatConfig.getProvider();
+        String selectedVendor = SetupWizard.vendorForProvider(selectedProvider);
         String selectedModel = chatConfig.getModel();
         boolean committed = false;
         modelPickerActive = true;
         ChatCompleter.setTemporaryWindowActive(true);
         tui.showTemporaryWindow("Provider and model", pickerLines(
-                "Choose a provider", providers, selectedProvider, selectedProvider, selectedModel));
+                "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel));
         try {
             while (true) {
                 tui.updateTemporaryWindow("Provider and model", pickerLines(
-                        "Choose a provider", providers, selectedProvider, selectedProvider, selectedModel));
+                        "Choose a provider", providers, selectedVendor, selectedVendor, selectedProvider, selectedModel));
                 String providerInput = reader.readLine("picker provider (number/name, Esc cancels): ");
                 if (providerInput == null || providerInput.isBlank()
                         || "cancel".equalsIgnoreCase(providerInput.trim())) {
@@ -1671,15 +1669,78 @@ public class ChatRepl {
                             "Current: " + activeModelDisplayName()));
                     continue;
                 }
-                selectedProvider = providerChoice;
+                selectedVendor = providerChoice;
+
+                List<SetupWizard.AuthMethod> authMethods =
+                        SetupWizard.authMethodsForPicker(selectedVendor);
+                if (authMethods.isEmpty()) {
+                    tui.updateTemporaryWindow("Provider and model", List.of(
+                            "No configured authentication route exists for "
+                                    + SetupWizard.vendorLabel(selectedVendor) + ".",
+                            "Run /setup to configure this provider."));
+                    continue;
+                }
+                SetupWizard.AuthMethod selectedAuth =
+                        selectedVendor.equalsIgnoreCase(SetupWizard.vendorForProvider(selectedProvider))
+                                ? SetupWizard.authMethodForProvider(selectedProvider)
+                                : authMethods.get(0);
+                if (!authMethods.contains(selectedAuth)) {
+                    selectedAuth = authMethods.get(0);
+                }
+                if (authMethods.size() > 1) {
+                    List<String> authChoices = authMethods.stream()
+                            .map(SetupWizard::authMethodLabel).toList();
+                    boolean backToProvider = false;
+                    while (true) {
+                        tui.updateTemporaryWindow("Provider and model", pickerLines(
+                                "Choose authentication for " + SetupWizard.vendorLabel(selectedVendor),
+                                authChoices,
+                                SetupWizard.authMethodLabel(selectedAuth),
+                                selectedVendor, selectedProvider, selectedModel));
+                        String authInput = reader.readLine(
+                                "picker auth (number/name, back, Esc cancels): ");
+                        if (authInput == null || "cancel".equalsIgnoreCase(authInput.trim())) {
+                            return;
+                        }
+                        if ("back".equalsIgnoreCase(authInput.trim())) {
+                            backToProvider = true;
+                            break;
+                        }
+                        String authChoice = parsePickerChoice(authInput, authChoices);
+                        if (authChoice == null) {
+                            tui.updateTemporaryWindow("Provider and model", List.of(
+                                    "Invalid authentication method: " + authInput.trim(),
+                                    "Choose a numbered method or its exact name."));
+                            continue;
+                        }
+                        selectedAuth = authMethods.get(authChoices.indexOf(authChoice));
+                        break;
+                    }
+                    if (backToProvider) {
+                        continue;
+                    }
+                }
+                SetupWizard.AuthenticationSelection authentication =
+                        SetupWizard.authenticate(reader, selectedVendor, selectedAuth);
+                if (authentication == null) {
+                    tui.updateTemporaryWindow("Provider and model", List.of(
+                            "Authentication was not completed for "
+                                    + SetupWizard.vendorLabel(selectedVendor) + ".",
+                            "Choose another authentication route or provider."));
+                    continue;
+                }
+                selectedProvider = authentication.provider();
 
                 List<String> models = modelChoices(selectedProvider, selectedModel);
                 while (true) {
-                    String defaultModel = models.isEmpty() ? selectedModel : models.get(0);
+                    String defaultModel = models.isEmpty() ? null : models.get(0);
+                    List<String> pickerModels = new ArrayList<>(models);
+                    pickerModels.add(ADD_MODEL_OPTION);
                     tui.updateTemporaryWindow("Provider and model", pickerLines(
-                            "Choose a model for " + providerLabel(selectedProvider),
-                            models, defaultModel, selectedProvider, selectedModel));
-                    String modelInput = reader.readLine("picker model (number/name, blank uses default, Esc cancels): ");
+                            "Choose a model for " + providerLabel(selectedVendor),
+                            pickerModels, defaultModel, selectedVendor, selectedProvider, selectedModel));
+                    String modelInput = reader.readLine(
+                            "picker model (number/name, Add new model..., blank uses default, Esc cancels): ");
                     if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
                         return;
                     }
@@ -1687,30 +1748,102 @@ public class ChatRepl {
                         break;
                     }
                     String modelChoice = modelInput.isBlank()
-                            ? defaultModel : parsePickerChoice(modelInput, models);
+                            ? defaultModel
+                            : parsePickerChoice(modelInput, pickerModels);
+                    boolean addingModel = ADD_MODEL_OPTION.equals(modelChoice);
+                    if (addingModel) {
+                        String newModel = reader.readLine(
+                                "new model id (blank/back cancels, Esc cancels): ");
+                        if (newModel == null || "cancel".equalsIgnoreCase(newModel.trim())) {
+                            return;
+                        }
+                        if (newModel.isBlank() || "back".equalsIgnoreCase(newModel.trim())) {
+                            continue;
+                        }
+                        modelChoice = newModel.trim();
+                    }
                     if (modelChoice == null || modelChoice.isBlank()) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
-                                "No model is available for " + providerLabel(selectedProvider) + ".",
-                                "Type a model name or choose another provider.",
+                                "No model was selected for " + providerLabel(selectedVendor) + ".",
+                                "Choose a listed model or Add new model....",
                                 "Current: " + activeModelDisplayName()));
                         continue;
                     }
                     selectedModel = modelChoice;
 
+                    String selectedThinking = chatConfig.getThinking();
+                    List<SetupWizard.ThinkingOption> thinkingOptions =
+                            SetupWizard.thinkingOptions(selectedProvider, selectedModel);
+                    boolean backToModel = false;
+                    if (SetupWizard.supportsThinkingSelection(selectedProvider, selectedModel)) {
+                        List<String> thinkingChoices = thinkingOptions.stream()
+                                .map(SetupWizard.ThinkingOption::label)
+                                .toList();
+                        String defaultThinkingChoice = thinkingChoices.get(0);
+                        for (int i = 0; i < thinkingOptions.size(); i++) {
+                            if (Objects.equals(thinkingOptions.get(i).value(), selectedThinking)) {
+                                defaultThinkingChoice = thinkingChoices.get(i);
+                                break;
+                            }
+                        }
+                        while (true) {
+                            tui.updateTemporaryWindow("Provider and model", pickerLines(
+                                    "Choose reasoning effort", thinkingChoices, defaultThinkingChoice,
+                                    selectedVendor, selectedProvider, selectedModel));
+                            String thinkingInput = reader.readLine(
+                                    "picker thinking (number/name, blank keeps current, back, Esc cancels): ");
+                            if (thinkingInput == null
+                                    || "cancel".equalsIgnoreCase(thinkingInput.trim())) {
+                                return;
+                            }
+                            if ("back".equalsIgnoreCase(thinkingInput.trim())) {
+                                backToModel = true;
+                                break;
+                            }
+                            String thinkingChoice = thinkingInput.isBlank()
+                                    ? defaultThinkingChoice
+                                    : parsePickerChoice(thinkingInput, thinkingChoices);
+                            if (thinkingChoice == null) {
+                                tui.updateTemporaryWindow("Provider and model", List.of(
+                                        "Invalid reasoning effort: " + thinkingInput.trim(),
+                                        "Choose a listed effort, blank, back, or Esc to cancel."));
+                                continue;
+                            }
+                            selectedThinking = thinkingOptions.get(thinkingChoices.indexOf(thinkingChoice)).value();
+                            break;
+                        }
+                    } else {
+                        // A model without a thinking control must not inherit the
+                        // previous model's provider-native effort.
+                        selectedThinking = null;
+                    }
+                    if (backToModel) {
+                        continue;
+                    }
+
                     ChatConfig candidate = buildModelProviderCandidate(selectedProvider, selectedModel);
+                    candidate.setThinking(selectedThinking);
+                    if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
+                        // API-key input is transient and write-only; it is never persisted
+                        // into chat-config.json.
+                        candidate.setApiKey(authentication.apiKey());
+                    }
                     if (!canHotSwitchLocalProvider(candidate)) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
                                 "That provider owns a separate runtime and cannot be replaced in-place:",
-                                "  " + providerLabel(selectedProvider),
+                                "  " + providerLabel(selectedVendor),
                                 "Use /setup and restart the session for this provider."));
                         continue;
                     }
                     if (!candidate.isValid()) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
-                                "Credentials are not configured for " + providerLabel(selectedProvider) + ".",
+                                "Credentials are not configured for " + providerLabel(selectedVendor) + ".",
                                 "Run /setup to configure this provider, then try again.",
                                 "The current provider/model is still active."));
                         continue;
+                    }
+                    if (addingModel) {
+                        candidate.addModelToCatalog(selectedProvider, selectedModel);
                     }
                     if (commitModelProviderSelection(candidate)) {
                         committed = true;
@@ -1739,6 +1872,7 @@ public class ChatRepl {
     void applyModelSelection(String model) {
         if (model == null || model.isBlank() || chatConfig == null) return;
         ChatConfig candidate = buildModelProviderCandidate(chatConfig.getProvider(), model.trim());
+        candidate.addModelToCatalog(chatConfig.getProvider(), model.trim());
         if (!candidate.isValid()) {
             ChatCompleter.printAbove(renderer.yellow("  Cannot use model ") + renderer.cyan(model.trim())
                     + renderer.dim(" because the current provider is not configured."));
@@ -1755,7 +1889,7 @@ public class ChatRepl {
             return false;
         }
         try {
-            chatConfig.save();
+            chatConfig.saveLoadedOrGlobal();
         } catch (Exception ignored) {
             // The in-session switch remains active even if persistence is unavailable.
         }
@@ -1787,19 +1921,12 @@ public class ChatRepl {
     }
 
     private List<String> switchableProviders() {
-        LinkedHashSet<String> providers = new LinkedHashSet<>();
-        for (String provider : ChatConfig.PROVIDER_ORDER) {
-            if (!"kompile".equals(provider) && !"kompile-local".equals(provider)) {
-                providers.add(provider);
-            }
-        }
-        if ("custom".equalsIgnoreCase(chatConfig.getProvider())) {
-            providers.add("custom");
-        }
-        if (chatConfig.getProvider() != null && !chatConfig.getProvider().isBlank()
-                && !"kompile".equalsIgnoreCase(chatConfig.getProvider())
-                && !"kompile-local".equalsIgnoreCase(chatConfig.getProvider())) {
-            providers.add(chatConfig.getProvider());
+        LinkedHashSet<String> providers = new LinkedHashSet<>(SetupWizard.providerPickerOrder());
+        String currentVendor = SetupWizard.vendorForProvider(chatConfig.getProvider());
+        if (currentVendor != null && !currentVendor.isBlank()
+                && !"kompile".equalsIgnoreCase(currentVendor)
+                && !"kompile-local".equalsIgnoreCase(currentVendor)) {
+            providers.add(currentVendor);
         }
         return List.copyOf(providers);
     }
@@ -1809,7 +1936,7 @@ public class ChatRepl {
         if (currentModel != null && provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
             models.add(currentModel);
         }
-        for (String model : ChatConfig.getDefaultModels(provider)) {
+        for (String model : SetupWizard.modelOptions(provider, chatConfig)) {
             models.add(model);
         }
         AgentConfig activeAgent = agentRegistry.get(localAgentName);
@@ -1837,7 +1964,8 @@ public class ChatRepl {
     }
 
     private List<String> pickerLines(String heading, List<String> choices,
-                                     String defaultChoice, String provider, String model) {
+                                     String defaultChoice, String vendor,
+                                     String provider, String model) {
         List<String> lines = new ArrayList<>();
         lines.add("Active: " + activeModelDisplayName());
         lines.add("Selection is applied atomically after both values are chosen.");
@@ -1845,19 +1973,25 @@ public class ChatRepl {
         lines.add("");
         lines.add(heading + ":");
         for (int i = 0; i < choices.size(); i++) {
+            String display = "Choose a provider".equals(heading)
+                    ? SetupWizard.vendorLabel(choices.get(i)) : choices.get(i);
             String marker = choices.get(i).equalsIgnoreCase(defaultChoice) ? " *" : "  ";
-            lines.add(String.format("%2d%s %s", i + 1, marker, choices.get(i)));
+            lines.add(String.format("%2d%s %s", i + 1, marker, display));
         }
         if (choices.isEmpty()) lines.add("  (type a value at the prompt)");
         lines.add("");
-        lines.add("Provider: " + provider + "   Model: " + model);
-        lines.add("Commands: number/name, back, or Esc to cancel");
+        String auth = SetupWizard.authMethodLabel(SetupWizard.authMethodForProvider(provider));
+        lines.add("Provider: " + SetupWizard.vendorLabel(vendor)
+                + " (" + provider + ")   Auth: " + auth + "   Model: " + model);
+        String commands = heading.startsWith("Choose reasoning effort")
+                ? "number/name, blank keeps current, back, or Esc to cancel"
+                : "number/name, Add new model..., back, or Esc to cancel";
+        lines.add("Commands: " + commands);
         return lines;
     }
 
     private String providerLabel(String provider) {
-        if (provider == null) return "unknown";
-        return ChatConfig.PROVIDERS.getOrDefault(provider, provider);
+        return SetupWizard.vendorLabel(SetupWizard.vendorForProvider(provider));
     }
 
     private String activeModelDisplayName() {

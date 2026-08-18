@@ -79,17 +79,20 @@ public class PipelineServingSubprocessMain {
     }
 
     public static void main(String[] args) {
-        if (JAVACPP_LOADER_CLASS == null) {
-            throw new IllegalStateException("JavaCPP Loader is unavailable");
-        }
-        configureImporterClassGraphScan();
-        NativeLibraryResolver.bootstrapModelExecutionOrThrow();
-        if (args.length < 1) {
-            System.err.println("Usage: PipelineServingSubprocessMain <args-json-file>");
-            System.exit(1);
-        }
-
+        String failureStage = "BOOTSTRAP_NATIVE_RUNTIME";
+        String pipelineId = null;
         try {
+            if (JAVACPP_LOADER_CLASS == null) {
+                throw new IllegalStateException("JavaCPP Loader is unavailable");
+            }
+            configureImporterClassGraphScan();
+            NativeLibraryResolver.bootstrapModelExecutionOrThrow();
+            if (args.length < 1) {
+                throw new IllegalArgumentException(
+                        "Usage: PipelineServingSubprocessMain <args-json-file>");
+            }
+
+            failureStage = "READ_DEFINITION";
             PipelineServingSubprocessArgs subprocessArgs =
                     PipelineServingSubprocessArgs.fromFile(Path.of(args[0]));
 
@@ -98,22 +101,23 @@ public class PipelineServingSubprocessMain {
                     subprocessArgs.pipelineDefinitionJson(),
                     UnifiedPipelineDefinition.class
             );
+            pipelineId = definition.getPipelineId();
 
-            // Reconstruct the framework Pipeline from the pipelineSpec map
+            failureStage = "INITIALIZE_PIPELINE";
             Pipeline pipeline = mapper.convertValue(definition.getPipelineSpec(), Pipeline.class);
             pipeline.validate();
-
             PipelineExecutor executor = pipeline.createExecutor();
 
+            failureStage = "SERVE_RUNTIME";
             // The only execution contract is the persistent stdio runtime. It owns the executor.
             serveStdio(executor, mapper, definition);
             System.exit(0);
 
         } catch (Throwable t) {
-            log.error("Pipeline subprocess fatal error: {}", t.getMessage(), t);
+            log.error("Pipeline subprocess fatal error during {}: {}", failureStage, t.getMessage(), t);
             try {
                 PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
-                        PipelineRuntimeProtocol.error(null, null, t));
+                        PipelineRuntimeProtocol.error(null, pipelineId, failureStage, t));
             } catch (Exception ignored) {
                 // The process exit remains the final failure signal if stdout is unavailable.
             }
@@ -205,7 +209,8 @@ public class PipelineServingSubprocessMain {
                                 try {
                                     PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
                                             PipelineRuntimeProtocol.error(requestId,
-                                                    definitionRef.get().getPipelineId(), failure));
+                                                    definitionRef.get().getPipelineId(),
+                                                    "EXECUTE_PIPELINE", failure));
                                 } catch (Exception ignored) {
                                 }
                             }

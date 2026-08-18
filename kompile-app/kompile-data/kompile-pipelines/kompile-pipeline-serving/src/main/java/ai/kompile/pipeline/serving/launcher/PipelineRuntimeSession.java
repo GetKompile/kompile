@@ -15,6 +15,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -63,6 +64,20 @@ public final class PipelineRuntimeSession implements AutoCloseable {
             close();
             throw new IOException("Pipeline runtime did not become ready for "
                     + definition.getPipelineId(), e);
+        }
+    }
+
+    /** Structured runtime failure propagated without discarding the protocol diagnostic. */
+    public static final class RuntimeFailure extends IOException {
+        private final Map<String, Object> diagnostic;
+
+        private RuntimeFailure(String message, Map<String, Object> diagnostic) {
+            super(message);
+            this.diagnostic = diagnostic == null ? Map.of() : Map.copyOf(diagnostic);
+        }
+
+        public Map<String, Object> diagnostic() {
+            return diagnostic;
         }
     }
 
@@ -204,14 +219,14 @@ public final class PipelineRuntimeSession implements AutoCloseable {
                     ready.complete(message);
                 } else if (PipelineRuntimeProtocol.ERROR.equals(message.type())
                         && message.requestId() == null && !ready.isDone()) {
-                    ready.completeExceptionally(new IOException(message.error()));
+                    ready.completeExceptionally(runtimeFailure(message));
                 } else if (PipelineRuntimeProtocol.PROGRESS.equals(message.type())) {
                     progressListener.accept(message);
                 } else if (message.requestId() != null) {
                     CompletableFuture<Message> future = pending.get(message.requestId());
                     if (future != null) {
                         if (PipelineRuntimeProtocol.ERROR.equals(message.type())) {
-                            future.completeExceptionally(new IOException(message.error()));
+                            future.completeExceptionally(runtimeFailure(message));
                         } else {
                             future.complete(message);
                         }
@@ -249,10 +264,27 @@ public final class PipelineRuntimeSession implements AutoCloseable {
         pending.clear();
     }
 
-    private String stderrSuffix() {
+    private RuntimeFailure runtimeFailure(Message message) {
+        Map<String, Object> diagnostic = new LinkedHashMap<>(message.payload());
+        diagnostic.putIfAbsent("summary", message.error() == null
+                ? "Pipeline runtime failed" : message.error());
+        if (message.requestId() != null) diagnostic.put("requestId", message.requestId());
+        if (message.pipelineId() != null) diagnostic.put("pipelineId", message.pipelineId());
+        diagnostic.put("runtimePid", process.pid());
+        String captured = stderrText();
+        if (!captured.isBlank()) diagnostic.put("stderr", captured);
+        return new RuntimeFailure(String.valueOf(diagnostic.get("summary")), diagnostic);
+    }
+
+    private String stderrText() {
         synchronized (stderr) {
-            return stderr.isEmpty() ? "" : ":\n" + stderr;
+            return stderr.toString();
         }
+    }
+
+    private String stderrSuffix() {
+        String captured = stderrText();
+        return captured.isEmpty() ? "" : ":\n" + captured;
     }
 
     @Override

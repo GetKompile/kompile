@@ -70,6 +70,7 @@ import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.chat.local.android.staging.ModelStagingHandoff
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
 import ai.kompile.chat.local.android.viewmodel.GraphImportOutcome
+import ai.kompile.chat.local.android.viewmodel.HuggingFaceConfigurationUiState
 import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportStep
 import ai.kompile.chat.local.android.viewmodel.HuggingFaceImportUiState
 import ai.kompile.chat.local.android.viewmodel.ImportOperationKind
@@ -126,6 +127,7 @@ fun SettingsScreen(
     val huggingFaceUrl by vm.huggingFaceReference.collectAsState()
     val huggingFaceDiscovery by vm.huggingFaceDiscovery.collectAsState()
     val huggingFaceSelection by vm.huggingFaceSelection.collectAsState()
+    val huggingFaceConfigurationState by vm.huggingFaceConfigurationState.collectAsState()
     val modelPreparationOptions by vm.modelPreparationOptions.collectAsState()
     val localModelOptimizationState by vm.localModelOptimizationState.collectAsState()
     val localModelSources by vm.localModelSources.collectAsState()
@@ -515,6 +517,52 @@ fun SettingsScreen(
                         },
                         diagnostics = importDiagnostics
                     )
+                    when (val configurationState = huggingFaceConfigurationState) {
+                        HuggingFaceConfigurationUiState.Idle -> Unit
+                        is HuggingFaceConfigurationUiState.Resolving -> {
+                            LinearProgressIndicator(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("hugging_face_configuration_resolving")
+                            )
+                            Text(
+                                text = "Resolving the shared tokenizer and repository configuration for " +
+                                    configurationState.repository + "…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        is HuggingFaceConfigurationUiState.Resolved -> {
+                            val configuration = configurationState.configuration
+                            Text(
+                                text = "Repository tokenizer/configuration resolved",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.testTag("hugging_face_configuration_resolved")
+                            )
+                            Text(
+                                text = "Weights: ${configuration.repository}@" +
+                                    configuration.immutableRevision.take(12) + " · " +
+                                    "${configuration.modelCandidatePaths.size} model candidate(s)\n" +
+                                    "Canonical assets: ${configuration.assetSources.size} pinned source repo(s)\n" +
+                                    configuration.assets.joinToString("\n") { asset ->
+                                        "${asset.name}: ${asset.sourceRepository}@" +
+                                            asset.sourceRevision.take(12) + "/${asset.path}"
+                                    },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        is HuggingFaceConfigurationUiState.Failed -> {
+                            Text(
+                                text = "Repository configuration could not be resolved: " +
+                                    configurationState.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.testTag("hugging_face_configuration_failed")
+                            )
+                        }
+                    }
                     huggingFaceDiscovery
                         ?.takeIf {
                             huggingFaceImportState is HuggingFaceImportUiState.SelectionRequired &&
@@ -545,7 +593,12 @@ fun SettingsScreen(
                                 },
                                 enabled = !importBlocked &&
                                     !huggingFaceBusy &&
-                                    huggingFaceSelection != null,
+                                    huggingFaceSelection != null &&
+                                    (huggingFaceConfigurationState as?
+                                        HuggingFaceConfigurationUiState.Resolved)
+                                        ?.configuration
+                                        ?.modelCandidatePaths
+                                        ?.contains(huggingFaceSelection?.path) == true,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Import selected GGUF/GGML with SDX")

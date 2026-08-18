@@ -37,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -64,6 +65,14 @@ public class ChatConfig {
 
     @JsonProperty
     private String model;
+
+    /**
+     * User-added model ids keyed by provider. The built-in catalog remains the
+     * source of defaults; this overlay lets the picker discover additional
+     * upstream ids without hardcoding them in the application.
+     */
+    @JsonProperty
+    private Map<String, List<String>> modelCatalog = new LinkedHashMap<>();
 
     /**
      * Optional reasoning effort for standard direct-model chat. A null/blank
@@ -191,6 +200,65 @@ public class ChatConfig {
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
 
+    /** Return the persisted user model overlay keyed by provider. */
+    public Map<String, List<String>> getModelCatalog() {
+        if (modelCatalog == null) {
+            modelCatalog = new LinkedHashMap<>();
+        }
+        return modelCatalog;
+    }
+
+    public void setModelCatalog(Map<String, List<String>> modelCatalog) {
+        this.modelCatalog = modelCatalog == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(modelCatalog);
+    }
+
+    /**
+     * Merge the startup catalog with user-added model ids for this provider.
+     * Provider matching is case-insensitive because wire provider ids may come
+     * from an auth route rather than the display catalog.
+     */
+    public List<String> getConfiguredModels(String provider) {
+        LinkedHashSet<String> models = new LinkedHashSet<>();
+        for (String defaultModel : getDefaultModels(provider)) {
+            if (defaultModel != null && !defaultModel.isBlank()) {
+                models.add(defaultModel);
+            }
+        }
+        if (provider != null && modelCatalog != null) {
+            for (Map.Entry<String, List<String>> entry : modelCatalog.entrySet()) {
+                if (!provider.equalsIgnoreCase(entry.getKey()) || entry.getValue() == null) {
+                    continue;
+                }
+                for (String addedModel : entry.getValue()) {
+                    if (addedModel != null && !addedModel.isBlank()) {
+                        models.add(addedModel.trim());
+                    }
+                }
+            }
+        }
+        return List.copyOf(models);
+    }
+
+    /** Add a model id to the provider overlay unless it is already known. */
+    public boolean addModelToCatalog(String provider, String model) {
+        if (provider == null || provider.isBlank() || model == null || model.isBlank()) {
+            return false;
+        }
+        String providerId = provider.trim();
+        String modelId = model.trim();
+        if (getConfiguredModels(providerId).contains(modelId)) {
+            return false;
+        }
+        List<String> added = getModelCatalog().computeIfAbsent(providerId, ignored -> new ArrayList<>());
+        if (added.contains(modelId)) {
+            return false;
+        }
+        added.add(modelId);
+        return true;
+    }
+
     public String getThinking() { return thinking; }
     public void setThinking(String thinking) { this.thinking = thinking; }
 
@@ -248,6 +316,12 @@ public class ChatConfig {
         // enable/threshold/reserve policy intentionally remains session-wide.
         this.contextWindowTokens = source.contextWindowTokens;
         this.maxOutputTokens = source.maxOutputTokens;
+        this.modelCatalog = new LinkedHashMap<>();
+        if (source.modelCatalog != null) {
+            source.modelCatalog.forEach((providerId, models) ->
+                    this.modelCatalog.put(providerId,
+                            models == null ? new ArrayList<>() : new ArrayList<>(models)));
+        }
         this.loadedFrom = source.loadedFrom;
     }
 

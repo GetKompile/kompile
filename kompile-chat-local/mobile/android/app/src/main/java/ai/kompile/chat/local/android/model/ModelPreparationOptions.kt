@@ -102,7 +102,7 @@ enum class ModelDiagnosticMode(
     DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full"),
 }
 
-internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI = "ggml-runtime-packed-gdn-v4"
+internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI = "ggml-runtime-packed-gdn-v5"
 internal const val MODEL_PREPARATION_EMBEDDING_DATA_TYPE = "HALF"
 internal const val MODEL_PREPARATION_LOGITS_MODE = "LAST_POSITION_ONLY"
 

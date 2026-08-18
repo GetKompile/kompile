@@ -274,7 +274,7 @@ final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
                 Map.of("accountId", accountId));
     }
 
-    private String extractAccountId(String accessToken) throws IOException {
+    private static String extractAccountId(String accessToken) throws IOException {
         try {
             String[] parts = accessToken.split("\\.");
             if (parts.length != 3) {
@@ -293,19 +293,40 @@ final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
         }
     }
 
+    /**
+     * Recognize access tokens written by the legacy chat setup as API keys.
+     * They are still valid subscription credentials and must remain selectable.
+     */
+    static boolean isLegacyAccessToken(String accessToken) {
+        try {
+            extractAccountId(accessToken);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    static RequestAuth toRequestAuthFromAccessToken(String accessToken) throws IOException {
+        return requestAuth(accessToken, extractAccountId(accessToken));
+    }
+
     @Override
     public RequestAuth toRequestAuth(ManagedCredential credential) throws IOException {
         String accountId = credential.getMetadata("accountId");
         if (accountId == null || accountId.isBlank()) {
             accountId = extractAccountId(credential.getAccess());
         }
+        return requestAuth(credential.getAccess(), accountId);
+    }
+
+    private static RequestAuth requestAuth(String accessToken, String accountId) {
         Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("Authorization", "Bearer " + credential.getAccess());
+        headers.put("Authorization", "Bearer " + accessToken);
         headers.put("chatgpt-account-id", accountId);
         headers.put("originator", "kompile");
         headers.put("OpenAI-Beta", "responses=experimental");
         return RequestAuth.oauth(
-                credential.getAccess(),
+                accessToken,
                 "https://chatgpt.com/backend-api",
                 headers);
     }

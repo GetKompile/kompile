@@ -1670,7 +1670,8 @@ public class StagingService implements ai.kompile.core.staging.StagingServiceApi
                 || name.endsWith(".pb")
                 || name.endsWith(".h5")
                 || name.endsWith(".gguf")
-                || name.endsWith(".ggml");
+                || name.endsWith(".ggml")
+                || name.endsWith(".safetensors");
     }
 
     private boolean isVlmPipeline(ModelType type, String format) {

@@ -18,7 +18,9 @@ package ai.kompile.modelmanager.vlm.dynamic;
 
 import ai.kompile.modelmanager.vlm.VlmModelComponent;
 import ai.kompile.modelmanager.vlm.VlmModelSet;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Getter;
 import lombok.Setter;
@@ -67,12 +69,25 @@ public class VlmCustomModelSet {
     private String displayName;
     private String description;
     private ModelSource source;
+    /** Provider identifier such as huggingface, ollama, or a project-specific adapter. */
+    private String provider;
+    /** Canonical provider repository/model reference. */
+    private String repository;
+    private String revision;
+    private String format;
+    /** Runtime registry type used by the project model bootstrapper (for example vlm_transformers). */
+    private String modelType;
+    /** Legacy Hugging Face and local fields retained for backwards compatibility. */
     private String huggingFaceRepo;
     private String localPath;
     @Setter(lombok.AccessLevel.NONE)
     private List<VlmModelComponentConfig> components;
     @Setter(lombok.AccessLevel.NONE)
     private Map<String, Object> pipelineConfig;
+    @Setter(lombok.AccessLevel.NONE)
+    private Map<String, Object> runtime;
+    @Setter(lombok.AccessLevel.NONE)
+    private Map<String, Object> metadata;
     private boolean isBuiltin;
     private long createdAt;
     private long updatedAt;
@@ -81,6 +96,8 @@ public class VlmCustomModelSet {
     public VlmCustomModelSet() {
         this.components = new ArrayList<>();
         this.pipelineConfig = new LinkedHashMap<>();
+        this.runtime = new LinkedHashMap<>();
+        this.metadata = new LinkedHashMap<>();
     }
 
     private VlmCustomModelSet(Builder builder) {
@@ -88,12 +105,21 @@ public class VlmCustomModelSet {
         this.displayName = builder.displayName;
         this.description = builder.description;
         this.source = builder.source;
+        this.provider = builder.provider;
+        this.repository = builder.repository;
+        this.revision = builder.revision;
+        this.format = builder.format;
+        this.modelType = builder.modelType;
         this.huggingFaceRepo = builder.huggingFaceRepo;
         this.localPath = builder.localPath;
         this.components = builder.components != null ?
             new ArrayList<>(builder.components) : new ArrayList<>();
         this.pipelineConfig = builder.pipelineConfig != null ?
             new LinkedHashMap<>(builder.pipelineConfig) : new LinkedHashMap<>();
+        this.runtime = builder.runtime != null ?
+            new LinkedHashMap<>(builder.runtime) : new LinkedHashMap<>();
+        this.metadata = builder.metadata != null ?
+            new LinkedHashMap<>(builder.metadata) : new LinkedHashMap<>();
         this.isBuiltin = builder.isBuiltin;
         this.createdAt = builder.createdAt > 0 ? builder.createdAt : System.currentTimeMillis();
         this.updatedAt = this.createdAt;
@@ -113,6 +139,9 @@ public class VlmCustomModelSet {
             .displayName(modelSet.getDisplayName())
             .description(modelSet.getDescription())
             .source(ModelSource.HUGGINGFACE)
+            .provider("huggingface")
+            .repository(modelSet.getHuggingFaceRepo())
+            .modelType("vlm")
             .huggingFaceRepo(modelSet.getHuggingFaceRepo())
             .components(components)
             .pipelineConfig(new LinkedHashMap<>(modelSet.getPipelineConfig()))
@@ -129,7 +158,7 @@ public class VlmCustomModelSet {
             .setId(setId)
             .displayName(displayName)
             .description(description)
-            .huggingFaceRepo(huggingFaceRepo);
+            .huggingFaceRepo(repository != null ? repository : huggingFaceRepo);
 
         for (VlmModelComponentConfig comp : components) {
             builder.addComponent(comp.toModelComponent());
@@ -142,6 +171,73 @@ public class VlmCustomModelSet {
         return builder.build();
     }
 
+    /**
+     * Project-runtime model definition generated from this registry entry.
+     * The map deliberately keeps provider-specific values under free-form fields so
+     * new providers can be configured without changing the MCP schema.
+     */
+    @JsonIgnore
+    public Map<String, Object> toDefinitionMap() {
+        Map<String, Object> definition = new LinkedHashMap<>();
+        putIfPresent(definition, "id", setId);
+        putIfPresent(definition, "modelId", setId);
+        putIfPresent(definition, "displayName", displayName);
+        putIfPresent(definition, "description", description);
+        putIfPresent(definition, "role", "VLM");
+        putIfPresent(definition, "provider", provider);
+        putIfPresent(definition, "source", source == null ? provider : source.name());
+        putIfPresent(definition, "repository", repository != null ? repository : huggingFaceRepo);
+        putIfPresent(definition, "revision", revision);
+        putIfPresent(definition, "format", format);
+        putIfPresent(definition, "type", modelType);
+        putIfPresent(definition, "localPath", localPath);
+        putIfPresent(definition, "path", localPath);
+        if (components != null && !components.isEmpty()) definition.put("components", components);
+        if (pipelineConfig != null && !pipelineConfig.isEmpty()) definition.put("pipelineConfig", pipelineConfig);
+        if (runtime != null && !runtime.isEmpty()) definition.put("runtime", runtime);
+        if (metadata != null && !metadata.isEmpty()) definition.put("metadata", metadata);
+        return definition;
+    }
+
+    private static void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null && (!(value instanceof String string) || !string.isBlank())) {
+            target.put(key, value);
+        }
+    }
+
+    /** Validate the provider-neutral definition before it is registered. */
+    @JsonIgnore
+    public List<String> validate() {
+        List<String> errors = new ArrayList<>();
+        if (setId == null || setId.isBlank()) errors.add("setId is required");
+        if (displayName == null || displayName.isBlank()) errors.add("displayName is required");
+        boolean hasLocator = (provider != null && !provider.isBlank())
+                || (repository != null && !repository.isBlank())
+                || (huggingFaceRepo != null && !huggingFaceRepo.isBlank())
+                || (localPath != null && !localPath.isBlank())
+                || (components != null && !components.isEmpty());
+        if (!hasLocator) {
+            errors.add("A provider, repository, localPath, or at least one component is required");
+        }
+        if (components != null) {
+            for (int i = 0; i < components.size(); i++) {
+                VlmModelComponentConfig component = components.get(i);
+                if (component == null) {
+                    errors.add("components[" + i + "] must not be null");
+                } else {
+                    if (component.getComponentKey() == null || component.getComponentKey().isBlank()) {
+                        errors.add("components[" + i + "].componentKey is required");
+                    }
+                    if ((component.getFileName() == null || component.getFileName().isBlank())
+                            && (component.getDownloadUrl() == null || component.getDownloadUrl().isBlank())) {
+                        errors.add("components[" + i + "] requires fileName or downloadUrl");
+                    }
+                }
+            }
+        }
+        return errors;
+    }
+
     // Custom setters with null-safety
 
     public void setComponents(List<VlmModelComponentConfig> components) {
@@ -150,6 +246,30 @@ public class VlmCustomModelSet {
 
     public void setPipelineConfig(Map<String, Object> pipelineConfig) {
         this.pipelineConfig = pipelineConfig != null ? pipelineConfig : new LinkedHashMap<>();
+    }
+
+    public void setRuntime(Map<String, Object> runtime) {
+        this.runtime = runtime != null ? runtime : new LinkedHashMap<>();
+    }
+
+    public void setMetadata(Map<String, Object> metadata) {
+        Map<String, Object> providerFields = this.metadata;
+        this.metadata = metadata != null ? new LinkedHashMap<>(metadata) : new LinkedHashMap<>();
+        if (providerFields != null) {
+            providerFields.forEach(this.metadata::putIfAbsent);
+        }
+    }
+
+    /**
+     * Preserve provider-specific top-level fields without coupling the model definition
+     * contract to a fixed provider schema.
+     */
+    @JsonAnySetter
+    public void setProviderOption(String key, Object value) {
+        if (key != null && !key.isBlank()) {
+            if (metadata == null) metadata = new LinkedHashMap<>();
+            metadata.put(key, value);
+        }
     }
 
     /**
@@ -195,11 +315,18 @@ public class VlmCustomModelSet {
         private String setId;
         private String displayName;
         private String description;
-        private ModelSource source = ModelSource.HUGGINGFACE;
+        private ModelSource source;
+        private String provider;
+        private String repository;
+        private String revision;
+        private String format;
+        private String modelType;
         private String huggingFaceRepo;
         private String localPath;
         private List<VlmModelComponentConfig> components = new ArrayList<>();
         private Map<String, Object> pipelineConfig = new LinkedHashMap<>();
+        private Map<String, Object> runtime = new LinkedHashMap<>();
+        private Map<String, Object> metadata = new LinkedHashMap<>();
         private boolean isBuiltin = false;
         private long createdAt;
 
@@ -220,6 +347,31 @@ public class VlmCustomModelSet {
 
         public Builder source(ModelSource source) {
             this.source = source;
+            return this;
+        }
+
+        public Builder provider(String provider) {
+            this.provider = provider;
+            return this;
+        }
+
+        public Builder repository(String repository) {
+            this.repository = repository;
+            return this;
+        }
+
+        public Builder revision(String revision) {
+            this.revision = revision;
+            return this;
+        }
+
+        public Builder format(String format) {
+            this.format = format;
+            return this;
+        }
+
+        public Builder modelType(String modelType) {
+            this.modelType = modelType;
             return this;
         }
 
@@ -254,6 +406,16 @@ public class VlmCustomModelSet {
             return this;
         }
 
+        public Builder runtime(Map<String, Object> runtime) {
+            this.runtime = runtime != null ? new LinkedHashMap<>(runtime) : new LinkedHashMap<>();
+            return this;
+        }
+
+        public Builder metadata(Map<String, Object> metadata) {
+            this.metadata = metadata != null ? new LinkedHashMap<>(metadata) : new LinkedHashMap<>();
+            return this;
+        }
+
         public Builder isBuiltin(boolean isBuiltin) {
             this.isBuiltin = isBuiltin;
             return this;
@@ -275,12 +437,14 @@ public class VlmCustomModelSet {
      * Configuration for a single model component.
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
     @Getter
     @Setter
     public static class VlmModelComponentConfig {
         private String componentKey;
         private String fileName;
         private String downloadUrl;
+        private String checksum;
         private String pipelineStage;
         private String description;
         private String inputShape;
@@ -295,6 +459,7 @@ public class VlmCustomModelSet {
             this.componentKey = builder.componentKey;
             this.fileName = builder.fileName;
             this.downloadUrl = builder.downloadUrl;
+            this.checksum = builder.checksum;
             this.pipelineStage = builder.pipelineStage;
             this.description = builder.description;
             this.inputShape = builder.inputShape;
@@ -310,6 +475,7 @@ public class VlmCustomModelSet {
                 .componentKey(component.getComponentKey())
                 .fileName(component.getFileName())
                 .downloadUrl(component.getDownloadUrl())
+                .checksum(component.getChecksum())
                 .pipelineStage(component.getPipelineStage() != null ?
                     component.getPipelineStage().name() : null)
                 .description(component.getDescription())
@@ -328,6 +494,7 @@ public class VlmCustomModelSet {
                 .componentKey(componentKey)
                 .fileName(fileName)
                 .downloadUrl(downloadUrl)
+                .checksum(checksum)
                 .description(description)
                 .inputShape(inputShape)
                 .outputShape(outputShape)
@@ -353,6 +520,7 @@ public class VlmCustomModelSet {
             private String componentKey;
             private String fileName;
             private String downloadUrl;
+            private String checksum;
             private String pipelineStage;
             private String description;
             private String inputShape;
@@ -371,6 +539,11 @@ public class VlmCustomModelSet {
 
             public ComponentBuilder downloadUrl(String downloadUrl) {
                 this.downloadUrl = downloadUrl;
+                return this;
+            }
+
+            public ComponentBuilder checksum(String checksum) {
+                this.checksum = checksum;
                 return this;
             }
 
