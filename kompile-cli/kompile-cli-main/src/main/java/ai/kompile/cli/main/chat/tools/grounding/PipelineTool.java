@@ -70,6 +70,8 @@ public final class PipelineTool implements CliTool {
                 + "Project registration modelRefs and request input.modelBindings are merged before launch; explicit "
                 + "request bindings win and the resolved model descriptors are injected into the runtime runner. "
                 + "All execution uses MCP-owned reusable stdio runtimes; callers never configure processes or executable paths. "
+                + "run is asynchronous by default; poll status with the returned runId until terminal=true. "
+                + "FAILED status includes the page/step diagnostic and stops execution on the first VLM page error. "
                 + "Use model_runtime status/bootstrap/import/convert to acquire or prepare artifacts, or use localPath for local-only models.";
     }
 
@@ -398,6 +400,7 @@ public final class PipelineTool implements CliTool {
                     "pdfRenderDpi", "integer (default 300)",
                     "pageBatchSize", "integer (default 1)",
                     "maxPages", "integer (default 0, all pages)",
+                    "failFastOnPageError", "boolean (default true)",
                     "maxNewTokens", "integer",
                     "temperature", "number"));
             schema.put("defaultParameters", configuredStep.get("parameters"));
@@ -936,6 +939,7 @@ public final class PipelineTool implements CliTool {
             result.put("pipelineId", pipelineId);
             result.put("version", version);
             result.put("status", status);
+            result.put("terminal", Set.of("COMPLETED", "FAILED", "CANCELLED").contains(status));
             if (output != null) result.put("output", output);
             if (error != null) result.put("error", error);
             if (diagnostic != null) result.put("diagnostic", diagnostic);

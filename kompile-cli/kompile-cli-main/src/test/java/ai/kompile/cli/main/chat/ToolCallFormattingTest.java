@@ -493,7 +493,7 @@ class ToolCallFormattingTest {
         }
 
         @Test
-        void completionRetainsAttemptedActionAndStaysCompact() {
+        void completionRetainsAttemptedActionAndShowsContent() {
             ToolResult result = ToolResult.success("AGENTS.md", "file contents",
                     Map.of("totalLines", 252));
             String output = renderer.renderToolCallComplete("read",
@@ -501,7 +501,48 @@ class ToolCallFormattingTest {
             assertTrue(output.contains("Read"));
             assertTrue(output.contains("AGENTS.md"));
             assertTrue(output.contains("totalLines=252"));
-            assertFalse(output.contains("\n"), "Compact completion rows should remain one line");
+            assertTrue(output.contains("↳ content:"), "Read completion should expose its content");
+            assertTrue(output.contains("file contents"), "Read completion should expose the returned content");
+            assertTrue(output.contains("\n"), "Detailed completion should retain multiline content");
+        }
+
+        @Test
+        void editCompletionShowsReplacementDiff() {
+            ToolResult result = ToolResult.success("Applied edit", "updated");
+            String input = "{\"file_path\":\"src/Foo.java\",\"old_string\":\"old line\","
+                    + "\"new_string\":\"new line\"}";
+
+            String output = renderer.renderToolCallComplete("edit", input, result);
+
+            assertTrue(output.contains("↳ diff:"), "Edit completion should expose a diff section");
+            assertTrue(output.contains("- old line"), "Deleted edit text should be visible");
+            assertTrue(output.contains("+ new line"), "Added edit text should be visible");
+            assertTrue(output.contains("↳ result:"), "Edit completion should retain the tool result");
+        }
+
+        @Test
+        void patchCompletionShowsHighlightedUnifiedDiff() {
+            ToolResult result = ToolResult.success("Applied patch", "updated");
+            String input = "{\"file_path\":\"src/Foo.java\",\"patch\":\"@@ -1 +1 @@\\n-old\\n+new\"}";
+
+            String output = new TerminalRenderer(true).renderToolCallComplete("patch", input, result);
+
+            assertTrue(output.contains("@@ -1 +1 @@"), "Patch hunk should be visible");
+            assertTrue(output.contains("-old"), "Patch deletion should be visible");
+            assertTrue(output.contains("+new"), "Patch addition should be visible");
+            assertTrue(output.contains("\033[31m-old"), "Patch deletions should be red when ANSI is enabled");
+            assertTrue(output.contains("\033[32m+new"), "Patch additions should be green when ANSI is enabled");
+        }
+
+        @Test
+        void writeCompletionShowsWrittenContent() {
+            ToolResult result = ToolResult.success("Created file", "created");
+            String input = "{\"file_path\":\"src/New.java\",\"content\":\"public class New {}\\n\"}";
+
+            String output = renderer.renderToolCallComplete("write", input, result);
+
+            assertTrue(output.contains("↳ content:"), "Write completion should expose written content");
+            assertTrue(output.contains("public class New {}"), "Written content should be visible");
         }
     }
 

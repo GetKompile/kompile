@@ -49,6 +49,11 @@ class ChatReplKeyBindingTest {
                 "\033[5~", "\033[5;2~", "\033[1;2A");
         keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_PAGE_DOWN_WIDGET),
                 "\033[6~", "\033[6;2~", "\033[1;2B");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_TOP_WIDGET),
+                "\033[1;5H", "\033[5H");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_BOTTOM_WIDGET),
+                "\033[1;5F", "\033[5F");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET), "\033[M");
     }
 
     @Test
@@ -167,6 +172,16 @@ class ChatReplKeyBindingTest {
                 ((Reference) keyMap.getBound("\033[1;2B")).name());
         assertNull(keyMap.getBound("5"));
         assertNull(keyMap.getBound("6"));
+    }
+
+    @Test
+    void transcriptTopBottomAndMouseBindingsAreAvailable() {
+        assertEquals(ChatRepl.STANDARD_CHAT_SCROLL_TOP_WIDGET,
+                ((Reference) keyMap.getBound("\033[1;5H")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_SCROLL_BOTTOM_WIDGET,
+                ((Reference) keyMap.getBound("\033[1;5F")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET,
+                ((Reference) keyMap.getBound("\033[M")).name());
     }
 
     @Test

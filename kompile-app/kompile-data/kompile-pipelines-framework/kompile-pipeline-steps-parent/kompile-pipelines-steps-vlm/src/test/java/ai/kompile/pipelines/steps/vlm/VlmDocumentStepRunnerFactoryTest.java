@@ -24,6 +24,8 @@ class VlmDocumentStepRunnerFactoryTest {
         assertTrue(schema.getInputSchema("resolvedModels").orElseThrow().isRequired());
         assertEquals(300L, schema.getParameterSchema("pdfRenderDpi")
                 .orElseThrow().getDefaultValue());
+        assertEquals(true, schema.getParameterSchema("failFastOnPageError")
+                .orElseThrow().getDefaultValue());
         assertEquals("DOCTAGS", schema.getParameterSchema("outputFormat")
                 .orElseThrow().getDefaultValue());
         assertTrue(schema.getOutputSchema("markdown").isPresent());

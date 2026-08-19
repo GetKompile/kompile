@@ -90,6 +90,7 @@ final class StandardChatActivityPanel {
     private final BackgroundProcessManager processManager;
     private final StatusBar statusBar;
     private final IntSupplier reservedRowSupplier;
+    private final TerminalRenderer toolRenderer = new TerminalRenderer();
 
     private volatile boolean focused;
     private volatile String selectedKey = "";
@@ -599,8 +600,10 @@ final class StandardChatActivityPanel {
                         details.append("  outcome: ").append(
                                 TerminalRenderer.summarizeToolResult(activity.result, 500)).append("\n");
                     }
-                    if (activity.result.getOutput() != null && !activity.result.getOutput().isBlank()) {
-                        details.append("\n").append(activity.result.getOutput());
+                    String renderedDetail = toolRenderer.renderToolResultDetail(
+                            activity.toolName, activity.rawInput, activity.result);
+                    if (!renderedDetail.isBlank()) {
+                        details.append("\n").append(renderedDetail);
                     }
                 }
             }

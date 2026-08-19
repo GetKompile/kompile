@@ -63,10 +63,9 @@ public final class NativeCliAuth {
         }
 
         List<String> command = new ArrayList<>(definition.get().getAuthCommand());
+        // The registered command is provider-specific (for OpenCode this is
+        // `opencode auth`); let the native CLI perform its own provider selection.
         command.add(action.name().toLowerCase(Locale.ROOT));
-        if (action == Action.LOGOUT) {
-            command.add(providerId);
-        }
 
         try {
             Process process = new ProcessBuilder(command).inheritIO().start();

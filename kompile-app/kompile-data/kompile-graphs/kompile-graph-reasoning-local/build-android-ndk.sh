@@ -150,9 +150,11 @@ assert_unix_file_attributes_abi() {
     fail "SDX_NATIVE_IMAGE_MAX_HEAP must be a positive JVM memory size such as 16g"
 [[ "$NATIVE_IMAGE_THREADS" =~ ^[1-9][0-9]*$ ]] ||
     fail "SDX_NATIVE_IMAGE_THREADS must be a positive integer"
+NATIVE_IMAGE_TMP_ROOT="${TMPDIR:-$WORK_DIR/tmp}"
+mkdir -p -- "$NATIVE_IMAGE_TMP_ROOT"
 NATIVE_IMAGE_RESOURCE_ARGS=(
     "-J-Xmx$NATIVE_IMAGE_MAX_HEAP"
-    "-J-Djava.io.tmpdir=${TMPDIR:-/tmp}"
+    "-J-Djava.io.tmpdir=$NATIVE_IMAGE_TMP_ROOT"
     "-J-XX:ActiveProcessorCount=$NATIVE_IMAGE_THREADS"
     "-H:NumberOfThreads=$NATIVE_IMAGE_THREADS"
 )

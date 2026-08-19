@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * Handles streaming, tool calling, and multi-turn conversations.
  */
-public class DirectLlmClient {
+public class DirectLlmClient implements AutoCloseable {
 
     private final ChatConfig config;
     private final HttpClient httpClient;
@@ -55,6 +55,7 @@ public class DirectLlmClient {
     private volatile java.util.function.Consumer<String> outputConsumer;
     private volatile RadiusGatewayConfig radiusGatewayConfig;
     private volatile String radiusGatewayConfigSource;
+    private volatile OpenCodeServeClient openCodeServeClient;
 
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
         this.config = config;
@@ -139,6 +140,8 @@ public class DirectLlmClient {
                 ? modelOverride : config.getModel();
         if (config.isKompileLocalServing()) {
             return streamKompileServing(userMessage, systemPrompt, toolDefs, toolResults);
+        } else if (config.isOpenCodeNative()) {
+            return streamOpenCode(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
         } else if (config.isOpenAiCodexFormat()) {
             return streamOpenAiResponses(
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, true);
@@ -153,6 +156,70 @@ public class DirectLlmClient {
                     userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, false);
         } else {
             return streamOpenAi(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+        }
+    }
+
+    private StreamResult streamOpenCode(String userMessage, String systemPrompt,
+                                         ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                         String effectiveModel) {
+        StreamResult result = new StreamResult();
+        StringBuilder streamed = new StringBuilder();
+        try {
+            OpenCodeServeClient client = openCodeClient();
+            String text = client.send(effectiveModel, config.getThinking(), systemPrompt, userMessage,
+                    chunk -> {
+                        streamed.append(chunk);
+                        printStreamingChunk(chunk);
+                    });
+            result.text = text;
+            if (streamed.length() == 0) {
+                printStreamingChunk(text);
+            }
+            appendOpenCodeHistory(userMessage, text);
+        } catch (Exception e) {
+            if (!markCancelled(result, e)) {
+                result.text = "[Error: " + formatExceptionMessage(e) + "]";
+            }
+        }
+        return result;
+    }
+
+    private OpenCodeServeClient openCodeClient() {
+        OpenCodeServeClient client = openCodeServeClient;
+        if (client == null) {
+            synchronized (this) {
+                client = openCodeServeClient;
+                if (client == null) {
+                    client = new OpenCodeServeClient(objectMapper,
+                            java.nio.file.Path.of(System.getProperty("user.dir")));
+                    openCodeServeClient = client;
+                }
+            }
+        }
+        return client;
+    }
+
+    private void appendOpenCodeHistory(String userMessage, String assistantText) {
+        if (userMessage != null) {
+            ObjectNode user = objectMapper.createObjectNode();
+            user.put("role", "user");
+            user.put("content", userMessage);
+            conversationHistory.add(user);
+        }
+        if (assistantText != null && !assistantText.isBlank()) {
+            ObjectNode assistant = objectMapper.createObjectNode();
+            assistant.put("role", "assistant");
+            assistant.put("content", assistantText);
+            conversationHistory.add(assistant);
+        }
+    }
+
+    @Override
+    public void close() {
+        OpenCodeServeClient client = openCodeServeClient;
+        if (client != null) {
+            client.close();
+            openCodeServeClient = null;
         }
     }
 

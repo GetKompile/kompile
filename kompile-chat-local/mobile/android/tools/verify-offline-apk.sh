@@ -56,7 +56,9 @@ for t in cmake unzip zip sha256sum; do command -v "$t" >/dev/null || fail "requi
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 VALIDATOR=$SCRIPT_DIR/verify-offline-apk-json.cmake
 [[ -s $VALIDATOR ]] || fail "companion validator missing"
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/verify-offline-apk.XXXXXXXX")
+VERIFY_TMP_ROOT="${VERIFY_OFFLINE_APK_TMPDIR:-$SCRIPT_DIR/../build/verify-offline-apk-tmp}"
+mkdir -p -- "$VERIFY_TMP_ROOT"
+TMP=$(mktemp -d "$VERIFY_TMP_ROOT/verify-offline-apk.XXXXXXXX")
 trap 'rm -rf -- "$TMP"' EXIT HUP INT TERM
 
 mapfile -t BTDIRS < <(find "$ANDROID_SDK/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V -r)

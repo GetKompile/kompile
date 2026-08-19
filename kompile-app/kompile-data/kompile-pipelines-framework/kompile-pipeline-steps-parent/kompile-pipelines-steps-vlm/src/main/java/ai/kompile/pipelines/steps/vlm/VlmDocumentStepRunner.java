@@ -68,6 +68,7 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
                 .pdfRenderDpi(intOption(input, "pdfRenderDpi", 300))
                 .pageBatchSize(intOption(input, "pageBatchSize", 1))
                 .maxPages(intOption(input, "maxPages", 0))
+                .failFastOnPageError(booleanOption(input, "failFastOnPageError", true))
                 .pageRange(stringOption(input, "pageRange", null))
                 .includeAuditTrail(booleanOption(input, "includeAuditTrail", true))
                 .build();

@@ -244,6 +244,36 @@ class ResumeCommandTest {
         }
     }
 
+    @Test
+    void viewFlagParsesAndRendersKompileTranscript() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        PrintStream originalOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setProperty("user.home", tempDir.toString());
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+            ChatHistory history = new ChatHistory("resume-view-session");
+            history.open("(local)", "coder", false);
+            history.logUserMessage("prior user question");
+            history.logAssistantMessage("previous **answer** with `code`", 0, 0);
+            history.close();
+
+            int exitCode = new CommandLine(new ResumeCommand()).execute(
+                    "--session-id", "resume-view-session", "--view");
+
+            String output = captured.toString(StandardCharsets.UTF_8);
+            assertEquals(0, exitCode);
+            assertTrue(output.contains("You:"));
+            assertTrue(output.contains("Assistant:"));
+            assertTrue(output.contains("previous"));
+            assertFalse(output.contains("> prior user question"));
+            assertFalse(output.contains("< previous **answer** with `code`"));
+        } finally {
+            System.setOut(originalOut);
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
     private List<String> buildAgentCommand(String agent, ConversationExporter.ExportResult exportResult) throws Exception {
         return buildAgentCommand(agent, exportResult, false);
     }

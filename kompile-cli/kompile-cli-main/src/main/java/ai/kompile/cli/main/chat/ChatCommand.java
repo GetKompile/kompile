@@ -851,8 +851,9 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     /**
-     * Restores a previous conversation by replaying the local transcript
-     * to the server-side session so the LLM has full context.
+     * Restores a previous conversation to the server-side session so the LLM
+     * has full context. The interactive ChatRepl renders the parsed turns after
+     * its TUI is initialized; this method must not print the physical transcript.
      */
     private void restoreConversation(McpSseClient client, String targetUrl) throws Exception {
         ChatHistory history = new ChatHistory(sessionId);
@@ -864,14 +865,8 @@ public class ChatCommand implements Callable<Integer> {
             return;
         }
 
-        String transcript = history.readTranscript();
-        if (transcript != null) {
-            System.out.println();
-            System.out.println(transcript);
-            System.out.println("─── end of previous conversation ───");
-            System.out.println();
-        }
-
+        // Rendering is deferred to ChatRepl so the parsed turns are drawn in
+        // Kompile's scroll region once the TUI owns the terminal.
         System.out.println("Restoring " + turns.size() + " turns to server...");
         createChatSession(client, turns);
         System.out.println("Restored conversation context.");

@@ -1055,7 +1055,7 @@ public class ChatCommandRouter {
             ToolResult result = tool.execute(args, ctx);
             spinner.stop();
 
-            System.out.println(renderer.renderToolCallComplete(toolName, result));
+            System.out.println(renderer.renderToolCallComplete(toolName, argsJson, result));
         } catch (ToolExecutionException e) {
             if (e.isPermissionDenied()) {
                 System.out.println(renderer.renderToolCallDenied(toolName, e.getMessage()));

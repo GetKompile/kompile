@@ -57,7 +57,7 @@ class SessionLifecycleManagerTest {
         ChatHistory history = new ChatHistory(sessionId);
         history.open("(local)", "coder", false);
         history.logUserMessage("the prior user question");
-        history.logAssistantMessage("the prior assistant answer", 0, 0);
+        history.logAssistantMessage("the prior **assistant answer** with `code`", 0, 0);
         history.close();
 
         TerminalRenderer renderer = new TerminalRenderer(false);
@@ -79,6 +79,10 @@ class SessionLifecycleManagerTest {
         String rendered = String.join("\n", renderedLines);
         assertTrue(rendered.contains("the prior user question"));
         assertTrue(rendered.contains("the prior assistant answer"));
+        assertTrue(rendered.contains("You:"));
+        assertTrue(rendered.contains("Assistant:"));
+        assertTrue(!rendered.contains("> the prior user question"));
+        assertTrue(!rendered.contains("< the prior **assistant answer** with `code`"));
         assertTrue(rendered.contains("end of previous conversation (2 turns)"));
     }
 }

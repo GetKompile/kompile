@@ -8,7 +8,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ANDROID_HOME="${HOME}/dev-apps/android-sdk"
+SETUP_TMP_ROOT="${ANDROID_SETUP_TMPDIR:-${SCRIPT_DIR}/build/setup-android-tmp}"
+mkdir -p -- "${SETUP_TMP_ROOT}"
 CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 CMDLINE_TOOLS_DIR="${ANDROID_HOME}/cmdline-tools/latest"
 
@@ -23,12 +26,13 @@ java -version
 if [ ! -f "${CMDLINE_TOOLS_DIR}/bin/sdkmanager" ]; then
     echo "=== Installing Android cmdline-tools ==="
     mkdir -p "${ANDROID_HOME}/cmdline-tools"
-    TMP_ZIP=$(mktemp /tmp/cmdline-tools-XXXXXX.zip)
+    TMP_ZIP=$(mktemp "${SETUP_TMP_ROOT}/cmdline-tools-XXXXXX.zip")
+    EXTRACT_DIR=$(mktemp -d "${SETUP_TMP_ROOT}/cmdline-tools-extracted.XXXXXX")
     curl -L -o "${TMP_ZIP}" "${CMDLINE_TOOLS_URL}"
-    unzip -q "${TMP_ZIP}" -d /tmp/cmdline-tools-extracted
-    mv /tmp/cmdline-tools-extracted/cmdline-tools "${CMDLINE_TOOLS_DIR}"
+    unzip -q "${TMP_ZIP}" -d "${EXTRACT_DIR}"
+    mv "${EXTRACT_DIR}/cmdline-tools" "${CMDLINE_TOOLS_DIR}"
     rm -f "${TMP_ZIP}"
-    rm -rf /tmp/cmdline-tools-extracted
+    rm -rf "${EXTRACT_DIR}"
     echo "cmdline-tools installed to ${CMDLINE_TOOLS_DIR}"
 else
     echo "cmdline-tools already present, skipping."

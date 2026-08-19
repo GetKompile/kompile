@@ -43,6 +43,7 @@ class SetupWizardRuntimeTest {
         assertFalse(vendors.contains("openai-codex"));
         assertEquals(1, vendors.stream().filter("openai"::equals).count());
         assertTrue(vendors.contains("anthropic"));
+        assertTrue(vendors.contains("opencode"));
     }
 
     @Test
@@ -72,6 +73,13 @@ class SetupWizardRuntimeTest {
                 SetupWizard.authMethodForProvider("openai-codex"));
         assertEquals(List.of(SetupWizard.AuthMethod.NONE),
                 SetupWizard.authMethodsForPicker("ollama"));
+        assertTrue(pickerProviders.contains("opencode"));
+        assertEquals(List.of(SetupWizard.AuthMethod.NATIVE),
+                SetupWizard.authMethodsForPicker("opencode"));
+        assertEquals(List.of("OpenCode native auth (OAuth/API)"),
+                SetupWizard.authOptions("opencode"));
+        assertEquals(SetupWizard.AuthMethod.NATIVE,
+                SetupWizard.authMethodForProvider("opencode"));
         assertEquals(List.of(ChatConfig.getDefaultModels("openai")),
                 SetupWizard.modelOptions("openai"));
         assertEquals(List.of(ChatConfig.getDefaultModels("xai")),
@@ -141,6 +149,12 @@ class SetupWizardRuntimeTest {
         assertEquals(List.of("", "low", "medium", "high"),
                 SetupWizard.thinkingOptions("openai", "o4-mini")
                         .stream().map(SetupWizard.ThinkingOption::value).toList());
+
+        List<SetupWizard.ThinkingOption> opencode =
+                SetupWizard.thinkingOptions("opencode", "opencode-go/deepseek-v4-pro");
+        assertEquals("", opencode.get(0).value());
+        assertTrue(opencode.size() > 1);
+        assertTrue(SetupWizard.isCustomThinkingSelection("opencode", opencode.get(1).value()));
     }
 
     @Test

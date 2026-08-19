@@ -206,6 +206,18 @@ class ChatConfigTest {
     }
 
     @Test
+    void opencodeStandardConfigUsesItsNativeProviderLifecycle() {
+        ChatConfig config = new ChatConfig("opencode", null,
+                "opencode-go/deepseek-v4-pro", null);
+
+        assertTrue(config.isValid());
+        assertTrue(config.isOpenCodeNative());
+        assertFalse(config.isOpenAiCompatible());
+        assertNull(ChatConfig.getDefaultBaseUrl("opencode"));
+        assertArrayEquals(new String[0], ChatConfig.getDefaultModels("opencode"));
+    }
+
+    @Test
     void passthroughAgentOrderComesFromPackagedCliAgentRegistry() {
         assertTrue(ChatConfig.getPassthroughAgentOrder().contains("codex"),
                 "setup wizard must be able to offer Codex when codex is on PATH");

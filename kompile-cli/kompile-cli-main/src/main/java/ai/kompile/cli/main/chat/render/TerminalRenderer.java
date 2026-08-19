@@ -62,6 +62,7 @@ public class TerminalRenderer {
     private static final int MAX_CONTEXT_TOOL_BUCKETS = 4;
     private static final int MAX_SUBAGENT_TOOL_OUTPUT_CHARS = 8_000;
     private static final int MAX_SUBAGENT_EDIT_DIFF_CHARS = 8_000;
+    private static final int MAX_INLINE_TOOL_DETAIL_CHARS = 12_000;
 
     // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
@@ -204,6 +205,11 @@ public class TerminalRenderer {
      * carry enough context to remain useful on its own.
      */
     public String renderToolCallComplete(String toolName, String rawInput, ToolResult result) {
+        return renderToolCallComplete(toolName, rawInput, result, true);
+    }
+
+    private String renderToolCallComplete(String toolName, String rawInput, ToolResult result,
+                                          boolean includeDetail) {
         String cleanName = stripMcpPrefix(toolName);
         String displayName = prettifyToolName(toolName);
         String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
@@ -253,7 +259,88 @@ public class TerminalRenderer {
             }
         }
 
+        if (includeDetail) {
+            String detail = renderToolResultDetail(toolName, rawInput, result);
+            if (!detail.isBlank()) {
+                sb.append("\n").append(detail);
+            }
+        }
+
         return sb.toString();
+    }
+
+    /**
+     * Render the durable body of a tool result. The compact tool row remains useful
+     * as a summary, but the transcript must retain the actual read/output payload and
+     * the source-side changes for edit/patch calls.
+     */
+    public String renderToolResultDetail(String toolName, String rawInput, ToolResult result) {
+        if (result == null) return "";
+
+        String cleanName = stripMcpPrefix(toolName);
+        StringBuilder detail = new StringBuilder();
+        List<String> changeLines = renderEditDiffLines(toolName, rawInput);
+        if (!changeLines.isEmpty()) {
+            appendBoundedDetailLines(detail, "diff", changeLines, true);
+        } else if ("write".equals(cleanName)) {
+            List<String> contentLines = renderWriteContentLines(rawInput);
+            if (!contentLines.isEmpty()) {
+                appendBoundedDetailLines(detail, "content", contentLines, false);
+            }
+        }
+
+        String output = result.getOutput();
+        if (output != null && !output.isBlank()) {
+            String label = !changeLines.isEmpty() ? "result" : isContentTool(cleanName) ? "content" : "output";
+            appendBoundedDetailLines(detail, label,
+                    List.of(output.stripTrailing().split("\\R", -1)), false);
+        }
+        return detail.toString();
+    }
+
+    private static List<String> renderWriteContentLines(String rawInput) {
+        if (rawInput == null || rawInput.isBlank()) return List.of();
+        try {
+            JsonNode input = JSON.readTree(rawInput.trim());
+            String content = textValue(input, "content");
+            if (content.isBlank()) return List.of();
+            return List.of(content.stripTrailing().split("\\R", -1));
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private void appendBoundedDetailLines(StringBuilder detail, String label,
+                                          List<String> lines, boolean diff) {
+        if (lines == null || lines.isEmpty()) return;
+        detail.append("  ").append(dim("↳ " + label + ":"));
+        int shownChars = 0;
+        boolean truncated = false;
+        for (String line : lines) {
+            if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS) {
+                truncated = true;
+                break;
+            }
+            int remaining = MAX_INLINE_TOOL_DETAIL_CHARS - shownChars;
+            String visible = line == null ? "" : line;
+            if (visible.length() > remaining) {
+                visible = visible.substring(0, remaining);
+                truncated = true;
+            }
+            detail.append("\n     ").append(diff ? colorDiffLine(visible) : visible);
+            shownChars += visible.length();
+            if (truncated) break;
+        }
+        if (truncated) {
+            detail.append("\n     ").append(dim("… (tool detail truncated at "
+                    + MAX_INLINE_TOOL_DETAIL_CHARS + " chars)"));
+        }
+    }
+
+    private static boolean isContentTool(String toolName) {
+        return Set.of("read", "read_batch", "grep", "glob", "list", "bash", "webfetch",
+                "websearch", "code_search", "code_graph", "rag_search", "graph_search",
+                "memory", "semantic_memory", "process", "exec").contains(toolName);
     }
 
     /**
@@ -299,7 +386,7 @@ public class TerminalRenderer {
      * nested call actually returned, so keep the summary and add the result below it.
      */
     public String renderSubagentToolCall(String toolName, String rawInput, ToolResult result) {
-        String rendered = renderToolCallComplete(toolName, rawInput, result).stripLeading();
+        String rendered = renderToolCallComplete(toolName, rawInput, result, false).stripLeading();
         StringBuilder detailed = new StringBuilder("  ").append(magenta("│")).append("  ")
                 .append(rendered.replace("\n", "\n  │  "));
 

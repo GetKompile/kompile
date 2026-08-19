@@ -29,6 +29,11 @@ class KompileTuiContentViewTest {
             assertFalse(tui.getVisibleContentLines().contains("line 8"));
 
             assertTrue(tui.scrollToBottom());
+            assertTrue(tui.scrollContent(1));
+            assertTrue(tui.scrollToTop());
+            assertFalse(tui.getVisibleContentLines().contains("line 8"));
+
+            assertTrue(tui.scrollToBottom());
             assertEquals(0, tui.getContentScrollOffset());
             assertEquals(java.util.List.of("line 7", "line 8"), tui.getVisibleContentLines());
         } finally {

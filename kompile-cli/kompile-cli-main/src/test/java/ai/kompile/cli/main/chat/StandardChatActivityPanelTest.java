@@ -172,6 +172,7 @@ class StandardChatActivityPanelTest {
             StandardChatActivityPanel.ActivityView view = panel.openSelectedView();
             assertNotNull(view);
             assertTrue(view.title().contains("Read AGENTS.md"));
+            assertTrue(view.content().contains("↳ content:"));
             assertTrue(view.content().contains("file body"));
         } finally {
             processes.close();

@@ -54,7 +54,7 @@ public class ChatConfig {
             .enable(SerializationFeature.INDENT_OUTPUT);
 
     @JsonProperty
-    private String provider; // kompile, kompile-local, openai, anthropic, gemini, ollama, custom
+    private String provider; // kompile, kompile-local, opencode, openai, anthropic, gemini, ollama, custom
 
     /**
      * Legacy/in-memory API key input. It is accepted when reading older config
@@ -382,7 +382,8 @@ public class ChatConfig {
         // First-party Kompile serving and external local endpoints do not require an API key.
         if ("kompile-local".equals(provider)
                 || "ollama".equals(provider)
-                || "custom".equals(provider)) return true;
+                || "custom".equals(provider)
+                || isOpenCodeNative()) return true;
         String resolvedApiKey = getApiKey();
         return resolvedApiKey != null && !resolvedApiKey.isBlank();
     }
@@ -412,6 +413,8 @@ public class ChatConfig {
             case "kompile":       return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
             // The bootstrap assigns a private loopback URL for each local chat session.
             case "kompile-local": return null;
+            // OpenCode owns its native server lifecycle and provider routing.
+            case "opencode":    return null;
             case "openai":     return "https://api.openai.com/v1";
             case "anthropic":  return "https://api.anthropic.com";
             case "gemini":     return "https://generativelanguage.googleapis.com/v1beta/openai";
@@ -431,6 +434,8 @@ public class ChatConfig {
         if (provider == null) return new String[0];
         switch (provider.toLowerCase()) {
             case "kompile":       return new String[0]; // instance uses server-side agents
+            // OpenCode's model catalog is live and provider-owned; never freeze it here.
+            case "opencode":    return new String[0];
             case "kompile-local": return new String[]{
                     "Qwen2.5-0.5B-Instruct", "Qwen2.5-1.5B-Instruct"};
             case "openai":     return new String[]{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"};
@@ -468,6 +473,12 @@ public class ChatConfig {
         return "openai-codex".equals(provider);
     }
 
+    /** Whether this provider uses OpenCode's native server/CLI protocol. */
+    @JsonIgnore
+    public boolean isOpenCodeNative() {
+        return "opencode".equalsIgnoreCase(provider);
+    }
+
     /** Whether this provider uses Pi's native messages protocol. */
     @JsonIgnore
     public boolean isPiMessagesFormat() {
@@ -479,7 +490,8 @@ public class ChatConfig {
      */
     @JsonIgnore
     public boolean isOpenAiCompatible() {
-        return !isAnthropicFormat() && !isOpenAiCodexFormat() && !isPiMessagesFormat();
+        return !isOpenCodeNative() && !isAnthropicFormat()
+                && !isOpenAiCodexFormat() && !isPiMessagesFormat();
     }
 
     // --- Persistence ---
@@ -697,6 +709,7 @@ public class ChatConfig {
     public static final Map<String, String> PROVIDERS = Map.ofEntries(
             Map.entry("kompile", "Kompile (connect to a running kompile-app instance)"),
             Map.entry("kompile-local", "Kompile Local (first-party serving subprocess)"),
+            Map.entry("opencode", "OpenCode (native providers, models, and variants)"),
             Map.entry("openai", "OpenAI (GPT-4o, o4-mini)"),
             Map.entry("anthropic", "Anthropic (Claude Sonnet/Opus)"),
             Map.entry("gemini", "Google Gemini (2.5 Pro/Flash)"),
@@ -713,7 +726,7 @@ public class ChatConfig {
 
     // Ordered list for display — kompile first
     public static final String[] PROVIDER_ORDER = {
-            "kompile", "anthropic", "openai", "gemini", "ollama", "openrouter", "xai",
+            "kompile", "anthropic", "openai", "gemini", "opencode", "ollama", "openrouter", "xai",
             "github-copilot", "openai-codex", "radius", "deepseek", "groq"
     };
 

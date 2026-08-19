@@ -20,6 +20,8 @@ import ai.kompile.cli.common.chat.sources.ChatSessionSummary;
 import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
 import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import ai.kompile.cli.main.chat.tools.CrossAgentResumeCompactor;
 import picocli.CommandLine;
@@ -237,20 +239,15 @@ public class ResumeCommand implements Callable<Integer> {
         try {
             Path transcriptPath = Paths.get(
                     System.getProperty("user.home"), ".kompile", "conversations", sessionId + ".txt");
-            
+            ai.kompile.cli.main.chat.format.ConversationReader reader =
+                    new ai.kompile.cli.main.chat.format.ConversationReader();
+
             if (!Files.exists(transcriptPath)) {
-                ai.kompile.cli.main.chat.format.ConversationReader reader =
-                        new ai.kompile.cli.main.chat.format.ConversationReader();
                 for (String source : List.of("pi", "claude-code", "codex", "qwen", "opencode", "gemini")) {
                     try {
                         List<ChatHistory.Turn> turns = reader.readExternalSession(source, sessionId);
                         if (turns == null || turns.isEmpty()) continue;
-                        System.out.println("Conversation: " + sessionId + " (source=" + source + ")");
-                        for (ChatHistory.Turn turn : turns) {
-                            System.out.println(turn.role().toUpperCase(Locale.ROOT) + ":");
-                            System.out.println(turn.content());
-                            System.out.println();
-                        }
+                        printRenderedConversation(sessionId, "source=" + source, turns);
                         return 0;
                     } catch (Exception ignored) {
                         // Try the next registered external source.
@@ -260,12 +257,46 @@ public class ResumeCommand implements Callable<Integer> {
                 return 1;
             }
 
-            String transcript = Files.readString(transcriptPath);
-            System.out.println(transcript);
+            // Parse the persisted format before displaying it. Printing the file directly
+            // exposes storage markers/role prefixes as literal text instead of rendering
+            // markdown and presenting each turn consistently with live chat.
+            List<ChatHistory.Turn> turns = reader.readKompileSession(sessionId);
+            if (turns == null || turns.isEmpty()) {
+                System.err.println("Conversation is empty: " + sessionId);
+                return 1;
+            }
+            printRenderedConversation(sessionId, "kompile", turns);
             return 0;
         } catch (Exception e) {
             System.err.println("Error viewing conversation: " + e.getMessage());
             return 1;
+        }
+    }
+
+    private void printRenderedConversation(
+            String sessionId, String source, List<ChatHistory.Turn> turns) {
+        TerminalRenderer renderer = new TerminalRenderer();
+        AsciiRenderer ascii = new AsciiRenderer(renderer);
+        System.out.println("Conversation: " + sessionId + " (" + source + ")");
+        for (ChatHistory.Turn turn : turns) {
+            String role = turn.role() == null
+                    ? "assistant"
+                    : turn.role().trim().toLowerCase(Locale.ROOT);
+            String label = switch (role) {
+                case "user" -> renderer.cyan("You:");
+                case "assistant" -> renderer.green("Assistant:");
+                case "system" -> renderer.dim("System:");
+                case "tool", "tool_result" -> renderer.yellow("Tool:");
+                default -> renderer.dim(role + ":");
+            };
+            System.out.println(label);
+            String content = turn.content();
+            if (content != null && !content.isBlank()) {
+                for (String line : ascii.renderMarkdown(content).split("\\n", -1)) {
+                    System.out.println("  " + line);
+                }
+            }
+            System.out.println();
         }
     }
 

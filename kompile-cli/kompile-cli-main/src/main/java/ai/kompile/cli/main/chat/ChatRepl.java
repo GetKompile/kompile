@@ -52,9 +52,11 @@ import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.Widget;
 import org.jline.reader.EndOfFileException;
+import org.jline.terminal.MouseEvent;
 import org.jline.terminal.Terminal;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
+import org.jline.utils.InfoCmp;
 
 import java.io.File;
 import java.io.IOError;
@@ -114,6 +116,7 @@ public class ChatRepl {
     private final RoleManager roleManager;
     private final PermissionService permissionService;
     private final AgenticChatLoop agenticLoop;
+    private final DirectLlmClient directClient;
     private final BackgroundProcessManager processManager;
     private final TerminalRenderer renderer;
     private AsciiRenderer ascii;
@@ -152,6 +155,7 @@ public class ChatRepl {
     private volatile LineReader activeReader;
     private volatile Terminal activeTerminal;
     private volatile boolean modelPickerActive;
+    private volatile boolean transcriptMouseEnabled;
 
     // Persistent below-bar status line showing processes, subagents, queue
     private final StatusBar statusBar;
@@ -287,10 +291,8 @@ public class ChatRepl {
                 localMode ? chatConfig : null, roleManager);
 
         // Create DirectLlmClient for local mode
-        DirectLlmClient directClient = null;
-        if (localMode && chatConfig != null) {
-            directClient = new DirectLlmClient(chatConfig, objectMapper);
-        }
+        this.directClient = localMode && chatConfig != null
+                ? new DirectLlmClient(chatConfig, objectMapper) : null;
 
         this.agenticLoop = new AgenticChatLoop(
                 baseUrl, objectMapper, toolRegistry, permissionService,
@@ -788,6 +790,7 @@ public class ChatRepl {
         tui.setReservedRowsCalculator(StandardChatActivityPanel::reservedRowsForTerminal);
         tui.start(terminal);
         activityPanel.refresh();
+        enableTranscriptMouse(terminal);
 
         // KompileTui.start() clears the terminal while establishing its bars and
         // scroll region. Restore only after that clear, and route each line through
@@ -858,6 +861,10 @@ public class ChatRepl {
                 try {
                     int termWidth = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
                     tui.reestablishScrollRegion();
+                    // JLine may reset terminal mouse tracking while entering readLine.
+                    // Reassert it for every prompt so wheel events keep scrolling the
+                    // managed transcript rather than the terminal's native scrollback.
+                    forceTranscriptMouseCapture(terminal);
                     ChatCompleter.schedulePostRestore();
                     String prompt = buildPrompt(termWidth);
                     line = reader.readLine(prompt);
@@ -950,6 +957,11 @@ public class ChatRepl {
             activeTerminal = null;
             modelPickerActive = false;
 
+            // Clean up provider-owned native processes before the general process manager.
+            if (directClient != null) {
+                directClient.close();
+            }
+
             // Clean up background process manager to prevent shutdown hook leak
             processManager.close();
 
@@ -958,6 +970,7 @@ public class ChatRepl {
             // IOError (extends Error) when the thread is interrupted during
             // shutdown, especially in GraalVM native images.
             try {
+                disableTranscriptMouse(terminal);
                 terminal.writer().print("\033[2J");
                 terminal.writer().flush();
                 terminal.close();
@@ -1251,6 +1264,9 @@ public class ChatRepl {
     static final String STANDARD_CHAT_PARENT_WIDGET = "standard-chat-activity-parent";
     static final String STANDARD_CHAT_PAGE_UP_WIDGET = "standard-chat-transcript-page-up";
     static final String STANDARD_CHAT_PAGE_DOWN_WIDGET = "standard-chat-transcript-page-down";
+    static final String STANDARD_CHAT_SCROLL_TOP_WIDGET = "standard-chat-transcript-top";
+    static final String STANDARD_CHAT_SCROLL_BOTTOM_WIDGET = "standard-chat-transcript-bottom";
+    static final String STANDARD_CHAT_SCROLL_MOUSE_WIDGET = "standard-chat-transcript-mouse";
 
     enum StandardUpAction {
         MOVE_WITHIN_DRAFT,
@@ -1366,14 +1382,42 @@ public class ChatRepl {
                 new Reference(STANDARD_CHAT_PARENT_WIDGET), "\033[D", "\033OD");
 
         reader.getWidgets().put(STANDARD_CHAT_PAGE_UP_WIDGET, () -> {
-            boolean changed = tui.pageContent(1);
+            boolean changed = tui != null && tui.pageContent(1);
             redisplayWithContent(reader, tui);
             return changed;
         });
         reader.getWidgets().put(STANDARD_CHAT_PAGE_DOWN_WIDGET, () -> {
-            boolean changed = tui.pageContent(-1);
+            boolean changed = tui != null && tui.pageContent(-1);
             redisplayWithContent(reader, tui);
             return changed;
+        });
+        reader.getWidgets().put(STANDARD_CHAT_SCROLL_TOP_WIDGET, () -> {
+            boolean changed = tui != null && tui.scrollToTop();
+            redisplayWithContent(reader, tui);
+            return changed;
+        });
+        reader.getWidgets().put(STANDARD_CHAT_SCROLL_BOTTOM_WIDGET, () -> {
+            boolean changed = tui != null && tui.scrollToBottom();
+            redisplayWithContent(reader, tui);
+            return changed;
+        });
+        reader.getWidgets().put(STANDARD_CHAT_SCROLL_MOUSE_WIDGET, () -> {
+            try {
+                if (tui != null) {
+                    MouseEvent event = reader.getTerminal().readMouseEvent();
+                    if (event != null) {
+                        switch (event.getButton()) {
+                            case WheelUp -> tui.scrollContent(3);
+                            case WheelDown -> tui.scrollContent(-3);
+                            default -> { /* consume clicks and motion */ }
+                        }
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                // A partial mouse report must never break the active prompt.
+            }
+            redisplayWithContent(reader, tui);
+            return true;
         });
         // Page keys must follow the active JLine map as well (emacs/vi/inputrc);
         // otherwise scrolling works only in the default map.
@@ -1382,9 +1426,20 @@ public class ChatRepl {
                 continue;
             }
             activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_UP_WIDGET),
-                    "\033[5~", "\033[5;2~", "\033[1;2A");
+                    keySequences(reader, InfoCmp.Capability.key_ppage,
+                            "\033[5~", "\033[5;2~", "\033[1;2A")
+                            .toArray(String[]::new));
             activityKeys.bind(new Reference(STANDARD_CHAT_PAGE_DOWN_WIDGET),
-                    "\033[6~", "\033[6;2~", "\033[1;2B");
+                    keySequences(reader, InfoCmp.Capability.key_npage,
+                            "\033[6~", "\033[6;2~", "\033[1;2B")
+                            .toArray(String[]::new));
+            activityKeys.bind(new Reference(STANDARD_CHAT_SCROLL_TOP_WIDGET),
+                    "\033[1;5H", "\033[5H");
+            activityKeys.bind(new Reference(STANDARD_CHAT_SCROLL_BOTTOM_WIDGET),
+                    "\033[1;5F", "\033[5F");
+            activityKeys.bind(new Reference(STANDARD_CHAT_SCROLL_MOUSE_WIDGET),
+                    keySequences(reader, InfoCmp.Capability.key_mouse, "\033[M")
+                            .toArray(String[]::new));
         }
 
         Widget originalAccept = reader.getWidgets().get(LineReader.ACCEPT_LINE);
@@ -1463,6 +1518,53 @@ public class ChatRepl {
             tui.redrawContentView();
         }
         reader.callWidget(LineReader.REDISPLAY);
+    }
+
+    private static List<String> keySequences(
+            LineReaderImpl reader,
+            InfoCmp.Capability capability,
+            String... fallbackSequences) {
+        LinkedHashSet<String> sequences = new LinkedHashSet<>();
+        if (capability != null) {
+            try {
+                String terminalSequence = reader.getTerminal().getStringCapability(capability);
+                if (terminalSequence != null && !terminalSequence.isBlank()) {
+                    sequences.add(terminalSequence);
+                }
+            } catch (RuntimeException ignored) {
+                // Fall back to standard ANSI sequences below.
+            }
+        }
+        sequences.addAll(Arrays.asList(fallbackSequences));
+        return new ArrayList<>(sequences);
+    }
+
+    private void enableTranscriptMouse(Terminal terminal) {
+        forceTranscriptMouseCapture(terminal);
+    }
+
+    /** Re-send mouse tracking even when the flag says it is already enabled. */
+    private void forceTranscriptMouseCapture(Terminal terminal) {
+        if (terminal == null) return;
+        try {
+            terminal.writer().print("\033[?1000h");
+            terminal.writer().flush();
+            transcriptMouseEnabled = true;
+        } catch (RuntimeException | IOError ignored) {
+            // Wheel capture is best-effort; page and modifier key bindings remain available.
+        }
+    }
+
+    private void disableTranscriptMouse(Terminal terminal) {
+        if (terminal == null || !transcriptMouseEnabled) return;
+        try {
+            terminal.writer().print("\033[?1000l");
+            terminal.writer().flush();
+        } catch (RuntimeException | IOError ignored) {
+            // The terminal may already be shutting down.
+        } finally {
+            transcriptMouseEnabled = false;
+        }
     }
 
     private static void showActivityView(
@@ -1810,6 +1912,12 @@ public class ChatRepl {
                                 continue;
                             }
                             selectedThinking = thinkingOptions.get(thinkingChoices.indexOf(thinkingChoice)).value();
+                            if (SetupWizard.isCustomThinkingSelection(selectedProvider, selectedThinking)) {
+                                selectedThinking = SetupWizard.promptCustomThinking(reader, selectedProvider);
+                                if (selectedThinking == null) {
+                                    backToModel = true;
+                                }
+                            }
                             break;
                         }
                     } else {

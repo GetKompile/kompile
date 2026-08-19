@@ -686,14 +686,32 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     }
                 } catch (Exception pageEx) {
                     failedPages++;
-                    logger.error("Page {}/{} failed: {}. Continuing with remaining pages.",
-                            progressPage, effectiveTotalPages, pageEx.getMessage(), pageEx);
+                    boolean failFast = config != null && config.isFailFastOnPageError();
+                    String pageFailure = pageEx.getMessage() != null
+                            ? pageEx.getMessage() : pageEx.getClass().getName();
+                    logger.error("Page {}/{} failed: {}. {}",
+                            progressPage, effectiveTotalPages, pageFailure,
+                            failFast ? "Stopping pipeline." : "Continuing with remaining pages.", pageEx);
 
                     // Reset sessions to free GPU memory from the failed page
                     try {
                         vlm.resetSessionsForDecode();
                     } catch (Exception resetEx) {
                         logger.warn("Failed to reset sessions after page {} error: {}", pageNum, resetEx.getMessage());
+                    }
+
+                    if (failFast) {
+                        if (releaseEncoderAfterEncoding && vlm != null && vlm.getVisionEncoder() != null) {
+                            try {
+                                vlm.getVisionEncoder().close();
+                            } catch (Exception releaseEx) {
+                                logger.warn("Failed to release vision encoder after page {} error: {}",
+                                        pageNum, releaseEx.getMessage());
+                            }
+                        }
+                        throw new IllegalStateException(
+                                "VLM page " + pageNum + "/" + effectiveTotalPages + " failed: " + pageFailure,
+                                pageEx);
                     }
 
                     // Record a failed result for this page so it's tracked in output
@@ -748,6 +766,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         } catch (Exception e) {
             logger.error("Failed to process PDF with VLM: {}", e.getMessage(), e);
+            if (config != null && config.isFailFastOnPageError()) {
+                throw new IllegalStateException("VLM PDF processing failed: " + e.getMessage(), e);
+            }
             results.add(ParsedDocument.failed(pdfFile.getAbsolutePath(), 0, e.getMessage()));
         }
 

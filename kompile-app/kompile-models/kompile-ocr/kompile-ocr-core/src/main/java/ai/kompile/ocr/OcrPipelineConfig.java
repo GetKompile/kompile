@@ -246,6 +246,15 @@ public class OcrPipelineConfig {
     private int maxPages = 0;
 
     /**
+     * Stop PDF processing at the first page/inference error instead of recording a
+     * failed page and continuing. This is enabled by default so a run cannot report
+     * partial output as a successful execution; set false only for deliberate
+     * best-effort document processing.
+     */
+    @Builder.Default
+    private boolean failFastOnPageError = true;
+
+    /**
      * Maximum number of image tiles per page. Controls how many sub-images the
      * vision encoder processes. Lower values reduce VRAM usage and speed up inference
      * at the cost of detail. -1 = unlimited (default), 9 = recommended for SmolDocling-256M.

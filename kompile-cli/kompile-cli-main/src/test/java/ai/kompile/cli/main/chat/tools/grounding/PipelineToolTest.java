@@ -200,6 +200,8 @@ class PipelineToolTest {
         assertTrue(result.getOutput().contains("callerManagedProcesses"));
         assertTrue(result.getOutput().contains("VLM_DOCUMENT"), result.getOutput());
         assertTrue(result.getOutput().contains("application/pdf"), result.getOutput());
+        assertTrue(result.getOutput().contains("failFastOnPageError"), result.getOutput());
+        assertTrue(tool.description().contains("terminal=true"));
         assertTrue(result.getOutput().contains("VISION_MULTIMODEL"), result.getOutput());
         assertTrue(result.getOutput().contains("vision_encoder.image_features"), result.getOutput());
         assertTrue(result.getOutput().contains("pipeline_input.input_ids"), result.getOutput());

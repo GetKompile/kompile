@@ -138,7 +138,9 @@ public class PersistentAgentProcess implements AutoCloseable {
                     new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-                    recordDiagnostic(line);
+                    if (handleDiagnostic(line)) {
+                        return;
+                    }
                 }
             } catch (IOException ignored) {}
         }, "agent-proc-err-drain");
@@ -366,15 +368,7 @@ public class PersistentAgentProcess implements AutoCloseable {
                 if (trimmed.isEmpty()) continue;
                 // Preserve provider errors (including quota/auth/disabled messages) even when
                 // they arrive on stdout as a non-protocol line or an error JSON event.
-                String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
-                if (!trimmed.startsWith("{") || lower.contains("error") || lower.contains("quota")
-                        || lower.contains("rate limit") || lower.contains("usage limit")
-                        || lower.contains("not authenticated") || lower.contains("disabled")) {
-                    recordDiagnostic(trimmed);
-                }
-                if (isFatalDiagnostic(lower)) {
-                    failureReason = "Judge agent reported an availability failure: " + trimmed;
-                    close();
+                if (handleDiagnostic(trimmed)) {
                     return;
                 }
                 if (!trimmed.startsWith("{")) continue;
@@ -433,12 +427,40 @@ public class PersistentAgentProcess implements AutoCloseable {
         }
     }
 
+    private boolean handleDiagnostic(String line) {
+        if (line == null || line.isBlank()) return false;
+        String trimmed = line.trim();
+        String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+        boolean diagnostic = !trimmed.startsWith("{") || lower.contains("error")
+                || lower.contains("quota") || lower.contains("limit")
+                || lower.contains("not authenticated") || lower.contains("disabled");
+        if (!diagnostic) return false;
+        recordDiagnostic(trimmed);
+        if (!isFatalDiagnostic(lower)) return false;
+        failureReason = "Judge agent reported an availability failure: " + trimmed;
+        close();
+        return true;
+    }
+
     private boolean isFatalDiagnostic(String lower) {
         if (lower == null || lower.isBlank()) return false;
+        if (lower.startsWith("{") && (lower.contains("\"type\":\"error\"")
+                || lower.contains("\"is_error\":true"))) {
+            return true;
+        }
         return lower.contains("usage limit") || lower.contains("weekly limit")
-                || lower.contains("monthly limit") || lower.contains("quota exceeded")
-                || lower.contains("rate limit") || lower.contains("out of credits")
-                || lower.contains("too many requests") || lower.contains("not authenticated")
+                || lower.contains("monthly limit")
+                || (lower.contains("quota") && (lower.contains("exceed")
+                        || lower.contains("limit") || lower.contains("hit")
+                        || lower.contains("reach") || lower.contains("exhaust")
+                        || lower.contains("deplet") || lower.contains("zero")))
+                || lower.contains("quota has been exceeded") || lower.contains("rate limit")
+                || lower.contains("limit reached") || lower.contains("hit your limit")
+                || lower.contains("reached your limit") || lower.contains("exceeded your limit")
+                || lower.contains("out of credits") || lower.contains("credits exhausted")
+                || lower.contains("credit limit") || lower.contains("insufficient credits")
+                || lower.contains("too many requests") || lower.contains("resource exhausted")
+                || lower.contains("429") || lower.contains("not authenticated")
                 || lower.contains("not logged in") || lower.contains("authentication required")
                 || lower.contains("login required") || lower.contains("agent disabled")
                 || lower.contains("command not found");

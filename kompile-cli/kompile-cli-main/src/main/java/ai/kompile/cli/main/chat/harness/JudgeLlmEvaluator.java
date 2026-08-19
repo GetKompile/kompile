@@ -116,10 +116,20 @@ public class JudgeLlmEvaluator {
      * Constructor with an explicit backend (for testing or custom wiring).
      */
     public JudgeLlmEvaluator(JudgeBackend backend, ObjectMapper objectMapper) {
+        this(backend, objectMapper, null);
+    }
+
+    /**
+     * Constructor with an explicit backend and watcher manager.
+     * Useful for custom harness wiring that wants the same judge lifecycle tracking
+     * as the config-driven constructors.
+     */
+    public JudgeLlmEvaluator(JudgeBackend backend, ObjectMapper objectMapper,
+                             BackgroundProcessManager processManager) {
         this.objectMapper = objectMapper;
         this.backend = backend;
-        this.processManager = null;
-        this.processId = null;
+        this.processManager = processManager;
+        this.processId = registerJudgeProcess(null);
     }
 
     /**
@@ -169,6 +179,12 @@ public class JudgeLlmEvaluator {
         return value != null && !value.isBlank() ? value : fallback;
     }
 
+    private void markJudgeProcessFailed() {
+        if (processManager != null && processId != null) {
+            processManager.fail(processId);
+        }
+    }
+
     /**
      * Evaluate agent output quality across multiple dimensions.
      */
@@ -179,6 +195,7 @@ public class JudgeLlmEvaluator {
         }
 
         if (backend == null || !backend.isAvailable()) {
+            markJudgeProcessFailed();
             return JudgeDimensions.error("No judge backend available. "
                     + "Configure judge_mode, judge_provider, or judge_local_model in harness config.");
         }
@@ -189,15 +206,20 @@ public class JudgeLlmEvaluator {
             String responseText = backend.generate(userPrompt, JUDGE_SYSTEM_PROMPT);
 
             if (responseText == null || responseText.isBlank()) {
+                markJudgeProcessFailed();
                 return JudgeDimensions.error("Judge returned empty response");
             }
 
-            return parseJudgeResponse(responseText, taskType, metrics.hasThinking());
+            JudgeDimensions dimensions = parseJudgeResponse(responseText, taskType, metrics.hasThinking());
+            if (dimensions.isError()) {
+                // Providers sometimes return quota/limit failures as ordinary text instead
+                // of a non-zero process exit. That is still a dead judge watcher.
+                markJudgeProcessFailed();
+            }
+            return dimensions;
 
         } catch (Exception e) {
-            if (processManager != null && processId != null) {
-                processManager.fail(processId);
-            }
+            markJudgeProcessFailed();
             return JudgeDimensions.error("Judge call failed: " + e.getMessage());
         }
     }

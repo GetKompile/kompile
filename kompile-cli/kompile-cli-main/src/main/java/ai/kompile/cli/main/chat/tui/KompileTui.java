@@ -554,6 +554,16 @@ public class KompileTui {
         return scrollContent(direction > 0 ? page : -page);
     }
 
+    public boolean scrollToTop() {
+        synchronized (drawLock) {
+            int top = clampScrollOffset(Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
+            if (contentScrollOffset == top) return false;
+            contentScrollOffset = top;
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return true;
+        }
+    }
+
     public boolean scrollToBottom() {
         synchronized (drawLock) {
             if (contentScrollOffset == 0) return false;

@@ -44,6 +44,8 @@ public final class VlmDocumentStepRunnerFactory implements PipelineStepRunnerFac
                         "Pages per inference batch", 1L))
                 .parameter(parameter("maxPages", ValueType.INT64,
                         "Maximum pages, 0 for all", 0L))
+                .parameter(parameter("failFastOnPageError", ValueType.BOOLEAN,
+                        "Stop at the first page/inference error", true))
                 .parameter(parameter("maxNewTokens", ValueType.INT64,
                         "Generation token limit", 4096L))
                 .parameter(parameter("temperature", ValueType.DOUBLE,

@@ -703,8 +703,8 @@ verify_sdx_aot_sdk_receipt() {
   fi
   expected_maven="$(command -v "$MAVEN")" || return 1
   expected_maven="$(realpath -e -- "$expected_maven")" || return 1
-  maven_version="$({ env JAVA_HOME="$JAVA_HOME_ARG" PATH="$JAVA_HOME_ARG/bin:$PATH" "$expected_maven" --version; } 2>&1)"
-  java_version="$({ "$JAVA_HOME_ARG/bin/java" -version; } 2>&1)"
+  maven_version="$({ env -u JAVA_TOOL_OPTIONS JAVA_HOME="$JAVA_HOME_ARG" PATH="$JAVA_HOME_ARG/bin:$PATH" "$expected_maven" --version; } 2>&1)"
+  java_version="$({ env -u JAVA_TOOL_OPTIONS "$JAVA_HOME_ARG/bin/java" -version; } 2>&1)"
   require_receipt_value "SDX AOT SDK" format "${SDX_AOT_RECEIPT_VALUES[format]}" "8" || return 1
   require_receipt_value "SDX AOT SDK" stage "${SDX_AOT_RECEIPT_VALUES[stage]}" "android-aot-sdk" || return 1
   if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
@@ -978,8 +978,8 @@ verify_tensor_g3_full_receipt() {
     expected_source_manifest="$(dl4j_source_manifest_sha256)"
     expected_maven="$(realpath -e -- "$(command -v "$MAVEN")")" || return 1
     expected_java_home="$(realpath -e -- "$JAVA_HOME_ARG")" || return 1
-    maven_version="$({ env JAVA_HOME="$expected_java_home" PATH="$expected_java_home/bin:$PATH" "$expected_maven" --version; } 2>&1)"
-    java_version="$({ "$expected_java_home/bin/java" -version; } 2>&1)"
+    maven_version="$({ env -u JAVA_TOOL_OPTIONS JAVA_HOME="$expected_java_home" PATH="$expected_java_home/bin:$PATH" "$expected_maven" --version; } 2>&1)"
+    java_version="$({ env -u JAVA_TOOL_OPTIONS "$expected_java_home/bin/java" -version; } 2>&1)"
   fi
 
   require_receipt_value "Tensor G3 full build" format "${TENSOR_G3_RECEIPT_VALUES[format]}" "3" || return 1

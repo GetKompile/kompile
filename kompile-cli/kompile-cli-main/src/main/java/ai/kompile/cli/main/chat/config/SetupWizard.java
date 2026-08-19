@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.auth.ManagedCredential;
 import ai.kompile.cli.main.auth.CredentialStore;
+import ai.kompile.cli.main.auth.NativeCliAuth;
 import ai.kompile.cli.main.auth.oauth.OAuthCredentialManager;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
@@ -37,6 +38,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -66,7 +68,9 @@ public class SetupWizard {
     public enum AuthMethod {
         NONE,
         OAUTH,
-        API_KEY
+        API_KEY,
+        /** Authentication is owned by the provider CLI (OAuth/API selection stays native). */
+        NATIVE
     }
 
     record ProviderSelection(String vendor, String provider, AuthMethod authMethod) {}
@@ -103,6 +107,7 @@ public class SetupWizard {
             List.of("low", "medium", "high");
     private static final List<String> XAI_EFFORTS =
             List.of("low", "medium", "high");
+    private static final String OPENCODE_CUSTOM_VARIANT = "__kompile_opencode_variant__";
 
     /**
      * Run the interactive setup wizard.
@@ -434,7 +439,7 @@ public class SetupWizard {
         return selectedKey;
     }
 
-    private static AgentProvider passthroughDefinition(String agentKey) {
+    private static AgentProvider registryDefinition(String agentKey) {
         if (agentKey == null || agentKey.isBlank()) {
             return null;
         }
@@ -451,7 +456,7 @@ public class SetupWizard {
      * still allow an arbitrary model id.
      */
     public static List<String> passthroughModelOptions(String agentKey) {
-        AgentProvider definition = passthroughDefinition(agentKey);
+        AgentProvider definition = registryDefinition(agentKey);
         return definition == null ? List.of() : CliAgentModelDiscovery.discover(definition);
     }
 
@@ -496,7 +501,7 @@ public class SetupWizard {
      * variant names, so Kompile must not maintain a stale effort catalog.
      */
     private static String selectPassthroughThinking(LineReader reader, String agentKey) {
-        AgentProvider definition = passthroughDefinition(agentKey);
+        AgentProvider definition = registryDefinition(agentKey);
         if (definition == null) {
             return null;
         }
@@ -542,6 +547,12 @@ public class SetupWizard {
         }
         return switch (authMethod) {
             case NONE -> vendor;
+            case NATIVE -> {
+                if (!NativeCliAuth.isSupported(vendor)) {
+                    throw new IllegalArgumentException(vendor + " does not support native CLI authentication");
+                }
+                yield vendor;
+            }
             case OAUTH -> {
                 String oauthProvider = oauthProviderForVendor(vendor);
                 if (oauthProvider == null) {
@@ -589,17 +600,29 @@ public class SetupWizard {
         return provider;
     }
 
-    /** Return the existing setup model source without adding another catalog. */
+    /**
+     * Resolve model ids from the provider itself when the provider owns a native
+     * catalog. OpenCode is deliberately not represented by a Kompile model list.
+     */
     public static List<String> modelOptions(String provider) {
+        AgentProvider definition = registryDefinition(provider);
+        if (definition != null && NativeCliAuth.isSupported(provider)) {
+            return CliAgentModelDiscovery.discover(definition);
+        }
         return List.of(ChatConfig.getDefaultModels(provider));
     }
 
     /**
-     * Return the startup catalog plus user-added model ids from the active
-     * location-scoped chat configuration.
+     * Return live native ids plus the user's configured ids. The live ids are
+     * first so the picker remains current while still preserving custom entries.
      */
     public static List<String> modelOptions(String provider, ChatConfig config) {
-        return config == null ? modelOptions(provider) : config.getConfiguredModels(provider);
+        if (config == null) {
+            return modelOptions(provider);
+        }
+        LinkedHashSet<String> models = new LinkedHashSet<>(modelOptions(provider));
+        models.addAll(config.getConfiguredModels(provider));
+        return List.copyOf(models);
     }
 
     /** Resolve the active wire provider's current authentication route. */
@@ -636,6 +659,15 @@ public class SetupWizard {
             return null;
         }
         if (authMethod == AuthMethod.NONE) {
+            return new AuthenticationSelection(provider, authMethod, null);
+        }
+        if (authMethod == AuthMethod.NATIVE) {
+            int exitCode = NativeCliAuth.login(provider);
+            if (exitCode != 0) {
+                System.err.println("  Native authentication failed for " + vendorLabel(vendor)
+                        + " (exit code " + exitCode + ").");
+                return null;
+            }
             return new AuthenticationSelection(provider, authMethod, null);
         }
         if (!selectManagedCredential(reader, provider, authMethod)) {
@@ -741,6 +773,9 @@ public class SetupWizard {
     }
 
     private static List<AuthMethod> authMethods(String vendor) {
+        if (NativeCliAuth.isSupported(vendor)) {
+            return List.of(AuthMethod.NATIVE);
+        }
         List<AuthMethod> methods = new ArrayList<>();
         if (oauthProviderForVendor(vendor) != null) {
             methods.add(AuthMethod.OAUTH);
@@ -774,6 +809,7 @@ public class SetupWizard {
         return switch (authMethod) {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "API key";
+            case NATIVE -> "OpenCode native auth (OAuth/API)";
             case NONE -> "None";
         };
     }
@@ -842,6 +878,14 @@ public class SetupWizard {
                 efforts = XAI_EFFORTS;
                 defaultEffort = "high";
             }
+            case "opencode" -> {
+                // OpenCode owns the valid variant names. Keep the control opaque
+                // and let the user enter any native value supported by that model.
+                return List.of(
+                        new ThinkingOption("", "OpenCode default (native)"),
+                        new ThinkingOption(OPENCODE_CUSTOM_VARIANT, "Enter OpenCode variant...")
+                );
+            }
             default -> {
                 return List.of();
             }
@@ -860,6 +904,18 @@ public class SetupWizard {
         return thinkingOptions(provider, model).size() > 1;
     }
 
+    public static boolean isCustomThinkingSelection(String provider, String value) {
+        return "opencode".equalsIgnoreCase(provider)
+                && OPENCODE_CUSTOM_VARIANT.equals(value);
+    }
+
+    public static String promptCustomThinking(LineReader reader, String provider) {
+        if (!isCustomThinkingSelection(provider, OPENCODE_CUSTOM_VARIANT)) {
+            return null;
+        }
+        return promptManual(reader, "  OpenCode variant (provider-specific, blank cancels): ");
+    }
+
     private static String selectThinking(LineReader reader, String provider, String model) {
         List<ThinkingOption> options = thinkingOptions(provider, model);
         List<String> labels = options.stream().map(ThinkingOption::label).toList();
@@ -868,6 +924,10 @@ public class SetupWizard {
         if (selected < 0) return null;
 
         String effort = options.get(selected).value();
+        if (isCustomThinkingSelection(provider, effort)) {
+            effort = promptCustomThinking(reader, provider);
+            if (effort == null) return null;
+        }
         System.out.println("  → " + GREEN
                 + (effort.isBlank() ? options.get(selected).label() : effort) + RESET);
         System.out.println();
@@ -880,6 +940,7 @@ public class SetupWizard {
             case "openai-codex" -> "OpenAI Codex";
             case "openai" -> "OpenAI";
             case "github-copilot" -> "GitHub Copilot";
+            case "opencode" -> "OpenCode";
             case "xai" -> "xAI";
             default -> "Model";
         };

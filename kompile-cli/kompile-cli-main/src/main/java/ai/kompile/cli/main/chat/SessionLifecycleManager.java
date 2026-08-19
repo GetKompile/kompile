@@ -30,6 +30,7 @@ import ai.kompile.cli.main.chat.tools.ResumeTool;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -101,25 +102,11 @@ public class SessionLifecycleManager {
 
             if (turns.isEmpty()) return;
 
-            // Print the previous transcript
-            String transcript = history.readTranscript();
-            if (transcript != null) {
-                sink.accept("");
-                // Print a condensed version — last 50 lines
-                String[] lines = transcript.split("\n");
-                if (lines.length > 50) {
-                    sink.accept(renderer.dim("  ... (" + (lines.length - 50) + " earlier lines)"));
-                    for (int i = lines.length - 50; i < lines.length; i++) {
-                        sink.accept(lines[i]);
-                    }
-                } else {
-                    for (String line : lines) {
-                        sink.accept(line);
-                    }
-                }
-                sink.accept(renderer.dim("─── end of previous conversation (" + turns.size() + " turns) ───"));
-                sink.accept("");
-            }
+            // Render parsed turns rather than replaying the physical transcript file.
+            // The file contains role prefixes and metadata for persistence; displaying
+            // those raw lines makes resumed markdown look like literal inline code and
+            // bypasses the TUI's normal role/markdown presentation.
+            renderRestoredTurns(turns, sink);
 
             // In local mode, replay turns into the DirectLlmClient
             if (localMode && agenticLoop != null) {
@@ -133,6 +120,35 @@ public class SessionLifecycleManager {
         } catch (Exception e) {
             System.err.println("Warning: Could not restore session: " + e.getMessage());
         }
+    }
+
+    private void renderRestoredTurns(List<ChatHistory.Turn> turns, Consumer<String> sink) {
+        sink.accept("");
+        sink.accept(renderer.dim("─── previous conversation (" + turns.size() + " turns) ───"));
+        for (ChatHistory.Turn turn : turns) {
+            String role = turn.role() == null
+                    ? "assistant"
+                    : turn.role().trim().toLowerCase(Locale.ROOT);
+            String label = switch (role) {
+                case "user" -> renderer.cyan("You:");
+                case "assistant" -> renderer.green("Assistant:");
+                case "system" -> renderer.dim("System:");
+                case "tool", "tool_result" -> renderer.yellow("Tool:");
+                default -> renderer.dim(role + ":");
+            };
+            sink.accept(label);
+
+            String content = turn.content();
+            if (content != null && !content.isBlank()) {
+                String rendered = ascii.renderMarkdown(content);
+                for (String line : rendered.split("\\n", -1)) {
+                    sink.accept("  " + line);
+                }
+            }
+            sink.accept("");
+        }
+        sink.accept(renderer.dim("─── end of previous conversation (" + turns.size() + " turns) ───"));
+        sink.accept("");
     }
 
     /**
