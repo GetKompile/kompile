@@ -825,10 +825,12 @@ public final class PipelineTool implements CliTool {
             return Map.of("runId", runId, "cancelled", false);
         }
         state.cancelRequested.set(true);
+        state.status = "CANCELLING";
         PipelineRuntimeSupervisor.RunningExecution execution = state.execution;
         boolean cancelled = execution == null || execution.cancel(Duration.ofSeconds(5));
         if (cancelled) state.status = "CANCELLED";
-        return Map.of("runId", runId, "cancelled", cancelled);
+        return Map.of("runId", runId, "cancelled", cancelled,
+                "terminationConfirmed", cancelled, "status", state.status);
     }
 
     private UnifiedPipelineDefinition definition(JsonNode params) {

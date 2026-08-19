@@ -7,6 +7,8 @@ package ai.kompile.pipeline.serving.launcher;
 import ai.kompile.pipeline.serving.definition.UnifiedPipelineDefinition;
 import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol;
 import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.Message;
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -16,6 +18,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -37,16 +40,24 @@ public final class PipelineRuntimeSession implements AutoCloseable {
             new ConcurrentHashMap<>();
     private final CompletableFuture<Message> ready = new CompletableFuture<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicBoolean logFinished = new AtomicBoolean(false);
     private final StringBuilder stderr = new StringBuilder();
+    private final SubprocessLogWriter logWriter;
     private final Thread outputReader;
     private final Thread errorReader;
     private volatile Consumer<Message> progressListener = ignored -> { };
 
     PipelineRuntimeSession(UnifiedPipelineDefinition definition, Process process) {
+        this(definition, process, List.of(), null);
+    }
+
+    PipelineRuntimeSession(UnifiedPipelineDefinition definition, Process process,
+                           List<String> command, String heapSize) {
         this.definition = definition;
         this.process = process;
         this.input = new BufferedWriter(new OutputStreamWriter(
                 process.getOutputStream(), StandardCharsets.UTF_8));
+        this.logWriter = createLogWriter(command, heapSize);
         this.outputReader = new Thread(this::readOutput,
                 "pipeline-runtime-stdout-" + definition.getPipelineId());
         this.outputReader.setDaemon(true);
@@ -108,10 +119,11 @@ public final class PipelineRuntimeSession implements AutoCloseable {
 
         public boolean cancel(Duration timeout) {
             boolean cancelled = PipelineRuntimeSession.this.cancel(requestId, timeout);
-            if (cancelled) {
-                response.completeExceptionally(
-                        new CancellationException("Pipeline runtime execution cancelled"));
-            }
+            // Native calls may ignore Java interruption. Complete the caller now that the
+            // session has been tainted/termination has been requested; the pool observes
+            // isAlive()==false and will not reuse this runtime.
+            response.completeExceptionally(
+                    new CancellationException("Pipeline runtime execution cancelled"));
             return cancelled;
         }
     }
@@ -159,13 +171,13 @@ public final class PipelineRuntimeSession implements AutoCloseable {
     public boolean cancel(String requestId, Duration timeout) {
         if (requestId == null || requestId.isBlank()) return false;
         try {
-            Message response = request(PipelineRuntimeProtocol.CANCEL,
+            request(PipelineRuntimeProtocol.CANCEL,
                     Map.of("targetRequestId", requestId), timeout);
-            return PipelineRuntimeProtocol.CANCELLED.equals(response.type())
-                    && Boolean.TRUE.equals(response.payload().get("cancelled"));
         } catch (Exception ignored) {
-            return false;
+            // A non-cooperative native call can prevent the child from answering CANCEL.
+            // Process termination below is therefore the source of truth.
         }
+        return terminate(timeout, "cancelled");
     }
 
     public void onProgress(Consumer<Message> listener) {
@@ -213,6 +225,7 @@ public final class PipelineRuntimeSession implements AutoCloseable {
                 process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                logLine(AgentLogRecord.Stream.STDOUT, line);
                 if (!line.startsWith(PipelineRuntimeProtocol.PREFIX)) continue;
                 Message message = PipelineRuntimeProtocol.decode(line);
                 if (PipelineRuntimeProtocol.READY.equals(message.type())) {
@@ -237,9 +250,11 @@ public final class PipelineRuntimeSession implements AutoCloseable {
                     "Pipeline runtime stdout closed" + stderrSuffix());
             ready.completeExceptionally(closed);
             failPending(closed);
+            if (!process.isAlive()) finishLog("EXITED", closed.getMessage());
         } catch (Exception e) {
             ready.completeExceptionally(e);
             failPending(e);
+            if (!process.isAlive()) finishLog("FAILED", e.getMessage());
         }
     }
 
@@ -248,6 +263,7 @@ public final class PipelineRuntimeSession implements AutoCloseable {
                 process.getErrorStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                logLine(AgentLogRecord.Stream.STDERR, line);
                 synchronized (stderr) {
                     stderr.append(line).append(System.lineSeparator());
                     if (stderr.length() > MAX_STDERR_CHARS) {
@@ -273,6 +289,7 @@ public final class PipelineRuntimeSession implements AutoCloseable {
         diagnostic.put("runtimePid", process.pid());
         String captured = stderrText();
         if (!captured.isBlank()) diagnostic.put("stderr", captured);
+        if (logWriter != null) diagnostic.put("logFile", logWriter.getLogFile().getAbsolutePath());
         return new RuntimeFailure(String.valueOf(diagnostic.get("summary")), diagnostic);
     }
 
@@ -289,17 +306,97 @@ public final class PipelineRuntimeSession implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        if (process.isAlive()) {
-            try {
-                send(PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.SHUTDOWN,
-                        UUID.randomUUID().toString(), definition.getPipelineId(), Map.of()));
-                if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroy();
-                if (!process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly();
-            } catch (Exception ignored) {
-                process.destroyForcibly();
+        terminate(Duration.ofSeconds(8), "closed");
+    }
+
+    /**
+     * Taints the session before attempting shutdown. This is deliberately process based:
+     * Future.cancel(true) only interrupts the Java worker and cannot interrupt a native CUDA
+     * dynamic-shape plan. A tainted session must never be returned to the reusable pool.
+     */
+    private synchronized boolean terminate(Duration timeout, String reason) {
+        closed.set(true);
+        long budgetMillis = Math.max(1_000L, timeout == null ? 8_000L : timeout.toMillis());
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budgetMillis);
+        try {
+            if (process.isAlive()) {
+                try {
+                    send(PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.SHUTDOWN,
+                            UUID.randomUUID().toString(), definition.getPipelineId(), Map.of()));
+                } catch (Exception ignored) {
+                    // The child may be blocked in native code and unable to read SHUTDOWN.
+                }
+                waitFor(deadline, Math.min(500L, budgetMillis));
+                if (process.isAlive()) process.destroy();
+                waitFor(deadline, Math.min(1_000L, remainingMillis(deadline)));
+                if (process.isAlive()) process.destroyForcibly();
+                waitFor(deadline, remainingMillis(deadline));
             }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            if (process.isAlive()) process.destroyForcibly();
+        } finally {
+            failPending("cancelled".equals(reason)
+                    ? new CancellationException("Pipeline runtime execution cancelled")
+                    : new IOException("Pipeline runtime session " + reason));
+            finishLog("cancelled".equals(reason) ? "CANCELLED" : "CLOSED", reason);
         }
-        failPending(new IOException("Pipeline runtime session closed"));
+        return !process.isAlive();
+    }
+
+    private void waitFor(long deadline, long maximumMillis) throws InterruptedException {
+        long remaining = Math.min(remainingMillis(deadline), maximumMillis);
+        if (remaining > 0 && process.isAlive()) process.waitFor(remaining, TimeUnit.MILLISECONDS);
+    }
+
+    private long remainingMillis(long deadline) {
+        return Math.max(0L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+    }
+
+    private SubprocessLogWriter createLogWriter(List<String> command, String heapSize) {
+        SubprocessLogWriter writer = null;
+        try {
+            String runId = UUID.randomUUID().toString();
+            writer = new SubprocessLogWriter("serving", runId);
+            writer.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    definition.getPipelineId(),
+                    command == null ? List.of() : List.copyOf(command),
+                    null,
+                    process.pid(),
+                    heapSize));
+            return writer;
+        } catch (Exception ignored) {
+            if (writer != null) writer.close();
+            return null;
+        }
+    }
+
+    private void logLine(AgentLogRecord.Stream stream, String line) {
+        if (logWriter == null) return;
+        try {
+            logWriter.writeLine(stream, line);
+        } catch (IOException ignored) {
+            // Diagnostics must never prevent protocol draining or cancellation.
+        }
+    }
+
+    private void finishLog(String state, String errorMessage) {
+        if (logWriter == null || !logFinished.compareAndSet(false, true)) return;
+        try {
+            Integer exitCode = null;
+            if (!process.isAlive()) {
+                try {
+                    exitCode = process.exitValue();
+                } catch (IllegalThreadStateException ignored) {
+                    // The process exited between isAlive and exitValue.
+                }
+            }
+            logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, errorMessage, false, false));
+        } catch (IOException ignored) {
+            // Best-effort log finalization.
+        } finally {
+            logWriter.close();
+        }
     }
 }

@@ -62,6 +62,31 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void standardResumeDoesNotPromotePassthroughToHttp() {
+        ChatCommand command = parse("--resume", "cli-test", "--mode", "standard");
+        ChatConfig passthrough = passthroughConfig(true);
+
+        ChatConfig config = command.normalizeResumeConfig(passthrough, true);
+
+        assertNull(config);
+    }
+
+    @Test
+    void standardResumeKeepsDirectProviderConfig() {
+        ChatCommand command = parse("--resume", "cli-test", "--mode", "standard");
+        ChatConfig direct = new ChatConfig("openai-codex", null, "gpt-5.6-sol", null);
+        direct.setChatMode("standard");
+
+        ChatConfig config = command.normalizeResumeConfig(direct, true);
+
+        assertNotNull(config);
+        assertEquals("openai-codex", config.getProvider());
+        assertEquals("gpt-5.6-sol", config.getModel());
+        assertEquals("standard", config.getChatMode());
+        assertFalse(config.isKompileServer());
+    }
+
+    @Test
     void noStartConnectsToDefaultServerWithoutSavedConfig() {
         ChatConfig config = parse("--no-start").configFromExplicitRoute();
 

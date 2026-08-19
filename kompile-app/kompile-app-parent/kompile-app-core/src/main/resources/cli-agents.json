@@ -57,6 +57,7 @@
     "args": ["run", "--format", "json"],
     "modelFlag": "--model",
     "modelListCommand": ["opencode", "models"],
+    "authCommand": ["opencode", "auth"],
     "isDefault": false,
     "description": "OpenCode CLI",
     "mcpSupported": true,

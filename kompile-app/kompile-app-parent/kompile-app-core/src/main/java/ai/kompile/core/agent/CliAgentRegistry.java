@@ -68,6 +68,7 @@ public final class CliAgentRegistry {
                             .interactivePromptPattern(def.interactivePromptPattern)
                             .modelFlag(def.modelFlag)
                             .modelListCommand(def.modelListCommand)
+                            .authCommand(def.authCommand)
                             .mcpSupported(def.mcpSupported)
                             .mcpServerFlag(def.mcpServerFlag)
                             .mcpConfigFlag(def.mcpConfigFlag)
@@ -130,6 +131,7 @@ public final class CliAgentRegistry {
         public String outputMode;
         public String interactivePromptPattern;
         public List<String> modelListCommand;
+        public List<String> authCommand;
         public boolean mcpSupported;
         public String mcpServerFlag;
         public String mcpConfigFlag;

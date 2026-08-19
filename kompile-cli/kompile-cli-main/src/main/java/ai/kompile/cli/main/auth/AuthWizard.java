@@ -7,6 +7,7 @@ package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.core.agent.AgentProvider;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
@@ -88,6 +89,9 @@ final class AuthWizard implements AutoCloseable {
             return null;
         }
         LoginKind kind = kinds.get(kindIndex);
+        if (kind == LoginKind.NATIVE) {
+            return new LoginRequest(providerId, null, kind, null, null, true);
+        }
         String credentialProviderId = kind == LoginKind.OAUTH ? oauthProviderId : providerId;
 
         List<CredentialStore.CredentialInfo> existing = store.list(credentialProviderId);
@@ -162,6 +166,9 @@ final class AuthWizard implements AutoCloseable {
             OAuthProviderRegistry registry,
             String providerId,
             String oauthProviderId) {
+        if (NativeCliAuth.isSupported(providerId)) {
+            return List.of(LoginKind.NATIVE);
+        }
         List<LoginKind> kinds = new ArrayList<>();
         if (oauthProviderId != null) {
             kinds.add(LoginKind.OAUTH);
@@ -178,6 +185,7 @@ final class AuthWizard implements AutoCloseable {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "Paste an API key";
             case ENVIRONMENT -> "Reference an environment variable";
+            case NATIVE -> "Native agent login — choose OAuth or API in the agent";
         };
     }
 
@@ -304,6 +312,10 @@ final class AuthWizard implements AutoCloseable {
                 .forEach(flow -> providers.putIfAbsent(
                         flow.providerId(),
                         flow.displayName() + " — OAuth"));
+        for (AgentProvider agent : NativeCliAuth.providers()) {
+            providers.putIfAbsent(agent.getCommand(),
+                    agent.getDisplayName() + " — native auth (OAuth/API)");
+        }
         return providers;
     }
 
@@ -352,7 +364,8 @@ final class AuthWizard implements AutoCloseable {
     enum LoginKind {
         API_KEY,
         ENVIRONMENT,
-        OAUTH
+        OAUTH,
+        NATIVE
     }
 
     enum LogoutScope {

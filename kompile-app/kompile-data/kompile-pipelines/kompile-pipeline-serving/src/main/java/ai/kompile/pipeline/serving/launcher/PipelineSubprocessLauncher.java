@@ -54,16 +54,22 @@ public class PipelineSubprocessLauncher implements BackendConfigurable {
         PipelineServingSubprocessArgs args = buildArgs(definition);
         Path argsFile = args.writeToTempFile();
         Process process = null;
+        PipelineRuntimeSession session = null;
         try {
-            ProcessBuilder builder = new ProcessBuilder(buildCommand(definition, argsFile));
+            List<String> command = buildCommand(definition, argsFile);
+            ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectErrorStream(false);
             propagateEnvironment(builder.environment());
             process = builder.start();
-            PipelineRuntimeSession session = new PipelineRuntimeSession(definition, process);
+            UnifiedPipelineDefinition.ServingConfig serving = definition.getServing() != null
+                    ? definition.getServing()
+                    : UnifiedPipelineDefinition.ServingConfig.builder().build();
+            session = new PipelineRuntimeSession(definition, process, command, serving.getHeapSize());
             session.awaitReady(Duration.ofMillis(READY_TIMEOUT_MS));
             return session;
         } catch (Exception failure) {
-            stopChild(process);
+            if (session != null) session.close();
+            else stopChild(process);
             throw failure;
         } finally {
             Files.deleteIfExists(argsFile);

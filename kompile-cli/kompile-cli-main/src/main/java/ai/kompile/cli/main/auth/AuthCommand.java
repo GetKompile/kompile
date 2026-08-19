@@ -99,6 +99,7 @@ public class AuthCommand implements Callable<Integer> {
             String storedValue = null;
             boolean activate = !noSwitch;
             boolean useOAuth;
+            boolean nativeAuth;
 
             if (providerId == null) {
                 if (stdin || environmentName != null || oauth || oauthMethod != null
@@ -116,6 +117,7 @@ public class AuthCommand implements Callable<Integer> {
                     }
                     providerId = request.providerId();
                     credentialName = request.credentialName();
+                    nativeAuth = request.kind() == AuthWizard.LoginKind.NATIVE;
                     useOAuth = request.kind() == AuthWizard.LoginKind.OAUTH;
                     storedValue = request.storedValue();
                     oauthMethod = request.oauthMethod();
@@ -126,10 +128,25 @@ public class AuthCommand implements Callable<Integer> {
                     return 1;
                 }
             } else {
-                useOAuth = oauth || registry.isOAuthOnly(providerId);
+                nativeAuth = NativeCliAuth.isSupported(providerId);
+                if (nativeAuth) {
+                    if (credentialName != null || noSwitch || stdin || environmentName != null
+                            || oauth || oauthMethod != null || manual
+                            || enterpriseDomain != null || gateway != null) {
+                        System.err.println("Native agent auth owns credential names and OAuth/API selection; "
+                                + "run the native login without Kompile credential options.");
+                        return 2;
+                    }
+                    useOAuth = false;
+                } else {
+                    useOAuth = oauth || registry.isOAuthOnly(providerId);
+                }
             }
 
             try {
+                if (nativeAuth) {
+                    return NativeCliAuth.login(providerId);
+                }
                 return useOAuth
                         ? loginOAuth(manager, store, interaction, activate)
                         : loginApiKey(store, storedValue, activate);
@@ -360,6 +377,13 @@ public class AuthCommand implements Callable<Integer> {
                 System.err.println("PROVIDER is required for a named credential.");
                 return 2;
             }
+            if (providerId != null && NativeCliAuth.isSupported(providerId)) {
+                if (credentialName != null || all) {
+                    System.err.println("Native agent auth does not expose Kompile credential or --all logout options.");
+                    return 2;
+                }
+                return NativeCliAuth.logout(providerId);
+            }
 
             CredentialStore store = CredentialStore.create();
             OAuthCredentialManager manager = new OAuthCredentialManager(
@@ -440,7 +464,12 @@ public class AuthCommand implements Callable<Integer> {
                                 flow.loginMethods().stream()
                                         .map(OAuthProviderFlow.LoginMethod::id)
                                         .collect(java.util.stream.Collectors.joining(","))));
+                NativeCliAuth.providers().forEach(agent -> System.out.printf(
+                        "%-24s native (OAuth/API)%n", agent.getCommand()));
                 return 0;
+            }
+            if (providerId != null && NativeCliAuth.isSupported(providerId)) {
+                return NativeCliAuth.list(providerId);
             }
             CredentialStore store = CredentialStore.create();
             var credentials = providerId == null ? store.list() : store.list(providerId);

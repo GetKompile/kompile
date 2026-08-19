@@ -63,6 +63,23 @@ class AuthWizardTest {
     }
 
     @Test
+    void nativeAgentAuthLeavesOAuthAndApiSelectionToTheAgent() throws Exception {
+        CredentialStore store = new CredentialStore(tempDir.resolve("native-auth.json"));
+        ScriptedPrompter prompter = new ScriptedPrompter().selecting("OpenCode");
+
+        AuthWizard.LoginRequest request;
+        try (AuthWizard wizard = AuthWizard.using(prompter)) {
+            request = wizard.promptForLogin(new OAuthProviderRegistry(), store);
+        }
+
+        assertNotNull(request);
+        assertEquals("opencode", request.providerId());
+        assertEquals(AuthWizard.LoginKind.NATIVE, request.kind());
+        assertNull(request.credentialName());
+        assertTrue(store.list().isEmpty());
+    }
+
+    @Test
     void switchWizardSelectsOneCredentialWithinTheProvider() throws Exception {
         CredentialStore store = new CredentialStore(tempDir.resolve("switch-auth.json"));
         store.putApiKey("openai", "personal", "personal-secret", true);

@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -56,7 +57,30 @@ class PipelineRuntimeSupervisorTest {
                     lease.start(Map.of("text", "cancel me"));
             assertTrue(execution.cancel(Duration.ofSeconds(1)));
             assertTrue(runtime.cancelled.get());
+            assertFalse(runtime.isAlive(), "a cancelled native runtime must be tainted");
         }
+    }
+
+    @Test
+    void cancelledRuntimeIsNotReturnedToThePool() throws Exception {
+        AtomicInteger starts = new AtomicInteger();
+        AtomicReference<FakeRuntime> first = new AtomicReference<>();
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> {
+            FakeRuntime runtime = new FakeRuntime();
+            first.compareAndSet(null, runtime);
+            starts.incrementAndGet();
+            return runtime;
+        });
+
+        try (PipelineRuntimeSupervisor.Lease lease = PipelineRuntimeSupervisor.acquire(
+                definition("evict"), Duration.ofSeconds(1))) {
+            assertTrue(lease.start(Map.of("text", "cancel")).cancel(Duration.ofSeconds(1)));
+        }
+        try (PipelineRuntimeSupervisor.Lease ignored = PipelineRuntimeSupervisor.acquire(
+                definition("evict"), Duration.ofSeconds(1))) {
+            assertEquals(2, starts.get());
+        }
+        assertFalse(first.get().isAlive());
     }
 
     @Test
@@ -117,6 +141,7 @@ class PipelineRuntimeSupervisorTest {
                 @Override
                 public boolean cancel(Duration timeout) {
                     cancelled.set(true);
+                    closed.set(true);
                     return true;
                 }
             };

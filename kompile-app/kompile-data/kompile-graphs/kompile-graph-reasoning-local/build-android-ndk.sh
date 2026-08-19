@@ -152,6 +152,7 @@ assert_unix_file_attributes_abi() {
     fail "SDX_NATIVE_IMAGE_THREADS must be a positive integer"
 NATIVE_IMAGE_RESOURCE_ARGS=(
     "-J-Xmx$NATIVE_IMAGE_MAX_HEAP"
+    "-J-Djava.io.tmpdir=${TMPDIR:-/tmp}"
     "-J-XX:ActiveProcessorCount=$NATIVE_IMAGE_THREADS"
     "-H:NumberOfThreads=$NATIVE_IMAGE_THREADS"
 )
@@ -542,7 +543,13 @@ if [[ -z "$GRAPH_OBJECT" ]]; then
     # GraalVM tree. This is deterministic, independent of the source support
     # directory's lifetime, and never mutates the installed GraalVM.
     STAGED_CLIB_ROOT="$STAGED_GRAAL/lib/svm/clibraries"
-    rm -rf -- "$STAGED_CLIB_ROOT"
+    # The staged closure is made read-only after a successful image build. Make
+    # it writable before replacing it so a later cached invocation can cleanly
+    # refresh the materialized target libraries without touching /tmp.
+    if [[ -e "$STAGED_CLIB_ROOT" ]]; then
+        chmod -R u+w -- "$STAGED_CLIB_ROOT" || fail "Could not make staged Graal libraries writable: $STAGED_CLIB_ROOT"
+        rm -rf -- "$STAGED_CLIB_ROOT"
+    fi
     mkdir -p -- "$(dirname -- "$STAGED_CLIB_ROOT")"
     cp -a -- "$GRAALVM_HOME/lib/svm/clibraries" "$STAGED_CLIB_ROOT"
     STAGED_CLIB="$STAGED_CLIB_ROOT/linux-aarch64/bionic"

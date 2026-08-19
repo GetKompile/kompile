@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
@@ -32,6 +33,7 @@ import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jline.reader.EndOfFileException;
@@ -44,6 +46,7 @@ import picocli.CommandLine;
 
 import java.io.IOError;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -207,6 +210,12 @@ public class ChatCommand implements Callable<Integer> {
             config = configFromExplicitRoute();
         }
 
+        // ResumeCommand routes standard transcripts back through this command with
+        // --mode standard. Restore the provider/model recorded for that transcript. Do not
+        // turn a passthrough config into provider=kompile: that selects the HTTP chat-server
+        // bootstrap and is not the local stdio/direct-chat path used by the CLI.
+        config = normalizeResumeConfig(config, isResume);
+
         // Bare chat keeps the established wizard-first flow. The installed subprocess is
         // considered only after the user has selected Standard Chat and a provider.
         if (shouldRunSetupWizard(config, hasExplicitAction)) {
@@ -223,7 +232,9 @@ public class ChatCommand implements Callable<Integer> {
             config.setChatMode(mode.toLowerCase());
         }
 
-        boolean startInstalledChatSubprocess = config.isKompileServer()
+        // Resuming a transcript must stay on that session's local/stdio chat path. Never
+        // silently replace it with the installed HTTP chat subprocess during resume.
+        boolean startInstalledChatSubprocess = !isResume && config.isKompileServer()
                 && shouldStartInstalledChatSubprocess(config,
                 ChatInstanceBootstrap.isDistributionInstalled());
 
@@ -233,6 +244,56 @@ public class ChatCommand implements Callable<Integer> {
 
     private ChatConfig runSetupWizard() {
         return globalConfig ? SetupWizard.runGlobal() : SetupWizard.run();
+    }
+
+    ChatConfig normalizeResumeConfig(ChatConfig config, boolean isResume) {
+        String requestedMode = mode == null ? "" : mode.trim();
+        if (!isResume || !"standard".equalsIgnoreCase(requestedMode)) {
+            return config;
+        }
+
+        ChatConfig recorded = loadRecordedResumeConfig(config);
+        if (recorded != null) {
+            return recorded;
+        }
+
+        // A direct standard config is already usable. A passthrough-only config has no
+        // model endpoint and must not be silently converted into the HTTP server route;
+        // returning null lets the explicit resume flow ask for a real standard config.
+        if (config != null && !"passthrough".equalsIgnoreCase(config.getChatMode())) {
+            config.setChatMode("standard");
+            return config;
+        }
+        return null;
+    }
+
+    private ChatConfig loadRecordedResumeConfig(ChatConfig fallback) {
+        if (resumeSessionId == null || resumeSessionId.isBlank()) {
+            return null;
+        }
+        Path metrics = KompileHome.homeDirectory().toPath().resolve("conversations")
+                .resolve(resumeSessionId + ".metrics.json");
+        if (!Files.isRegularFile(metrics)) {
+            return null;
+        }
+        try {
+            JsonNode session = JsonUtils.standardMapper().readTree(metrics.toFile()).path("session");
+            String provider = session.path("provider").asText(null);
+            String model = session.path("model").asText(null);
+            if (provider == null || provider.isBlank() || model == null || model.isBlank()) {
+                return null;
+            }
+            ChatConfig recorded = new ChatConfig(provider, null, model, null);
+            recorded.setChatMode("standard");
+            if (fallback != null && provider.equalsIgnoreCase(fallback.getProvider())) {
+                recorded.setApiKey(fallback.getApiKey());
+                recorded.setBaseUrl(fallback.getBaseUrl());
+                recorded.setThinking(fallback.getThinking());
+            }
+            return recorded;
+        } catch (IOException | RuntimeException ignored) {
+            return null;
+        }
     }
 
     boolean shouldRunSetupWizard(ChatConfig config, boolean hasExplicitAction) {
@@ -294,6 +355,13 @@ public class ChatCommand implements Callable<Integer> {
             if (agent == null || agent.isBlank()) {
                 System.err.println("Passthrough mode requires an agent.");
                 return 1;
+            }
+            // Explicit CLI flags win; otherwise use the model/variant selected by setup.
+            if ((model == null || model.isBlank()) && config.getModel() != null) {
+                model = config.getModel();
+            }
+            if ((thinking == null || thinking.isBlank()) && config.getThinking() != null) {
+                thinking = config.getThinking();
             }
             System.out.println("Starting passthrough mode with agent: " + agent);
 

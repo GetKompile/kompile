@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Launch the Kompile CLI uber JAR. JBang is preferred when installed; the
-# bundled/system Java fallback keeps the same wrapper usable in CI and minimal
-# installations.
+# Launch the Kompile CLI uber JAR in JVM mode. Prefer an explicitly configured
+# or system Java runtime; retain the bundled runtime only for self-contained
+# installations without a usable JVM.
 
 set -euo pipefail
 
@@ -21,22 +21,23 @@ export KOMPILE_DIST_HOME="${KOMPILE_DIST_HOME:-${DIST_HOME}}"
 export LD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export DYLD_LIBRARY_PATH="${DIST_HOME}/bin:${DIST_HOME}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 
-if command -v jbang >/dev/null 2>&1; then
-    exec jbang --java=17 "${CLI_JAR}" "$@"
-fi
-
 if [ -x "${KOMPILE_JAVA:-}" ]; then
     JAVA_BIN="${KOMPILE_JAVA}"
-elif [ -x "${DIST_HOME}/runtime/bin/java" ]; then
-    JAVA_BIN="${DIST_HOME}/runtime/bin/java"
 elif [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
     JAVA_BIN="${JAVA_HOME}/bin/java"
 elif command -v java >/dev/null 2>&1; then
-    JAVA_BIN="java"
+    JAVA_BIN="$(command -v java)"
+elif [ -x "${DIST_HOME}/runtime/bin/java" ]; then
+    JAVA_BIN="${DIST_HOME}/runtime/bin/java"
 else
-    echo "error: no Java runtime found. Install JBang or Java 17+, set JAVA_HOME, or rebuild the dist" >&2
+    echo "error: no Java runtime found. Install Java 17+, set JAVA_HOME, or rebuild the dist" >&2
     exit 1
 fi
+
+# Child JVM launchers inherit this selection (for example, the local chat server
+# started while resuming a standard conversation). Prefer a working system JVM and
+# retain the bundled runtime only as the final fallback for self-contained installs.
+export KOMPILE_JAVA="${KOMPILE_JAVA:-${JAVA_BIN}}"
 
 exec "${JAVA_BIN}" \
     -Dfile.encoding=UTF-8 \

@@ -250,8 +250,8 @@ producer started independently may not be visible to a later packaging process.
 android/build-tensor-g3-offline-apk.sh
 ```
 
-The wrapper discovers the sibling deeplearning4j checkout and always uses the
-stable `/tmp/sdx-android-build` root. The checked-in entry point has no
+The wrapper discovers the sibling deeplearning4j checkout and uses the stable
+`mobile/android/build/sdx-android-build` project-volume root. The checked-in entry point has no
 root-selection, quick-build, or caller-provided build-identity switches.
 
 Before starting a producer, the wrapper holds a work-root pipeline lock and runs

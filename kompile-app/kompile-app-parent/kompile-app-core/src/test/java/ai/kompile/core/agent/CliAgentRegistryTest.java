@@ -48,6 +48,11 @@ class CliAgentRegistryTest {
         assertEquals("Codex", codex.getDisplayName());
         assertEquals("--model", codex.getModelFlag());
         assertEquals("--dangerously-bypass-approvals-and-sandbox", codex.getSkipPermissionsFlag());
+
+        AgentProvider opencode = byCommand.get("opencode");
+        assertNotNull(opencode);
+        assertEquals(List.of("opencode", "models"), opencode.getModelListCommand());
+        assertEquals(List.of("opencode", "auth"), opencode.getAuthCommand());
     }
 
     @Test

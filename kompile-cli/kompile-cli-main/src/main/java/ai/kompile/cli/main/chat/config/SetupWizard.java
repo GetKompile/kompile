@@ -25,6 +25,9 @@ import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
+import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.CliAgentModelDiscovery;
+import ai.kompile.core.agent.CliAgentRegistry;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
@@ -165,8 +168,10 @@ public class SetupWizard {
                 }
             }
 
-            // Step 2: If passthrough mode, select style then agent
+            // Step 2: If passthrough mode, select style, agent, model, and variant.
             String passthroughAgent = null;
+            String model = null;
+            String thinking = null;
             boolean passthroughManaged = true;
             Boolean enforcementChoice = null; // null = not asked; the router honors a FALSE
             if ("passthrough".equals(chatMode)) {
@@ -182,6 +187,9 @@ public class SetupWizard {
                 System.out.println();
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
+                model = selectPassthroughModel(reader, passthroughAgent, existingConfig);
+                if (model == null) return null;
+                thinking = selectPassthroughThinking(reader, passthroughAgent);
 
                 if (passthroughManaged) {
                     // Step 2b: Optional rule enforcement (judge/enforcer).
@@ -223,8 +231,6 @@ public class SetupWizard {
             // makes the no-instance paths explicit in the normal wizard.
             String provider = null;
             String apiKey = null;
-            String model = null;
-            String thinking = null;
             String baseUrl = null;
             ProviderSelection providerSelection = null;
 
@@ -251,7 +257,8 @@ public class SetupWizard {
             }
 
             // Build and save config
-            ChatConfig config = new ChatConfig(provider, apiKey, model, baseUrl);
+            String selectedModel = model == null || model.isBlank() ? null : model;
+            ChatConfig config = new ChatConfig(provider, apiKey, selectedModel, baseUrl);
             if (existingConfig != null) {
                 config.setModelCatalog(existingConfig.getModelCatalog());
             }
@@ -413,12 +420,8 @@ public class SetupWizard {
         }
 
         if (availableAgents.isEmpty()) {
-            System.out.println(YELLOW + "  Warning: No CLI agents found on PATH." + RESET);
-            String supportedAgents = String.join(", ", ChatConfig.getPassthroughAgents().values());
-            if (supportedAgents.isBlank()) {
-                supportedAgents = "Claude Code, Codex, Gemini, OpenCode, Qwen, Pi";
-            }
-            System.out.println("  Install one of: " + supportedAgents + ".");
+            System.out.println(YELLOW + "  Warning: No registered CLI agents found on PATH." + RESET);
+            System.out.println("  Install one of the agents listed in the CLI agent registry.");
             return null;
         }
 
@@ -429,6 +432,78 @@ public class SetupWizard {
         System.out.println("  → " + GREEN + availableAgents.get(selected) + RESET);
         System.out.println();
         return selectedKey;
+    }
+
+    private static AgentProvider passthroughDefinition(String agentKey) {
+        if (agentKey == null || agentKey.isBlank()) {
+            return null;
+        }
+        return CliAgentRegistry.loadAll().stream()
+                .filter(agent -> agentKey.equalsIgnoreCase(agent.getCommand())
+                        || agentKey.equalsIgnoreCase(agent.getName()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Resolve the live model catalog for a passthrough agent. The result is
+     * intentionally empty when the agent cannot enumerate models; callers must
+     * still allow an arbitrary model id.
+     */
+    public static List<String> passthroughModelOptions(String agentKey) {
+        AgentProvider definition = passthroughDefinition(agentKey);
+        return definition == null ? List.of() : CliAgentModelDiscovery.discover(definition);
+    }
+
+    private static String selectPassthroughModel(
+            LineReader reader,
+            String agentKey,
+            ChatConfig existingConfig) {
+        List<String> discovered = new ArrayList<>(passthroughModelOptions(agentKey));
+        if (existingConfig != null
+                && "passthrough".equals(existingConfig.getChatMode())
+                && agentKey.equalsIgnoreCase(existingConfig.getPassthroughAgent())
+                && existingConfig.getModel() != null
+                && !existingConfig.getModel().isBlank()
+                && !discovered.contains(existingConfig.getModel().trim())) {
+            discovered.add(existingConfig.getModel().trim());
+        }
+
+        List<String> choices = new ArrayList<>();
+        choices.add("Agent default (native)");
+        choices.addAll(discovered);
+        choices.add("Custom model id...");
+        int selected = selectNumbered(reader, "Select Model:", choices);
+        if (selected < 0) {
+            return null;
+        }
+        if (selected == 0) {
+            System.out.println("  → " + GREEN + "Agent default (native)" + RESET);
+            System.out.println();
+            return "";
+        }
+        if (selected <= discovered.size()) {
+            String model = discovered.get(selected - 1);
+            System.out.println("  → " + GREEN + model + RESET);
+            System.out.println();
+            return model;
+        }
+        return promptManual(reader, "  Model id/name (leave provider prefix intact): ");
+    }
+
+    /**
+     * Keep the variant value opaque. OpenCode and other agents own the valid
+     * variant names, so Kompile must not maintain a stale effort catalog.
+     */
+    private static String selectPassthroughThinking(LineReader reader, String agentKey) {
+        AgentProvider definition = passthroughDefinition(agentKey);
+        if (definition == null) {
+            return null;
+        }
+        System.out.println("  " + DIM + definition.getDisplayName()
+                + " variant/thinking values are provider-specific; enter the native value or leave blank."
+                + RESET);
+        return promptManual(reader, "  Thinking/variant override (optional): ");
     }
 
     // ── Provider selection ──────────────────────────────────────────────────

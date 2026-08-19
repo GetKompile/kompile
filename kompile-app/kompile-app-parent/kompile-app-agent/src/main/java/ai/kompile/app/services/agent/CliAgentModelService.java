@@ -18,6 +18,7 @@ package ai.kompile.app.services.agent;
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.CliAgentModelDiscovery;
 import ai.kompile.core.graphrag.agent.ExtractionLlmServiceRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -53,17 +54,11 @@ import java.util.stream.Collectors;
 public class CliAgentModelService {
 
     private static final Logger log = LoggerFactory.getLogger(CliAgentModelService.class);
-    private static final int DISCOVERY_TIMEOUT_SECONDS = 15;
     public static final String LOCAL_STAGING_AGENT_NAME = LocalStagingLlmService.AGENT_NAME;
 
-    private final AgentRegistryService agentRegistry;
-    private final AgentSubprocessExecutor subprocessExecutor;
-    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
-
     /**
-     * Default soft preference order for extraction-capable opencode models. Discovery still decides
-     * the candidate set, and health/correctness still de-escalate failures; this list only prevents a
-     * cold project from exploring the provider's catalog in arbitrary CLI output order.
+     * Default ordered extraction models used when a project has not supplied an explicit priority.
+     * Providers are filtered by the active extraction policy before this order is applied.
      */
     public static final List<String> DEFAULT_EXTRACTION_MODEL_PRIORITY = List.of(
             "opencode/deepseek-v4-flash-free",
@@ -72,14 +67,15 @@ public class CliAgentModelService {
             "opencode/kimi-k2.5",
             "opencode/minimax-m2.7",
             "opencode/glm-5.2",
-            // opencode-go provider (direct API keys) — same model families as the zen gateway
-            // entries above. When zen is unavailable (e.g. insufficient balance benches every
-            // opencode/* model) the rotation reaches these instead of dead-ending at local-staging.
             "opencode-go/deepseek-v4-pro",
             "opencode-go/deepseek-v4-flash",
             "opencode-go/kimi-k2.6",
             "opencode-go/minimax-m2.7",
             "opencode-go/glm-5.2");
+
+    private final AgentRegistryService agentRegistry;
+    private final AgentSubprocessExecutor subprocessExecutor;
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     @Autowired(required = false)
     private ExtractionLlmServiceRegistry extractionRegistry;
@@ -160,14 +156,8 @@ public class CliAgentModelService {
      */
     private volatile List<String> activeModelAllow = List.of();
 
-    /**
-     * Ordered extraction model preference list. For every provider named by this list (for example
-     * {@code opencode/...}), selection is constrained to those named models so fallback never wanders
-     * through the provider's whole discovered catalog before trying the next configured agent.
-     * Null policy resets to {@link #DEFAULT_EXTRACTION_MODEL_PRIORITY}; an explicit empty list keeps
-     * discovery-order fallback for all providers.
-     */
-    private volatile List<String> activeModelPriority = DEFAULT_EXTRACTION_MODEL_PRIORITY;
+    /** Optional caller-supplied ordered model preference list; empty means live discovery order. */
+    private volatile List<String> activeModelPriority = List.of();
 
     /**
      * Set the active extraction model policy. This is called at crawl-job start from the
@@ -184,15 +174,13 @@ public class CliAgentModelService {
     }
 
     /**
-     * Set the active extraction model policy, including the ordered priority list. The priority list
-     * constrains providers that it names (for example {@code opencode/...}) while leaving other
-     * allowed providers available through their own agents (for example {@code local/...}). Pass an
-     * explicit empty list to use discovery order for all providers; pass null to use the service defaults.
+     * Set the active extraction model policy, including an optional ordered priority list. An
+     * explicit empty list, or null, uses the live discovery order for all providers.
      *
      * @param providerAllow   whitelist of provider prefixes (e.g. ["opencode"]) — null means all providers
      * @param excludeMarkers  substrings to exclude from model ids — null keeps the default ["claude","codex"]
      * @param modelAllow      explicit model-id allow-list; null or empty = no explicit pin (providerAllow governs)
-     * @param modelPriority   ordered model preference list; null = service default, empty = discovery order
+     * @param modelPriority   ordered model preference list; null or empty = discovery order
      */
     public void setActiveExtractionPolicy(List<String> providerAllow, List<String> excludeMarkers,
                                            List<String> modelAllow, List<String> modelPriority) {
@@ -200,34 +188,12 @@ public class CliAgentModelService {
         this.activeExcludeMarkers = (excludeMarkers != null) ? List.copyOf(excludeMarkers)
                                                              : List.of("claude", "codex");
         this.activeModelAllow     = (modelAllow     != null) ? List.copyOf(modelAllow) : List.of();
-        this.activeModelPriority  = (modelPriority  != null) ? List.copyOf(modelPriority)
-                                                             : DEFAULT_EXTRACTION_MODEL_PRIORITY;
+        this.activeModelPriority  = (modelPriority  != null) ? List.copyOf(modelPriority) : List.of();
     }
 
     public void setModelUnhealthyTtlMs(long ttlMs) {
         this.modelUnhealthyTtlMs = ttlMs;
     }
-
-    // Well-known models for agents that lack a list command
-    private static final Map<String, List<String>> WELL_KNOWN_MODELS = Map.of(
-            "claude-cli", List.of(
-                    "claude-fable-5", "claude-opus-4-8", "opus",
-                    "claude-opus-4-7", "claude-sonnet-4-6", "sonnet",
-                    "claude-opus-4-6", "claude-haiku-4-5-20251001", "haiku"
-            ),
-            "codex-cli", List.of(
-                    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
-                    "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex"
-            ),
-            "agy-cli", List.of(
-                    "agy-3.1-pro", "agy-3-flash",
-                    "agy-3.1-pro-preview", "agy-2.5-pro", "agy-2.5-flash"
-            ),
-            "qwen-cli", List.of(
-                    "qwen3-coder", "qwen3-coder-next", "qwen3.7-max",
-                    "qwen3.7-plus", "qwen3.6-plus"
-            )
-    );
 
     public CliAgentModelService(AgentRegistryService agentRegistry, AgentSubprocessExecutor subprocessExecutor) {
         this.agentRegistry = agentRegistry;
@@ -418,105 +384,16 @@ public class CliAgentModelService {
     }
 
     /**
-     * Discover models for an agent, either via its list command or well-known list.
+     * Discover models using the command declared by the shared CLI-agent registry.
+     * An agent without a list command simply has no catalog here; callers may still
+     * use a configured model id or the agent's native default.
      */
     private List<String> discoverModels(AgentProvider agent) {
-        List<String> modelListCommand = agent.getModelListCommand();
-
-        // If agent has a model list command, try to run it
-        if (modelListCommand != null && !modelListCommand.isEmpty()) {
-            try {
-                List<String> discovered = runModelListCommand(modelListCommand);
-                if (!discovered.isEmpty()) {
-                    log.info("Discovered {} models for agent '{}'", discovered.size(), agent.getName());
-                    return discovered;
-                }
-            } catch (Exception e) {
-                log.warn("Model discovery failed for '{}': {}", agent.getName(), e.getMessage());
-            }
+        List<String> discovered = CliAgentModelDiscovery.discover(agent);
+        if (!discovered.isEmpty()) {
+            log.info("Discovered {} models for agent '{}'", discovered.size(), agent.getName());
         }
-
-        // Fall back to well-known models
-        List<String> wellKnown = WELL_KNOWN_MODELS.get(agent.getName());
-        if (wellKnown != null) {
-            log.debug("Using well-known model list for agent '{}' ({} models)", agent.getName(), wellKnown.size());
-            return wellKnown;
-        }
-
-        return List.of();
-    }
-
-    /**
-     * Run a model list command and parse one model per line from stdout.
-     */
-    private List<String> runModelListCommand(List<String> command) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
-
-        List<String> models = new ArrayList<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                parseModelListLine(line).ifPresent(models::add);
-            }
-        }
-
-        boolean completed = process.waitFor(DISCOVERY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!completed) {
-            process.destroyForcibly();
-            throw new TimeoutException("Model list command timed out after " + DISCOVERY_TIMEOUT_SECONDS + "s");
-        }
-
-        return models;
-    }
-
-    static Optional<String> parseModelListLine(String line) {
-        if (line == null) {
-            return Optional.empty();
-        }
-        String candidate = line.trim();
-        if (candidate.isEmpty() || candidate.startsWith("#") || candidate.startsWith("//")) {
-            return Optional.empty();
-        }
-
-        if (candidate.startsWith("-") || candidate.startsWith("*") || candidate.startsWith("•")) {
-            candidate = candidate.substring(1).trim();
-        }
-        if (candidate.isEmpty()) {
-            return Optional.empty();
-        }
-
-        String lower = candidate.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("no models available")
-                || lower.startsWith("use /login")
-                || lower.startsWith("see:")
-                || lower.startsWith("error")
-                || lower.startsWith("warning")
-                || lower.startsWith("available models")
-                || lower.startsWith("model id")
-                || lower.startsWith("provider")) {
-            return Optional.empty();
-        }
-
-        if (candidate.startsWith("/") || candidate.startsWith("~/") || candidate.startsWith("./") || candidate.startsWith("../")) {
-            return Optional.empty();
-        }
-
-        if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("file:")) {
-            return Optional.empty();
-        }
-
-        if (lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".html")
-                || lower.endsWith(".json") || lower.endsWith(".yml") || lower.endsWith(".yaml")) {
-            return Optional.empty();
-        }
-
-        if (candidate.chars().anyMatch(Character::isWhitespace)) {
-            return Optional.empty();
-        }
-
-        return Optional.of(candidate);
+        return discovered;
     }
 
     /**

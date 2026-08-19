@@ -27,7 +27,9 @@ fail() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_ROOT="/tmp/sdx-android-build"
+# Keep large Android/Graal intermediates on the project volume. The host's
+# temporary filesystem is intentionally not used for multi-gigabyte builds.
+WORK_ROOT="$SCRIPT_DIR/build/sdx-android-build"
 KOMPILE_ROOT="$(realpath -e -- "$SCRIPT_DIR/../../..")"
 DL4J_ROOT="$(realpath -e -- "$KOMPILE_ROOT/../deeplearning4j")"
 FINAL_OUTPUT_DIR="$SCRIPT_DIR/build/offline-dist"
@@ -40,7 +42,7 @@ ACCELERATOR_AAR="$ACCELERATOR_OUTPUT_ROOT/dist/sdx-runtime-android-arm64-tensor-
 ACCELERATOR_NATIVE_AAR="$ACCELERATOR_OUTPUT_ROOT/native/sdx-runtime-sdk/dist/sdx-runtime-android-arm64-tensor-g3.aar"
 ACCELERATOR_NATIVE_RECEIPT="$ACCELERATOR_NATIVE_AAR.build-receipt"
 APK_BUILDER="$SCRIPT_DIR/tools/build-offline-accelerators.sh"
-KOMPILE_MAVEN="$KOMPILE_ROOT/mvnw"
+KOMPILE_MAVEN="${SDX_MAVEN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
 GRAPH_MODULE="$KOMPILE_ROOT/kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local"
 GRAPH_LIBRARY="$GRAPH_MODULE/target/android-aot/jni/arm64-v8a/libkompile_reasoning_android.so"
 RESOLVED_BUILD_CONFIG="$WORK_ROOT/resolved-build-config.properties"
@@ -128,6 +130,18 @@ if [[ -e "$WORK_ROOT" ]]; then
     fail "work root must be a real directory: $WORK_ROOT"
 else
   mkdir -p -- "$WORK_ROOT"
+fi
+# Keep launcher scratch files (including Native Image response files) beside
+# the build as well; do not fall back to the host temporary filesystem.
+TMP_ROOT="$WORK_ROOT/tmp"
+mkdir -p -- "$TMP_ROOT"
+export TMPDIR="$TMP_ROOT"
+export TMP="$TMP_ROOT"
+export TEMP="$TMP_ROOT"
+if [[ "${JAVA_TOOL_OPTIONS:-}" == *"-Djava.io.tmpdir="* ]]; then
+  :
+else
+  export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.io.tmpdir=$TMP_ROOT"
 fi
 command -v flock >/dev/null 2>&1 || fail "flock is required"
 mkdir -p -- "$WORK_ROOT/.locks"

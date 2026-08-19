@@ -61,6 +61,9 @@ public class AgentProvider {
     // Model discovery: command to list available models for this agent
     private List<String> modelListCommand;
 
+    // Native authentication command, when the agent owns its provider credentials.
+    private List<String> authCommand;
+
     // CLI model selection: the flag used to pass a model to the CLI agent (e.g. "--model").
     // Loaded from cli-agents.json; the chosen model itself is carried in {@link #modelName}.
     private String modelFlag;
@@ -205,6 +208,11 @@ public class AgentProvider {
 
         public Builder modelListCommand(List<String> modelListCommand) {
             provider.modelListCommand = modelListCommand;
+            return this;
+        }
+
+        public Builder authCommand(List<String> authCommand) {
+            provider.authCommand = authCommand != null ? new ArrayList<>(authCommand) : new ArrayList<>();
             return this;
         }
 
