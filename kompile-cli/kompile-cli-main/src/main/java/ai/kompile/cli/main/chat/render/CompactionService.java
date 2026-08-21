@@ -121,7 +121,7 @@ public class CompactionService {
      * proportional to the window (a fixed 40K preserve span would make
      * compaction a no-op on models smaller than 40K).
      */
-    int preserveRecentTokens() {
+    public int preserveRecentTokens() {
         return Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(512, maxTokens / 3));
     }
 
