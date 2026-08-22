@@ -9,9 +9,12 @@ DL4J backend jars built from `../deeplearning4j`.
 
 ## 1. The canonical model
 
-There is **one distribution**: a zip/tar.gz whose primary payload is AOT-compiled (GraalVM
-native-image) binaries, with a jar tier inside the same archive as the fallback. Everything
-else (Dockerfiles, install script, CI, JBang) is a *delivery channel* for that one artifact.
+There is **one distribution layout** with two published execution forms. The cross-platform
+`cli-only` archives are AOT-compiled GraalVM binaries; the canonical Linux `full` archive is
+the JVM form produced by `build-dist.sh --jars-only`, with shaded/exec JARs and a bundled
+runtime. Backend-specific native `full` archives use the same layout and remain supplemental
+large-runner builds. Everything else (Dockerfiles, install script, CI, JBang) is a delivery
+channel for those canonical artifacts.
 
 ```
 kompile-dist-<version>-<variant>-<os>-<arch>.tar.gz
@@ -167,7 +170,7 @@ tier* keeps runtime multi-backend selection (`BackendManager`, both jars on clas
 | `build-dist.sh` | **Kept — variant orchestrator.** Fixed broken CLI path (`kompile-cli/kompile-cli-main/target/…`), emits canon names + back-compat symlinks, bundles jar tier + jbang files into every variant. Layout must match `dist.xml`. |
 | `kompile-dist/` assembly | **Kept — canonical layout definition** (`src/main/assembly/dist.xml`). `prepare-package` stages copies in `target/portable-bin` and applies the shared ELF normalizer before assembly. |
 | `install.sh` | Kept. Default `auto` selection tries the published Linux `full` variant first and falls back to `cli-only`; explicit native CPU/CUDA variants remain opt-in. |
-| `release.yml` | **Sole canonical release owner.** Owns the `v*` tag, release creation, installable archives, checksums, and stable jar assets. |
+| `release.yml` | **Sole canonical release owner.** Owns the `v*` tag, release creation, AOT `cli-only` archives, the JVM `full` archive, checksums, and stable jar assets. Manual dispatch may publish the selected branch SHA as a prerelease. JVM and AOT jobs use separate runner variables. |
 | `publish-release.yml` | Manual supplemental SDK builder/uploader only. It shares per-version concurrency, requires an existing canonical release, and never creates, edits, or clobbers release assets. |
 | Root `Dockerfile`, `Dockerfile.rockylinux8` | **Deprecated in-place** (headers added). Use `build-scripts/Dockerfile.cpu` / `.cuda`. |
 | Root `native-image/` | **Legacy/unwired** (README added). Canonical metadata is per-module `META-INF/native-image/`. |
@@ -186,7 +189,7 @@ Focused native-image-agent captures cover those subprocess entry points, includi
 uses its narrow `AnnotationConfigApplicationContext` rather than starting the full application.
 
 The former closure items are complete: live child poms honor `${nd4j.backend}`; release CI
-publishes the canonical `full` archive and stable jar names from that archive; and both Maven
+publishes the canonical JVM `full` archive, AOT `cli-only` archives, and stable jar names; and both Maven
 assembly and `build-dist.sh` normalize staged ELF copies through
 `kompile-dist/src/main/build/normalize-elf-portability.sh`. Linux native publication fails
 closed when `patchelf` is unavailable.
@@ -215,12 +218,17 @@ now resolve Java with this precedence:
 `kompile-server.sh` also gains a JAR-tier fallback (`lib/kompile-server.jar`) when
 `bin/kompile-server` native binary is absent.
 
-**`release.yml`** — `full-dist-linux` sets up Temurin 21 and GraalVM 21, builds the CLI image
-under GraalVM, and builds app-main, chat, crawl-manager, and model-staging exec jars under
-Temurin without activating native profiles. It then calls
-`./build-dist.sh full --skip-java-build`, making the variant orchestrator the single owner of
-the jlink runtime, layout, manifest, checksum, and ELF policy. The canonical release job uploads
-the archive plus stable jar names directly from the packaged `lib/` directory.
+**`release.yml`** — `full-dist-linux` runs only on the standard JVM runner, sets the reactor
+release version, and calls `./build-dist.sh full --jars-only`. The variant orchestrator owns
+the Java build, shaded/exec JAR closure, JBang wrapper, jlink runtime, layout, manifest, and
+checksums. The independent AOT matrix runs only the `cli-only` native images on ≥32 GiB runner
+labels, enforces that memory floor before building, and disables GraalVM quick-build optimization. The canonical release job uploads both
+forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual dispatch
+with `publish=true` creates `v<version>` at the selected branch commit; tag pushes remain the
+normal final-release path. Repository configuration must provide three ≥32 GiB AOT runner
+labels through `KOMPILE_AOT_{LINUX_X64,MACOS_ARM64,WINDOWS_X64}_RUNNER`; the JVM and
+publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
+`KOMPILE_RELEASE_RUNNER`. Publication is attached to the protected `release` environment.
 
 **`install.sh`** — default variant is now `auto` (tries `full` first via HEAD request, falls
 back to `cli-only` with a printed notice). After extraction, marks the bundled runtime
@@ -232,10 +240,10 @@ duplicates. Get-started text notes that `kompile project init` works fully only 
 
 | Asset | Source |
 |---|---|
-| `kompile-dist-<V>-cli-only-linux-x86_64.tar.gz` | existing `build` matrix job |
-| `kompile-dist-<V>-cli-only-macosx-arm64.tar.gz` | existing `build` matrix job |
-| `kompile-dist-<V>-cli-only-windows-x86_64.zip` | existing `build` matrix job |
-| `kompile-dist-<V>-full-linux-x86_64.tar.gz` | new `full-dist-linux` job |
+| `kompile-dist-<V>-cli-only-linux-x86_64.tar.gz` | AOT `build` matrix job |
+| `kompile-dist-<V>-cli-only-macosx-arm64.tar.gz` | AOT `build` matrix job |
+| `kompile-dist-<V>-cli-only-windows-x86_64.zip` | AOT `build` matrix job |
+| `kompile-dist-<V>-full-linux-x86_64.tar.gz` | JVM `full-dist-linux` job (`--jars-only`) |
 | `kompile-server.jar` | stable name, from full-dist `lib/` |
 | `kompile-model-staging.jar` | stable name, from full-dist `lib/` |
 | `kompile-cli.jar` | stable name, from full-dist `lib/` |

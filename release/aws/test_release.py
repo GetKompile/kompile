@@ -1374,6 +1374,33 @@ class BuildPlatformParityTest(unittest.TestCase):
 
 
 class GithubWorkflowParityTest(unittest.TestCase):
+    def test_java_distribution_smoke_covers_every_standard_architecture(self):
+        source = (
+            REPOSITORY / ".github" / "workflows" /
+            "build-java-distributions.yml"
+        ).read_text(encoding="utf-8")
+        expected_runners = {
+            "linux-x86_64": "ubuntu-22.04",
+            "linux-arm64": "ubuntu-24.04-arm",
+            "windows-x86_64": "windows-2022",
+            "windows-arm64": "windows-11-arm",
+            "macosx-x86_64": "macos-15-intel",
+            "macosx-arm64": "macos-14",
+        }
+        for platform, runner in expected_runners.items():
+            self.assertIn(f"'{platform}': '{runner}'", source)
+        self.assertIn("distribution:", source)
+        self.assertIn("- cli", source)
+        self.assertIn("- full", source)
+        self.assertIn("- both", source)
+        self.assertIn("--jars-only", source)
+        self.assertIn("--skip-maven-install", source)
+        self.assertIn('-jar "${DIST_ROOT}/lib/kompile-cli.jar" --version', source)
+        self.assertIn("actions/upload-artifact@v4", source)
+        self.assertIn("contents: read", source)
+        self.assertNotIn("contents: write", source)
+        self.assertNotIn("gh release", source)
+
     def test_cpu_actions_use_explicit_seven_classifier_matrix(self):
         expected = {"base", "avx2", "avx512", "onednn", "onednn-avx2", "onednn-avx512", "compile"}
         for name in ("build-native-linux-x86_64.yml", "build-native-windows-x86_64.yml"):
@@ -1464,15 +1491,23 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn('ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.zip"', source)
         self.assertNotIn('ARCHIVE_FILE="${STAGING}/${ARCHIVE_BASE}.tar.gz"', source)
 
-    def test_canonical_github_release_publishes_and_smokes_complete_zip(self):
+    def test_canonical_github_release_splits_jvm_and_aot_runners(self):
         source = (
             REPOSITORY / ".github" / "workflows" / "release.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("dl4j_sdk_assets_url:", source)
-        self.assertIn("DL4J_SDK_ASSETS_URL", source)
+        self.assertIn("KOMPILE_JAVA_RUNNER", source)
+        self.assertIn("KOMPILE_AOT_LINUX_X64_RUNNER", source)
+        self.assertIn("KOMPILE_AOT_MACOS_ARM64_RUNNER", source)
+        self.assertIn("KOMPILE_AOT_WINDOWS_X64_RUNNER", source)
+        self.assertIn("AOT release builds require a runner with at least 32 GiB RAM", source)
         self.assertIn("DL4J_MAVEN_REPOSITORY_URL", source)
         self.assertIn("DL4J_VERSION", source)
-        self.assertIn('--sdx-assets "${{ steps.dl4j_sdk.outputs.path }}"', source)
+        self.assertIn("--jars-only", source)
+        self.assertIn("-Dnative.quickBuild=false", source)
+        self.assertIn("-DprocessAllModules=true", source)
+        self.assertIn("-Dproperty=project.version", source)
+        self.assertNotIn("dl4j_sdk_assets_url:", source)
+        self.assertNotIn("DL4J_SDK_ASSETS_URL", source)
         self.assertIn('echo "archive=${NAME}.zip"', source)
         self.assertIn("compatibility_archive", source)
         self.assertIn(
@@ -1480,7 +1515,13 @@ class GithubWorkflowParityTest(unittest.TestCase):
             source,
         )
         self.assertIn("(cd \"$HOME/.kompile\" && sha256sum -c manifest.sha256)", source)
-        self.assertIn('\"$HOME/.kompile/sdx-sdk/jars\"', source)
+        self.assertIn('info["components"]["cli"]["native"] is False', source)
+        self.assertIn("http://localhost:18090/mcp/status", source)
+        self.assertIn("kompile-model-staging.jar", source)
+        self.assertIn("publish:", source)
+        self.assertIn("github.event_name == 'push' || inputs.publish", source)
+        self.assertIn("target_commitish: ${{ github.sha }}", source)
+        self.assertIn("release publication never moves an existing tag", source)
         self.assertNotIn("7z a -tzip", source)
 
     def test_build_workflows_have_read_only_contents_permissions(self):

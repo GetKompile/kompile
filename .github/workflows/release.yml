@@ -1,10 +1,11 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Kompile release pipeline
 #
-# Builds the cross-platform `kompile` CLI as a GraalVM native image, packages it
-# through the canonical complete-distribution builder, generates SHA-256
-# checksums, and publishes a GitHub Release. ZIP is the primary release and Maven
-# artifact on every platform; tar.gz remains available for installer compatibility.
+# Publishes both execution forms without paying AOT runner costs for the JVM tier:
+# a cross-platform GraalVM CLI image and a complete Linux JVM distribution built
+# with `build-dist.sh --jars-only`. Both use the canonical distribution builder,
+# include SHA-256 checksums, and are attached to one GitHub Release. ZIP is the
+# primary release artifact; tar.gz remains available for installer compatibility.
 #
 # Archive naming (must match install.sh + docs/getting-started/installation.md):
 #   kompile-dist-<version>-<variant>-<os>-<arch>.zip
@@ -13,25 +14,25 @@
 #     arch ∈ { x86_64, arm64 }
 #
 # ⚠️  RUNNER SIZING — READ THIS FIRST
-#   The CLI native-image build passes `-J-Xmx18g`
-#   (kompile-cli/kompile-cli-main/pom.xml). It will OOM on standard GitHub-hosted
-#   runners (16 GB). Point the `runner` matrix values at machines with ≥ 32 GB RAM
-#   (GitHub "larger runners" or self-hosted) by setting these repository variables
-#   (Settings -> Secrets and variables -> Actions -> Variables):
-#       KOMPILE_LINUX_X64_RUNNER     (default: ubuntu-latest)
-#       KOMPILE_MACOS_ARM64_RUNNER   (default: macos-14)
-#       KOMPILE_WINDOWS_X64_RUNNER   (default: windows-latest)
-#       KOMPILE_RELEASE_RUNNER       (default: ubuntu-latest; lightweight, no native build)
-#       DL4J_SDK_ASSETS_URL          (required for the complete Linux full ZIP)
+#   Java and AOT builds intentionally use separate runner variables. The JVM build
+#   is suitable for a standard runner. The CLI native-image build passes `-J-Xmx18g`
+#   (kompile-cli/kompile-cli-main/pom.xml), so each AOT runner needs ≥ 32 GB RAM.
+#   Configure these repository variables (Settings -> Secrets and variables ->
+#   Actions -> Variables):
+#       KOMPILE_JAVA_RUNNER             (default: ubuntu-22.04; JVM build + smoke)
+#       KOMPILE_AOT_LINUX_X64_RUNNER    (legacy fallback: KOMPILE_LINUX_X64_RUNNER)
+#       KOMPILE_AOT_MACOS_ARM64_RUNNER  (legacy fallback: KOMPILE_MACOS_ARM64_RUNNER)
+#       KOMPILE_AOT_WINDOWS_X64_RUNNER  (legacy fallback: KOMPILE_WINDOWS_X64_RUNNER)
+#       KOMPILE_RELEASE_RUNNER          (default: ubuntu-22.04; lightweight publisher)
 #       DL4J_MAVEN_REPOSITORY_URL    (optional repository containing the matching DL4J build)
 #       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
-#   Until you set the runner variables, the defaults run on standard hosted runners and the native
-#   build step is expected to OOM.
+#   AOT defaults retain the old hosted labels for compatibility, but production
+#   publication must point them at larger GitHub-hosted or self-hosted runners.
 #
 # Variants:
-#   This workflow publishes cross-platform `cli-only` archives and the canonical
-#   Linux `full` archive (CLI native + service JARs + Java runtime + DL4J SDK).
+#   This workflow publishes cross-platform AOT `cli-only` archives and the
+#   canonical Linux JVM `full` archive (CLI/service JARs + Java runtime).
 #   Native CPU/GPU service variants remain self-hosted builds produced through
 #   build-dist.sh; they must use the same release job when enabled.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -47,10 +48,16 @@ on:
         description: 'Version to build (without leading v), e.g. 0.1.0'
         required: true
         default: '0.0.0-dev'
-      dl4j_sdk_assets_url:
-        description: 'Verified linux-x86_64 DL4J sdk-assets archive URL (defaults to repository variable DL4J_SDK_ASSETS_URL)'
-        required: false
-        default: ''
+      publish:
+        description: 'Create/update v<version> from the selected branch commit'
+        required: true
+        type: boolean
+        default: true
+      prerelease:
+        description: 'Mark a manually published release as a prerelease'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write          # needed to create the GitHub Release
@@ -61,6 +68,9 @@ concurrency:
 
 env:
   GRAALVM_JAVA_VERSION: '21'
+  DL4J_MAVEN_REPOSITORY_URL: ${{ vars.DL4J_MAVEN_REPOSITORY_URL || 'https://central.sonatype.com/repository/maven-snapshots/' }}
+  DL4J_MAVEN_REPOSITORY_ID: ${{ vars.DL4J_MAVEN_REPOSITORY_ID || 'dl4j-release' }}
+  ND4J_VERSION: ${{ vars.DL4J_VERSION || '1.0.0-SNAPSHOT' }}
 
 jobs:
   build:
@@ -70,17 +80,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `runner` resolves from a repo variable, falling back to a hosted runner.
-          # Set the variables (see header) to ≥ 32 GB / self-hosted labels.
-          - runner: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+          # AOT runners resolve independently from the standard JVM runner. The
+          # legacy variables remain fallbacks while repositories migrate.
+          - runner: ${{ vars.KOMPILE_AOT_LINUX_X64_RUNNER || vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
             os_id: linux
             arch: x86_64
             variant: cli-only
-          - runner: ${{ vars.KOMPILE_MACOS_ARM64_RUNNER || 'macos-14' }}   # Apple Silicon
+          - runner: ${{ vars.KOMPILE_AOT_MACOS_ARM64_RUNNER || vars.KOMPILE_MACOS_ARM64_RUNNER || 'macos-14' }}   # Apple Silicon
             os_id: macosx
             arch: arm64
             variant: cli-only
-          - runner: ${{ vars.KOMPILE_WINDOWS_X64_RUNNER || 'windows-latest' }}
+          - runner: ${{ vars.KOMPILE_AOT_WINDOWS_X64_RUNNER || vars.KOMPILE_WINDOWS_X64_RUNNER || 'windows-latest' }}
             os_id: windows
             arch: x86_64
             variant: cli-only
@@ -91,6 +101,17 @@ jobs:
           #   variant: cli-only
 
     steps:
+      - name: Verify AOT runner capacity
+        shell: bash
+        run: |
+          TOTAL_GIB="$(node -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 / 1024))")"
+          echo "AOT runner memory: ${TOTAL_GIB} GiB"
+          if [ "${TOTAL_GIB}" -lt 30 ]; then
+            echo "ERROR: AOT release builds require a runner with at least 32 GiB RAM." >&2
+            echo "Configure the matching KOMPILE_AOT_*_RUNNER repository variable." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -112,8 +133,25 @@ jobs:
           else
             V="${{ github.event.inputs.version }}"
           fi
+          if [[ ! "${V}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid release version: ${V}" >&2
+            exit 2
+          fi
           echo "version=${V}" >> "$GITHUB_OUTPUT"
           echo "Building version ${V}"
+
+      - name: Set reactor release version
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
+            -DnewVersion="${VERSION}" \
+            -DprocessAllModules=true \
+            -DgenerateBackupPoms=false
+          mvn -B -ntp -N org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property \
+            -Dproperty=project.version \
+            -DnewVersion="${VERSION}" \
+            -DgenerateBackupPoms=false
 
       - name: Build CLI native image
         shell: bash
@@ -122,9 +160,12 @@ jobs:
         #     (the local "no -am" rule assumes deps are already installed).
         # -DskipTests skips the slow native test execution.
         run: |
-          mvn -B -ntp -Dkompile.dist=true -DskipTests \
+          mvn -B -ntp -Dkompile.dist=true -Dnative.quickBuild=false -DskipTests \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
             -pl kompile-cli/kompile-cli-main -am \
-            clean package
+            clean install
 
       - name: Install Linux packaging tools
         if: matrix.os_id == 'linux'
@@ -142,9 +183,10 @@ jobs:
           NAME="kompile-dist-${VERSION}-${VARIANT}-${PLATFORM}"
           OUTPUT_DIR="${PWD}/release-dist"
 
-          # Reuse the native image built above. The canonical builder owns the
-          # layout, metadata, internal manifest, ZIP, compatibility tarball, and
-          # platform-specific executable naming.
+          # Reuse the installed CLI native image and build the sibling model CLI
+          # at release optimization. The canonical builder owns layout, metadata,
+          # manifests, archives, and platform-specific executable naming.
+          export MAVEN_OPTS="${MAVEN_OPTS:-} -Dnative.quickBuild=false"
           DIST_ARGS=(
             "${VARIANT}"
             --skip-java-build
@@ -179,45 +221,27 @@ jobs:
             ${{ steps.pkg.outputs.compatibility_archive }}.sha256
           if-no-files-found: error
 
-  # ── Full distribution: CLI native + service JARs + jlink runtime + DL4J SDK ──
+  # ── JVM distribution: shaded/exec JARs + jlink runtime on a standard runner ──
   full-dist-linux:
-    name: build full (linux-x86_64)
-    runs-on: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+    name: build full JVM (linux-x86_64)
+    runs-on: ${{ vars.KOMPILE_JAVA_RUNNER || 'ubuntu-22.04' }}
     env:
-      DL4J_MAVEN_REPOSITORY_URL: ${{ vars.DL4J_MAVEN_REPOSITORY_URL }}
-      DL4J_MAVEN_REPOSITORY_ID: ${{ vars.DL4J_MAVEN_REPOSITORY_ID || 'dl4j-release' }}
-      ND4J_VERSION: ${{ vars.DL4J_VERSION }}
       DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
       DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
+      MAVEN_OPTS: '-Xmx6g'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Temurin JDK 21 (for jlink runtime + jar builds)
+      - name: Set up Temurin JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'maven'
           server-id: ${{ env.DL4J_MAVEN_REPOSITORY_ID }}
           server-username: DL4J_MAVEN_USERNAME
           server-password: DL4J_MAVEN_PASSWORD
-
-      - name: Remember Temurin home
-        shell: bash
-        run: echo "TEMURIN_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
-
-      - name: Set up GraalVM ${{ env.GRAALVM_JAVA_VERSION }} (for CLI native image)
-        uses: graalvm/setup-graalvm@v1
-        with:
-          java-version: ${{ env.GRAALVM_JAVA_VERSION }}
-          distribution: 'graalvm-community'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          native-image-job-reports: 'true'
-          cache: 'maven'
-
-      - name: Remember GraalVM home
-        shell: bash
-        run: echo "GRAALVM_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
 
       - name: Resolve version
         id: ver
@@ -228,84 +252,25 @@ jobs:
           else
             V="${{ github.event.inputs.version }}"
           fi
+          if [[ ! "${V}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid release version: ${V}" >&2
+            exit 2
+          fi
           echo "version=${V}" >> "$GITHUB_OUTPUT"
           echo "Building version ${V}"
 
-      - name: Build CLI native image (GraalVM)
+      - name: Set reactor release version
         shell: bash
         run: |
-          mvn -B -ntp -Dkompile.dist=true -DskipTests \
-            -pl kompile-cli/kompile-cli-main -am \
-            clean package
-
-      - name: Build all service exec jars with UI (Temurin)
-        shell: bash
-        run: |
-          export JAVA_HOME="${TEMURIN_HOME}"
-          export PATH="${JAVA_HOME}/bin:${PATH}"
-          # No -Dkompile.dist here: this is the jar tier, not a native-image build.
-          # app-main includes the Angular UI because -Dskip.ui is intentionally absent.
-          MAVEN_REPOSITORY_ARGS=()
-          if [ -n "${DL4J_MAVEN_REPOSITORY_URL}" ]; then
-            MAVEN_REPOSITORY_ARGS+=(
-              "-Ddl4j.repository.id=${DL4J_MAVEN_REPOSITORY_ID}"
-              "-Ddl4j.repository.url=${DL4J_MAVEN_REPOSITORY_URL}"
-            )
-          fi
-          if [ -n "${ND4J_VERSION}" ]; then
-            MAVEN_REPOSITORY_ARGS+=("-Dnd4j.version=${ND4J_VERSION}")
-          fi
-          mvn -B -ntp -DskipTests -Dkompile.uber -Dnd4j.backend=nd4j-native \
-            "${MAVEN_REPOSITORY_ARGS[@]}" \
-            -pl :kompile-app-main,:kompile-app-chat,:kompile-app-crawl-manager,:kompile-model-staging \
-            -am package
-
-      - name: Download and verify matching DL4J SDK assets
-        id: dl4j_sdk
-        shell: bash
-        env:
-          SDK_URL: ${{ inputs.dl4j_sdk_assets_url || vars.DL4J_SDK_ASSETS_URL }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SDK_URL}" ]; then
-            echo "ERROR: set workflow input dl4j_sdk_assets_url or repository variable DL4J_SDK_ASSETS_URL" >&2
-            exit 1
-          fi
-
-          DOWNLOAD_DIR="${RUNNER_TEMP}/dl4j-sdk-download"
-          SDK_ROOT="${RUNNER_TEMP}/dl4j-sdk-assets"
-          mkdir -p "${DOWNLOAD_DIR}" "${SDK_ROOT}"
-          ARCHIVE="${DOWNLOAD_DIR}/sdk-assets.archive"
-          CHECKSUM="${ARCHIVE}.sha256"
-          curl --fail --location --retry 3 "${SDK_URL}" --output "${ARCHIVE}"
-          curl --fail --location --retry 3 "${SDK_URL}.sha256" --output "${CHECKSUM}"
-
-          EXPECTED="$(awk '{print tolower($1)}' "${CHECKSUM}")"
-          ACTUAL="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
-          if [[ ! "${EXPECTED}" =~ ^[0-9a-f]{64}$ ]] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
-            echo "ERROR: DL4J SDK checksum mismatch: expected=${EXPECTED} actual=${ACTUAL}" >&2
-            exit 1
-          fi
-
-          python3 - "${ARCHIVE}" "${SDK_ROOT}" <<'PY'
-          import importlib.util
-          from pathlib import Path
-          import sys
-
-          driver = Path("release/aws/build-platform.py")
-          spec = importlib.util.spec_from_file_location("kompile_release_build_platform", driver)
-          module = importlib.util.module_from_spec(spec)
-          assert spec.loader is not None
-          spec.loader.exec_module(module)
-          destination = Path(sys.argv[2])
-          module.extract_sdk_archive(Path(sys.argv[1]), destination)
-          module.validate_sdk_assets(destination, "GitHub release DL4J SDK archive")
-          PY
-          echo "path=${SDK_ROOT}" >> "${GITHUB_OUTPUT}"
-
-      - name: Install Linux packaging tools
-        shell: bash
-        run: sudo apt-get update && sudo apt-get install -y patchelf
+          VERSION="${{ steps.ver.outputs.version }}"
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
+            -DnewVersion="${VERSION}" \
+            -DprocessAllModules=true \
+            -DgenerateBackupPoms=false
+          mvn -B -ntp -N org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property \
+            -Dproperty=project.version \
+            -DnewVersion="${VERSION}" \
+            -DgenerateBackupPoms=false
 
       - name: Assemble full distribution archive
         id: pkg
@@ -315,18 +280,16 @@ jobs:
           VERSION="${{ steps.ver.outputs.version }}"
           NAME="kompile-dist-${VERSION}-full-linux-x86_64"
           OUTPUT_DIR="${PWD}/release-dist"
-          export JAVA_HOME="${GRAALVM_HOME}"
-          export PATH="${JAVA_HOME}/bin:${PATH}"
-          export KOMPILE_JAVA="${TEMURIN_HOME}/bin/java"
+          export GRAALVM_HOME="${JAVA_HOME}"
+          export KOMPILE_JAVA="${JAVA_HOME}/bin/java"
 
-          # build-dist.sh owns the layout, jlink runtime, complete DL4J SDK,
-          # internal manifest, checksums, and ELF portability policy.
+          # build-dist.sh owns the complete JVM boundary: reactor build, shaded
+          # and exec JARs, JBang wrapper, jlink runtime, manifest, and checksums.
           ./build-dist.sh full \
-            --skip-java-build \
+            --jars-only \
             --skip-maven-install \
             --version "${VERSION}" \
             --platform linux-x86_64 \
-            --sdx-assets "${{ steps.dl4j_sdk.outputs.path }}" \
             --output-dir "${OUTPUT_DIR}"
 
           cp "${OUTPUT_DIR}/${NAME}.zip" "${NAME}.zip"
@@ -336,7 +299,7 @@ jobs:
 
           DIST_ROOT="${OUTPUT_DIR}/${NAME}"
           for asset in kompile-cli.jar kompile-server.jar kompile-chat.jar \
-                       kompile-crawl-manager.jar; do
+                       kompile-crawl-manager.jar kompile-model-staging.jar; do
             test -f "${DIST_ROOT}/lib/${asset}"
             cp "${DIST_ROOT}/lib/${asset}" "${asset}"
           done
@@ -359,13 +322,14 @@ jobs:
             kompile-server.jar
             kompile-chat.jar
             kompile-crawl-manager.jar
+            kompile-model-staging.jar
           if-no-files-found: error
 
   # ── Smoke-test the full-dist archive before publishing ───────────────────
   smoke-full-dist:
     name: Smoke-test full distribution (linux-x86_64)
     needs: full-dist-linux
-    runs-on: ${{ vars.KOMPILE_LINUX_X64_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.KOMPILE_JAVA_RUNNER || 'ubuntu-22.04' }}
     steps:
       - name: Resolve version
         id: ver
@@ -375,6 +339,10 @@ jobs:
             V="${GITHUB_REF_NAME#v}"
           else
             V="${{ github.event.inputs.version }}"
+          fi
+          if [[ ! "${V}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid release version: ${V}" >&2
+            exit 2
           fi
           echo "version=${V}" >> "$GITHUB_OUTPUT"
 
@@ -408,10 +376,21 @@ jobs:
           fi
           cp -a "${DIST_ROOT}/." "$HOME/.kompile/"
 
-          # Attest the internal payload and the complete DL4J companion shard.
+          # Attest the internal payload and the JVM execution form.
           (cd "$HOME/.kompile" && sha256sum -c manifest.sha256)
-          test -n "$(find "$HOME/.kompile/sdx-sdk" -type f \( -name '*.zip' -o -name '*.aar' \) -print -quit)"
-          test -n "$(find "$HOME/.kompile/sdx-sdk/jars" -type f -name '*.jar' -print -quit)"
+          python3 - "$HOME/.kompile/.dist-info.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          info = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert info["variant"] == "full"
+          assert info["components"]["cli"]["native"] is False
+          assert info["components"]["cli"]["jar"] is True
+          for component in ("server", "chat", "crawl-manager", "model-staging"):
+              assert info["components"][component]["jar"] is True, component
+          assert info["components"]["bundled-runtime"]["present"] is True
+          PY
           echo "Complete ZIP extracted and verified"
 
       - name: Set permissions
@@ -460,14 +439,14 @@ jobs:
           done
           echo "project init assertions passed"
 
-      - name: Smoke-test native staging server startup
+      - name: Smoke-test JVM staging server startup
         shell: bash
         run: |
           set -euo pipefail
           STAGING_LOG="$RUNNER_TEMP/staging-server.log"
-          STAGING_BIN="$HOME/.kompile/bin/kompile-model-staging"
-          if [ ! -x "${STAGING_BIN}" ]; then
-            echo "ERROR: required native staging worker is missing: ${STAGING_BIN}" >&2
+          STAGING_LAUNCHER="$HOME/.kompile/bin/kompile-model-staging.sh"
+          if [ ! -x "${STAGING_LAUNCHER}" ]; then
+            echo "ERROR: required staging launcher is missing: ${STAGING_LAUNCHER}" >&2
             exit 1
           fi
 
@@ -475,20 +454,21 @@ jobs:
           export KOMPILE_NATIVE_LIB_DIR="$HOME/.kompile/lib"
           export LD_LIBRARY_PATH="$HOME/.kompile/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-          echo "Starting native staging server on port 18090 (log: ${STAGING_LOG}) ..."
-          "${STAGING_BIN}" \
-            --server.port=18090 \
+          echo "Starting JVM staging server on port 18090 (log: ${STAGING_LOG}) ..."
+          "${STAGING_LAUNCHER}" \
+            --port 18090 \
             --spring.main.web-application-type=servlet \
             >> "${STAGING_LOG}" 2>&1 &
           STAGING_PID=$!
           echo "Staging server PID: ${STAGING_PID}"
 
-          # Poll /actuator/health for up to 90s
+          # There is no Spring Actuator in this application. Poll the staging
+          # MCP status endpoint for up to 90 seconds.
           DEADLINE=$(( $(date +%s) + 90 ))
           HEALTHY=false
           while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
             HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' \
-              http://localhost:18090/actuator/health 2>/dev/null || echo "000")
+              http://localhost:18090/mcp/status 2>/dev/null || echo "000")
             if [ "${HTTP_CODE}" = "200" ]; then
               HEALTHY=true
               echo "Staging server healthy (HTTP 200)"
@@ -523,9 +503,24 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [build, full-dist-linux, smoke-full-dist]
-    runs-on: ${{ vars.KOMPILE_RELEASE_RUNNER || 'ubuntu-latest' }}
-    if: github.event_name == 'push'        # tags publish; manual dispatch only builds
+    runs-on: ${{ vars.KOMPILE_RELEASE_RUNNER || 'ubuntu-22.04' }}
+    if: github.event_name == 'push' || inputs.publish
+    environment: release
     steps:
+      - name: Verify manual release tag targets this branch commit
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: v${{ inputs.version }}
+        run: |
+          EXISTING_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null || true)"
+          if [ -n "${EXISTING_SHA}" ] && [ "${EXISTING_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "ERROR: ${RELEASE_TAG} already targets ${EXISTING_SHA}, not selected commit ${GITHUB_SHA}." >&2
+            echo "Choose a new version; release publication never moves an existing tag." >&2
+            exit 1
+          fi
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -535,9 +530,12 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Template: hosted / GPU variants (needs a dedicated or self-hosted runner)
