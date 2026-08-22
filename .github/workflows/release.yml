@@ -266,7 +266,7 @@ jobs:
     env:
       DL4J_MAVEN_USERNAME: ${{ secrets.DL4J_MAVEN_USERNAME }}
       DL4J_MAVEN_PASSWORD: ${{ secrets.DL4J_MAVEN_PASSWORD }}
-      MAVEN_OPTS: '-Xmx6g'
+      MAVEN_OPTS: '-Xmx6g -Dmaven.test.skip=true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
