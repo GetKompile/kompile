@@ -81,6 +81,11 @@ on:
         required: true
         type: boolean
         default: true
+      allow_constrained_aot:
+        description: 'Allow a manual AOT trial below the production 32 GiB memory floor'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write          # needed to create the GitHub Release
@@ -140,9 +145,14 @@ jobs:
           TOTAL_GIB="$(node -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 / 1024))")"
           echo "AOT runner memory: ${TOTAL_GIB} GiB"
           if [ "${TOTAL_GIB}" -lt 30 ]; then
-            echo "ERROR: AOT release builds require a runner with at least 32 GiB RAM." >&2
-            echo "Configure the matching KOMPILE_AOT_*_RUNNER repository variable." >&2
-            exit 1
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+                && [ "${{ inputs.allow_constrained_aot }}" = "true" ]; then
+              echo "::warning::Running an explicitly requested constrained AOT trial below 32 GiB; the job may OOM."
+            else
+              echo "ERROR: AOT release builds require a runner with at least 32 GiB RAM." >&2
+              echo "Configure the matching KOMPILE_AOT_*_RUNNER repository variable or explicitly allow a constrained manual trial." >&2
+              exit 1
+            fi
           fi
 
       - name: Checkout
