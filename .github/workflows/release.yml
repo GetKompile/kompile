@@ -139,7 +139,27 @@ jobs:
           #   variant: cli-only
 
     steps:
+      - name: Select requested native platform
+        id: platform
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            SELECTED=true
+          else
+            REQUESTED=",${{ inputs.platforms }},"
+            REQUESTED="${REQUESTED//[[:space:]]/}"
+            CANDIDATE=",${{ matrix.os_id }}-${{ matrix.arch }},"
+            if [[ "${REQUESTED}" == *"${CANDIDATE}"* ]]; then
+              SELECTED=true
+            else
+              SELECTED=false
+            fi
+          fi
+          echo "selected=${SELECTED}" >> "$GITHUB_OUTPUT"
+          echo "Native platform ${{ matrix.os_id }}-${{ matrix.arch }} selected: ${SELECTED}"
+
       - name: Verify AOT runner capacity
+        if: steps.platform.outputs.selected == 'true'
         shell: bash
         run: |
           TOTAL_GIB="$(node -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 / 1024))")"
@@ -156,9 +176,11 @@ jobs:
           fi
 
       - name: Checkout
+        if: steps.platform.outputs.selected == 'true'
         uses: actions/checkout@v4
 
       - name: Set up GraalVM ${{ env.GRAALVM_JAVA_VERSION }}
+        if: steps.platform.outputs.selected == 'true'
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: ${{ env.GRAALVM_JAVA_VERSION }}
@@ -169,6 +191,7 @@ jobs:
 
       - name: Resolve version
         id: ver
+        if: steps.platform.outputs.selected == 'true'
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
@@ -184,6 +207,7 @@ jobs:
           echo "Building version ${V}"
 
       - name: Set reactor release version
+        if: steps.platform.outputs.selected == 'true'
         shell: bash
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
@@ -201,6 +225,7 @@ jobs:
             -DgenerateBackupPoms=false
 
       - name: Build CLI native image
+        if: steps.platform.outputs.selected == 'true'
         shell: bash
         # -Dkompile.dist=true activates the `native` profile (see cli-main pom).
         # -am builds the CLI's upstream reactor dependencies from a clean checkout
@@ -215,12 +240,13 @@ jobs:
             clean install
 
       - name: Install Linux packaging tools
-        if: matrix.os_id == 'linux'
+        if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'linux'
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y patchelf
 
       - name: Assemble canonical distribution archives
         id: pkg
+        if: steps.platform.outputs.selected == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -258,6 +284,7 @@ jobs:
           ls -lh "${RELEASE_FILES[@]}"
 
       - name: Upload build artifacts
+        if: steps.platform.outputs.selected == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.archive }}
