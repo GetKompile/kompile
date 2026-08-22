@@ -1374,7 +1374,7 @@ class BuildPlatformParityTest(unittest.TestCase):
 
 
 class GithubWorkflowParityTest(unittest.TestCase):
-    def test_java_distribution_smoke_covers_every_standard_architecture(self):
+    def test_java_distribution_smoke_covers_supported_release_platforms(self):
         source = (
             REPOSITORY / ".github" / "workflows" /
             "build-java-distributions.yml"
@@ -1383,12 +1383,12 @@ class GithubWorkflowParityTest(unittest.TestCase):
             "linux-x86_64": "ubuntu-22.04",
             "linux-arm64": "ubuntu-24.04-arm",
             "windows-x86_64": "windows-2022",
-            "windows-arm64": "windows-11-arm",
-            "macosx-x86_64": "macos-15-intel",
             "macosx-arm64": "macos-14",
         }
         for platform, runner in expected_runners.items():
             self.assertIn(f"'{platform}': '{runner}'", source)
+        self.assertNotIn("windows-11-arm", source)
+        self.assertNotIn("macos-15-intel", source)
         self.assertIn("distribution:", source)
         self.assertIn("- cli", source)
         self.assertIn("- full", source)
