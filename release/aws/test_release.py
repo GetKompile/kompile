@@ -1512,6 +1512,7 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("-Dnative.quickBuild=false", source)
         self.assertIn("-DprocessAllModules=true", source)
         self.assertIn("-Dproperty=project.version", source)
+        self.assertIn("-Dproperty=anserini.version", source)
         self.assertNotIn("dl4j_sdk_assets_url:", source)
         self.assertNotIn("DL4J_SDK_ASSETS_URL", source)
         self.assertIn('echo "archive=${NAME}.zip"', source)

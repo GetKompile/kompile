@@ -171,6 +171,10 @@ jobs:
             -Dproperty=project.version \
             -DnewVersion="${VERSION}" \
             -DgenerateBackupPoms=false
+          mvn -B -ntp -N org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property \
+            -Dproperty=anserini.version \
+            -DnewVersion="${VERSION}" \
+            -DgenerateBackupPoms=false
 
       - name: Build Java distribution
         id: package
