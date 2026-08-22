@@ -187,7 +187,6 @@ jobs:
           set -euo pipefail
           export GRAALVM_HOME="${JAVA_HOME}"
           export KOMPILE_JAVA="${JAVA_HOME}/bin/java"
-          export MAVEN_OPTS="${MAVEN_OPTS:-} -Dmaven.test.skip=true"
           export OUTPUT_DIR="${RUNNER_TEMP}/kompile-java-dist"
           ./build-dist.sh "${VARIANT}" \
             --jars-only \

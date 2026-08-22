@@ -17,6 +17,7 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.CliAgentModelDiscovery;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -34,19 +35,19 @@ class CliAgentModelServiceTest {
     @Test
     void modelListParserKeepsRealModelIds() {
         assertEquals("opencode/deepseek-v4-flash",
-                CliAgentModelService.parseModelListLine("opencode/deepseek-v4-flash").orElseThrow());
+                CliAgentModelDiscovery.parseModelListLine("opencode/deepseek-v4-flash").orElseThrow());
         assertEquals("qwen2.5-coder:7b",
-                CliAgentModelService.parseModelListLine("  - qwen2.5-coder:7b  ").orElseThrow());
+                CliAgentModelDiscovery.parseModelListLine("  - qwen2.5-coder:7b  ").orElseThrow());
     }
 
     @Test
     void modelListParserRejectsCliHelpAndDocsPaths() {
-        assertTrue(CliAgentModelService.parseModelListLine(
+        assertTrue(CliAgentModelDiscovery.parseModelListLine(
                 "No models available. Use /login to log into a provider via OAuth or API key. See:").isEmpty());
-        assertTrue(CliAgentModelService.parseModelListLine(
+        assertTrue(CliAgentModelDiscovery.parseModelListLine(
                 "/home/agibsonccc/.nvm/versions/node/v22.15.0/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md").isEmpty());
-        assertTrue(CliAgentModelService.parseModelListLine("https://example.invalid/models.md").isEmpty());
-        assertTrue(CliAgentModelService.parseModelListLine("Available models:").isEmpty());
+        assertTrue(CliAgentModelDiscovery.parseModelListLine("https://example.invalid/models.md").isEmpty());
+        assertTrue(CliAgentModelDiscovery.parseModelListLine("Available models:").isEmpty());
     }
 
     @Test
