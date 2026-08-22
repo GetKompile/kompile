@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat.tools;
 
+import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
+
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.util.function.Consumer;
@@ -45,50 +47,49 @@ public class ProgressPrintStream extends PrintStream {
 
     @Override
     public void println(String x) {
-        super.println(x);
-        if (consumer != null && x != null) {
-            consumer.accept(x);
-        }
+        String prefix = lineBuffer.toString();
+        lineBuffer.setLength(0);
+        forward(prefix + (x == null ? "null" : x), true);
     }
 
     @Override
     public void println(Object x) {
-        String s = String.valueOf(x);
-        super.println(s);
-        if (consumer != null) {
-            consumer.accept(s);
-        }
+        println(String.valueOf(x));
     }
 
     @Override
     public void print(String s) {
-        super.print(s);
-        // Buffer partial lines (e.g., carriage-return progress bars)
-        if (s != null && consumer != null) {
-            if (s.contains("\r") || s.contains("\n")) {
-                lineBuffer.append(s);
-                String buffered = lineBuffer.toString();
-                // Split on newlines, emit complete lines
-                String[] lines = buffered.split("[\\r\\n]+");
-                for (String line : lines) {
-                    if (!line.isEmpty()) {
-                        consumer.accept(line);
-                    }
-                }
-                lineBuffer.setLength(0);
-            } else {
-                lineBuffer.append(s);
-            }
+        if (s == null) return;
+        lineBuffer.append(s.replace('\r', '\n'));
+        int newline;
+        while ((newline = lineBuffer.indexOf("\n")) >= 0) {
+            String line = lineBuffer.substring(0, newline);
+            lineBuffer.delete(0, newline + 1);
+            if (!line.isEmpty()) forward(line, true);
         }
     }
 
     @Override
     public void flush() {
-        super.flush();
-        if (lineBuffer.length() > 0 && consumer != null) {
-            consumer.accept(lineBuffer.toString());
+        if (lineBuffer.length() > 0) {
+            forward(lineBuffer.toString(), false);
             lineBuffer.setLength(0);
         }
+        super.flush();
+    }
+
+    private void forward(String line, boolean newline) {
+        if (line == null) return;
+        if (CodeIndexDiagnostics.isAlertLine(line)
+                && CodeIndexDiagnostics.hasAlertSink()) {
+            CodeIndexDiagnostics.alert(line);
+            return;
+        }
+        if (!CodeIndexDiagnostics.hasAlertSink()) {
+            if (newline) super.println(line);
+            else super.print(line);
+        }
+        if (consumer != null) consumer.accept(line);
     }
 
     /**

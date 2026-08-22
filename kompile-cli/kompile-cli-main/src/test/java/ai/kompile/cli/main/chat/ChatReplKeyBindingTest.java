@@ -6,7 +6,13 @@ import org.jline.reader.LineReader;
 import org.jline.reader.Reference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -25,6 +31,43 @@ import static org.junit.jupiter.api.Assertions.*;
  * </pre>
  */
 class ChatReplKeyBindingTest {
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void postExitResumeCommandUsesExactTranscriptUuid() {
+        String transcriptUuid = "123e4567-e89b-12d3-a456-426614174000";
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(buffer, true, StandardCharsets.UTF_8);
+
+        ChatRepl.printPostExitResumeCommand(out, transcriptUuid, true);
+
+        assertEquals("\nResume this chat:\n"
+                        + "  kompile chat --resume " + transcriptUuid + " --mode standard\n",
+                buffer.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+    }
+
+    @Test
+    void postExitEligibilityRequiresPersistedStandardChatTranscript() throws Exception {
+        Path transcript = tempDir.resolve("123e4567-e89b-12d3-a456-426614174000.txt");
+
+        assertFalse(ChatRepl.shouldPrintPostExitResumeCommand(false, transcript));
+        Files.writeString(transcript, "saved chat");
+        assertTrue(ChatRepl.shouldPrintPostExitResumeCommand(false, transcript));
+        assertFalse(ChatRepl.shouldPrintPostExitResumeCommand(true, transcript));
+    }
+
+    @Test
+    void postExitResumeCommandIsSuppressedOutsideStandardChat() {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(buffer, true, StandardCharsets.UTF_8);
+
+        ChatRepl.printPostExitResumeCommand(
+                out, "123e4567-e89b-12d3-a456-426614174000", false);
+
+        assertEquals("", buffer.toString(StandardCharsets.UTF_8));
+    }
 
     private KeyMap<Object> keyMap;
 
@@ -118,6 +161,22 @@ class ChatReplKeyBindingTest {
     }
 
     @Test
+    void ctrlBIsBoundInEveryPossibleActiveKeymap() {
+        Map<String, KeyMap<Binding>> keyMaps = new LinkedHashMap<>();
+        keyMaps.put(LineReader.EMACS, new KeyMap<>());
+        keyMaps.put(LineReader.VIINS, new KeyMap<>());
+        keyMaps.put(LineReader.VICMD, new KeyMap<>());
+
+        ChatRepl.bindBackgroundKey(keyMaps);
+
+        for (KeyMap<Binding> map : keyMaps.values()) {
+            Object bound = map.getBound(KeyMap.ctrl('B'));
+            assertInstanceOf(Reference.class, bound);
+            assertEquals("background-task", ((Reference) bound).name());
+        }
+    }
+
+    @Test
     void escapeShouldBindToCancelOperation() {
         Object bound = keyMap.getBound("\033");
         assertInstanceOf(Reference.class, bound);
@@ -202,6 +261,34 @@ class ChatReplKeyBindingTest {
     void firstLineOfMultilineDraftDoesNotFallIntoHistory() {
         assertEquals(ChatRepl.StandardUpAction.KEEP_DRAFT,
                 ChatRepl.resolveStandardUpAction("first\nsecond", 3, false, false));
+    }
+
+    @Test
+    void queueEditLeasePreservesMessageAndMoveChangesDispatchOrder() {
+        MessageQueue queue = new MessageQueue(
+                "queue-edit-contract-" + java.util.UUID.randomUUID());
+        try {
+            queue.clear();
+            MessageQueue.QueuedMessage first = queue.enqueue("first");
+            MessageQueue.QueuedMessage second = queue.enqueue("second");
+
+            assertTrue(queue.beginEdit(second.getId()));
+            assertEquals(2, queue.size(), "editing must not remove the queued item");
+            assertEquals(MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING,
+                    queue.get(second.getId()).getStatus());
+            assertNull(queue.takeForSend(second.getId()),
+                    "dispatch must not claim a message while its edit buffer is active");
+            assertTrue(queue.update(second.getId(), "second revised"));
+            assertEquals(MessageQueue.QueuedMessage.QueuedMessageStatus.PENDING,
+                    queue.get(second.getId()).getStatus());
+
+            assertTrue(queue.move(second.getId(), 0));
+            assertEquals(second.getId(), queue.peek().getId());
+            assertEquals("second revised", queue.peek().getContent());
+            assertEquals(first.getId(), queue.getAll().get(1).getId());
+        } finally {
+            queue.clear();
+        }
     }
 
     @Test

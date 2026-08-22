@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.codeindex.IndexDatabase;
 import ai.kompile.cli.main.codeindex.LocalCodeIndexer;
+import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
 import ai.kompile.cli.main.coordination.CoordinationStateManager;
 import ai.kompile.cli.main.lsp.LspException;
 import ai.kompile.cli.main.lsp.LspServerConfig;
@@ -662,7 +663,8 @@ public class LspTool implements CliTool {
         try (PrintStream sink = new PrintStream(OutputStream.nullOutputStream())) {
             new LocalCodeIndexer().index(root, projectId, null, null, sink);
         } catch (Exception e) {
-            System.err.println("[LSP] incremental reindex after rename failed: " + e.getMessage());
+            CodeIndexDiagnostics.alert(
+                    "[LSP] incremental reindex after rename failed: " + e.getMessage());
         }
     }
 

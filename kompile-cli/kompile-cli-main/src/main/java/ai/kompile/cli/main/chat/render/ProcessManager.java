@@ -26,6 +26,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * Proper subprocess management with process group handling, kill tree,
@@ -74,6 +77,23 @@ public class ProcessManager {
      * @return the process result
      */
     public static ProcessResult execute(String command, Path workDir, int timeoutMs, AtomicBoolean abortSignal) {
+        return executeInterruptibly(command, workDir, timeoutMs,
+                abortSignal == null ? null : abortSignal::get);
+    }
+
+    /** Execute while observing a composed cancellation predicate. */
+    public static ProcessResult executeInterruptibly(
+            String command, Path workDir, int timeoutMs, BooleanSupplier abortCheck) {
+        return executeInterruptibly(command, workDir, timeoutMs, abortCheck, null);
+    }
+
+    /**
+     * Execute while forwarding each merged stdout/stderr line as soon as it is
+     * captured. The returned result still contains the bounded canonical output.
+     */
+    public static ProcessResult executeInterruptibly(
+            String command, Path workDir, int timeoutMs, BooleanSupplier abortCheck,
+            Consumer<String> outputConsumer) {
         if (timeoutMs <= 0) timeoutMs = DEFAULT_TIMEOUT_MS;
 
         long startTime = System.currentTimeMillis();
@@ -97,8 +117,22 @@ public class ProcessManager {
             inheritEnv(env, "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL",
                     "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "TERM");
 
+            if (abortCheck != null && abortCheck.getAsBoolean()) {
+                return new ProcessResult("", -1,
+                        System.currentTimeMillis() - startTime,
+                        false, true, false);
+            }
+
             process = pb.start();
             ACTIVE_PROCESSES.add(process);
+
+            // Close the small check/start race before a fast command can finish.
+            if (abortCheck != null && abortCheck.getAsBoolean()) {
+                killTree(process);
+                return new ProcessResult("", -1,
+                        System.currentTimeMillis() - startTime,
+                        false, true, false);
+            }
 
             final Process proc = process;
 
@@ -107,6 +141,9 @@ public class ProcessManager {
             // read on the calling thread would block past any timeout.
             final StringBuilder output = new StringBuilder();
             final AtomicBoolean outputTruncated = new AtomicBoolean(false);
+            final Object outputCallbackLock = new Object();
+            final AtomicReference<Consumer<String>> liveOutput =
+                    new AtomicReference<>(outputConsumer);
             Thread reader = new Thread(() -> {
                 try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
                     String line;
@@ -116,6 +153,19 @@ public class ProcessManager {
                                 output.append(line).append('\n');
                             } else {
                                 outputTruncated.set(true);
+                            }
+                        }
+                        Consumer<String> sink = liveOutput.get();
+                        if (sink != null) {
+                            synchronized (outputCallbackLock) {
+                                sink = liveOutput.get();
+                                if (sink != null) {
+                                    try {
+                                        sink.accept(line);
+                                    } catch (RuntimeException ignored) {
+                                        // Rendering failures must not terminate the command.
+                                    }
+                                }
                             }
                         }
                     }
@@ -130,7 +180,7 @@ public class ProcessManager {
             boolean timedOut = false;
             boolean aborted = false;
             while (proc.isAlive()) {
-                if (abortSignal != null && abortSignal.get()) {
+                if (abortCheck != null && abortCheck.getAsBoolean()) {
                     aborted = true;
                     break;
                 }
@@ -149,6 +199,11 @@ public class ProcessManager {
             // Let the reader drain the tail, then abandon it (daemon thread) — a
             // detached pipe holder must not stall the call.
             reader.join((timedOut || aborted) ? 500 : OUTPUT_DRAIN_TIMEOUT_MS);
+            // A detached child may keep the pipe open after the root exits. Stop
+            // display callbacks before returning even if the daemon reader remains.
+            synchronized (outputCallbackLock) {
+                liveOutput.set(null);
+            }
 
             long durationMs = System.currentTimeMillis() - startTime;
             String outputStr;

@@ -24,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -46,6 +47,20 @@ public class BackgroundProcessManager implements AutoCloseable {
     @FunctionalInterface
     public interface ExitCallback {
         void onProcessExit(ProcessEntry entry);
+    }
+
+    /** One-shot configuration that wakes the chat agent when a process exits. */
+    public record ProcessMonitor(String processId, String message, Instant createdAt) {
+        public ProcessMonitor {
+            message = message == null ? "" : message.strip();
+            createdAt = createdAt == null ? Instant.now() : createdAt;
+        }
+    }
+
+    /** Callback invoked only when a process with an explicit monitor exits. */
+    @FunctionalInterface
+    public interface MonitorCallback {
+        void onMonitoredProcessExit(ProcessEntry entry, ProcessMonitor monitor);
     }
 
     /**
@@ -93,6 +108,8 @@ public class BackgroundProcessManager implements AutoCloseable {
         private final Process process;
         private final ProcessKind kind;
         private volatile Map<String, String> metadata;
+        private final AtomicBoolean exitNotified = new AtomicBoolean(false);
+        private final AtomicBoolean killRequested = new AtomicBoolean(false);
 
         ProcessEntry(String id, String command, long pid, Instant startTime,
                      Path outputFile, String description, Process process,
@@ -146,6 +163,7 @@ public class BackgroundProcessManager implements AutoCloseable {
     private final String sessionId;
     private final Path outputDir;
     private final Map<String, ProcessEntry> processes = new ConcurrentHashMap<>();
+    private final Map<String, ProcessMonitor> monitors = new ConcurrentHashMap<>();
     private final AtomicInteger counter = new AtomicInteger(0);
     private final ExecutorService ioExecutor;
     private volatile ExitCallback exitCallback;
@@ -156,6 +174,10 @@ public class BackgroundProcessManager implements AutoCloseable {
     // Output listeners are separate from state listeners so callers can redraw the
     // currently viewed process without treating every output line as a lifecycle change.
     private final List<OutputCallback> outputListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.concurrent.CopyOnWriteArrayList<ExitCallback> exitListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.concurrent.CopyOnWriteArrayList<MonitorCallback> monitorListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * Default retention for completed process entries (1 hour).
@@ -217,6 +239,58 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public void setExitCallback(ExitCallback callback) {
         this.exitCallback = callback;
+    }
+
+    public void addExitListener(ExitCallback listener) {
+        if (listener != null) exitListeners.addIfAbsent(listener);
+    }
+
+    public void removeExitListener(ExitCallback listener) {
+        exitListeners.remove(listener);
+    }
+
+    public void addMonitorListener(MonitorCallback listener) {
+        if (listener != null) monitorListeners.addIfAbsent(listener);
+    }
+
+    public void removeMonitorListener(MonitorCallback listener) {
+        monitorListeners.remove(listener);
+    }
+
+    /**
+     * Create or replace a one-shot completion monitor for a running local command.
+     * The entry lock closes the race between registration and terminal-state publication.
+     */
+    public ProcessMonitor monitor(String processId, String message) {
+        ProcessEntry entry = processes.get(processId);
+        if (entry == null) return null;
+        ProcessMonitor monitor;
+        synchronized (entry) {
+            if (!entry.isRunning() || entry.isVirtual()
+                    || entry.getKind() != ProcessKind.COMMAND) {
+                return null;
+            }
+            monitor = new ProcessMonitor(entry.getId(), message, Instant.now());
+            monitors.put(entry.getId(), monitor);
+        }
+        fireChange();
+        return monitor;
+    }
+
+    public boolean removeMonitor(String processId) {
+        boolean removed = processId != null && monitors.remove(processId) != null;
+        if (removed) fireChange();
+        return removed;
+    }
+
+    public ProcessMonitor getMonitor(String processId) {
+        return processId == null ? null : monitors.get(processId);
+    }
+
+    public List<ProcessMonitor> listMonitors() {
+        List<ProcessMonitor> result = new ArrayList<>(monitors.values());
+        result.sort(Comparator.comparing(ProcessMonitor::createdAt));
+        return result;
     }
 
     /**
@@ -290,7 +364,15 @@ public class BackgroundProcessManager implements AutoCloseable {
      * @throws IOException if the process cannot be started or output directory cannot be created
      */
     public ProcessEntry launch(String command, String description, Path workDir) throws IOException {
-        return launch(new String[]{"bash", "-c", command}, command, description, workDir);
+        return launch(new String[]{"bash", "-c", command}, command, description, workDir,
+                false, "");
+    }
+
+    /** Launch a command with a one-shot completion monitor installed before output capture starts. */
+    public ProcessEntry launchMonitored(String command, String description, Path workDir,
+                                        String monitorMessage) throws IOException {
+        return launch(new String[]{"bash", "-c", command}, command, description, workDir,
+                true, monitorMessage);
     }
 
     /**
@@ -304,10 +386,11 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public ProcessEntry launch(String[] args, String description, Path workDir) throws IOException {
         String command = String.join(" ", args);
-        return launch(args, command, description, workDir);
+        return launch(args, command, description, workDir, false, "");
     }
 
-    private ProcessEntry launch(String[] args, String command, String description, Path workDir) throws IOException {
+    private ProcessEntry launch(String[] args, String command, String description, Path workDir,
+                                boolean monitored, String monitorMessage) throws IOException {
         // Ensure output directory exists
         Files.createDirectories(outputDir);
 
@@ -333,6 +416,9 @@ public class BackgroundProcessManager implements AutoCloseable {
                 id, command, process.pid(), Instant.now(), outputFile, description, process,
                 ProcessKind.COMMAND, Map.of());
         processes.put(id, entry);
+        if (monitored) {
+            monitors.put(id, new ProcessMonitor(id, monitorMessage, Instant.now()));
+        }
 
         // Start daemon thread to capture output and watch for exit
         ioExecutor.submit(() -> captureOutputAndWait(entry));
@@ -395,22 +481,41 @@ public class BackgroundProcessManager implements AutoCloseable {
 
             // Process has exited; get exit code
             int exitCode = entry.process.waitFor();
-            entry.endTime = Instant.now();
-            entry.exitCode = exitCode;
-            entry.state = exitCode == 0 ? ProcessState.COMPLETED : ProcessState.FAILED;
+            synchronized (entry) {
+                entry.endTime = Instant.now();
+                if (entry.killRequested.get()) {
+                    entry.exitCode = -1;
+                    entry.state = ProcessState.KILLED;
+                } else {
+                    entry.exitCode = exitCode;
+                    entry.state = exitCode == 0
+                            ? ProcessState.COMPLETED : ProcessState.FAILED;
+                }
+            }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            entry.endTime = Instant.now();
-            entry.exitCode = -1;
-            entry.state = ProcessState.KILLED;
+            synchronized (entry) {
+                entry.endTime = Instant.now();
+                entry.exitCode = -1;
+                entry.state = ProcessState.KILLED;
+            }
         } catch (IOException e) {
-            entry.endTime = Instant.now();
-            entry.exitCode = -1;
-            entry.state = ProcessState.FAILED;
+            synchronized (entry) {
+                entry.endTime = Instant.now();
+                entry.exitCode = -1;
+                entry.state = entry.killRequested.get()
+                        ? ProcessState.KILLED : ProcessState.FAILED;
+            }
         }
 
-        // Invoke callback
+        fireExit(entry);
+        fireChange();
+    }
+
+    private void fireExit(ProcessEntry entry) {
+        if (entry == null || !entry.exitNotified.compareAndSet(false, true)) return;
+        ProcessMonitor monitor = monitors.remove(entry.getId());
         ExitCallback cb = exitCallback;
         if (cb != null) {
             try {
@@ -419,8 +524,22 @@ public class BackgroundProcessManager implements AutoCloseable {
                 // Don't let callback errors propagate
             }
         }
-
-        fireChange();
+        for (ExitCallback listener : exitListeners) {
+            try {
+                listener.onProcessExit(entry);
+            } catch (RuntimeException ignored) {
+                // Completion observation must never break process cleanup.
+            }
+        }
+        if (monitor != null) {
+            for (MonitorCallback listener : monitorListeners) {
+                try {
+                    listener.onMonitoredProcessExit(entry, monitor);
+                } catch (RuntimeException ignored) {
+                    // Agent wake-up failures must never break process cleanup.
+                }
+            }
+        }
     }
 
     /**
@@ -449,8 +568,26 @@ public class BackgroundProcessManager implements AutoCloseable {
     }
 
     private boolean killProcess(ProcessEntry entry) {
-        if (!entry.isRunning()) {
-            return false;
+        synchronized (entry) {
+            if (!entry.isRunning()) {
+                return false;
+            }
+            if (entry.process == null) {
+                entry.killRequested.set(true);
+                entry.endTime = Instant.now();
+                entry.state = ProcessState.KILLED;
+                entry.exitCode = -1;
+            } else {
+                if (!entry.process.isAlive()) {
+                    // The capture owner still has to drain output and record the
+                    // real exit code. Its synchronized publication will make this
+                    // terminal before any later kill can claim the entry.
+                    return false;
+                }
+                // Publish intent atomically with the RUNNING-state check. The waiter
+                // cannot publish a natural terminal event between these operations.
+                entry.killRequested.set(true);
+            }
         }
 
         if (entry.process == null) {
@@ -469,19 +606,9 @@ public class BackgroundProcessManager implements AutoCloseable {
                     }
                 });
             }
-            entry.endTime = Instant.now();
-            entry.state = ProcessState.KILLED;
-            entry.exitCode = -1;
+            fireExit(entry);
             fireChange();
             return true;
-        }
-
-        if (!entry.process.isAlive()) {
-            entry.endTime = Instant.now();
-            entry.state = ProcessState.COMPLETED;
-            entry.exitCode = 0;
-            fireChange();
-            return false;
         }
 
         long pid = entry.pid;
@@ -516,9 +643,11 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
         }
 
-        entry.endTime = Instant.now();
-        entry.state = ProcessState.KILLED;
-        entry.exitCode = -1;
+        synchronized (entry) {
+            entry.endTime = Instant.now();
+            entry.state = ProcessState.KILLED;
+            entry.exitCode = -1;
+        }
 
         fireChange();
         return true;
@@ -529,12 +658,13 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public boolean complete(String processId) {
         ProcessEntry entry = processes.get(processId);
-        if (entry == null || !entry.isRunning()) {
-            return false;
+        if (entry == null) return false;
+        synchronized (entry) {
+            if (!entry.isRunning()) return false;
+            entry.endTime = Instant.now();
+            entry.exitCode = 0;
+            entry.state = ProcessState.COMPLETED;
         }
-        entry.endTime = Instant.now();
-        entry.exitCode = 0;
-        entry.state = ProcessState.COMPLETED;
         fireChange();
         return true;
     }
@@ -544,12 +674,13 @@ public class BackgroundProcessManager implements AutoCloseable {
      */
     public boolean fail(String processId, int exitCode) {
         ProcessEntry entry = processes.get(processId);
-        if (entry == null || !entry.isRunning()) {
-            return false;
+        if (entry == null) return false;
+        synchronized (entry) {
+            if (!entry.isRunning()) return false;
+            entry.endTime = Instant.now();
+            entry.exitCode = exitCode;
+            entry.state = ProcessState.FAILED;
         }
-        entry.endTime = Instant.now();
-        entry.exitCode = exitCode;
-        entry.state = ProcessState.FAILED;
         fireChange();
         return true;
     }
@@ -686,6 +817,7 @@ public class BackgroundProcessManager implements AutoCloseable {
             ProcessEntry entry = it.next().getValue();
             if (!entry.isRunning() && entry.endTime != null && entry.endTime.isBefore(cutoff)) {
                 it.remove();
+                monitors.remove(entry.getId());
                 // Also delete the output file
                 try {
                     Files.deleteIfExists(entry.outputFile);
@@ -725,6 +857,8 @@ public class BackgroundProcessManager implements AutoCloseable {
             }
         }
         ioExecutor.shutdownNow();
+        monitors.clear();
+        monitorListeners.clear();
 
         // Remove shutdown hook to prevent leak
         try {

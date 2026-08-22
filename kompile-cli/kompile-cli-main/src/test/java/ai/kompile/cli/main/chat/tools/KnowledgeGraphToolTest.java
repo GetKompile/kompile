@@ -249,6 +249,39 @@ class KnowledgeGraphToolTest {
     }
 
     @Test
+    void factSheetInventoryUsesCrawlSummariesAndIsolatesUnreadableLegacyGraphs() throws Exception {
+        Path healthy = tempDir.resolve("data/crawls/dogfood-ocr-pdf");
+        Files.createDirectories(healthy);
+        Files.writeString(healthy.resolve("crawl-result.json"), """
+                {
+                  "profileId": "dogfood-ocr-pdf",
+                  "name": "MCP OCR Dogfood",
+                  "status": "COMPLETED",
+                  "sources": ["wailingcaverns.pdf"],
+                  "documentCount": 1,
+                  "chunkCount": 1,
+                  "graphEntityCount": 4,
+                  "graphRelationCount": 3
+                }
+                """, StandardCharsets.UTF_8);
+        Files.write(healthy.resolve("graph.kgraph"), new byte[]{(byte) 0xc3});
+        Path orphan = tempDir.resolve("data/crawls/unreadable-legacy");
+        Files.createDirectories(orphan);
+        Files.write(orphan.resolve("graph.kgraph"), new byte[]{(byte) 0xc3});
+
+        ToolResult result = noUrlTool.execute(
+                om.createObjectNode().put("action", "list_fact_sheets"), context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("MCP OCR Dogfood"), result.getOutput());
+        assertTrue(result.getOutput().contains("\"inventorySource\" : \"crawl-summary\""),
+                result.getOutput());
+        assertTrue(result.getOutput().contains("\"skippedUnreadableGraphs\" : 1"),
+                result.getOutput());
+        assertTrue(result.getOutput().contains("unreadable-legacy"), result.getOutput());
+    }
+
+    @Test
     void projectLocalGraphSupportsDiscoveryStatusAndQueries() throws Exception {
         Path graphPath = tempDir.resolve("data/crawls/kb-7/graph.kgraph");
         Files.createDirectories(graphPath.getParent());

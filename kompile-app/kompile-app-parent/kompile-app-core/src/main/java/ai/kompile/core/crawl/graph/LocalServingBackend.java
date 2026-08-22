@@ -91,6 +91,21 @@ public interface LocalServingBackend {
         return false;
     }
 
+    /** Stable process-lifetime identity for diagnostics; null for in-process/test adapters. */
+    default String subprocessRunId() {
+        return null;
+    }
+
+    /** Durable process log path, when the adapter owns an out-of-process runtime. */
+    default String subprocessLogPath() {
+        return null;
+    }
+
+    /** Exact transport request most recently completed on the current caller thread. */
+    default String lastTransportRequestId() {
+        return null;
+    }
+
     /**
      * Run model-owned structured chat. The default deliberately fails instead of flattening the
      * request into raw text; callers that select this capability must never silently fall back.

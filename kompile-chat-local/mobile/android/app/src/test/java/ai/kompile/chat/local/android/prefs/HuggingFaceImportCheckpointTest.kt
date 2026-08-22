@@ -119,12 +119,10 @@ class HuggingFaceImportCheckpointTest {
 
     @Test
     fun movingBranchReferenceIsNeverPersistedAsDurableResume() {
-        val discovery = HuggingFaceGgmlResolver.resolve(
+        val discovery = HuggingFaceGgmlResolver.exact(
             HuggingFaceGgmlResolver.parse(
                 "https://huggingface.co/acme/tiny-chat/resolve/main/model.gguf"
-            ),
-            COMMIT,
-            emptyList()
+            )
         )
 
         assertFalse(discovery.selectedCandidate().orElseThrow().isCommitPinned)

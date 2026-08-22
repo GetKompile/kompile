@@ -119,6 +119,8 @@ public class MessageQueueManager {
         System.out.println();
         System.out.println(renderer.dim("Commands:"));
         System.out.println(renderer.dim("  /queue-send [id]     Send the next message (or specific ID)"));
+        System.out.println(renderer.dim("  /queue-edit <id> <text>  Edit a queued message"));
+        System.out.println(renderer.dim("  /queue-move <id> <n>     Move a message to position n"));
         System.out.println(renderer.dim("  /queue-send-all      Send all queued messages"));
         System.out.println(renderer.dim("  /queue-remove <id>   Remove a message from the queue"));
         System.out.println(renderer.dim("  /queue-clear         Clear all queued messages"));
@@ -141,10 +143,21 @@ public class MessageQueueManager {
             return;
         }
 
-        System.out.println(renderer.cyan("Sending queued message [") + msg.getId() + renderer.cyan("]"));
-        messageQueue.dequeue();
+        if (isBeingEdited(msg)) {
+            System.out.println(renderer.yellow("Message is currently being edited [")
+                    + msg.getId() + renderer.yellow("]"));
+            return;
+        }
+
+        MessageQueue.QueuedMessage dequeued = messageHandler.dispatchNextQueuedMessage();
+        if (dequeued == null) {
+            System.out.println(renderer.yellow("Message is currently being edited [")
+                    + msg.getId() + renderer.yellow("]"));
+            return;
+        }
+        System.out.println(renderer.cyan("Sending queued message [")
+                + dequeued.getId() + renderer.cyan("]"));
         repl.requestStatusRedraw();
-        messageHandler.handleChatMessage(msg.getContent());
     }
 
     /**
@@ -170,10 +183,20 @@ public class MessageQueueManager {
             return;
         }
 
+        if (isBeingEdited(msg)) {
+            System.out.println(renderer.yellow("Message is currently being edited [")
+                    + id + renderer.yellow("]"));
+            return;
+        }
+
+        MessageQueue.QueuedMessage dequeued = messageHandler.dispatchQueuedMessage(id);
+        if (dequeued == null) {
+            System.out.println(renderer.yellow("Message is currently being edited or no longer queued [")
+                    + id + renderer.yellow("]"));
+            return;
+        }
         System.out.println(renderer.cyan("Sending queued message [") + id + renderer.cyan("]"));
-        messageQueue.remove(id);
         repl.requestStatusRedraw();
-        messageHandler.handleChatMessage(msg.getContent());
     }
 
     /**
@@ -193,6 +216,11 @@ public class MessageQueueManager {
             }
             return;
         }
+        MessageQueue.QueuedMessage first = messageQueue.peek();
+        if (first != null && isBeingEdited(first)) {
+            System.out.println(renderer.yellow("The upcoming message is being edited; queue order was not changed."));
+            return;
+        }
 
         int total = messageQueue.size();
         backgroundTaskManager.startQueueChain(total);
@@ -204,11 +232,14 @@ public class MessageQueueManager {
         // remaining messages in order. Looping here would dequeue and immediately
         // re-enqueue every item while the first turn is busy.
         backgroundTaskManager.advanceQueueChain();
-        MessageQueue.QueuedMessage msg = messageQueue.dequeue();
+        MessageQueue.QueuedMessage msg = messageHandler.dispatchNextQueuedMessage();
+        if (msg == null) {
+            backgroundTaskManager.endQueueChain();
+            return;
+        }
         repl.requestStatusRedraw();
         System.out.println(renderer.dim("→ [1/" + total + "] Sending: ")
                 + StringUtils.truncate(msg.getContent(), 55));
-        messageHandler.handleChatMessage(msg.getContent());
     }
 
     /**
@@ -227,6 +258,49 @@ public class MessageQueueManager {
             System.out.println(renderer.green("Removed message [") + id + renderer.green("]"));
         } else {
             System.out.println(renderer.red("Message not found: ") + id);
+        }
+    }
+
+    /** Edit a queued message by ID without changing its queue position. */
+    public void editQueuedMessage(String arguments) {
+        String[] parts = arguments == null ? new String[0] : arguments.strip().split("\\s+", 2);
+        if (parts.length < 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            System.out.println("Usage: /queue-edit <id> <new message>");
+            System.out.println(renderer.dim("  Press ↑ on an empty prompt to edit the latest queued message interactively."));
+            return;
+        }
+        if (messageQueue.update(parts[0], parts[1].strip())) {
+            repl.requestStatusRedraw();
+            System.out.println(renderer.green("Updated message [") + parts[0] + renderer.green("]"));
+        } else {
+            System.out.println(renderer.red("Message not found: ") + parts[0]);
+        }
+    }
+
+    /** Move a queued message to a one-based queue position. */
+    public void moveQueuedMessage(String arguments) {
+        String[] parts = arguments == null ? new String[0] : arguments.strip().split("\\s+", 2);
+        if (parts.length < 2) {
+            System.out.println("Usage: /queue-move <id> <position>");
+            return;
+        }
+        int position;
+        try {
+            position = Integer.parseInt(parts[1].strip());
+        } catch (NumberFormatException e) {
+            System.out.println(renderer.red("Queue position must be a number: ") + parts[1]);
+            return;
+        }
+        if (position < 1 || position > messageQueue.size()) {
+            System.out.println(renderer.red("Queue position must be between 1 and ") + messageQueue.size());
+            return;
+        }
+        if (messageQueue.move(parts[0], position - 1)) {
+            repl.requestStatusRedraw();
+            System.out.println(renderer.green("Moved message [") + parts[0]
+                    + renderer.green("] to position " + position));
+        } else {
+            System.out.println(renderer.red("Message not found: ") + parts[0]);
         }
     }
 
@@ -253,7 +327,7 @@ public class MessageQueueManager {
         autoDequeueEnabled = !autoDequeueEnabled;
         if (autoDequeueEnabled) {
             System.out.println(renderer.green("✓ Auto-dequeue enabled"));
-            System.out.println(renderer.dim("  Queued messages will send automatically when tasks complete"));
+            System.out.println(renderer.dim("  Queued messages will send at the next model/tool boundary"));
             if (!messageQueue.isEmpty()) {
                 System.out.println(renderer.dim("  " + messageQueue.size() + " message(s) in queue"));
             }
@@ -265,6 +339,11 @@ public class MessageQueueManager {
             }
         }
         System.out.println();
+    }
+
+    private static boolean isBeingEdited(MessageQueue.QueuedMessage message) {
+        return message != null && message.getStatus()
+                == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING;
     }
 
 }

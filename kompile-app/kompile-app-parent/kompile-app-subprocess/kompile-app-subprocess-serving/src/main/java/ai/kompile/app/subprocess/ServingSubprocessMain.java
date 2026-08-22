@@ -202,39 +202,40 @@ public class ServingSubprocessMain {
     }
 
     private static void preloadModel(SameDiffLanguageModelImpl llm,
-                                     ServingSubprocessArgs args) {
-        try {
-            Path modelPath = Paths.get(args.modelPath());
-            Path tokenizerPath = args.tokenizerPath() != null
-                    ? Paths.get(args.tokenizerPath())
-                    : modelPath.getParent().resolve("tokenizer.json");
+                                     ServingSubprocessArgs args) throws Exception {
+        Path modelPath = Paths.get(args.modelPath());
+        Path tokenizerPath = args.tokenizerPath() != null
+                ? Paths.get(args.tokenizerPath())
+                : modelPath.getParent().resolve("tokenizer.json");
 
-            Map<String, Object> opts = new HashMap<>();
-            opts.put("maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256);
-            if (args.temperature() != null) {
-                opts.put("temperature", args.temperature());
-            }
-            if (args.topK() != null) {
-                opts.put("topK", args.topK());
-            }
-            if (args.dspEnabled() != null) {
-                opts.put("dspEnabled", args.dspEnabled());
-                // Recovery mode is a complete Kompile-side Java decode loop. Merely disabling
-                // SameDiff DSP still leaves GGUF GenerationPipeline dependent on the native
-                // autoregressive_decode plan, so select the existing lifecycle-managed runner.
-                opts.put("legacyGeneration", !args.dspEnabled());
-            }
-            if (args.optimizerEnabled() != null) {
-                opts.put("graphOptimizerEnabled", args.optimizerEnabled());
-            }
-
-            logger.info("Pre-loading model: {} from {}", args.modelId(), modelPath);
-            llm.loadModel(args.modelId(), modelPath, tokenizerPath, opts);
-            logger.info("Model {} pre-loaded successfully", args.modelId());
-        } catch (Exception e) {
-            logger.warn("Failed to pre-load model {}: {}", args.modelId(), e.getMessage());
-            // Don't fail startup — model can be loaded later via REST API
+        Map<String, Object> opts = new HashMap<>();
+        opts.put("maxNewTokens", args.maxNewTokens() > 0 ? args.maxNewTokens() : 256);
+        if (args.temperature() != null) {
+            opts.put("temperature", args.temperature());
         }
+        if (args.topK() != null) {
+            opts.put("topK", args.topK());
+        }
+        if (args.dspEnabled() != null) {
+            opts.put("dspEnabled", args.dspEnabled());
+            // Recovery mode is a complete Kompile-side Java decode loop. Merely disabling
+            // SameDiff DSP still leaves GGUF GenerationPipeline dependent on the native
+            // autoregressive_decode plan, so select the existing lifecycle-managed runner.
+            opts.put("legacyGeneration", !args.dspEnabled());
+        }
+        if (args.optimizerEnabled() != null) {
+            opts.put("graphOptimizerEnabled", args.optimizerEnabled());
+        }
+
+        logger.info("Pre-loading model: {} from {}", args.modelId(), modelPath);
+        try {
+            llm.loadModel(args.modelId(), modelPath, tokenizerPath, opts);
+        } catch (Exception failure) {
+            logger.error("Failed to pre-load model {} from {}",
+                    args.modelId(), modelPath, failure);
+            throw failure;
+        }
+        logger.info("Model {} pre-loaded successfully", args.modelId());
     }
 
     /**

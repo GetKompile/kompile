@@ -88,17 +88,17 @@ class DirectLlmClientHistoryTest {
         }
 
         @Test
-        void nullSummaryClearsHistoryWithoutAddingMessages() {
+        void nullSummaryLeavesHistoryUnchanged() {
             client.addToHistory("user", "old message");
             client.replaceHistoryWithSummary(null);
-            assertEquals(0, client.getHistorySize());
+            assertEquals(1, client.getHistorySize());
         }
 
         @Test
-        void blankSummaryClearsHistoryWithoutAddingMessages() {
+        void blankSummaryLeavesHistoryUnchanged() {
             client.addToHistory("user", "old message");
             client.replaceHistoryWithSummary("   \t\n  ");
-            assertEquals(0, client.getHistorySize());
+            assertEquals(1, client.getHistorySize());
         }
 
         @Test

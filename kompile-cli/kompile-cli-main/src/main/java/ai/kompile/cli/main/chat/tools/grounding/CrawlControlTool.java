@@ -101,10 +101,15 @@ public final class CrawlControlTool implements CliTool {
         context.checkPermission(permissionKey(), "Control a unified crawl");
         String operation = params.path("operation").asText("").toLowerCase(Locale.ROOT);
         if (operation.isBlank()) return ToolResult.error("operation is required");
+        String jobId = params.path("jobId").asText("");
+        // A project-local job remains project-local even when a managed crawl URL is configured.
+        // Route by the backend-owned identity before probing or calling any remote endpoint.
+        if (LocalCrawlJobRegistry.isJobId(jobId)) {
+            return localBackend.control(params, context);
+        }
         if (!client.isAvailable()) {
             return localBackend.control(params, context);
         }
-        String jobId = params.path("jobId").asText("");
         String stepId = params.path("stepId").asText("");
         int page = Math.max(0, params.path("page").asInt(0));
         int size = Math.min(200, Math.max(1, params.path("size").asInt(50)));

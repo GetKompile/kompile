@@ -105,6 +105,9 @@ public final class LocalCrawlCapabilities {
                 .add("kvCacheEnabled").add("kvCacheMaxEntries").add("timeoutMinutes");
         vlmTemplate.put("executionModel", "unified-pipeline-runtime")
                 .put("supportedInputTypes", "application/pdf")
+                .put("ocrSemantics", "VLM-based document extraction after PDF page rendering")
+                .put("recommendedFor", "Scanned or image-heavy PDFs; prefer an active project pipeline such as vlm-ocr-pdf when available")
+                .put("canonicalScannedPdf", true)
                 .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec");
         vlmConfiguration.put("modelLifecycle",
                 "The MCP runtime resolves or bootstraps bound models and acquires a reusable isolated runtime automatically.");
@@ -127,9 +130,12 @@ public final class LocalCrawlCapabilities {
                         .get("pipelineDefinition")));
         ObjectNode ocrTemplate = pipelineTemplate(templates, OCR_PIPELINE, "OCR", "pdf",
                 "recursive-character", 2_000, 200,
-                "PDF OCR/extraction through the reusable unified pipeline runtime.");
+                "Generic PDF OCR pipeline contract through the reusable unified pipeline runtime.");
         ocrTemplate.put("executionModel", "unified-pipeline-runtime")
                 .put("supportedInputTypes", "application/pdf")
+                .put("ocrSemantics", "Executor-defined OCR; this template does not imply a bundled traditional OCR engine")
+                .put("recommendedFor", "Projects that explicitly register an OCR executor or model; use VLM for the verified scanned-PDF path")
+                .put("canonicalScannedPdf", false)
                 .put("definitionFormat", "UnifiedPipelineDefinition with a concrete pipelineSpec");
         pipelineTemplate(templates, TABLE_AWARE_PIPELINE, "TABLE_AWARE", "table",
                 "recursive-character", 2_000, 200,
@@ -140,7 +146,7 @@ public final class LocalCrawlCapabilities {
 
         ArrayNode loaders = catalog.putArray("loaders");
         loader(loaders, "auto", List.of("local-text", "local-knowledge"),
-                List.of("file/*"), "Select pdf, html, markdown, code, or text from each file.");
+                List.of("file/*"), "Select pdf, html, markdown, Excel, code, or text from each file.");
         loader(loaders, "text", List.of("plain-text"),
                 List.of("text/*", "application/json", "application/xml"),
                 "UTF-8 text loader with normalized whitespace.");
@@ -148,6 +154,10 @@ public final class LocalCrawlCapabilities {
                 "Markdown-preserving UTF-8 loader.");
         loader(loaders, "html", List.of("web-html"), List.of("text/html"),
                 "HTML-to-Markdown loader with table and heading preservation.");
+        loader(loaders, "excel", List.of("xlsx", "spreadsheet", "office-excel"),
+                List.of("application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.oasis.opendocument.spreadsheet"),
+                "Apache POI Excel loader with sheet tables and formula dependency graph extraction.");
         loader(loaders, "pdf", List.of("pdfbox"), List.of("application/pdf"),
                 "PDFBox loader with pdftotext fallback in native mode.");
         loader(loaders, "code", List.of("source-code"), List.of("text/x-source"),
@@ -183,6 +193,7 @@ public final class LocalCrawlCapabilities {
                 .put("resultTool", "crawl_result")
                 .put("cancelOperation", "cancel")
                 .put("pollAfterMs", 1000)
+                .put("progressFields", "stage, stageDetail, progressPercent, stageUpdatedAt")
                 .put("terminalStatuses", "COMPLETED, COMPLETED_WITH_ERRORS, FAILED, CANCELLED")
                 .put("retention", "bounded MCP-host registry; completed handles expire after configured retention")
                 .put("agentRule", "Never repeat a start while terminal=false; poll the returned jobId and respect pollAfterMs.");
@@ -216,6 +227,12 @@ public final class LocalCrawlCapabilities {
         minimumRequest.put("modelDefinitionTool", "vlm_model_definition");
         minimumRequest.put("defaultPipelineId", "pdf-vlm").put("dryRun", true);
         minimumRequest.putObject("modelRuntime").put("autoBootstrap", true);
+        wiring.putObject("scannedPdf")
+                .put("canonicalPipelineType", "VLM")
+                .put("preferredProjectPipelineId", "vlm-ocr-pdf")
+                .put("fallbackTemplate", VLM_PIPELINE)
+                .put("inputContract", "application/pdf")
+                .put("guidance", "Use the project-registered VLM OCR pipeline for scanned or image-heavy PDFs; ocr-document is only for an explicitly configured OCR executor.");
         wiring.putObject("textModelText")
                 .put("pipelineId", TEXT_MODEL_PIPELINE)
                 .put("contract", "text input + modelBindings.default + local model resolution + text output");
@@ -227,8 +244,10 @@ public final class LocalCrawlCapabilities {
                 .put("contract", "caller owns the concrete SequencePipeline or GraphPipeline composition; no model/provider is inferred");
 
         ObjectNode typeGuide = catalog.putObject("pipelineTypeGuide");
-        typeGuide.put("VLM/OCR",
-                "UnifiedPipelineDefinition + modelId/modelBindings; MCP manages runtime acquisition and reuse.");
+        typeGuide.put("VLM",
+                "Canonical scanned/image-heavy PDF path. PDF pages are rendered and processed by a bound vision-language model; prefer the active vlm-ocr-pdf project pipeline when advertised.");
+        typeGuide.put("OCR",
+                "Generic OCR pipeline type for an explicitly registered OCR executor or model. It does not automatically select a traditional OCR engine.");
         typeGuide.put("LLM",
                 "Use the text-model-text composition or provide a custom UnifiedPipelineDefinition with a caller-selected model binding.");
         typeGuide.put("COMPOSED_VISION",
@@ -381,9 +400,11 @@ public final class LocalCrawlCapabilities {
         }
         String profileLoader = profile == null ? null : profile.getLoader();
         String profileChunker = profile == null ? null : profile.getChunker();
+        String documentLoader = text(document, "loaderName");
+        String crawlerLoader = crawlerLoader(document);
         String loader = explicitlySelectedPipeline
-                ? firstNonBlank(text(document, "loaderName"), pipeline.loaderName(), profileLoader, "auto")
-                : firstNonBlank(text(document, "loaderName"), profileLoader, pipeline.loaderName(), "auto");
+                ? firstNonBlank(documentLoader, crawlerLoader, pipeline.loaderName(), profileLoader, "auto")
+                : firstNonBlank(documentLoader, crawlerLoader, profileLoader, pipeline.loaderName(), "auto");
         String chunker = explicitlySelectedPipeline
                 ? firstNonBlank(text(document, "chunkerName"), pipeline.chunkerName(), profileChunker,
                 "recursive-character")
@@ -426,7 +447,10 @@ public final class LocalCrawlCapabilities {
         applyExecutorReference(request, document, processor);
         applyDefinitionReference(request, document, processor);
         JsonNode modelRuntime = request == null ? null : request.get("modelRuntime");
-        if (modelRuntime != null && modelRuntime.isObject()) {
+        // A request-level runtime is not a model pipeline by itself. Keep ordinary
+        // STANDARD_TEXT ingestion on the local loader path unless the resolved
+        // pipeline already has an executable processor definition.
+        if (!processor.isEmpty() && modelRuntime != null && modelRuntime.isObject()) {
             processor.put("modelRuntime", jsonValue(modelRuntime));
         }
         validateAllowedContentTypes(document, file);
@@ -463,6 +487,7 @@ public final class LocalCrawlCapabilities {
             case "html" -> name.endsWith(".html") || name.endsWith(".htm");
             case "markdown" -> name.endsWith(".md") || name.endsWith(".markdown");
             case "code" -> isCodeFile(file);
+            case "excel" -> isExcelFile(file);
             case "table" -> name.endsWith(".csv") || name.endsWith(".tsv")
                     || name.endsWith(".html") || name.endsWith(".htm") || name.endsWith(".pdf");
             case "text" -> !name.endsWith(".pdf");
@@ -593,7 +618,9 @@ public final class LocalCrawlCapabilities {
             String registeredPipelineId = text(definition, "registeredPipelineId");
             PipelineDefinition inherited = pipelines.get(registeredPipelineId);
             if (registeredPipelineId != null && inherited == null) {
-                throw new IllegalArgumentException("Unknown registeredPipelineId: " + registeredPipelineId);
+                throw new IllegalArgumentException("Unknown registeredPipelineId: " + registeredPipelineId
+                        + ". registeredPipelineId must name a reusable pipelineRegistry.defaults or "
+                        + "registeredPipelines entry; select a project pipeline directly with pipelineId.");
             }
             String type = firstNonBlank(text(definition, "pipelineType"),
                             inherited == null ? null : inherited.pipelineType(), "CUSTOM")
@@ -1126,8 +1153,15 @@ public final class LocalCrawlCapabilities {
         if (name.endsWith(".pdf")) return "pdf";
         if (name.endsWith(".html") || name.endsWith(".htm")) return "html";
         if (name.endsWith(".md") || name.endsWith(".markdown")) return "markdown";
+        if (isExcelFile(file)) return "excel";
         if (isCodeFile(file)) return "code";
         return "text";
+    }
+
+    private static boolean isExcelFile(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".xls") || name.endsWith(".xlsx")
+                || name.endsWith(".xlsm") || name.endsWith(".ods");
     }
 
     private static boolean isCodeFile(Path file) {
@@ -1153,6 +1187,13 @@ public final class LocalCrawlCapabilities {
         return LOADER_ALIASES.get(normalize(value));
     }
 
+    private static String crawlerLoader(JsonNode document) {
+        if (document == null || !document.isObject()) return null;
+        JsonNode properties = document.get("properties");
+        return firstNonBlank(text(properties, "crawlerId"), text(properties, "preferredCrawlerId"),
+                text(document, "crawlerId"), text(document, "preferredCrawlerId"));
+    }
+
     private static String canonicalChunker(String value) {
         if (value == null || value.isBlank()) return "recursive-character";
         return CHUNKER_ALIASES.get(normalize(value));
@@ -1164,6 +1205,7 @@ public final class LocalCrawlCapabilities {
         aliases(aliases, "text", "text", "plain-text");
         aliases(aliases, "markdown", "markdown", "md");
         aliases(aliases, "html", "html", "web-html");
+        aliases(aliases, "excel", "excel", "xlsx", "spreadsheet", "office-excel");
         aliases(aliases, "pdf", "pdf", "pdfbox");
         aliases(aliases, "code", "code", "source-code");
         aliases(aliases, "table", "table", "table-aware");

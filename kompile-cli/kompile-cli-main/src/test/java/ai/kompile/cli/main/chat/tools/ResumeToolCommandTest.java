@@ -154,6 +154,14 @@ class ResumeToolCommandTest {
     }
 
     @Test
+    void kompileChatWizardDisplaysFullTranscriptUuid() {
+        String transcriptUuid = "123e4567-e89b-12d3-a456-426614174000";
+
+        assertEquals(transcriptUuid,
+                ResumeTool.wizardSessionIdentifier(transcriptUuid, null));
+    }
+
+    @Test
     void sessionIdentifierColumnPreservesFullUuidAndCompactsLongProviderIds() {
         String uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
         assertEquals(uuid, ResumeTool.fitSessionIdentifier(uuid, 36));
@@ -236,7 +244,8 @@ class ResumeToolCommandTest {
         Path home = tempDir.resolve("standard-chat-home");
         System.setProperty("user.home", home.toString());
         try {
-            ChatHistory history = new ChatHistory("custom-standard-catalog");
+            String transcriptUuid = "123e4567-e89b-12d3-a456-426614174000";
+            ChatHistory history = new ChatHistory(transcriptUuid);
             history.open("(local)", null, false);
             history.logUserMessage("resume my literal standard chat");
             history.logAgentResponse("coder", "saved response", 10);
@@ -253,7 +262,7 @@ class ResumeToolCommandTest {
             JsonNode searchJson = mapper.readTree(searchResult.getOutput());
             JsonNode standard = null;
             for (JsonNode conversation : searchJson.path("conversations")) {
-                if ("custom-standard-catalog".equals(conversation.path("session_id").asText())) {
+                if (transcriptUuid.equals(conversation.path("session_id").asText())) {
                     standard = conversation;
                     break;
                 }
@@ -264,11 +273,11 @@ class ResumeToolCommandTest {
             assertEquals("standard_chat", standard.path("session_type").asText());
             assertEquals("kompile", standard.path("resume_target").asText());
             assertTrue(standard.path("resume_command").asText()
-                    .contains("chat --resume custom-standard-catalog --mode standard"));
+                    .contains("chat --resume " + transcriptUuid + " --mode standard"));
 
             ObjectNode resume = mapper.createObjectNode();
             resume.put("action", "resume");
-            resume.put("session_id", "custom-standard-catalog");
+            resume.put("session_id", transcriptUuid);
             ToolResult resumeResult = tool.execute(resume, null);
             assertFalse(resumeResult.isError());
 
@@ -276,13 +285,79 @@ class ResumeToolCommandTest {
             assertEquals("kompile", resumeJson.path("target_agent").asText());
             assertEquals("standard_chat", resumeJson.path("session_type").asText());
             assertEquals("standard", resumeJson.path("resume_mode").asText());
+            assertEquals(transcriptUuid, resumeJson.path("session_id").asText());
             assertTrue(resumeJson.path("resume_command").asText()
-                    .contains("chat --resume custom-standard-catalog --mode standard"));
+                    .contains("chat --resume " + transcriptUuid + " --mode standard"));
         } finally {
             if (previousHome == null) {
                 System.clearProperty("user.home");
             } else {
                 System.setProperty("user.home", previousHome);
+            }
+        }
+    }
+
+    @Test
+    void searchScopesKompileSessionsToCurrentDirectory() throws Exception {
+        String previousHome = System.getProperty("user.home");
+        String previousUserDir = System.getProperty("user.dir");
+        Path home = tempDir.resolve("scoped-search-home");
+        Path currentProject = tempDir.resolve("search-project-a").toAbsolutePath().normalize();
+        Path otherProject = tempDir.resolve("search-project-b").toAbsolutePath().normalize();
+        Files.createDirectories(currentProject);
+        Files.createDirectories(otherProject);
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", otherProject.toString());
+        try {
+            ChatHistory local = new ChatHistory("local-search-session");
+            local.open("(local)", null, false, currentProject);
+            local.logUserMessage("local search conversation");
+            local.close();
+
+            ChatHistory remote = new ChatHistory("remote-search-session");
+            remote.open("(local)", null, false, otherProject);
+            remote.logUserMessage("remote search conversation");
+            remote.close();
+
+            ResumeTool tool = new ResumeTool(true);
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode search = mapper.createObjectNode();
+            search.put("action", "search");
+            search.put("source", "kompile");
+
+            ToolContext currentProjectContext = new ToolContext(
+                    "resume-scope-test", null, null, currentProject, null);
+            ToolResult result = tool.execute(search, currentProjectContext);
+            assertFalse(result.isError());
+            JsonNode conversations = mapper.readTree(result.getOutput()).path("conversations");
+            assertEquals(1, conversations.size());
+            assertEquals("local-search-session",
+                    conversations.get(0).path("session_id").asText());
+            assertEquals(currentProject.toString(),
+                    conversations.get(0).path("working_directory").asText());
+
+            ObjectNode resumeRemote = mapper.createObjectNode();
+            resumeRemote.put("action", "resume");
+            resumeRemote.put("session_id", "remote-search-session");
+            resumeRemote.put("target_agent", "auto");
+            ToolResult resumeResult = tool.execute(resumeRemote, currentProjectContext);
+            assertFalse(resumeResult.isError());
+            JsonNode resumed = mapper.readTree(resumeResult.getOutput());
+            assertEquals("kompile", resumed.path("target_agent").asText(),
+                    "An explicit cross-project standard chat must retain global metadata");
+            assertEquals("standard_chat", resumed.path("session_type").asText());
+            assertEquals("standard", resumed.path("resume_mode").asText());
+            assertEquals(otherProject.toString(), resumed.path("working_directory").asText());
+        } finally {
+            if (previousHome == null) {
+                System.clearProperty("user.home");
+            } else {
+                System.setProperty("user.home", previousHome);
+            }
+            if (previousUserDir == null) {
+                System.clearProperty("user.dir");
+            } else {
+                System.setProperty("user.dir", previousUserDir);
             }
         }
     }

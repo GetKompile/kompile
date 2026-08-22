@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 
 /**
  * One model loop for graph extraction.
@@ -151,6 +152,15 @@ public final class ToolDrivenExtractionExecutor {
             arguments = arguments == null
                     ? Map.of()
                     : Collections.unmodifiableMap(new LinkedHashMap<>(arguments));
+        }
+    }
+
+    /** Complete round-level audit event emitted before any response evidence is discarded. */
+    public record TraceEvent(String eventType, int round, Map<String, Object> payload) {
+        public TraceEvent {
+            eventType = eventType == null ? "UNKNOWN" : eventType;
+            payload = payload == null ? Map.of()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(payload));
         }
     }
 
@@ -501,6 +511,17 @@ public final class ToolDrivenExtractionExecutor {
                                     StructuredLlmCaller caller,
                                     DecomposedExtractionExecutor.PromptProfile profile,
                                     String additionalInstructions) {
+        return extractStructured(chunkText, taskContext, backend, caller, profile,
+                additionalInstructions, null);
+    }
+
+    public Result extractStructured(String chunkText,
+                                    ExtractionTaskContext taskContext,
+                                    ExtractionToolBackend backend,
+                                    StructuredLlmCaller caller,
+                                    DecomposedExtractionExecutor.PromptProfile profile,
+                                    String additionalInstructions,
+                                    Consumer<TraceEvent> traceSink) {
         if (chunkText == null || chunkText.isBlank()) {
             return new Result(null, null, 0, 0, List.of(), List.of("source shard is empty"));
         }
@@ -609,6 +630,9 @@ public final class ToolDrivenExtractionExecutor {
                         + "inside the executable prompt budget");
             }
             StructuredRequest request = new StructuredRequest(messages, tools);
+            trace(traceSink, "LLM_REQUEST", round, Map.of(
+                    "messages", request.messages(),
+                    "tools", request.tools()));
             final StructuredResponse response;
             try {
                 response = caller.call(PASS_ID, request);
@@ -623,6 +647,13 @@ public final class ToolDrivenExtractionExecutor {
 
             StructuredResponseAssessment assessment =
                     assessStructuredResponse(request, response);
+            Map<String, Object> responseTrace = new LinkedHashMap<>();
+            responseTrace.put("rawText", response.rawText());
+            responseTrace.put("content", response.content());
+            responseTrace.put("toolCalls", response.toolCalls());
+            responseTrace.put("parseErrors", response.parseErrors());
+            responseTrace.put("assessment", assessment);
+            trace(traceSink, "LLM_RESPONSE", round, responseTrace);
             String parseFeedback = null;
             if (!assessment.parseErrors().isEmpty()) {
                 parseFeedback = invalidStructuredToolCallFeedback(
@@ -681,17 +712,30 @@ public final class ToolDrivenExtractionExecutor {
                 ToolRequest exactCall = new ToolRequest(
                         id, call.name(), call.arguments());
                 if (!callAssessment.declared()) {
-                    observations.add(new StructuredToolObservation(
-                            exactCall, undeclaredToolJson(exactCall, tools)));
+                    String observation = undeclaredToolJson(exactCall, tools);
+                    observations.add(new StructuredToolObservation(exactCall, observation));
+                    trace(traceSink, "TOOL_REJECTED", round, Map.of(
+                            "call", exactCall,
+                            "declared", false,
+                            "schemaValid", false,
+                            "errors", callAssessment.errors(),
+                            "observation", observation));
                     notes.add("round " + round + " rejected undeclared function '"
                             + exactCall.name() + "' without backend execution");
                     continue;
                 }
 
                 if (!callAssessment.schemaValid()) {
+                    String observation = invalidToolArgumentsJson(
+                            exactCall, callAssessment.errors());
                     observations.add(new StructuredToolObservation(
-                            exactCall,
-                            invalidToolArgumentsJson(exactCall, callAssessment.errors())));
+                            exactCall, observation));
+                    trace(traceSink, "TOOL_REJECTED", round, Map.of(
+                            "call", exactCall,
+                            "declared", true,
+                            "schemaValid", false,
+                            "errors", callAssessment.errors(),
+                            "observation", observation));
                     notes.add("round " + round + " rejected " + exactCall.name()
                             + " arguments without mutation or backend execution: "
                             + String.join("; ", callAssessment.errors()));
@@ -737,6 +781,11 @@ public final class ToolDrivenExtractionExecutor {
                 observations.add(new StructuredToolObservation(toolCall, execution.json()));
 
                 Optional<ExtractionResult> accepted = backend.acceptedResult();
+                trace(traceSink, "TOOL_OBSERVATION", round, Map.of(
+                        "call", toolCall,
+                        "observation", execution.json(),
+                        "terminal", execution.terminal(),
+                        "accepted", accepted.isPresent()));
                 if (execution.terminal() && accepted.isPresent()) {
                     try {
                         return new Result(
@@ -769,6 +818,18 @@ public final class ToolDrivenExtractionExecutor {
         return retainedResult(backend, rounds, calls, toolsUsed, notes,
                 "native retry rounds ended after retaining validator-clean facts",
                 transientFailureObserved ? FailureKind.TRANSIENT : FailureKind.TERMINAL);
+    }
+
+    private static void trace(Consumer<TraceEvent> traceSink,
+                              String eventType,
+                              int round,
+                              Map<String, Object> payload) {
+        if (traceSink == null) return;
+        try {
+            traceSink.accept(new TraceEvent(eventType, round, payload));
+        } catch (RuntimeException ignored) {
+            // Observability must never alter extraction or admission behavior.
+        }
     }
 
     private static StructuredContract structuredContract(

@@ -231,6 +231,56 @@ class DoctorCommandTest {
         assertFalse(DoctorCommand.isLocalDistribution(tmp));
     }
 
+    @Test
+    void cliOnlyMetadataRequiresOnlyPresentServingWorkers(@TempDir Path tmp) throws IOException {
+        Files.writeString(tmp.resolve(".dist-info.json"), """
+                {
+                  "variant": "cli-only",
+                  "components": {
+                    "server": {"present": false},
+                    "model-staging": {"present": false},
+                    "model-serving": {"present": true},
+                    "pipeline-serving": {"present": true},
+                    "chat": {"present": false},
+                    "crawl-manager": {"present": false}
+                  }
+                }
+                """);
+
+        DoctorCommand.DistributionComponentContract contract =
+                DoctorCommand.distributionComponentContract(tmp);
+
+        assertEquals("cli-only", contract.variant());
+        assertEquals(List.of(
+                        ai.kompile.cli.main.install.registry.ComponentRegistry.KOMPILE_MODEL_SERVING,
+                        ai.kompile.cli.main.install.registry.ComponentRegistry.KOMPILE_PIPELINE_SERVING),
+                contract.required());
+        assertTrue(contract.optional().isEmpty());
+    }
+
+    @Test
+    void metadataOverridesLegacyLocalMarker(@TempDir Path tmp) throws IOException {
+        Files.writeString(tmp.resolve(".variant"), "local\n");
+        Files.writeString(tmp.resolve(".dist-info.json"), """
+                {
+                  "variant": "local",
+                  "components": {
+                    "model-staging": {"present": false},
+                    "model-serving": {"present": true},
+                    "pipeline-serving": {"present": true}
+                  }
+                }
+                """);
+
+        DoctorCommand.DistributionComponentContract contract =
+                DoctorCommand.distributionComponentContract(tmp);
+
+        assertFalse(contract.required().contains(
+                ai.kompile.cli.main.install.registry.ComponentRegistry.KOMPILE_MODEL_STAGING));
+        assertTrue(contract.required().contains(
+                ai.kompile.cli.main.install.registry.ComponentRegistry.KOMPILE_MODEL_SERVING));
+    }
+
     // ── isNativeImage helper ──────────────────────────────────────────────────
 
     @Test
@@ -296,11 +346,13 @@ class DoctorCommandTest {
     // ── Instance registry GC ──────────────────────────────────────────────────
 
     @Test
-    void checkInstances_producesExactlyOneResult() {
+    void checkInstancesProducesRegistrySummaryAndOptionalHealthResults() {
         DoctorCommand cmd = new DoctorCommand();
         List<DoctorCommand.CheckResult> results = cmd.checkInstances();
-        assertEquals(1, results.size(), "checkInstances should produce exactly one result");
-        assertEquals("Instance registry", results.get(0).name());
+        assertFalse(results.isEmpty());
+        assertTrue(results.stream().anyMatch(result -> "Instance registry".equals(result.name())));
+        assertTrue(results.stream().allMatch(result ->
+                "Instance registry".equals(result.name()) || result.name().startsWith("Instance: ")));
     }
 
     @Test

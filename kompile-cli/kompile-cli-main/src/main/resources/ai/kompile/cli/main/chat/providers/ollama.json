@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "provider": "ollama",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "Ollama thinking capability guide",
+    "url": "https://docs.ollama.com/capabilities/thinking",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": []
+}

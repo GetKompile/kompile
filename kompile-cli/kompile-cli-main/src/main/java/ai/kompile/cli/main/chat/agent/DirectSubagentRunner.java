@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -62,17 +63,22 @@ public class DirectSubagentRunner implements SubagentRunner {
         private final String modelOverride;
         private final ConcurrentLinkedQueue<String> followUps = new ConcurrentLinkedQueue<>();
         private final AtomicBoolean running = new AtomicBoolean(false);
+        private final AtomicBoolean cancelled;
+        private final AtomicBoolean terminalClaimed = new AtomicBoolean(false);
+        private volatile Thread ownerThread;
+        private volatile ToolContext activeToolContext;
         private volatile long lastTouched = System.currentTimeMillis();
 
         private DirectSession(String id, AgentConfig agent, ToolContext parentContext,
                               DirectLlmClient client, String systemPrompt,
-                              String modelOverride) {
+                              String modelOverride, AtomicBoolean cancelled) {
             this.id = id;
             this.agent = agent;
             this.parentContext = parentContext;
             this.client = client;
             this.systemPrompt = systemPrompt;
             this.modelOverride = modelOverride;
+            this.cancelled = cancelled;
         }
     }
 
@@ -94,31 +100,35 @@ public class DirectSubagentRunner implements SubagentRunner {
     @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
-        String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
-        if (lifecycleListener != null) {
-            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
-        }
-        emitActivity(subagentId, "starting",
-                renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
-                parentContext);
-
-        notifyStatus(subagentId, "starting");
+        String subagentId = agent.getName() + "-"
+                + UUID.randomUUID().toString().substring(0, 8);
         // Create an isolated, retained LLM history for this subagent while
         // sharing the parent turn's cancellation signal. Retention is what lets
         // the selected subagent accept later follow-up messages.
         DirectLlmClient subClient = new DirectLlmClient(chatConfig, objectMapper);
-        subClient.setCancelSignal(parentContext.getAbortSignal());
+        AtomicBoolean subagentCancelled = new AtomicBoolean(false);
+        subClient.setCancellationCheck(
+                () -> subagentCancelled.get() || parentContext.isAborted());
         String systemPrompt = agent.getSystemPrompt();
         if (systemPrompt == null) systemPrompt = "";
         DirectSession session = new DirectSession(
                 subagentId, agent, parentContext, subClient,
-                systemPrompt, agent.getModelOverride());
+                systemPrompt, agent.getModelOverride(), subagentCancelled);
         if (lifecycleListener != null) {
             subClient.setOutputConsumer(chunk -> emitOutput(subagentId, chunk));
         }
         sessions.put(subagentId, session);
         trimSessions();
         session.running.set(true);
+        session.ownerThread = Thread.currentThread();
+        // Publish the row only after its cancellation handle is registered.
+        if (lifecycleListener != null) {
+            lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
+        }
+        emitActivity(subagentId, "starting",
+                renderer.renderSubagentStart(agent.getName(), StringUtils.truncate(prompt, 80)),
+                parentContext);
+        notifyStatus(subagentId, "starting");
         try {
             return runConversation(session, prompt, startTime);
         } catch (Exception e) {
@@ -140,7 +150,7 @@ public class DirectSubagentRunner implements SubagentRunner {
         // Direct subagents run until they finish or their shared abort signal
         // fires. Chat does not impose an arbitrary execution-limit cutoff.
         while (true) {
-            if (session.parentContext.isAborted()) {
+            if (session.cancelled.get() || session.parentContext.isAborted()) {
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
                         renderer.renderSubagentError(session.agent.getName(), "Aborted"),
@@ -156,7 +166,8 @@ public class DirectSubagentRunner implements SubagentRunner {
             DirectLlmClient.StreamResult result = session.client.streamChat(
                     currentMessage, session.systemPrompt, toolDefinitions,
                     pendingToolResults, session.modelOverride);
-            if (result.cancelled || session.parentContext.isAborted()) {
+            if (result.cancelled || session.cancelled.get()
+                    || session.parentContext.isAborted()) {
                 notifyStatus(session.id, "aborted");
                 emitActivity(session.id, "aborted",
                         renderer.renderSubagentError(session.agent.getName(), "Aborted"),
@@ -182,6 +193,10 @@ public class DirectSubagentRunner implements SubagentRunner {
 
             List<DirectLlmClient.ToolCallResultInput> toolResults = new ArrayList<>();
             for (DirectLlmClient.ToolCallOutput tc : result.toolCalls) {
+                if (session.cancelled.get() || session.parentContext.isAborted()) {
+                    notifyStatus(session.id, "aborted");
+                    break;
+                }
                 String rawInput = tc.arguments == null ? "" : tc.arguments.toString();
                 String callSummary = TerminalRenderer.summarizeToolCall(tc.name, rawInput, 88);
                 emitActivity(session.id, callSummary + " …",
@@ -218,10 +233,12 @@ public class DirectSubagentRunner implements SubagentRunner {
                         session.parentContext.getWorkingDirectory(),
                         toolRegistry
                 );
-                subContext.linkAbortSignal(session.parentContext.getAbortSignal());
+                subContext.linkAbortCheck(
+                        () -> session.cancelled.get() || session.parentContext.isAborted());
                 subContext.setOutputConsumer(session.parentContext.getOutputConsumer());
 
                 try {
+                    session.activeToolContext = subContext;
                     ToolResult toolResult = tool.execute(tc.arguments, subContext);
                     String outcome = TerminalRenderer.summarizeToolResult(toolResult, 72);
                     emitActivity(session.id,
@@ -244,6 +261,8 @@ public class DirectSubagentRunner implements SubagentRunner {
                             session.parentContext);
                     toolResults.add(new DirectLlmClient.ToolCallResultInput(
                             tc.id, tc.name, "Error: " + e.getMessage(), true));
+                } finally {
+                    session.activeToolContext = null;
                 }
             }
 
@@ -253,6 +272,11 @@ public class DirectSubagentRunner implements SubagentRunner {
 
         long durationMs = System.currentTimeMillis() - startTime;
         String finalResult = fullResponse.toString().trim();
+
+        if (!session.terminalClaimed.compareAndSet(false, true)) {
+            notifyStatus(session.id, "aborted");
+            return finalResult + "\n[Subagent aborted]";
+        }
 
         notifyStatus(session.id, "completed");
         emitActivity(session.id, "completed",
@@ -265,7 +289,8 @@ public class DirectSubagentRunner implements SubagentRunner {
     @Override
     public boolean sendMessage(String subagentId, String message) {
         DirectSession session = sessions.get(subagentId);
-        if (session == null || message == null || message.isBlank()) return false;
+        if (session == null || session.cancelled.get()
+                || message == null || message.isBlank()) return false;
         session.lastTouched = System.currentTimeMillis();
         session.followUps.add(message.strip());
         emitActivity(session.id, "follow-up queued", "\n  You › " + message.strip(),
@@ -274,17 +299,52 @@ public class DirectSubagentRunner implements SubagentRunner {
         return true;
     }
 
+    @Override
+    public boolean canCancel(String subagentId) {
+        DirectSession session = sessions.get(subagentId);
+        return session != null && session.running.get()
+                && !session.terminalClaimed.get() && !session.cancelled.get();
+    }
+
+    @Override
+    public boolean cancel(String subagentId) {
+        DirectSession session = sessions.get(subagentId);
+        if (session == null || !session.running.get()
+                || !session.terminalClaimed.compareAndSet(false, true)) return false;
+        session.cancelled.set(true);
+        session.followUps.clear();
+        ToolContext activeTool = session.activeToolContext;
+        if (activeTool != null) activeTool.abort();
+        notifyStatus(session.id, "cancelling");
+        emitActivity(session.id, "cancelling",
+                renderer.renderSubagentError(session.agent.getName(), "Cancelled by user"),
+                session.parentContext);
+        Thread owner = session.ownerThread;
+        if (owner != null && owner != Thread.currentThread()) owner.interrupt();
+        return true;
+    }
+
     private void finishRun(DirectSession session) {
         session.lastTouched = System.currentTimeMillis();
+        session.ownerThread = null;
+        if (session.cancelled.get()) Thread.interrupted();
         if (lifecycleListener != null) lifecycleListener.onSubagentEnd(session.id);
         session.running.set(false);
-        startQueuedRun(session);
+        if (session.cancelled.get()) {
+            session.followUps.clear();
+            sessions.remove(session.id, session);
+        } else {
+            startQueuedRun(session);
+        }
     }
 
     private void startQueuedRun(DirectSession session) {
-        if (session.followUps.isEmpty() || !session.running.compareAndSet(false, true)) return;
+        if (session.cancelled.get() || session.followUps.isEmpty()
+                || !session.running.compareAndSet(false, true)) return;
+        session.terminalClaimed.set(false);
         String first = session.followUps.poll();
         Thread worker = new Thread(() -> {
+            session.ownerThread = Thread.currentThread();
             if (lifecycleListener != null) {
                 lifecycleListener.onSubagentStart(
                         session.id, session.agent.getName(), "Interactive follow-up");

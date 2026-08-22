@@ -33,6 +33,36 @@ class ToolCallRenderingTest {
     }
 
     @Test
+    void streamedOutputIsNestedAndNotRepeatedAtCompletion() {
+        ToolResult result = new ToolResult("exit 0", "BUILD SUCCESS\nsecond line", Map.of(
+                "exitCode", 0,
+                ToolResult.OUTPUT_STREAMED_METADATA, true));
+
+        String live = renderer.renderToolOutput("BUILD SUCCESS\nsecond line");
+        String completed = renderer.renderToolCallComplete("bash", result);
+
+        assertTrue(live.contains("│"));
+        assertTrue(live.contains("BUILD SUCCESS"));
+        assertTrue(live.contains("second line"));
+        assertFalse(completed.contains("BUILD SUCCESS"),
+                "completion must not repeat an output body already rendered live");
+        assertFalse(completed.contains(ToolResult.OUTPUT_STREAMED_METADATA),
+                "internal rendering metadata must stay out of the transcript");
+    }
+
+    @Test
+    void streamedOutputRemovesTerminalControlCharacters() {
+        String rendered = new TerminalRenderer(false).renderToolOutput(
+                "before\u001bc\bafter\u001b[2J\u009b31m");
+
+        assertFalse(rendered.contains("\u001b"));
+        assertFalse(rendered.contains("\b"));
+        assertFalse(rendered.contains("\u009b"));
+        assertTrue(rendered.contains("before"));
+        assertTrue(rendered.contains("after"));
+    }
+
+    @Test
     void readShowsFilePathAndLineCount() {
         ToolResult result = new ToolResult("src/main/java/Foo.java", "     1\tpackage com.example;\n",
                 Map.of("totalLines", 200, "linesShown", 50, "truncated", true));

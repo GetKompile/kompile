@@ -29,6 +29,7 @@ class CrawlLlmDispatcherStructuredChatTest {
     @Test
     void dispatchesStructuredCapabilityWithoutRawPromptSerialization() {
         AtomicInteger calls = new AtomicInteger();
+        List<UnifiedCrawlJob.LlmCallRecord> observed = new java.util.ArrayList<>();
         dispatcher = new CrawlLlmDispatcher((request, maxNewTokens) -> {
             calls.incrementAndGet();
             assertEquals(128, maxNewTokens);
@@ -40,16 +41,25 @@ class CrawlLlmDispatcherStructuredChatTest {
                             "call-1", "submit_graph_delta",
                             Map.of("entities", List.of(), "relations", List.of()))), List.of());
         });
+        dispatcher.setLlmCallObserver(observed::add);
+        UnifiedCrawlJob job = job();
 
         StructuredChatLanguageModel.Response response =
                 dispatcher.promptStructuredWithCapacityFallback(
-                        request(), "llm", job(), null);
+                        request(), "llm", job, null);
 
         assertEquals(1, calls.get());
         assertEquals("<native>", response.rawText());
         assertTrue(dispatcher.hasStructuredChatBackend());
         assertEquals(false, dispatcher.hasLlmChat(),
                 "structured capability must not require a raw LLMChat wrapper");
+        assertEquals(1, observed.size());
+        UnifiedCrawlJob.LlmCallRecord record = observed.get(0);
+        assertTrue(record.isStructured());
+        assertTrue(record.getStructuredRequestJson().contains("submit_graph_delta"));
+        assertTrue(record.getStructuredResponseJson().contains("toolCalls"));
+        assertTrue(record.getStructuredResponseJson().contains("call-1"));
+        assertEquals(record.getLlmCallId(), job.getRecentLlmCalls().get(0).getLlmCallId());
     }
 
     @Test
@@ -60,13 +70,18 @@ class CrawlLlmDispatcherStructuredChatTest {
             throw new IllegalStateException("native parser unavailable");
         });
 
+        UnifiedCrawlJob job = job();
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> dispatcher.promptStructuredWithCapacityFallback(
-                        request(), "llm", job(), null));
+                        request(), "llm", job, null));
 
         assertTrue(failure.getMessage().contains("Structured model call failed"));
         assertEquals(1, calls.get());
         assertEquals(false, dispatcher.hasLlmChat());
+        assertEquals(1, job.getRecentLlmCalls().size());
+        assertEquals(false, job.getRecentLlmCalls().get(0).isSuccess());
+        assertTrue(job.getRecentLlmCalls().get(0).getStructuredRequestJson()
+                .contains("submit_graph_delta"));
     }
 
     private static StructuredChatLanguageModel.Request request() {

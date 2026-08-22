@@ -16,6 +16,18 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.util.JsonUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -70,15 +82,25 @@ public class ScheduledLoopManager {
 
         ScheduledLoop(String schedule, String prompt, boolean isCron,
                       long intervalMs, int[] cronFields) {
-            this.id = UUID.randomUUID().toString().substring(0, 8);
+            this(UUID.randomUUID().toString().substring(0, 8), schedule, prompt,
+                    Instant.now(), isCron, intervalMs, cronFields,
+                    LoopStatus.ACTIVE, null, 0);
+        }
+
+        private ScheduledLoop(
+                String id, String schedule, String prompt, Instant createdAt,
+                boolean isCron, long intervalMs, int[] cronFields,
+                LoopStatus status, Instant lastFiredAt, int fireCount) {
+            this.id = id;
             this.schedule = schedule;
             this.prompt = prompt;
-            this.createdAt = Instant.now();
+            this.createdAt = createdAt;
             this.isCron = isCron;
             this.intervalMs = intervalMs;
             this.cronFields = cronFields;
-            this.status = LoopStatus.ACTIVE;
-            this.fireCount = 0;
+            this.status = status;
+            this.lastFiredAt = lastFiredAt;
+            this.fireCount = fireCount;
         }
 
         public String getId() { return id; }
@@ -136,18 +158,42 @@ public class ScheduledLoopManager {
     private final Map<String, ScheduledFuture<?>> futures = new ConcurrentHashMap<>();
     private final List<String> loopOrder = new CopyOnWriteArrayList<>();
     private final Consumer<String> fireCallback;
+    private final Path stateFile;
+    private final long minimumIntervalMs;
+    private final ObjectMapper objectMapper = JsonUtils.standardMapper();
 
     /**
      * @param fireCallback invoked (on the scheduler thread) when a loop fires.
      *                     Receives the prompt/command string to inject into the chat.
      */
     public ScheduledLoopManager(Consumer<String> fireCallback) {
+        this(fireCallback, null, 5000);
+    }
+
+    public ScheduledLoopManager(Consumer<String> fireCallback, Path stateFile) {
+        this(fireCallback, stateFile, 5000);
+    }
+
+    ScheduledLoopManager(
+            Consumer<String> fireCallback, Path stateFile, long minimumIntervalMs) {
         this.fireCallback = fireCallback;
+        this.stateFile = stateFile;
+        this.minimumIntervalMs = Math.max(1, minimumIntervalMs);
         this.scheduler = Executors.newScheduledThreadPool(2, r -> {
             Thread t = new Thread(r, "loop-scheduler");
             t.setDaemon(true);
             return t;
         });
+        loadPersistedLoops();
+    }
+
+    /** Stable local state path scoped to one project directory. */
+    public static Path stateFileForProject(Path workingDirectory) {
+        Path normalized = workingDirectory.toAbsolutePath().normalize();
+        String projectId = UUID.nameUUIDFromBytes(
+                normalized.toString().getBytes(StandardCharsets.UTF_8)).toString();
+        return KompileHome.homeDirectory().toPath()
+                .resolve("scheduled-loops").resolve(projectId + ".json");
     }
 
     /**
@@ -158,16 +204,18 @@ public class ScheduledLoopManager {
      * @return the created loop, or null if the schedule string is invalid
      */
     public ScheduledLoop create(String scheduleStr, String prompt) {
+        if (scheduleStr == null || prompt == null || prompt.isBlank()) return null;
         scheduleStr = scheduleStr.trim();
         prompt = prompt.trim();
 
         if (INTERVAL_PATTERN.matcher(scheduleStr).matches()) {
             long ms = parseIntervalMs(scheduleStr);
-            if (ms < 5000) return null; // minimum 5 seconds
+            if (ms < minimumIntervalMs) return null;
             ScheduledLoop loop = new ScheduledLoop(scheduleStr, prompt, false, ms, null);
             loops.put(loop.getId(), loop);
             loopOrder.add(loop.getId());
             scheduleInterval(loop);
+            persist();
             return loop;
         }
 
@@ -179,6 +227,7 @@ public class ScheduledLoopManager {
             loops.put(loop.getId(), loop);
             loopOrder.add(loop.getId());
             scheduleCron(loop);
+            persist();
             return loop;
         }
 
@@ -189,10 +238,11 @@ public class ScheduledLoopManager {
      * Pause an active loop.
      */
     public boolean pause(String id) {
-        ScheduledLoop loop = loops.get(id);
+        ScheduledLoop loop = get(id);
         if (loop == null || loop.getStatus() != ScheduledLoop.LoopStatus.ACTIVE) return false;
         loop.setStatus(ScheduledLoop.LoopStatus.PAUSED);
-        cancelFuture(id);
+        cancelFuture(loop.getId());
+        persist();
         return true;
     }
 
@@ -200,7 +250,7 @@ public class ScheduledLoopManager {
      * Resume a paused loop.
      */
     public boolean resume(String id) {
-        ScheduledLoop loop = loops.get(id);
+        ScheduledLoop loop = get(id);
         if (loop == null || loop.getStatus() != ScheduledLoop.LoopStatus.PAUSED) return false;
         loop.setStatus(ScheduledLoop.LoopStatus.ACTIVE);
         if (loop.isCron()) {
@@ -208,6 +258,7 @@ public class ScheduledLoopManager {
         } else {
             scheduleInterval(loop);
         }
+        persist();
         return true;
     }
 
@@ -215,12 +266,13 @@ public class ScheduledLoopManager {
      * Stop and remove a loop permanently.
      */
     public boolean remove(String id) {
-        ScheduledLoop loop = loops.get(id);
+        ScheduledLoop loop = get(id);
         if (loop == null) return false;
         loop.setStatus(ScheduledLoop.LoopStatus.STOPPED);
-        cancelFuture(id);
-        loops.remove(id);
-        loopOrder.remove(id);
+        cancelFuture(loop.getId());
+        loops.remove(loop.getId());
+        loopOrder.remove(loop.getId());
+        persist();
         return true;
     }
 
@@ -261,15 +313,19 @@ public class ScheduledLoopManager {
         return count;
     }
 
+    /** Fire one loop immediately without changing its recurring schedule. */
+    public boolean runNow(String idPrefix) {
+        ScheduledLoop loop = get(idPrefix);
+        if (loop == null || loop.getStatus() == ScheduledLoop.LoopStatus.STOPPED) return false;
+        fire(loop);
+        return true;
+    }
+
     /**
      * Shutdown the scheduler and stop all loops. Call on REPL exit.
      */
     public void shutdown() {
-        for (String id : new ArrayList<>(loops.keySet())) {
-            ScheduledLoop loop = loops.get(id);
-            if (loop != null) loop.setStatus(ScheduledLoop.LoopStatus.STOPPED);
-            cancelFuture(id);
-        }
+        for (String id : new ArrayList<>(loops.keySet())) cancelFuture(id);
         scheduler.shutdownNow();
     }
 
@@ -278,8 +334,7 @@ public class ScheduledLoopManager {
     private void scheduleInterval(ScheduledLoop loop) {
         ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(() -> {
             if (loop.getStatus() == ScheduledLoop.LoopStatus.ACTIVE) {
-                loop.recordFire();
-                fireCallback.accept(loop.getPrompt());
+                fire(loop);
             }
         }, loop.getIntervalMs(), loop.getIntervalMs(), TimeUnit.MILLISECONDS);
         futures.put(loop.getId(), future);
@@ -301,8 +356,7 @@ public class ScheduledLoopManager {
 
         ScheduledFuture<?> future = scheduler.schedule(() -> {
             if (loop.getStatus() == ScheduledLoop.LoopStatus.ACTIVE) {
-                loop.recordFire();
-                fireCallback.accept(loop.getPrompt());
+                fire(loop);
             }
             // Reschedule for next cron match
             scheduleNextCronFire(loop);
@@ -313,6 +367,87 @@ public class ScheduledLoopManager {
     private void cancelFuture(String id) {
         ScheduledFuture<?> f = futures.remove(id);
         if (f != null) f.cancel(false);
+    }
+
+    private void fire(ScheduledLoop loop) {
+        loop.recordFire();
+        persist();
+        try {
+            fireCallback.accept(loop.getPrompt());
+        } catch (RuntimeException ignored) {
+            // One failed dispatch must not terminate a recurring local schedule.
+        }
+    }
+
+    private synchronized void persist() {
+        if (stateFile == null) return;
+        try {
+            Path parent = stateFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            ArrayNode entries = objectMapper.createArrayNode();
+            for (ScheduledLoop loop : list()) {
+                entries.addObject()
+                        .put("id", loop.getId())
+                        .put("schedule", loop.getSchedule())
+                        .put("prompt", loop.getPrompt())
+                        .put("createdAt", loop.getCreatedAt().toString())
+                        .put("status", loop.getStatus().name())
+                        .put("lastFiredAt", loop.getLastFiredAt() == null
+                                ? null : loop.getLastFiredAt().toString())
+                        .put("fireCount", loop.getFireCount());
+            }
+            Path temp = stateFile.resolveSibling(stateFile.getFileName() + ".tmp");
+            Files.writeString(temp, objectMapper.writeValueAsString(entries));
+            try {
+                Files.move(temp, stateFile, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp, stateFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ignored) {
+            // Scheduling remains available in memory if local persistence fails.
+        }
+    }
+
+    private void loadPersistedLoops() {
+        if (stateFile == null || !Files.isRegularFile(stateFile)) return;
+        try {
+            JsonNode entries = objectMapper.readTree(Files.readString(stateFile));
+            if (!entries.isArray()) return;
+            for (JsonNode entry : entries) {
+                String schedule = entry.path("schedule").asText("");
+                String prompt = entry.path("prompt").asText("");
+                if (schedule.isBlank() || prompt.isBlank()) continue;
+                boolean cron = CRON_PATTERN.matcher(schedule).matches();
+                long intervalMs = cron ? 0 : parseIntervalMs(schedule);
+                int[] cronFields = cron ? parseCronFields(schedule) : null;
+                if ((!cron && intervalMs < minimumIntervalMs) || (cron && cronFields == null)) continue;
+                ScheduledLoop.LoopStatus status;
+                try {
+                    status = ScheduledLoop.LoopStatus.valueOf(
+                            entry.path("status").asText("ACTIVE"));
+                } catch (IllegalArgumentException e) {
+                    status = ScheduledLoop.LoopStatus.ACTIVE;
+                }
+                if (status == ScheduledLoop.LoopStatus.STOPPED) continue;
+                ScheduledLoop loop = new ScheduledLoop(
+                        entry.path("id").asText(UUID.randomUUID().toString().substring(0, 8)),
+                        schedule, prompt,
+                        Instant.parse(entry.path("createdAt").asText(Instant.now().toString())),
+                        cron, intervalMs, cronFields, status,
+                        entry.path("lastFiredAt").isNull()
+                                || entry.path("lastFiredAt").asText("").isBlank()
+                                ? null : Instant.parse(entry.path("lastFiredAt").asText()),
+                        entry.path("fireCount").asInt(0));
+                loops.put(loop.getId(), loop);
+                loopOrder.add(loop.getId());
+                if (status == ScheduledLoop.LoopStatus.ACTIVE) {
+                    if (cron) scheduleCron(loop); else scheduleInterval(loop);
+                }
+            }
+        } catch (Exception ignored) {
+            // Ignore malformed local state instead of preventing chat startup.
+        }
     }
 
     // ── Interval parsing ──────────────────────────────────────────────

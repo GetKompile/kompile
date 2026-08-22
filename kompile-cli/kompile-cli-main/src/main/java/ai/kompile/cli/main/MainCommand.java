@@ -60,12 +60,14 @@ import ai.kompile.cli.main.uninstall.UnInstallMain;
 import ai.kompile.cli.main.cloud.CloudCommand;
 import ai.kompile.cli.main.web.WebCommand;
 import ai.kompile.cli.plugin.api.CliCommandRegistrar;
+import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.ServiceLoader;
 import java.util.concurrent.Callable;
 
@@ -148,6 +150,14 @@ public class MainCommand implements Callable<Integer> {
     public static void main(String...args) {
         configureStartupLogging();
 
+        // The native CLI owns folder-local model subprocesses. Route the embedding child before
+        // normal CLI bootstrap so re-executing this binary cannot accidentally enter picocli or
+        // contact a model-staging service.
+        if (isEmbeddingSubprocessRequest(args)) {
+            EmbeddingSubprocessMain.main(Arrays.copyOfRange(args, 1, args.length));
+            return;
+        }
+
         // Native payloads are deliberately excluded from every Graal image. The CLI
         // owns only its manifest-declared direct JNI closure; CUDA/ND4J initialization
         // belongs to the model-serving subprocesses spawned on demand.
@@ -183,6 +193,10 @@ public class MainCommand implements Callable<Integer> {
         // System.exit() still runs the registered shutdown hooks (which persist
         // session/coordination state) before reaping the process.
         System.exit(exitCode);
+    }
+
+    static boolean isEmbeddingSubprocessRequest(String[] args) {
+        return args != null && args.length > 0 && "--subprocess=embedding".equals(args[0]);
     }
 
     /**

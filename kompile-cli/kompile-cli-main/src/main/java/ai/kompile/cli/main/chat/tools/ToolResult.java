@@ -22,6 +22,9 @@ import java.util.Map;
  * Result returned by a {@link CliTool} execution.
  */
 public class ToolResult {
+    /** Metadata flag indicating that the output body was already emitted live. */
+    public static final String OUTPUT_STREAMED_METADATA = "outputStreamed";
+
     private final String title;
     private final String output;
     private final Map<String, Object> metadata;
@@ -58,6 +61,12 @@ public class ToolResult {
     public String getOutput() { return output; }
     public Map<String, Object> getMetadata() { return metadata; }
     public boolean isError() { return error; }
+
+    public boolean isOutputStreamed() {
+        Object value = metadata.get(OUTPUT_STREAMED_METADATA);
+        return Boolean.TRUE.equals(value)
+                || (value instanceof String text && Boolean.parseBoolean(text));
+    }
 
     @Override
     public String toString() {

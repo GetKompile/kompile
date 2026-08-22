@@ -78,4 +78,37 @@ class ExecJsonEventsTest {
         assertEquals("", mapper.readTree(ExecJsonEvents.result(mapper, null, "s", 0, 0)).get("text").asText());
         assertEquals("", mapper.readTree(ExecJsonEvents.error(mapper, null)).get("message").asText());
     }
+
+    @Test
+    void richEventsPreserveSequenceAndLifecycle() throws Exception {
+        JsonNode started = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.started("s", "model", "/work").withSequence(7)));
+        assertEquals(7, started.get("seq").asLong());
+        assertEquals("session", started.get("type").asText());
+
+        JsonNode delta = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.assistantDelta("s", "hello").withSequence(8)));
+        assertEquals(8, delta.get("seq").asLong());
+        assertEquals("text", delta.get("type").asText());
+        assertEquals("hello", delta.get("text").asText());
+
+        JsonNode toolStart = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.toolStarted("s", "call-1", "bash", "pwd").withSequence(9)));
+        assertEquals(9, toolStart.get("seq").asLong());
+        assertEquals("tool_start", toolStart.get("type").asText());
+        assertEquals("call-1", toolStart.get("call_id").asText());
+
+        JsonNode toolDone = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.toolCompleted("s", "call-1", "bash", "", true, 12).withSequence(10)));
+        assertEquals(10, toolDone.get("seq").asLong());
+        assertEquals("tool", toolDone.get("type").asText());
+        assertEquals(12, toolDone.get("ms").asLong());
+
+        JsonNode result = mapper.readTree(ExecJsonEvents.event(mapper,
+                HeadlessRunEvent.completed("s", "done", 0, 1).withSequence(11)));
+        assertEquals(11, result.get("seq").asLong());
+        assertEquals("result", result.get("type").asText());
+        assertEquals("done", result.get("text").asText());
+        assertEquals(1, result.get("tools").asInt());
+    }
 }

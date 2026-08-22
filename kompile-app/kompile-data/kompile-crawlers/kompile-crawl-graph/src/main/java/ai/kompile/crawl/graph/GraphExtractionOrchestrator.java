@@ -249,6 +249,9 @@ class GraphExtractionOrchestrator {
     /** Active DECOMPOSED implementation: one model loop over production corpus/graph tools. */
     final ToolDrivenExtractionExecutor toolDrivenExecutor = new ToolDrivenExtractionExecutor();
 
+    /** Optional headless/local audit sink. Managed crawls keep their existing transcript path. */
+    Consumer<Map<String, Object>> extractionTraceSink;
+
     /** Complete pooled corpus visible to every shard in the active crawl, including its first shard. */
     private final ConcurrentMap<String, CrawlCorpusSnapshot> activeExtractionCorpora =
             new ConcurrentHashMap<>();
@@ -3788,7 +3791,8 @@ class GraphExtractionOrchestrator {
                         }
                     },
                     promptProfile,
-                    additionalInstructions);
+                    additionalInstructions,
+                    event -> emitExtractionTrace(job, scopePhase, effectiveTask, event));
         }
         return toolDrivenExecutor.extract(
                 text,
@@ -3824,6 +3828,34 @@ class GraphExtractionOrchestrator {
                 },
                 promptProfile,
                 additionalInstructions);
+    }
+
+    private void emitExtractionTrace(
+            UnifiedCrawlJob job,
+            String phase,
+            ExtractionTaskContext task,
+            ToolDrivenExtractionExecutor.TraceEvent event) {
+        Consumer<Map<String, Object>> sink = extractionTraceSink;
+        if (sink == null || event == null) return;
+        Map<String, Object> trace = new LinkedHashMap<>();
+        trace.put("eventType", event.eventType());
+        trace.put("crawlJobId", job == null ? null : job.getJobId());
+        trace.put("phase", phase);
+        trace.put("toolRound", event.round());
+        if (task != null) {
+            trace.put("extractionTaskId", task.taskId());
+            trace.put("partitionId", task.partitionId());
+            trace.put("chunkId", task.chunkId());
+            trace.put("corpusSnapshotId", task.corpusSnapshotId());
+            trace.put("graphRevision", task.graphRevision());
+        }
+        trace.put("payload", event.payload());
+        try {
+            sink.accept(trace);
+        } catch (RuntimeException e) {
+            log.debug("[Job {}] Extraction trace sink failed: {}",
+                    job == null ? "?" : job.getJobId(), e.getMessage());
+        }
     }
 
     private static ToolDrivenExtractionExecutor.Result combinePhasedResults(

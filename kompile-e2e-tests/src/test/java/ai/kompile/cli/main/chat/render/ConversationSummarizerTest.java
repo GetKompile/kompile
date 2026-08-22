@@ -286,6 +286,19 @@ class ConversationSummarizerTest {
 
             assertTrue(result.isEmpty());
         }
+
+        @Test
+        void failedProviderResponseCannotBecomeAuthoritativeSummary() {
+            client.cannedResponse.text = "[LLM API error 500: unavailable]";
+            client.cannedResponse.failed = true;
+
+            ConversationSummarizer.SummaryResult result = summarizer.summarize(
+                    List.of(CompactionService.ConversationEntry.user("important context")),
+                    null, null);
+
+            assertTrue(result.isEmpty());
+            assertFalse(result.isSuccessful());
+        }
     }
 
     // ========================================================================

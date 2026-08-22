@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /** OpenAI Codex ChatGPT subscription OAuth with browser and headless device flows. */
-final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
+public final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "openai-codex";
 
     private static final String CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -36,7 +36,7 @@ final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
 
-    OpenAiCodexOAuthFlow() {
+    public OpenAiCodexOAuthFlow() {
         this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
     }
 
@@ -50,6 +50,21 @@ final class OpenAiCodexOAuthFlow implements OAuthProviderFlow {
     @Override
     public String providerId() {
         return PROVIDER_ID;
+    }
+
+    @Override
+    public String userFacingProviderId() {
+        return "openai";
+    }
+
+    @Override
+    public boolean supportsApiKey() {
+        return false;
+    }
+
+    @Override
+    public String defaultBaseUrl() {
+        return "https://chatgpt.com/backend-api";
     }
 
     @Override

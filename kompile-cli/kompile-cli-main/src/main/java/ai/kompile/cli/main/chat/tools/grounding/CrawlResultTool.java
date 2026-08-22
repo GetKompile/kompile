@@ -84,6 +84,9 @@ public final class CrawlResultTool implements CliTool {
         if (jobId.isEmpty()) {
             return ToolResult.error("crawl_result requires jobId");
         }
+        if (LocalCrawlJobRegistry.isJobId(jobId)) {
+            return localBackend.result(jobId, context);
+        }
         if (!client.isAvailable()) {
             return localBackend.result(jobId, context);
         }

@@ -18,6 +18,8 @@ package ai.kompile.cli.main.chat.harness;
 
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
@@ -194,30 +196,24 @@ public class JudgeBackendFactory {
         if (apiKey == null || apiKey.isBlank()) {
             apiKey = resolveApiKeyFromEnv(provider);
         }
-        if ((apiKey == null || apiKey.isBlank()) && !"ollama".equals(provider) && !"kompile".equals(provider)) {
+        String model = config.getJudgeModel();
+        ChatConfig judgeConfig = new ChatConfig(provider, apiKey, model, config.getJudgeBaseUrl());
+        OAuthProviderFlow.RequestAuth requestAuth = judgeConfig.resolveRequestAuth();
+        if ((requestAuth == null || requestAuth.token() == null || requestAuth.token().isBlank())
+                && !"ollama".equalsIgnoreCase(provider)
+                && !"kompile".equalsIgnoreCase(provider)) {
             return null;
         }
-
-        String model = config.getJudgeModel();
         if (model == null || model.isBlank()) {
-            String[] defaults = ChatConfig.getDefaultModels(provider);
-            model = defaults.length > 0 ? defaults[0] : null;
+            model = judgeConfig.getConfiguredModels(provider).stream().findFirst().orElse(null);
         }
-        if (model == null) return null;
-
-        ChatConfig judgeConfig = new ChatConfig(provider, apiKey, model, config.getJudgeBaseUrl());
+        if (model == null || model.isBlank()) return null;
+        judgeConfig.setModel(model);
         return new DirectLlmClient(judgeConfig, objectMapper);
     }
 
     private static String resolveApiKeyFromEnv(String provider) {
-        return switch (provider.toLowerCase()) {
-            case "anthropic" -> System.getenv("ANTHROPIC_API_KEY");
-            case "openai" -> System.getenv("OPENAI_API_KEY");
-            case "gemini" -> System.getenv("GOOGLE_API_KEY");
-            case "openrouter" -> System.getenv("OPENROUTER_API_KEY");
-            case "deepseek" -> System.getenv("DEEPSEEK_API_KEY");
-            case "groq" -> System.getenv("GROQ_API_KEY");
-            default -> null;
-        };
+        String environmentVariable = ChatProviderRegistry.environmentVariable(provider);
+        return environmentVariable == null ? null : System.getenv(environmentVariable);
     }
 }

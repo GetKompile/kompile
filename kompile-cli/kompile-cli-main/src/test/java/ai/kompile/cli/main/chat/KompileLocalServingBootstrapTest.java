@@ -173,6 +173,7 @@ class KompileLocalServingBootstrapTest {
                 resolvedModel,
                 43123,
                 Map.of(
+                        "host", "0.0.0.0",
                         "maxNewTokens", 768,
                         "temperature", 1.0,
                         "topK", 20,
@@ -182,6 +183,7 @@ class KompileLocalServingBootstrapTest {
                         "memoryThresholdPercent", 81));
         try {
             JsonNode json = JsonUtils.standardMapper().readTree(args.toFile());
+            assertEquals("0.0.0.0", json.path("host").asText());
             assertEquals(768, json.path("maxNewTokens").asInt());
             assertEquals(1.0, json.path("temperature").asDouble());
             assertEquals(20, json.path("topK").asInt());

@@ -26,6 +26,7 @@ import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SystemPromptManager;
 import ai.kompile.cli.main.chat.mcp.McpToolInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
+import ai.kompile.cli.main.chat.render.ChatActivityPhase;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
@@ -482,7 +483,7 @@ public class SubprocessAgentRunner {
 
         List<String> agentCmd = buildCommand(agentBinary, message);
 
-        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
+        renderer.setActivity(ChatActivityPhase.THINKING, agent);
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
 
         StringBuilder fullText = new StringBuilder();
@@ -631,7 +632,7 @@ public class SubprocessAgentRunner {
         currentToolName = null;
         updateActivity(null); // clear activity — agent is idle
         emitLine("");
-        renderer.setTerminalTitle("kompile [" + agent + "]");
+        renderer.setReadyTerminalTitle("kompile [" + agent + "]");
         return fullText.toString();
     }
 
@@ -657,7 +658,7 @@ public class SubprocessAgentRunner {
         history.logUserMessage(message);
         metrics.recordUserTurn(message);
 
-        renderer.setTerminalTitle("Kompiling... (" + agent + ")");
+        renderer.setActivity(ChatActivityPhase.THINKING, agent);
         TerminalRenderer.SpinnerHandle spinner = renderer.startGeneratingSpinner(agent);
 
         StringBuilder fullText = new StringBuilder();
@@ -793,7 +794,7 @@ public class SubprocessAgentRunner {
         currentToolName = null;
         updateActivity(null);
         emitLine("");
-        renderer.setTerminalTitle("kompile [" + agent + "]");
+        renderer.setReadyTerminalTitle("kompile [" + agent + "]");
         return fullText.toString();
     }
 
@@ -905,7 +906,7 @@ public class SubprocessAgentRunner {
             // but don't add reasoning content to response text.
             spinner.setPhase("Thinking");
             updateActivity(getAgentDisplayName() + ": thinking...");
-            renderer.setTerminalTitle("Thinking... (" + agent + ")");
+            renderer.setActivity(ChatActivityPhase.THINKING, agent);
             return;
         }
 

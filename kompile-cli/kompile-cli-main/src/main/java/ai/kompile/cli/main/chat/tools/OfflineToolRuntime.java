@@ -40,9 +40,11 @@ public final class OfflineToolRuntime {
             if (query.isEmpty()) {
                 return ToolResult.error("query is required");
             }
+            String topic = params.path("topic").asText(null);
             String knowledgeBase = params.path("knowledgeBase").asText(null);
+            int limit = Math.min(50, Math.max(1, params.path("limit").asInt(20)));
             return CRAWL_BACKENDS.computeIfAbsent(root, ignored -> new LocalProjectCrawlBackend(mapper))
-                    .search(query, knowledgeBase, 20, context);
+                    .search(query, topic, knowledgeBase, limit, context);
         }
         return GRAPH_BACKENDS.computeIfAbsent(root, ignored -> new LocalProjectGraphBackend(mapper))
                 .executeOfflineTool(toolId, params, context);

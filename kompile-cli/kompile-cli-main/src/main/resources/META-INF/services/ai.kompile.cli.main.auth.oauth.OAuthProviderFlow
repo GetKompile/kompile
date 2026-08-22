@@ -1,0 +1,6 @@
+ai.kompile.cli.main.auth.oauth.OpenAiCodexOAuthFlow
+ai.kompile.cli.main.auth.oauth.AnthropicOAuthFlow
+ai.kompile.cli.main.auth.oauth.GitHubCopilotOAuthFlow
+ai.kompile.cli.main.auth.oauth.XaiOAuthFlow
+ai.kompile.cli.main.auth.oauth.OpenRouterOAuthFlow
+ai.kompile.cli.main.auth.oauth.RadiusOAuthFlow

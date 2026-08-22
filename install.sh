@@ -416,14 +416,20 @@ echo "Get started:"
 echo "  kompile project init                  # scaffold a Kompile project in the current directory"
 echo "  kompile project init --crawl --push   # scaffold + serve + index docs + push to git (one shot)"
 echo "  kompile chat                          # start an AI chat"
-if [ "${VARIANT}" != "local" ]; then
+if [ "${VARIANT}" != "local" ] && [ "${VARIANT}" != "cli-only" ]; then
     echo "  kompile web                           # launch the web UI"
 fi
 echo "  kompile --help                        # see all commands"
 echo ""
 if [ "${VARIANT}" = "cli-only" ]; then
-    echo "Note: installed the cli-only variant. Folder-local model execution requires the"
-    echo "local or full distribution. Re-run with: install.sh --variant local"
+    if [ -n "${BACKEND_PROFILE}" ]; then
+        echo "Note: installed the backend-qualified cli-only variant. It includes JAR-based"
+        echo "model and pipeline workers for ${BACKEND_PROFILE}, but no web/application server."
+        echo "A compatible Java runtime and system accelerator drivers are required."
+    else
+        echo "Note: installed the plain cli-only variant. Folder-local model execution requires"
+        echo "a backend-qualified cli-only archive, or the local/full distribution."
+    fi
     echo ""
 elif [ "${VARIANT}" = "local" ]; then
     echo "Note: installed the native local-execution variant. It includes project-local"

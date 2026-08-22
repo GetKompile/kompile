@@ -9,7 +9,7 @@
 #   ./build-dist.sh <variant> [options]
 #
 # Variants:
-#   cli-only      — Just the kompile-cli binary (smallest, fastest)
+#   cli-only      — CLI plus optional backend-bearing local serving JARs
 #   local         — CLI + native local execution workers; no staging/web/batch server
 #   full          — CLI native + all service exec JARs + bundled Java runtime
 #   hosted        — CLI + app-main + staging (for API-key/hosted LLM users)
@@ -271,9 +271,9 @@ if [ -n "${BACKEND_PROFILE_OVERRIDE}" ]; then
         *) echo "Unsupported backend profile: ${KOMPILE_BACKEND_PROFILE}" >&2; exit 1 ;;
     esac
 fi
-# Local request-scoped runtimes require a packaged numerical backend. Hosted and
-# cli-only variants remain remote-only. Backend-bearing distributions publish the
-# local MCP workers only as Graal executables; their JNI/CUDA payload stays in lib/.
+# Local request-scoped runtimes require a packaged numerical backend. A cli-only
+# build remains remote-only unless a backend profile is selected explicitly; with
+# one selected it carries the same model/pipeline worker closure in the chosen form.
 if [ -n "${ND4J_BACKEND}" ]; then
     LOCAL_RUNTIME=true
 fi
@@ -420,13 +420,18 @@ if [ "${SKIP_JAVA_BUILD}" = false ]; then
 
     BUILD_CMD=("${MVN}" clean install -DskipTests "${MAVEN_BUILD_ARGS[@]}")
     if [ "${VARIANT}" = "cli-only" ]; then
-        # A CLI-only archive must not require a DL4J backend just because the
-        # repository root also contains model-serving modules.
+        # A plain CLI-only archive does not require DL4J. Once a backend profile is
+        # selected, however, every request-scoped runtime copied below must be part
+        # of this clean reactor build so stale target/ output cannot enter the dist.
         if [ "${JARS_ONLY}" = true ]; then
-            BUILD_CMD+=(-pl :kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli -am)
+            CLI_ONLY_MODULES=":kompile-cli-main,:kompile-app-cli,:kompile-model-cli,:kompile-agent-cli,:kompile-component-cli"
         else
-            BUILD_CMD+=(-pl :kompile-cli-main,:kompile-model-cli -am)
+            CLI_ONLY_MODULES=":kompile-cli-main,:kompile-model-cli"
         fi
+        if [ "${LOCAL_RUNTIME}" = true ]; then
+            CLI_ONLY_MODULES+=",:kompile-app-subprocess-serving,:kompile-pipeline-serving"
+        fi
+        BUILD_CMD+=(-pl "${CLI_ONLY_MODULES}" -am)
     elif [ "${VARIANT}" = "local" ]; then
         # Keep the Java reactor at the local execution boundary. app-main is
         # included only because it currently owns the dedicated VLM entrypoint;
@@ -454,6 +459,24 @@ fi
 
 # ── Step 1b: Build exec JARs if needed (skip-java-build + service jar tier) ──
 
+# A target/ JAR may survive from another backend lane when --skip-java-build is
+# used, and packaging must also defend against any incomplete focused reactor.
+# Shaded JARs retain Maven metadata while Spring Boot JARs retain the dependency
+# under BOOT-INF/lib, so accept either representation of the exact selected lane.
+exec_jar_matches_backend() {
+    local jar="$1"
+    if [ -z "${ND4J_BACKEND}" ]; then
+        return 0
+    fi
+    [ -n "${jar}" ] && [ -f "${jar}" ] && {
+        unzip -p "${jar}" "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}.jar" \
+            >/dev/null 2>&1 \
+        || unzip -p "${jar}" \
+            "META-INF/maven/org.eclipse.deeplearning4j/${ND4J_BACKEND}/pom.properties" \
+            >/dev/null 2>&1
+    }
+}
+
 if [ "${SKIP_JAVA_BUILD}" = true ] \
         && { [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; } \
         && [ "${APP_NATIVE}" = true ]; then
@@ -466,13 +489,6 @@ if [ "${SKIP_JAVA_BUILD}" = true ] \
     # alone is not enough: a CUDA archive assembled after a CPU package run would
     # otherwise silently publish CPU-only service JARs. Require the lane's exact
     # backend artifact and rebuild only mismatched/missing exec JARs.
-    exec_jar_matches_backend() {
-        local jar="$1"
-        [ -n "${jar}" ] && [ -f "${jar}" ] \
-            && unzip -p "${jar}" "BOOT-INF/lib/${ND4J_BACKEND}-${ND4J_VERSION}.jar" \
-                >/dev/null 2>&1
-    }
-
     invalidate_exec_jar_if_backend_mismatch() {
         local variable_name="$1"
         local label="$2"
@@ -977,6 +993,11 @@ if [ "${LOCAL_RUNTIME}" = true ]; then
         if [ "${JARS_ONLY}" = true ] || [ "${SERVER_JARS_ONLY}" = true ]; then
             RUNTIME_EXEC_JAR=$(ls "${RUNTIME_TARGET}"/*-exec.jar 2>/dev/null | head -1 || true)
             if [ -n "${RUNTIME_EXEC_JAR}" ] && [ -f "${RUNTIME_EXEC_JAR}" ]; then
+                if ! exec_jar_matches_backend "${RUNTIME_EXEC_JAR}"; then
+                    echo "  ERROR: ${RUNTIME_EXEC_JAR} does not contain the selected ${ND4J_BACKEND} backend" >&2
+                    echo "  Refusing to package a stale or mismatched local runtime JAR." >&2
+                    exit 1
+                fi
                 cp "${RUNTIME_EXEC_JAR}" "${DIST_DIR}/lib/${RUNTIME_ARTIFACT}.jar"
                 echo "  lib/${RUNTIME_ARTIFACT}.jar ($(du -h "${RUNTIME_EXEC_JAR}" | cut -f1))"
                 RUNTIME_SHIPPED=true

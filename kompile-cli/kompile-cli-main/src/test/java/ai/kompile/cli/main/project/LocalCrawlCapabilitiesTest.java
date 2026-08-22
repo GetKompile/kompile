@@ -33,6 +33,7 @@ class LocalCrawlCapabilitiesTest {
         ObjectNode catalog = LocalCrawlCapabilities.catalog(mapper, "subprocess");
 
         assertTrue(catalog.path("loaders").toString().contains("\"pdf\""));
+        assertTrue(catalog.path("loaders").toString().contains("\"excel\""));
         assertTrue(catalog.path("loaders").toString().contains("\"code\""));
         assertTrue(catalog.path("chunkers").toString().contains("recursive-character"));
         assertTrue(catalog.path("chunkers").toString().contains("sentence"));
@@ -56,6 +57,15 @@ class LocalCrawlCapabilitiesTest {
                         .path("pipelineType").asText());
         assertTrue(catalog.path("pipelineTypeGuide").path("CUSTOM").asText()
                 .contains("UNIFIED_PIPELINE"));
+        assertTrue(catalog.path("pipelineTypeGuide").path("VLM").asText()
+                .contains("scanned/image-heavy PDF"));
+        assertTrue(catalog.path("pipelineTypeGuide").path("OCR").asText()
+                .contains("does not automatically select a traditional OCR engine"));
+        assertEquals("vlm-ocr-pdf",
+                catalog.path("wiringRecipe").path("scannedPdf")
+                        .path("preferredProjectPipelineId").asText());
+        assertTrue(catalog.path("asyncLifecycle").path("progressFields").asText()
+                .contains("stageDetail"));
         assertTrue(catalog.path("wiringRecipe").path("customDefinition").path("sources").asText()
                 .contains("pipelineDefinitionPath"));
     }
@@ -74,6 +84,21 @@ class LocalCrawlCapabilitiesTest {
 
     @Test
     void builtinCompositionsExposeRoleBoundTextAndVisionGraphs() {
+        Map<?, ?> documentProcessor = LocalCrawlCapabilities.builtinModelProcessor("VLM");
+        assertEquals("UNIFIED_PIPELINE", documentProcessor.get("type"));
+        Map<?, ?> documentDefinition = (Map<?, ?>) documentProcessor.get("pipelineDefinition");
+        Map<?, ?> documentSpec = (Map<?, ?>) documentDefinition.get("pipelineSpec");
+        assertEquals("ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline",
+                documentSpec.get("@class"));
+
+        ObjectNode documentRequest = mapper.createObjectNode();
+        ObjectNode documentPipeline = documentRequest.putArray("pipelines").addObject()
+                .put("pipelineId", "generated-vlm")
+                .put("pipelineType", "VLM");
+        documentPipeline.set("processor", mapper.valueToTree(documentProcessor));
+        documentRequest.put("defaultPipelineId", "generated-vlm");
+        assertNull(LocalModelPipelineRunner.validatePipelineDefinitions(tempDir, documentRequest));
+
         Map<?, ?> textProcessor = LocalCrawlCapabilities.builtinTextModelProcessor();
         Map<?, ?> textDefinition = (Map<?, ?>) textProcessor.get("pipelineDefinition");
         assertEquals("LLM", textDefinition.get("kind"));
@@ -93,6 +118,24 @@ class LocalCrawlCapabilitiesTest {
         assertTrue(nodes.toString().contains("modelRole=visionEncoder"));
         assertTrue(nodes.toString().contains("modelRole=textEmbedding"));
         assertTrue(nodes.toString().contains("modelRole=decoder"));
+    }
+
+    @Test
+    void modelPipelinePreflightRejectsDefinitionsWithoutAConcretePipelineClass() {
+        ObjectNode request = (ObjectNode) mapper.valueToTree(Map.of(
+                "defaultPipelineId", "invalid-vlm",
+                "pipelines", List.of(Map.of(
+                        "pipelineId", "invalid-vlm",
+                        "pipelineType", "VLM",
+                        "processor", Map.of(
+                                "type", "UNIFIED_PIPELINE",
+                                "pipelineDefinition", Map.of(
+                                        "pipelineId", "invalid-vlm",
+                                        "pipelineSpec", Map.of("id", "invalid-vlm", "steps", List.of())))))));
+
+        String error = LocalModelPipelineRunner.validatePipelineDefinitions(tempDir, request);
+
+        assertTrue(error.contains("pipelineSpec is missing @class"), error);
     }
 
     @Test
@@ -120,6 +163,25 @@ class LocalCrawlCapabilitiesTest {
                 LocalCrawlCapabilities.resolve(request, null, tempDir, tempDir.resolve("custom.txt"));
         assertEquals("UNIFIED_PIPELINE", resolved.processor().get("type"));
         assertEquals(customDefinition, mapper.valueToTree(resolved.processor().get("pipelineDefinition")));
+    }
+
+
+    @Test
+    void requestModelRuntimeDoesNotTurnStandardTextIntoAUnifiedPipeline() throws Exception {
+        Path markdown = tempDir.resolve("notes.md");
+        Files.writeString(markdown, "# Notes\n\nplain text");
+        ObjectNode request = mapper.createObjectNode()
+                .put("defaultPipelineId", LocalCrawlCapabilities.STANDARD_TEXT_PIPELINE);
+        request.putObject("modelRuntime")
+                .put("localPath", tempDir.toString())
+                .put("autoBootstrap", false);
+
+        LocalCrawlCapabilities.ResolvedPipeline pipeline = LocalCrawlCapabilities.resolve(
+                request, null, tempDir, markdown);
+
+        assertEquals("markdown", pipeline.loaderName());
+        assertTrue(pipeline.processor().isEmpty());
+        assertFalse(LocalCrawlCapabilities.usesModelPipeline(pipeline));
     }
 
     @Test
@@ -308,6 +370,40 @@ class LocalCrawlCapabilitiesTest {
         Map<?, ?> definitions = (Map<?, ?>) resolved.processor().get("registeredModelDefinitions");
         assertTrue(definitions.containsKey("generator-config"));
         assertTrue(definitions.containsKey("embedding-config"));
+    }
+
+    @Test
+    void requestPipelineCanInheritAProjectDefaultWithTheSameId() throws Exception {
+        Path pdf = tempDir.resolve("scanned.pdf");
+        Files.writeString(pdf, "model executor owns PDF decoding");
+        ObjectNode request = (ObjectNode) mapper.readTree("""
+                {
+                  "pipelineRegistry": {
+                    "defaults": [{
+                      "pipelineId":"vlm-ocr-pdf",
+                      "pipelineType":"VLM",
+                      "loaderName":"pdf",
+                      "chunkerName":"sentence",
+                      "processor":{"type":"VLM_PIPELINE"}
+                    }]
+                  },
+                  "pipelines": [{
+                    "pipelineId":"vlm-ocr-pdf",
+                    "registeredPipelineId":"vlm-ocr-pdf",
+                    "options":{"maxPages":1}
+                  }],
+                  "documents": [{"path":"%s","pipelineId":"vlm-ocr-pdf"}]
+                }
+                """.formatted(pdf.toString().replace("\\", "\\\\")));
+
+        assertNull(LocalCrawlCapabilities.validationError(request));
+        LocalCrawlCapabilities.ResolvedPipeline resolved =
+                LocalCrawlCapabilities.resolve(request, null, tempDir, pdf);
+
+        assertEquals("VLM", resolved.pipelineType());
+        assertEquals("pdf", resolved.loaderName());
+        assertEquals("sentence", resolved.chunkerName());
+        assertEquals(1, resolved.chunkerOptions().get("maxPages"));
     }
 
     @Test

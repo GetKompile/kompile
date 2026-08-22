@@ -30,15 +30,33 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodexAdapterTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void configuredCodexHomeHonorsExplicitProperty() {
+        String previous = System.getProperty("kompile.codex.home");
+        Path configured = tempDir.resolve("custom-codex-home").toAbsolutePath().normalize();
+        try {
+            System.setProperty("kompile.codex.home", configured.toString());
+            assertEquals(configured, CodexAdapter.configuredCodexHome());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("kompile.codex.home");
+            } else {
+                System.setProperty("kompile.codex.home", previous);
+            }
+        }
+    }
 
     @Test
     void discoverDeduplicatesSessionsAcrossRolloutsAndHistory() throws Exception {
@@ -213,6 +231,16 @@ class CodexAdapterTest {
         Files.writeString(rollout, """
                 {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"Indexed turn"}]}}
                 """, StandardCharsets.UTF_8);
+        String staleId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        Path staleRolloutDir = tempDir.resolve("sessions").resolve("2026").resolve("08").resolve("22");
+        Files.createDirectories(staleRolloutDir);
+        Files.writeString(
+                staleRolloutDir.resolve("rollout-2026-08-22T01-00-00-" + staleId + ".jsonl"),
+                """
+                {"type":"session_meta","payload":{"id":"%s","cwd":"/work/project","source":"cli"}}
+                {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"Stale rollout only"}]}}
+                """.formatted(staleId),
+                StandardCharsets.UTF_8);
 
         Class.forName("org.sqlite.JDBC");
         Path database = tempDir.resolve("state_5.sqlite");
@@ -296,7 +324,19 @@ class CodexAdapterTest {
         assertEquals("VS Code preview", summaries.get(2).title());
         assertEquals("/work/project", summaries.get(0).workingDirectory());
         assertEquals("Indexed turn", adapter.readTurns("matching").get(0).content());
+        assertTrue(adapter.isNativeThreadPresent("matching", Path.of("/other/project")),
+                "Native UUID presence must not inherit picker working-directory filtering");
+        assertFalse(adapter.isNativeThreadPresent(staleId, Path.of("/work/project")),
+                "A stale rollout missing from the state DB must not become resumable under its old id");
         assertTrue(adapter.discover().available());
+    }
+
+    @Test
+    void authoritativePresenceListCannotRepairRollouts() {
+        Map<String, Object> params = CodexAdapter.threadListParams(null, null, true);
+
+        assertEquals(true, params.get("useStateDbOnly"));
+        assertFalse(params.containsKey("cwd"));
     }
 
     @Test
@@ -388,6 +428,11 @@ class CodexAdapterTest {
 
         @Override
         protected Optional<List<ChatSessionSummary>> listAppServerThreads(Path workingDirectory) {
+            return Optional.empty();
+        }
+
+        @Override
+        protected Optional<List<ChatSessionSummary>> listAuthoritativeAppServerThreads() {
             return Optional.empty();
         }
 

@@ -313,6 +313,11 @@ class SdxModelPreparationProcessTest {
                 "tokenizerPath = tokenizerAssets.paths[\"tokenizer.json\"]?.toString()"
             )
         )
+        val startupOpen = viewModel.substring(
+            viewModel.indexOf("private fun rebuildEngineLocked("),
+            viewModel.indexOf("val route = newLocal.routeName")
+        )
+        assertTrue(startupOpen.contains("preparationOptions = prefs.modelPreparationOptions"))
         assertFalse(viewModel.contains("SdxRawGgufChatSession"))
 
         val sdx = File(
@@ -387,6 +392,20 @@ class SdxModelPreparationProcessTest {
         assertTrue(sdx.contains("native.sdxLlmDestroyRuntime(runtime)"))
         assertTrue(sdx.contains("\"native_generation_report\""))
         assertTrue(sdx.contains("\"decode_tokens_per_second\""))
+        assertTrue(sdx.contains("\"native_empty_output\""))
+        assertTrue(sdx.contains("SDX returned no assistant text after compiled generation"))
+        assertTrue(sdx.contains("\"generated_token_ids\" to generatedTokenIds"))
+        assertTrue(sdx.contains("generatedTokenIds.take(TRACE_TEXT_PREVIEW_CHARS)"))
+        assertTrue(sdx.contains("generated_token_ids_preview="))
+        assertTrue(sdx.contains("raw_decoded_utf8_hex_prefix="))
+        assertTrue(sdx.contains("\"native_op_sanity\" to effectiveDiagnosticMode.nativeOpSanity"))
+
+        val runtimeEnvironment = File(
+            "src/main/java/ai/kompile/chat/local/android/model/SdxRawGgufChatSession.kt"
+        ).readText()
+        assertTrue(runtimeEnvironment.contains("ND4J_DSP_NATIVE_DUMP_OUTPUTS"))
+        assertTrue(runtimeEnvironment.contains("ND4J_DSP_DIAG_EXEC_LIMIT"))
+        assertTrue(runtimeEnvironment.contains("effectiveDiagnosticMode.capturesDspTrace"))
 
         val androidAbi = File(
             "src/main/java/ai/kompile/chat/local/android/model/SdxAndroidLlmAbi.kt"
@@ -579,8 +598,18 @@ class SdxModelPreparationProcessTest {
         assertEquals(expected.topP(), decoded.topP(), 0.0)
         assertEquals(expected.topK(), decoded.topK())
         assertEquals(expected.seed(), decoded.seed())
-        assertTrue(sdxRuntimeGenerationTimeoutMillis(16) >= 5L * 60L * 1_000L)
-        assertTrue(sdxRuntimeGenerationTimeoutMillis(Int.MAX_VALUE) <= 2L * 60L * 60L * 1_000L)
+        assertEquals(
+            15L * 60L * 1_000L,
+            sdxRuntimeGenerationTimeoutMillis(16, coldCompilation = true)
+        )
+        assertEquals(
+            5L * 60L * 1_000L,
+            sdxRuntimeGenerationTimeoutMillis(16, coldCompilation = false)
+        )
+        assertTrue(
+            sdxRuntimeGenerationTimeoutMillis(Int.MAX_VALUE, coldCompilation = true) <=
+                2L * 60L * 60L * 1_000L
+        )
     }
 
     @Test

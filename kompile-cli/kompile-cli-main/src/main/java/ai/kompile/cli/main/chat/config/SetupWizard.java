@@ -27,7 +27,6 @@ import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
 import ai.kompile.cli.main.chat.enforcer.EnforcerSetupWizard;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
 import ai.kompile.core.agent.AgentProvider;
-import ai.kompile.core.agent.CliAgentModelDiscovery;
 import ai.kompile.core.agent.CliAgentRegistry;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -38,7 +37,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -81,6 +79,8 @@ public class SetupWizard {
     /** Exact provider wire value plus the label shown in the setup wizard. */
     public record ThinkingOption(String value, String label) {}
 
+    private record ModelSelection(String model, ModelDiscovery.Result discovery) {}
+
     private static final List<String> STANDARD_RUNTIME_OPTIONS = List.of(
             "Kompile local model — start the packaged first-party serving subprocess (no full Kompile instance)",
             "External local endpoint — Ollama or OpenAI-compatible (no Kompile instance)",
@@ -88,26 +88,6 @@ public class SetupWizard {
             "Kompile instance — connect to one or start the installed kompile-chat service"
     );
 
-    private static final List<String> EXTERNAL_LOCAL_OPTIONS = List.of(
-            "Ollama",
-            "OpenAI-compatible endpoint"
-    );
-
-    private static final List<String> CODEX_56_SOL_TERRA_EFFORTS =
-            List.of("low", "medium", "high", "xhigh", "max", "ultra");
-    private static final List<String> CODEX_56_LUNA_EFFORTS =
-            List.of("low", "medium", "high", "xhigh", "max");
-    private static final List<String> CODEX_CLASSIC_EFFORTS =
-            List.of("low", "medium", "high", "xhigh");
-    private static final List<String> OPENAI_56_EFFORTS =
-            List.of("none", "low", "medium", "high", "xhigh", "max");
-    private static final List<String> OPENAI_REASONING_EFFORTS =
-            List.of("none", "low", "medium", "high", "xhigh");
-    private static final List<String> O_SERIES_EFFORTS =
-            List.of("low", "medium", "high");
-    private static final List<String> XAI_EFFORTS =
-            List.of("low", "medium", "high");
-    private static final String OPENCODE_CUSTOM_VARIANT = "__kompile_opencode_variant__";
 
     /**
      * Run the interactive setup wizard.
@@ -173,10 +153,10 @@ public class SetupWizard {
                 }
             }
 
-            // Step 2: If passthrough mode, select style, agent, model, and variant.
+            // Step 2: If passthrough mode, select only the passthrough style and agent.
+            // Passthrough is a direct handoff to the native terminal; model and thinking
+            // selection belong exclusively to the standalone Kompile Chat flow.
             String passthroughAgent = null;
-            String model = null;
-            String thinking = null;
             boolean passthroughManaged = true;
             Boolean enforcementChoice = null; // null = not asked; the router honors a FALSE
             if ("passthrough".equals(chatMode)) {
@@ -192,9 +172,6 @@ public class SetupWizard {
                 System.out.println();
                 passthroughAgent = selectPassthroughAgent(reader);
                 if (passthroughAgent == null) return null;
-                model = selectPassthroughModel(reader, passthroughAgent, existingConfig);
-                if (model == null) return null;
-                thinking = selectPassthroughThinking(reader, passthroughAgent);
 
                 if (passthroughManaged) {
                     // Step 2b: Optional rule enforcement (judge/enforcer).
@@ -236,7 +213,10 @@ public class SetupWizard {
             // makes the no-instance paths explicit in the normal wizard.
             String provider = null;
             String apiKey = null;
+            String model = null;
+            String thinking = null;
             String baseUrl = null;
+            ModelDiscovery.Result selectedDiscovery = null;
             ProviderSelection providerSelection = null;
 
             if ("standard".equals(chatMode)) {
@@ -247,26 +227,44 @@ public class SetupWizard {
                 if (authentication == null) return null;
                 provider = authentication.provider();
                 apiKey = authentication.apiKey();
+                baseUrl = promptBaseUrl(reader, provider);
+                if (existingConfig != null
+                        && provider.equalsIgnoreCase(existingConfig.getProvider())
+                        && (baseUrl == null || baseUrl.isBlank())) {
+                    // A provider switch must not inherit another provider's endpoint, but
+                    // re-running setup for the same provider should retain its custom URL.
+                    baseUrl = existingConfig.getBaseUrl();
+                }
 
                 if (!"kompile".equals(provider)) {
-                    model = selectModel(reader, provider, existingConfig);
-                    if (model == null) return null;
+                    boolean sameProvider = existingConfig != null
+                            && provider.equalsIgnoreCase(existingConfig.getProvider());
+                    ChatConfig discoveryConfig = new ChatConfig(
+                            provider,
+                            apiKey,
+                            sameProvider ? existingConfig.getModel() : null,
+                            baseUrl);
+                    if (sameProvider && (baseUrl == null || baseUrl.isBlank())) {
+                        discoveryConfig.setBaseUrl(existingConfig.getBaseUrl());
+                    }
 
-                    if (supportsThinkingSelection(provider, model)) {
-                        thinking = selectThinking(reader, provider, model);
+                    ModelSelection selection = selectModel(reader, provider, apiKey, discoveryConfig);
+                    if (selection == null || selection.model() == null) return null;
+                    model = selection.model();
+                    selectedDiscovery = selection.discovery();
+
+                    if (supportsThinkingSelection(
+                            provider, model, apiKey, discoveryConfig, selectedDiscovery)) {
+                        thinking = selectThinking(
+                                reader, provider, model, apiKey, discoveryConfig, selection.discovery());
                         if (thinking == null) return null;
                     }
                 }
-
-                baseUrl = promptBaseUrl(reader, provider);
             }
 
             // Build and save config
             String selectedModel = model == null || model.isBlank() ? null : model;
             ChatConfig config = new ChatConfig(provider, apiKey, selectedModel, baseUrl);
-            if (existingConfig != null) {
-                config.setModelCatalog(existingConfig.getModelCatalog());
-            }
             config.setThinking(thinking == null || thinking.isBlank() ? null : thinking);
             config.setChatMode(chatMode);
             if (passthroughAgent != null) {
@@ -303,7 +301,8 @@ public class SetupWizard {
                     if (model != null) {
                         System.out.println("  Model:    " + BOLD + model + RESET);
                     }
-                    if (supportsThinkingSelection(provider, model)) {
+                    if (supportsThinkingSelection(
+                            provider, model, apiKey, config, selectedDiscovery)) {
                         System.out.println("  Thinking: " + BOLD
                                 + (config.getThinking() == null ? "provider/model default" : config.getThinking())
                                 + RESET);
@@ -450,67 +449,6 @@ public class SetupWizard {
                 .orElse(null);
     }
 
-    /**
-     * Resolve the live model catalog for a passthrough agent. The result is
-     * intentionally empty when the agent cannot enumerate models; callers must
-     * still allow an arbitrary model id.
-     */
-    public static List<String> passthroughModelOptions(String agentKey) {
-        AgentProvider definition = registryDefinition(agentKey);
-        return definition == null ? List.of() : CliAgentModelDiscovery.discover(definition);
-    }
-
-    private static String selectPassthroughModel(
-            LineReader reader,
-            String agentKey,
-            ChatConfig existingConfig) {
-        List<String> discovered = new ArrayList<>(passthroughModelOptions(agentKey));
-        if (existingConfig != null
-                && "passthrough".equals(existingConfig.getChatMode())
-                && agentKey.equalsIgnoreCase(existingConfig.getPassthroughAgent())
-                && existingConfig.getModel() != null
-                && !existingConfig.getModel().isBlank()
-                && !discovered.contains(existingConfig.getModel().trim())) {
-            discovered.add(existingConfig.getModel().trim());
-        }
-
-        List<String> choices = new ArrayList<>();
-        choices.add("Agent default (native)");
-        choices.addAll(discovered);
-        choices.add("Custom model id...");
-        int selected = selectNumbered(reader, "Select Model:", choices);
-        if (selected < 0) {
-            return null;
-        }
-        if (selected == 0) {
-            System.out.println("  → " + GREEN + "Agent default (native)" + RESET);
-            System.out.println();
-            return "";
-        }
-        if (selected <= discovered.size()) {
-            String model = discovered.get(selected - 1);
-            System.out.println("  → " + GREEN + model + RESET);
-            System.out.println();
-            return model;
-        }
-        return promptManual(reader, "  Model id/name (leave provider prefix intact): ");
-    }
-
-    /**
-     * Keep the variant value opaque. OpenCode and other agents own the valid
-     * variant names, so Kompile must not maintain a stale effort catalog.
-     */
-    private static String selectPassthroughThinking(LineReader reader, String agentKey) {
-        AgentProvider definition = registryDefinition(agentKey);
-        if (definition == null) {
-            return null;
-        }
-        System.out.println("  " + DIM + definition.getDisplayName()
-                + " variant/thinking values are provider-specific; enter the native value or leave blank."
-                + RESET);
-        return promptManual(reader, "  Thinking/variant override (optional): ");
-    }
-
     // ── Provider selection ──────────────────────────────────────────────────
 
     static List<String> standardRuntimeOptions() {
@@ -518,19 +456,21 @@ public class SetupWizard {
     }
 
     static List<String> externalLocalOptions() {
-        return EXTERNAL_LOCAL_OPTIONS;
+        List<String> options = new ArrayList<>(ChatProviderRegistry.localProviders().stream()
+                .map(ChatProvider::displayName)
+                .toList());
+        options.add("OpenAI-compatible endpoint");
+        return List.copyOf(options);
     }
 
     public static List<String> directVendorOrder() {
-        List<String> vendorKeys = new ArrayList<>();
-        for (String key : ChatConfig.PROVIDER_ORDER) {
-            if (!"kompile".equals(key)
-                    && !"ollama".equals(key)
-                    && !"openai-codex".equals(key)) {
-                vendorKeys.add(key);
-            }
-        }
-        return List.copyOf(vendorKeys);
+        return java.util.stream.Stream.concat(
+                        ChatProviderRegistry.directProviders().stream().map(ChatProvider::id),
+                        new OAuthProviderRegistry().flows().stream()
+                                .map(OAuthProviderFlow::userFacingProviderId))
+                .filter(provider -> provider != null && !provider.isBlank())
+                .distinct()
+                .toList();
     }
 
     public static List<String> authOptions(String vendor) {
@@ -574,18 +514,15 @@ public class SetupWizard {
      * user-facing vendor keys, never provider wire IDs such as openai-codex.
      */
     public static List<String> providerPickerOrder() {
-        List<String> providers = new ArrayList<>();
-        providers.add("ollama");
-        providers.add("custom");
-        providers.addAll(directVendorOrder());
+        List<String> providers = new ArrayList<>(directVendorOrder());
+        if (!providers.contains("custom")) {
+            providers.add("custom");
+        }
         return List.copyOf(providers);
     }
 
     /** Authentication methods for a provider shown in the picker. */
     public static List<AuthMethod> authMethodsForPicker(String vendor) {
-        if ("ollama".equalsIgnoreCase(vendor) || "custom".equalsIgnoreCase(vendor)) {
-            return List.of(AuthMethod.NONE);
-        }
         return authMethods(vendor);
     }
 
@@ -594,35 +531,76 @@ public class SetupWizard {
         if (provider == null || provider.isBlank()) {
             return provider;
         }
-        if ("openai-codex".equalsIgnoreCase(provider)) {
-            return "openai";
+        OAuthProviderFlow flow = new OAuthProviderRegistry().find(provider).orElse(null);
+        if (flow != null) {
+            return flow.userFacingProviderId();
         }
-        return provider;
+        ChatProvider chatProvider = ChatProviderRegistry.find(provider);
+        return chatProvider == null ? provider : chatProvider.id();
     }
 
-    /**
-     * Resolve model ids from the provider itself when the provider owns a native
-     * catalog. OpenCode is deliberately not represented by a Kompile model list.
-     */
+    /** Fetch the provider's current model ids and discovery status. */
+    public static ModelDiscovery.Result modelDiscovery(String provider) {
+        return ModelDiscoveryHttp.discoverResult(provider, null, null);
+    }
+
+    /** Fetch live models with the transient credential and current endpoint. */
+    public static ModelDiscovery.Result modelDiscovery(
+            String provider, String transientApiKey, ChatConfig config) {
+        boolean sameProvider = config != null
+                && provider != null
+                && provider.equalsIgnoreCase(config.getProvider());
+        String baseUrl = sameProvider ? config.getBaseUrl() : null;
+        return ModelDiscoveryHttp.discoverResult(provider, transientApiKey, baseUrl);
+    }
+
+    /** Force a live provider request, bypassing and refreshing the model cache. */
+    public static ModelDiscovery.Result refreshModelDiscovery(String provider) {
+        return ModelDiscoveryHttp.refreshResult(provider, null, null);
+    }
+
+    /** Force a live request with the transient credential and configured endpoint. */
+    public static ModelDiscovery.Result refreshModelDiscovery(
+            String provider, String transientApiKey, ChatConfig config) {
+        boolean sameProvider = config != null
+                && provider != null
+                && provider.equalsIgnoreCase(config.getProvider());
+        String baseUrl = sameProvider ? config.getBaseUrl() : null;
+        return ModelDiscoveryHttp.refreshResult(provider, transientApiKey, baseUrl);
+    }
+
     public static List<String> modelOptions(String provider) {
-        AgentProvider definition = registryDefinition(provider);
-        if (definition != null && NativeCliAuth.isSupported(provider)) {
-            return CliAgentModelDiscovery.discover(definition);
-        }
-        return List.of(ChatConfig.getDefaultModels(provider));
+        return modelIds(modelDiscovery(provider), null);
     }
 
-    /**
-     * Return live native ids plus the user's configured ids. The live ids are
-     * first so the picker remains current while still preserving custom entries.
-     */
+    /** Fetch live model ids with the transient credential and current endpoint. */
+    public static List<String> modelOptions(String provider, String transientApiKey, ChatConfig config) {
+        ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
+        String currentModel = config != null
+                && provider != null
+                && provider.equalsIgnoreCase(config.getProvider())
+                ? config.getModel() : null;
+        return modelIds(discovery, currentModel);
+    }
+
     public static List<String> modelOptions(String provider, ChatConfig config) {
-        if (config == null) {
-            return modelOptions(provider);
+        return modelOptions(provider, null, config);
+    }
+
+    /** Convert one discovery result to selectable ids, retaining the configured model. */
+    public static List<String> modelOptions(ModelDiscovery.Result discovery, String currentModel) {
+        return modelIds(discovery, currentModel);
+    }
+
+    private static List<String> modelIds(ModelDiscovery.Result discovery, String currentModel) {
+        List<String> ids = new ArrayList<>(discovery == null ? List.of() : discovery.models().stream()
+                .map(LiveModelDiscovery.Model::id)
+                .toList());
+        if (currentModel != null && !currentModel.isBlank()
+                && ids.stream().noneMatch(id -> id.equalsIgnoreCase(currentModel))) {
+            ids.add(currentModel);
         }
-        LinkedHashSet<String> models = new LinkedHashSet<>(modelOptions(provider));
-        models.addAll(config.getConfiguredModels(provider));
-        return List.copyOf(models);
+        return List.copyOf(ids);
     }
 
     /** Resolve the active wire provider's current authentication route. */
@@ -720,13 +698,15 @@ public class SetupWizard {
     }
 
     private static ProviderSelection selectExternalLocalProvider(LineReader reader) {
+        List<ChatProvider> localProviders = ChatProviderRegistry.localProviders();
         int selected = selectNumbered(reader, "Select External Local Endpoint:",
                 externalLocalOptions());
         if (selected < 0) return null;
-        if (selected == 0) {
-            System.out.println("  → " + GREEN + "Ollama" + RESET);
+        if (selected < localProviders.size()) {
+            ChatProvider provider = localProviders.get(selected);
+            System.out.println("  → " + GREEN + provider.displayName() + RESET);
             System.out.println();
-            return new ProviderSelection("ollama", "ollama", AuthMethod.NONE);
+            return new ProviderSelection(provider.id(), provider.id(), AuthMethod.NONE);
         }
         System.out.println("  → " + GREEN + "OpenAI-compatible endpoint" + RESET);
         System.out.println();
@@ -773,6 +753,9 @@ public class SetupWizard {
     }
 
     private static List<AuthMethod> authMethods(String vendor) {
+        if ("custom".equalsIgnoreCase(vendor)) {
+            return List.of(AuthMethod.NONE);
+        }
         if (NativeCliAuth.isSupported(vendor)) {
             return List.of(AuthMethod.NATIVE);
         }
@@ -782,6 +765,9 @@ public class SetupWizard {
         }
         if (supportsApiKey(vendor)) {
             methods.add(AuthMethod.API_KEY);
+        }
+        if (methods.isEmpty() && ChatProviderRegistry.find(vendor) != null) {
+            methods.add(AuthMethod.NONE);
         }
         return List.copyOf(methods);
     }
@@ -799,17 +785,20 @@ public class SetupWizard {
     }
 
     public static String vendorLabel(String vendor) {
-        if ("openai".equalsIgnoreCase(vendor)) {
-            return "OpenAI";
+        ChatProvider provider = ChatProviderRegistry.find(vendor);
+        if (provider != null) {
+            return provider.displayName();
         }
-        return ChatConfig.PROVIDERS.getOrDefault(vendor, vendor);
+        return new OAuthProviderRegistry().find(vendor)
+                .map(OAuthProviderFlow::displayName)
+                .orElseGet(() -> ChatProviderRegistry.label(vendor));
     }
 
     public static String authMethodLabel(AuthMethod authMethod) {
         return switch (authMethod) {
             case OAUTH -> "OAuth / subscription sign-in";
             case API_KEY -> "API key";
-            case NATIVE -> "OpenCode native auth (OAuth/API)";
+            case NATIVE -> "Native provider authentication";
             case NONE -> "None";
         };
     }
@@ -817,86 +806,73 @@ public class SetupWizard {
     // ── Model selection ─────────────────────────────────────────────────────
 
     public static List<ThinkingOption> thinkingOptions(String provider, String model) {
+        return thinkingOptionsFromDiscovery(provider, model, null);
+    }
+
+    public static List<ThinkingOption> thinkingOptions(
+            String provider, String model, String transientApiKey, ChatConfig config) {
+        return thinkingOptionsFromDiscovery(
+                provider, model, modelDiscovery(provider, transientApiKey, config));
+    }
+
+    /**
+     * Resolve thinking choices from an already-fetched discovery result.
+     * This overload is used by setup and the picker so metadata never causes a
+     * second network request.
+     */
+    public static List<ThinkingOption> thinkingOptions(
+            String provider,
+            String model,
+            String transientApiKey,
+            ChatConfig config,
+            ModelDiscovery.Result discovery) {
+        return thinkingOptionsFromDiscovery(provider, model, discovery);
+    }
+
+    private static List<ThinkingOption> thinkingOptionsFromDiscovery(
+            String provider, String model, ModelDiscovery.Result discovery) {
+        return thinkingOptions(resolveThinkingCapabilities(provider, model, discovery));
+    }
+
+    private static ThinkingCapabilityProvider.ThinkingCapabilities resolveThinkingCapabilities(
+            String provider, String model, ModelDiscovery.Result discovery) {
         if (provider == null || model == null || model.isBlank()) {
+            return ThinkingCapabilityProvider.ThinkingCapabilities.none();
+        }
+
+        ChatProvider providerDescriptor = ChatProviderRegistry.find(provider);
+        if (providerDescriptor == null) {
+            return ThinkingCapabilityProvider.ThinkingCapabilities.none();
+        }
+
+        LiveModelDiscovery.Model liveModel = discovery == null ? null
+                : discovery.models().stream()
+                .filter(candidate -> candidate.id().equalsIgnoreCase(model.trim()))
+                .findFirst()
+                .orElse(null);
+        if (liveModel == null) {
+            liveModel = new LiveModelDiscovery.Model(model.trim(), List.of());
+        }
+        return providerDescriptor.thinkingCapabilityProvider().resolve(liveModel);
+    }
+
+    private static List<ThinkingOption> thinkingOptions(
+            ThinkingCapabilityProvider.ThinkingCapabilities capabilities) {
+        if (!capabilities.supported()) {
             return List.of();
         }
 
-        String normalizedProvider = provider.trim().toLowerCase(java.util.Locale.ROOT);
-        String normalizedModel = model.trim().toLowerCase(java.util.Locale.ROOT);
-        List<String> efforts;
-        String defaultEffort;
-
-        switch (normalizedProvider) {
-            case "openai-codex" -> {
-                if (normalizedModel.equals("gpt-5.6-sol")) {
-                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
-                    defaultEffort = "low";
-                } else if (normalizedModel.equals("gpt-5.6-terra")) {
-                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
-                    defaultEffort = "medium";
-                } else if (normalizedModel.equals("gpt-5.6-luna")) {
-                    efforts = CODEX_56_LUNA_EFFORTS;
-                    defaultEffort = "medium";
-                } else {
-                    efforts = CODEX_CLASSIC_EFFORTS;
-                    defaultEffort = "medium";
-                }
-            }
-            case "github-copilot" -> {
-                if (normalizedModel.equals("gpt-5.6-terra")) {
-                    efforts = CODEX_56_SOL_TERRA_EFFORTS;
-                    defaultEffort = "medium";
-                } else if (normalizedModel.startsWith("gpt-5")) {
-                    efforts = CODEX_CLASSIC_EFFORTS;
-                    defaultEffort = "medium";
-                } else if (normalizedModel.startsWith("grok-")
-                        || normalizedModel.startsWith("mai-code-")) {
-                    efforts = XAI_EFFORTS;
-                    defaultEffort = "high";
-                } else {
-                    return List.of();
-                }
-            }
-            case "openai" -> {
-                if (normalizedModel.startsWith("gpt-5.6")) {
-                    efforts = OPENAI_56_EFFORTS;
-                    defaultEffort = "medium";
-                } else if (normalizedModel.startsWith("gpt-5")) {
-                    efforts = OPENAI_REASONING_EFFORTS;
-                    defaultEffort = "medium";
-                } else if (normalizedModel.matches("o[1-9].*")) {
-                    efforts = O_SERIES_EFFORTS;
-                    defaultEffort = "medium";
-                } else {
-                    return List.of();
-                }
-            }
-            case "xai" -> {
-                if (!normalizedModel.startsWith("grok-4")) {
-                    return List.of();
-                }
-                efforts = XAI_EFFORTS;
-                defaultEffort = "high";
-            }
-            case "opencode" -> {
-                // OpenCode owns the valid variant names. Keep the control opaque
-                // and let the user enter any native value supported by that model.
-                return List.of(
-                        new ThinkingOption("", "OpenCode default (native)"),
-                        new ThinkingOption(OPENCODE_CUSTOM_VARIANT, "Enter OpenCode variant...")
-                );
-            }
-            default -> {
-                return List.of();
-            }
-        }
-
         List<ThinkingOption> options = new ArrayList<>();
-        options.add(new ThinkingOption("",
-                "default — " + defaultEffort + " (recommended)"));
-        for (String effort : efforts) {
-            options.add(new ThinkingOption(effort, effort));
+        String defaultValue = capabilities.defaultValue();
+        String defaultLabel = defaultValue == null || defaultValue.isBlank()
+                ? "provider/model default (recommended)"
+                : "provider/model default (" + defaultValue + ", recommended)";
+        if (capabilities.documentedFallback()) {
+            defaultLabel += " — " + capabilities.sourceIndicator();
         }
+        options.add(new ThinkingOption("", defaultLabel));
+        capabilities.options().forEach(option ->
+                options.add(new ThinkingOption(option.value(), option.label())));
         return List.copyOf(options);
     }
 
@@ -904,80 +880,101 @@ public class SetupWizard {
         return thinkingOptions(provider, model).size() > 1;
     }
 
-    public static boolean isCustomThinkingSelection(String provider, String value) {
-        return "opencode".equalsIgnoreCase(provider)
-                && OPENCODE_CUSTOM_VARIANT.equals(value);
+    public static boolean supportsThinkingSelection(
+            String provider, String model, String transientApiKey, ChatConfig config) {
+        return thinkingOptions(provider, model, transientApiKey, config).size() > 1;
     }
 
-    public static String promptCustomThinking(LineReader reader, String provider) {
-        if (!isCustomThinkingSelection(provider, OPENCODE_CUSTOM_VARIANT)) {
+    public static boolean supportsThinkingSelection(
+            String provider,
+            String model,
+            String transientApiKey,
+            ChatConfig config,
+            ModelDiscovery.Result discovery) {
+        return thinkingOptions(provider, model, transientApiKey, config, discovery).size() > 1;
+    }
+
+    /**
+     * Keep a previous wire value only when it is valid for the selected model.
+     */
+    public static String compatibleThinking(
+            String provider,
+            String model,
+            String currentThinking,
+            ModelDiscovery.Result discovery) {
+        if (currentThinking == null || currentThinking.isBlank()) {
             return null;
         }
-        return promptManual(reader, "  OpenCode variant (provider-specific, blank cancels): ");
+        return thinkingOptionsFromDiscovery(provider, model, discovery).stream()
+                .map(ThinkingOption::value)
+                .anyMatch(currentThinking::equals)
+                ? currentThinking : null;
     }
 
-    private static String selectThinking(LineReader reader, String provider, String model) {
-        List<ThinkingOption> options = thinkingOptions(provider, model);
+    private static String selectThinking(
+            LineReader reader,
+            String provider,
+            String model,
+            String transientApiKey,
+            ChatConfig config,
+            ModelDiscovery.Result discovery) {
+        List<ThinkingOption> options = thinkingOptions(
+                provider, model, transientApiKey, config, discovery);
+        if (options.size() <= 1) {
+            return "";
+        }
+        ThinkingCapabilityProvider.ThinkingCapabilities capabilities =
+                resolveThinkingCapabilities(provider, model, discovery);
+        if (capabilities.documentedFallback()) {
+            System.out.println("  " + YELLOW + capabilities.sourceIndicator() + RESET);
+        }
         List<String> labels = options.stream().map(ThinkingOption::label).toList();
         int selected = selectNumbered(reader,
-                "Select " + reasoningVendorLabel(provider) + " Reasoning Effort:", labels);
+                "Select " + vendorLabel(provider) + " Thinking Variant:", labels);
         if (selected < 0) return null;
 
         String effort = options.get(selected).value();
-        if (isCustomThinkingSelection(provider, effort)) {
-            effort = promptCustomThinking(reader, provider);
-            if (effort == null) return null;
-        }
         System.out.println("  → " + GREEN
                 + (effort.isBlank() ? options.get(selected).label() : effort) + RESET);
         System.out.println();
         return effort;
     }
 
-    private static String reasoningVendorLabel(String provider) {
-        if (provider == null) return "Model";
-        return switch (provider.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "openai-codex" -> "OpenAI Codex";
-            case "openai" -> "OpenAI";
-            case "github-copilot" -> "GitHub Copilot";
-            case "opencode" -> "OpenCode";
-            case "xai" -> "xAI";
-            default -> "Model";
-        };
+    private static ModelSelection selectModel(LineReader reader, String provider) {
+        return selectModel(reader, provider, null, null);
     }
 
-    private static String selectModel(LineReader reader, String provider) {
-        return selectModel(reader, provider, null);
-    }
-
-    private static String selectModel(LineReader reader, String provider, ChatConfig config) {
-        List<String> defaults = modelOptions(provider, config);
-
-        if (defaults.isEmpty()) {
-            return promptManual(reader, "  Model name: ");
+    private static ModelSelection selectModel(
+            LineReader reader, String provider, String transientApiKey, ChatConfig config) {
+        ModelDiscovery.Result discovery = modelDiscovery(provider, transientApiKey, config);
+        String currentModel = config != null
+                && provider != null
+                && provider.equalsIgnoreCase(config.getProvider())
+                ? config.getModel() : null;
+        List<String> models = modelIds(discovery, currentModel);
+        if (!discovery.message().isBlank()) {
+            System.err.println("  " + discovery.message());
         }
+        if (models.isEmpty()) {
+            System.err.println("  Model discovery for " + vendorLabel(provider)
+                    + " returned " + discovery.status().name().toLowerCase().replace('_', ' ')
+                    + (discovery.message().isBlank() ? "." : ": " + discovery.message()));
 
-        List<String> models = new ArrayList<>();
-        for (int i = 0; i < defaults.size(); i++) {
-            String suffix = (i == 0) ? " (recommended)" : "";
-            models.add(defaults.get(i) + suffix);
+            String manual = promptManual(reader, "  Enter model id manually (blank to cancel): ");
+            if (manual != null) {
+                System.out.println("  → " + GREEN + manual + RESET);
+                System.out.println();
+            }
+            return new ModelSelection(manual, discovery);
         }
-        models.add("Custom...");
 
         int selected = selectNumbered(reader, "Select Model:", models);
         if (selected < 0) return null;
 
-        if (selected < defaults.size()) {
-            String model = defaults.get(selected);
-            System.out.println("  → " + GREEN + model + RESET);
-            System.out.println();
-            return model;
-        } else {
-            String prompt = "kompile-local".equals(provider)
-                    ? "  Local .gguf/.sdz model path: "
-                    : "  Custom model name: ";
-            return promptManual(reader, prompt);
-        }
+        String model = models.get(selected);
+        System.out.println("  → " + GREEN + model + RESET);
+        System.out.println();
+        return new ModelSelection(model, discovery);
     }
 
     // ── Manual text prompt ──────────────────────────────────────────────────
@@ -1142,7 +1139,7 @@ public class SetupWizard {
         }
     }
 
-    private static String promptBaseUrl(LineReader reader, String provider) {
+    public static String promptBaseUrl(LineReader reader, String provider) {
         String defaultUrl = ChatConfig.getDefaultBaseUrl(provider);
 
         if ("kompile-local".equals(provider)) {
@@ -1177,18 +1174,7 @@ public class SetupWizard {
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static String getEnvVarName(String provider) {
-        return switch (provider) {
-            case "openai" -> "OPENAI_API_KEY";
-            case "anthropic" -> "ANTHROPIC_API_KEY";
-            case "gemini" -> "GOOGLE_API_KEY";
-            case "openrouter" -> "OPENROUTER_API_KEY";
-            case "xai" -> "XAI_API_KEY";
-            case "github-copilot" -> "COPILOT_GITHUB_TOKEN";
-            case "radius" -> "RADIUS_API_KEY";
-            case "deepseek" -> "DEEPSEEK_API_KEY";
-            case "groq" -> "GROQ_API_KEY";
-            default -> null;
-        };
+        return ChatProviderRegistry.environmentVariable(provider);
     }
 
     private static String maskKey(String key) {

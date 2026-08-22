@@ -205,7 +205,11 @@ class LlmGenerateControllerTest {
                         "addGenerationPrompt", true,
                         "toolDefinitionFormat", "FLAT",
                         "toolCallFormat", "NATIVE"),
-                "maxTokens", 128);
+                "maxTokens", 128,
+                "correlation", Map.of(
+                        "crawlJobId", "local-11111111-1111-4111-8111-111111111111",
+                        "subprocessRunId", "runtime-1",
+                        "transportRequestId", "request-1"));
 
         ResponseEntity<Map<String, Object>> response = controller.chat(request);
 
@@ -213,6 +217,7 @@ class LlmGenerateControllerTest {
         assertEquals("", response.getBody().get("content"));
         assertEquals("inspect source", response.getBody().get("reasoningContent"));
         assertEquals(1, ((List<?>) response.getBody().get("toolCalls")).size());
+        assertEquals(request.get("correlation"), response.getBody().get("correlation"));
         var captor = org.mockito.ArgumentCaptor.forClass(
                 ai.kompile.core.llm.StructuredChatLanguageModel.Request.class);
         verify(languageModel).generateChat(captor.capture(), eq(128));

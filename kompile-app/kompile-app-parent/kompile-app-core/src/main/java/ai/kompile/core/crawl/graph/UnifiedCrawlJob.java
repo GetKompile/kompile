@@ -702,6 +702,8 @@ public class UnifiedCrawlJob {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class LlmCallRecord {
+        /** Stable identity for this exact model invocation. */
+        private String llmCallId;
         private Instant timestamp;
         /** Backend that handled the call (e.g. "default", "claude-cli", "openai-api") */
         private String backendId;
@@ -753,6 +755,18 @@ public class UnifiedCrawlJob {
         private String promptText;
         /** Full response text from the LLM (excluded from progress snapshot to avoid bloat) */
         private String responseText;
+        /** Whether this used the model-owned structured chat/tool protocol. */
+        private boolean structured;
+        /** Complete serialized structured request, including messages, tools, formats, and choice. */
+        private String structuredRequestJson;
+        /** Complete serialized structured response, including raw text, calls, and parser errors. */
+        private String structuredResponseJson;
+        /** Exact out-of-process runtime identity, when applicable. */
+        private String subprocessRunId;
+        /** Durable log path for that process. */
+        private String subprocessLogPath;
+        /** Exact HTTP/stdio request identity within a pooled process. */
+        private String transportRequestId;
     }
 
     @Data

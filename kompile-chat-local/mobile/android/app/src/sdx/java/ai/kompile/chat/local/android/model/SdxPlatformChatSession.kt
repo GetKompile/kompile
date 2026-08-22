@@ -88,15 +88,18 @@ internal object SdxPlatformRuntimeOwner {
         loadTransaction: NativeOperationTransaction
     ): SdxOwnedPlatformChatSession {
         val applicationContext = context.applicationContext
+        val effectiveDiagnosticMode = effectiveDiagnosticModeForRuntime(diagnosticMode)
         val trace = SmokeDecodeTraceLog(applicationContext)
         trace.record(
             "runtime_diagnostics_configured",
             loadTransaction.snapshot().attemptId,
             mapOf(
-                "diagnostic_mode" to diagnosticMode.wireValue,
-                "dsp_categories" to diagnosticMode.dspCategories,
-                "dsp_level" to diagnosticMode.dspLevel,
-                "dsp_trace_location" to if (diagnosticMode == ModelDiagnosticMode.DSP_DIAGNOSTICS) {
+                "requested_diagnostic_mode" to diagnosticMode.wireValue,
+                "diagnostic_mode" to effectiveDiagnosticMode.wireValue,
+                "dsp_categories" to effectiveDiagnosticMode.dspCategories,
+                "dsp_level" to effectiveDiagnosticMode.dspLevel,
+                "native_op_sanity" to effectiveDiagnosticMode.nativeOpSanity,
+                "dsp_trace_location" to if (effectiveDiagnosticMode.capturesDspTrace) {
                     DspDiagnosticsTraceLog(applicationContext).locationDescription()
                 } else {
                     "disabled"
@@ -129,7 +132,7 @@ internal object SdxPlatformRuntimeOwner {
                 "Unable to create the device compilation cache: ${deviceCache.absolutePath}"
             }
 
-            val library = SdxAndroidLlmLibrary.configure(applicationContext, diagnosticMode)
+            val library = SdxAndroidLlmLibrary.configure(applicationContext, effectiveDiagnosticMode)
             checkpointLoad(trace, loadTransaction, NativeOperationCheckpoint.LOAD_NATIVE_TRANSPORT)
             val abi = SdxAndroidLlmLibrary.bind(library)
             native = abi
@@ -511,6 +514,7 @@ internal object SdxPlatformRuntimeOwner {
                 model,
                 generationReportRef
             )
+            var generationReport: JSONObject? = null
             if (generationReportStatus == STATUS_OK && generationReportRef.value != null) {
                 val report = JSONObject(
                     readAndFree(
@@ -520,6 +524,7 @@ internal object SdxPlatformRuntimeOwner {
                         "native generation report"
                     )
                 )
+                generationReport = report
                 trace.record(
                     "native_generation_report",
                     attemptId,
@@ -569,6 +574,8 @@ internal object SdxPlatformRuntimeOwner {
                 readAndFree(native, runtime, parsedRef.value, "structured chat result")
             )
             val decoded = structured.optString("content").trim()
+            val toolCallCount = structured.getJSONArray("toolCalls").length()
+            val protocolErrorCount = structured.getJSONArray("protocolErrors").length()
             trace.record(
                 "native_output_ready",
                 attemptId,
@@ -582,12 +589,48 @@ internal object SdxPlatformRuntimeOwner {
                     "raw_decoded_utf8_bytes" to rawDecoded.toByteArray(StandardCharsets.UTF_8).size,
                     "raw_decoded_utf8_sha256" to utf8Sha256(rawDecoded),
                     "raw_decoded_utf8_hex_prefix" to utf8HexPrefix(rawDecoded),
-                    "tool_calls" to structured.getJSONArray("toolCalls").length(),
-                    "protocol_errors" to structured.getJSONArray("protocolErrors").length(),
+                    "tool_calls" to toolCallCount,
+                    "protocol_errors" to protocolErrorCount,
                     "chunk_count" to chunkCount.get(),
                     "chunk_chars" to chunkChars.get()
                 )
             )
+            if (decoded.isEmpty() && toolCallCount == 0 && protocolErrorCount == 0) {
+                val report = generationReport
+                val finishReason = report?.optString("finishReason")
+                    ?.takeIf { it.isNotBlank() } ?: "unavailable"
+                val generatedTokens = report?.optInt("generatedTokens", -1) ?: -1
+                val generatedTokenIds =
+                    report?.optJSONArray("generatedTokenIds")?.toString() ?: "[]"
+                val generatedTokenIdsForError =
+                    if (generatedTokenIds.length <= TRACE_TEXT_PREVIEW_CHARS) {
+                        generatedTokenIds
+                    } else {
+                        generatedTokenIds.take(TRACE_TEXT_PREVIEW_CHARS) + "..."
+                    }
+                trace.record(
+                    "native_empty_output",
+                    attemptId,
+                    mapOf(
+                        "finish_reason" to finishReason,
+                        "generated_tokens" to generatedTokens,
+                        "generated_token_ids" to generatedTokenIds,
+                        "raw_decoded_chars" to rawDecoded.length,
+                        "raw_decoded_utf8_hex_prefix" to utf8HexPrefix(rawDecoded),
+                        "chunk_count" to chunkCount.get(),
+                        "chunk_chars" to chunkChars.get()
+                    )
+                )
+                throw ChatException(
+                    "SDX returned no assistant text after compiled generation: " +
+                        "finish_reason=$finishReason, " +
+                        "generated_tokens=$generatedTokens, " +
+                        "generated_token_ids_preview=$generatedTokenIdsForError, " +
+                        "raw_decoded_chars=${rawDecoded.length}, " +
+                        "raw_decoded_utf8_hex_prefix=${utf8HexPrefix(rawDecoded)}, " +
+                        "chunk_count=${chunkCount.get()}"
+                )
+            }
             operation.complete()
             return structured.toString()
         }

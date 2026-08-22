@@ -3,6 +3,10 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.main.chat.agent.AgentLaunchDefaults;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.terminal.AgentLaunchSpec;
+import ai.kompile.cli.main.chat.terminal.AgentProcess;
+import ai.kompile.cli.main.chat.terminal.InterruptEscalation;
+import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.terminal.TerminalQueryStripResult;
 import ai.kompile.cli.main.chat.terminal.TerminalQueryStripper;
 import org.jline.keymap.KeyMap;
@@ -21,13 +25,18 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -704,6 +713,148 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
+    void managerOwnedProcessIsKillableAndCompletedEntriesLeaveBottomPane() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        BackgroundProcessManager manager = new BackgroundProcessManager(
+                "passthrough-manager-owned-" + System.nanoTime());
+        setField(command, "bgProcMgr", manager);
+        try {
+            BackgroundProcessManager.ProcessEntry completed = manager.registerVirtual(
+                    BackgroundProcessManager.ProcessKind.COMMAND,
+                    "done", "Old completed process", Map.of());
+            assertTrue(manager.complete(completed.getId()));
+            @SuppressWarnings("unchecked")
+            List<Object> before = (List<Object>) invokeNoArgReturn(command, "activityMenuItems");
+            assertFalse(before.toString().contains("Old completed process"),
+                    "terminal process history must not accumulate in the live bottom pane");
+
+            BackgroundProcessManager.ProcessEntry running = manager.launch(
+                    "sleep 30", "Manager-owned killable process", Path.of("."));
+            assertTrue(invokeBooleanStringArg(command, "killActivityItem", running.getId()),
+                    "Delete must route manager-owned rows back to BackgroundProcessManager");
+            assertTrue(await(() -> !running.isRunning()),
+                    "the manager-owned process should be terminated");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void staleSelectionDoesNotMoveToAnotherLiveProcess() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        BackgroundProcessManager manager = new BackgroundProcessManager(
+                "passthrough-stale-selection-" + System.nanoTime());
+        setField(command, "bgProcMgr", manager);
+        try {
+            BackgroundProcessManager.ProcessEntry first = manager.launch(
+                    "sleep 30", "First process", Path.of("."));
+            BackgroundProcessManager.ProcessEntry second = manager.launch(
+                    "sleep 30", "Second process", Path.of("."));
+            assertTrue(invokeBooleanNoArg(command, "selectNextActivityItem"));
+            String selectedId = (String) getField(command, "selectedActivityId");
+            BackgroundProcessManager.ProcessEntry selected = selectedId.equals(first.getId())
+                    ? first : second;
+            BackgroundProcessManager.ProcessEntry adjacent = selected == first ? second : first;
+
+            assertTrue(manager.kill(selected.getId()));
+            assertTrue(await(() -> !selected.isRunning()));
+            invokeNoArg(command, "drawFixedInputBox");
+
+            assertFalse((Boolean) getField(command, "activityFocusActive"),
+                    "a vanished selection must clear instead of moving to another process");
+            assertTrue(adjacent.isRunning(), "the adjacent process must remain untouched");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void collidingTaskIdRoutesKillToDisplayedTaskOwner() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "workingDir", tempDir.toString());
+        BackgroundProcessManager manager = new BackgroundProcessManager(
+                "passthrough-collision-" + System.nanoTime());
+        setField(command, "bgProcMgr", manager);
+        Process taskProcess = new ProcessBuilder("sh", "-c", "sleep 30").start();
+        Process staleSelectedProcess = null;
+        Process restartedProcess = null;
+        try {
+            BackgroundProcessManager.ProcessEntry managed = manager.launch(
+                    "sleep 30", "Manager collision", Path.of("."));
+            ai.kompile.cli.mcp.stdio.TaskRecord task = ai.kompile.cli.mcp.stdio.TaskRecord.builder()
+                    .taskId(managed.getId())
+                    .taskType("task")
+                    .description("Displayed registry task")
+                    .workDir(tempDir.toString())
+                    .build();
+            task.markRunning(taskProcess.pid());
+            ai.kompile.cli.mcp.stdio.TaskRegistry registry =
+                    new ai.kompile.cli.mcp.stdio.TaskRegistry(tempDir);
+            registry.create(task);
+
+            assertFalse(invokeBooleanStringArg(command, "killActivityItem", managed.getId()),
+                    "registry-only rows are inspect/logs-only without a stable Process handle");
+            assertTrue(taskProcess.isAlive(),
+                    "the pane must not perform unsafe PID-only task cancellation");
+            assertTrue(managed.isRunning(),
+                    "an ID-colliding manager process hidden by deduplication must not be killed");
+
+            staleSelectedProcess = new ProcessBuilder("sh", "-c", "sleep 30").start();
+            long stalePid = staleSelectedProcess.pid();
+            registry.update(managed.getId(), record -> record.markRunning(stalePid));
+            assertTrue(invokeBooleanNoArg(command, "selectNextActivityItem"));
+            restartedProcess = new ProcessBuilder("sh", "-c", "sleep 30").start();
+            long restartedPid = restartedProcess.pid();
+            registry.update(managed.getId(), record -> record.markRunning(restartedPid));
+
+            assertTrue(invokeBooleanNoArg(command, "killSelectedActivityItem"));
+            assertTrue(managed.isRunning(),
+                    "stale task selection must not transfer Delete to the colliding manager process");
+            assertTrue(staleSelectedProcess.isAlive(),
+                    "the original selected task incarnation is no longer the active owner");
+            assertTrue(restartedProcess.isAlive(),
+                    "a stale selection must not cancel a restarted task with the same ID");
+        } finally {
+            if (taskProcess.isAlive()) taskProcess.destroyForcibly();
+            if (staleSelectedProcess != null && staleSelectedProcess.isAlive()) {
+                staleSelectedProcess.destroyForcibly();
+            }
+            if (restartedProcess != null && restartedProcess.isAlive()) {
+                restartedProcess.destroyForcibly();
+            }
+            manager.close();
+        }
+    }
+
+    @Test
+    void detachedResponseNeverOwnsPersistentProviderPid() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "workingDir", tempDir.toString());
+        setField(command, "agent", "opencode");
+        Process provider = new ProcessBuilder("sh", "-c", "sleep 30").start();
+        try {
+            invokeStringProcessArg(command, "registerDetachedTask", "background response", provider);
+            String taskId = (String) getField(command, "detachedTaskId");
+            ai.kompile.cli.mcp.stdio.TaskRecord record =
+                    new ai.kompile.cli.mcp.stdio.TaskRegistry(tempDir).get(taskId);
+
+            assertNotNull(record);
+            assertTrue(record.isTerminal(), "the durable record must not remain active forever");
+            assertEquals(-1L, record.getPid(),
+                    "a detached response must never expose the persistent provider PID");
+            assertFalse(invokeBooleanStringArg(command, "killActivityItem", taskId));
+            assertTrue(provider.isAlive(), "Delete must not terminate the reusable provider session");
+
+            EmulatedPassthroughCommand resumed = configuredIdleCommand();
+            setField(resumed, "workingDir", tempDir.toString());
+            assertNotNull(invokeStringReturn(resumed, "findActivityMenuItem", taskId),
+                    "explicit activity lookup must retain terminal detached-response history");
+        } finally {
+            provider.destroyForcibly();
+        }
+    }
+
+    @Test
     void activityMenuShowsLogsBelowStatusAreaAndInScrollRegion() throws Exception {
         EmulatedPassthroughCommand command = configuredBusyCommand("draft while busy");
         setField(command, "scrollBottom", 18);
@@ -1305,7 +1456,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void backgroundFollowupsUseKompileManagedIsolatedProcessesForAllProviders() throws Exception {
+    void backgroundFollowupsStayQueuedUntilIsolatedOwnerExists() throws Exception {
         EmulatedPassthroughCommand command = configuredIdleCommand();
         setField(command, "firstMessageSent", true);
         setField(command, "agentSessionId", "provider-session");
@@ -1313,8 +1464,8 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
 
         for (String provider : List.of("claude", "codex", "gemini", "qwen", "opencode", "unknown-agent")) {
             setField(command, "agent", provider);
-            assertTrue(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"),
-                    provider + " should use Kompile-managed background dispatch");
+            assertFalse(invokeBooleanNoArg(command, "canDispatchQueuedMessageAfterBackground"),
+                    provider + " must not write a follow-up into a still-generating provider");
             List<String> built = invokeBuildCommand(command, provider, "next draft");
             AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(provider, null, null, null);
             assertEquals(provider, built.get(0), provider + " should launch the interactive provider binary");
@@ -1330,6 +1481,42 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
             assertFalse(built.contains("--fork"), provider + " must not rely on provider-specific fork flags");
             assertFalse(built.contains("next draft"), provider + " should receive the queued prompt over stdin, not argv");
         }
+    }
+
+    @Test
+    void failedManagedResumeDropsStaleNativeIdBeforeLaunchingProvider() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "agent", "codex");
+        setField(command, "resumeSessionId", "kompile-session");
+        setField(command, "resumeLaunchToken", "stale-native-session");
+        setField(command, "agentSessionId", "stale-native-session");
+        setField(command, "firstMessageSent", true);
+
+        command.resetNativeResumeForFreshSession();
+
+        List<String> built = invokeBuildCommand(command, "codex", "first fresh message");
+        assertFalse(built.contains("resume"));
+        assertFalse(built.contains("stale-native-session"));
+        assertFalse((boolean) getField(command, "firstMessageSent"));
+    }
+
+    @Test
+    void sessionResetClosesPersistentProviderBeforeFreshLaunch() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        TrackingAgentProcess owner = new TrackingAgentProcess();
+        setField(command, "tuiAgentProcess", owner);
+        setField(command, "tuiProcess", owner.process());
+        setField(command, "activeProcess", owner.process());
+        setField(command, "agentStdin", owner.stdin());
+
+        command.stopPersistentAgentForSessionReset();
+
+        assertTrue(owner.closed.get());
+        assertFalse(owner.process().isAlive());
+        assertNull(getField(command, "tuiAgentProcess"));
+        assertNull(getField(command, "tuiProcess"));
+        assertNull(getField(command, "activeProcess"));
+        assertNull(getField(command, "agentStdin"));
     }
 
     @Test
@@ -1425,6 +1612,46 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     private record StripResult(byte[] displayBytes, String queries) {}
+
+    private static final class TrackingAgentProcess implements AgentProcess {
+        private final AtomicBoolean closed = new AtomicBoolean();
+        private final TrackingProcess process = new TrackingProcess();
+        private final OutputStream stdin = OutputStream.nullOutputStream();
+
+        @Override public void start(AgentLaunchSpec spec) {}
+        @Override public OutputStream stdin() { return stdin; }
+        @Override public InputStream inputStream() { return InputStream.nullInputStream(); }
+        @Override public void resize(int rows, int cols) {}
+        @Override public String interrupt(InterruptEscalation escalation) {
+            process.destroy();
+            return "TERM";
+        }
+        @Override public void signalTree(String signal) {}
+        @Override public boolean isAlive() { return process.isAlive(); }
+        @Override public long pid() { return -1L; }
+        @Override public CompletableFuture<Integer> exitFuture() {
+            return CompletableFuture.completedFuture(0);
+        }
+        @Override public Process process() { return process; }
+        @Override public void close() {
+            closed.set(true);
+            process.destroy();
+        }
+    }
+
+    private static final class TrackingProcess extends Process {
+        private final AtomicBoolean alive = new AtomicBoolean(true);
+        @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+        @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+        @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+        @Override public int waitFor() { alive.set(false); return 0; }
+        @Override public int exitValue() {
+            if (alive.get()) throw new IllegalThreadStateException("process is still alive");
+            return 0;
+        }
+        @Override public void destroy() { alive.set(false); }
+        @Override public boolean isAlive() { return alive.get(); }
+    }
 
     private static void invokeStringArg(Object target, String name, String value) throws Exception {
         Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name, String.class);
@@ -1540,6 +1767,14 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(name, String.class, String.class, Process.class);
         method.setAccessible(true);
         return method.invoke(target, first, second, process);
+    }
+
+    private static void invokeStringProcessArg(
+            Object target, String name, String value, Process process) throws Exception {
+        Method method = EmulatedPassthroughCommand.class.getDeclaredMethod(
+                name, String.class, Process.class);
+        method.setAccessible(true);
+        method.invoke(target, value, process);
     }
 
     private static boolean invokeBooleanStringArg(Object target, String name, String value) throws Exception {

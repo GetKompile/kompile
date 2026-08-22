@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 /** Anthropic Claude Pro/Max browser PKCE OAuth flow. */
-final class AnthropicOAuthFlow implements OAuthProviderFlow {
+public final class AnthropicOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "anthropic";
 
     private static final String CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -30,7 +30,7 @@ final class AnthropicOAuthFlow implements OAuthProviderFlow {
 
     private final OAuthSupport.HttpTransport http;
 
-    AnthropicOAuthFlow() {
+    public AnthropicOAuthFlow() {
         this(OAuthSupport.defaultTransport());
     }
 

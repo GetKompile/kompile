@@ -21,14 +21,23 @@ import ai.kompile.cli.main.chat.MessageQueue;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.utils.AnsiConstants;
+import org.jline.reader.LineReader;
+import org.jline.reader.Widget;
 import org.jline.terminal.Terminal;
+import org.jline.utils.AttributedString;
 
-import java.io.PrintStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static ai.kompile.utils.AnsiConstants.*;
 
@@ -39,11 +48,14 @@ import static ai.kompile.utils.AnsiConstants.*;
  * <pre>
  * ┌─────────────────────────────────────────────┐  Row 1   ← TopBar content
  * │ kompile  [claude]  session: cli-a1b2  [plan] │
- * ├─────────────────────────────────────────────┤  Row 2   ← TopBar separator
+ * │ ⚠ transient alert                            │  Row 2   ← fixed alert lane
+ * ├─────────────────────────────────────────────┤  Row 3   ← TopBar separator
  * │                                              │
- * │  (scrollable content area — JLine readline,  │  Rows 3..H-2  ← scroll region
+ * │  (scrollable content area — JLine readline,  │  Rows 4..N    ← scroll region
  * │   agent output, tool calls, markdown, etc.)  │
  * │                                              │
+ * │ Queue · 2 pending · ↑ edits latest            │  Fixed queue pane
+ * │ → upcoming [a1b2c3d4] first pending message   │
  * ├─────────────────────────────────────────────┤  Row H-1 ← StatusBar separator
  * │ ⠋ proc-001 (2m) │ ◐ 1 bg │ Q:3 │ coder      │  Row H   ← StatusBar content
  * └─────────────────────────────────────────────┘
@@ -55,25 +67,56 @@ import static ai.kompile.utils.AnsiConstants.*;
 public class KompileTui {
 
     private static final String MAIN_CONTENT_VIEW = "main";
+    private static final String REDRAW_WIDGET = "kompile-redraw-frame";
     private static final int MAX_MAIN_TRANSCRIPT_LINES = 2_000;
+    private static final long MIN_ASYNC_FRAME_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
+    private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Bottom]";
+    /** JLine mouse coordinates are zero-based; row 3 and column 2 keep X10 clicks ASCII-safe. */
+    private static final int SCROLL_TO_BOTTOM_CONTROL_X = 1;
+    private static final int SCROLL_TO_BOTTOM_CONTROL_Y = TopBar.TOP_HEIGHT - 1;
 
     private final TopBar topBar;
     private final StatusBar statusBar;
     private final TerminalRenderer renderer;
+    private final MessageQueue messageQueue;
 
     /** Shared lock for all ANSI drawing to prevent interleaved output. */
     private final Object drawLock = new Object();
+    private final ExecutorService redrawExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "kompile-tui-redraw");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final AtomicBoolean redrawQueued = new AtomicBoolean(false);
+    private final AtomicBoolean redrawDirty = new AtomicBoolean(false);
+    private final AtomicLong alertVersion = new AtomicLong();
+    private volatile long lastFrameNanos;
 
     private volatile Terminal terminal;
     private volatile int terminalHeight;
     private volatile int terminalWidth;
     private volatile boolean started = false;
+    private volatile LineReader lineReader;
+    private volatile Widget clearInputWidget;
+    private volatile Widget redisplayWidget;
 
     /**
-     * Retained main-chat lines let the transcript area switch to a managed
-     * process view and back without relying on terminal scrollback scraping.
+     * Retained transcript entries let a running tool replace its own block while
+     * output arrives, instead of appending a start row, raw deltas, and a duplicate
+     * completion body. Unkeyed entries remain ordinary append-only transcript text.
      */
-    private final Deque<String> mainTranscriptLines = new ArrayDeque<>();
+    private static final class TranscriptEntry {
+        private final String key;
+        private List<String> lines;
+
+        private TranscriptEntry(String key, List<String> lines) {
+            this.key = key;
+            this.lines = lines;
+        }
+    }
+
+    private final Deque<TranscriptEntry> mainTranscriptEntries = new ArrayDeque<>();
+    private int mainTranscriptLineCount;
     private volatile String contentViewKey = MAIN_CONTENT_VIEW;
     private volatile String contentViewTitle = "Main chat";
     private volatile List<String> contentViewLines = List.of();
@@ -114,11 +157,13 @@ public class KompileTui {
                       MessageQueue messageQueue,
                       TerminalRenderer renderer) {
         this.renderer = renderer;
+        this.messageQueue = messageQueue;
         this.topBar = new TopBar(drawLock);
         // StatusBar with externalScrollManagement=true — we own the scroll region
         this.statusBar = new StatusBar(
                 taskManager, processManager, messageQueue, renderer,
                 drawLock, true);
+        this.statusBar.setRedrawRequester(this::requestRedraw);
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────
@@ -135,6 +180,34 @@ public class KompileTui {
         return drawLock;
     }
 
+    public String getCurrentAlert() {
+        return topBar.getAlert();
+    }
+
+    public boolean isStarted() {
+        return started;
+    }
+
+    /** Show a transient warning in the permanently reserved top alert row. */
+    public void showAlert(String message) {
+        if (message == null || message.isBlank()) return;
+        long version = alertVersion.incrementAndGet();
+        topBar.setAlert(message);
+        if (started) requestRedraw();
+        CompletableFuture.delayedExecutor(8, TimeUnit.SECONDS).execute(() -> {
+            if (alertVersion.compareAndSet(version, version + 1)) {
+                topBar.setAlert("");
+                if (started) requestRedraw();
+            }
+        });
+    }
+
+    public void clearAlert() {
+        alertVersion.incrementAndGet();
+        topBar.setAlert("");
+        if (started) requestRedraw();
+    }
+
     /**
      * The first row of the scrollable content region.
      */
@@ -144,10 +217,41 @@ public class KompileTui {
 
     /**
      * The last row of the scrollable content region.
-     * Accounts for TopBar at top, StatusBar at bottom, and any reserved middle rows.
+     * Accounts for TopBar at top, StatusBar/activity rows at bottom, and the
+     * fixed queue pane. Queue rows are reserved even while empty so adding a
+     * message cannot move JLine's live input anchor.
      */
     public int scrollBottom() {
-        return Math.max(scrollTop() + 2, terminalHeight - StatusBar.STATUS_HEIGHT - reservedMiddleRows);
+        if (terminalHeight <= 0) return scrollTop() + 2;
+        return Math.max(scrollTop(),
+                terminalHeight - StatusBar.STATUS_HEIGHT
+                        - reservedMiddleRows - getQueueRegionRows());
+    }
+
+    /** Number of fixed rows allocated to upcoming/queued messages. */
+    public int getQueueRegionRows() {
+        return queueRowsForTerminal(terminalHeight);
+    }
+
+    static int queueRowsForTerminal(int height) {
+        if (height <= 0) return 0;
+        if (height < 16) return 1;
+        return Math.max(2, Math.min(5, height / 12 + 1));
+    }
+
+    public int queueTop() {
+        return scrollBottom() + 1;
+    }
+
+    public int queueBottom() {
+        return queueTop() + Math.max(0, getQueueRegionRows() - 1);
+    }
+
+    /** Snapshot of queue-pane text before cursor-addressed placement. */
+    public List<String> getVisibleQueueLines() {
+        synchronized (drawLock) {
+            return visibleQueueLines();
+        }
     }
 
     /**
@@ -227,6 +331,30 @@ public class KompileTui {
         return contentScrollOffset;
     }
 
+    /** Whether the fixed separator-row shortcut should currently be shown. */
+    public boolean isScrollToBottomControlVisible() {
+        int width = terminalWidth > 0 ? terminalWidth : 80;
+        return !temporaryWindowActive
+                && contentScrollOffset > 0
+                && width > SCROLL_TO_BOTTOM_CONTROL_X
+                + AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
+    }
+
+    /**
+     * Handle a zero-based JLine primary-click coordinate. Only the visible
+     * separator-row shortcut is active; every other click remains a no-op.
+     */
+    public boolean handleScrollToBottomClick(int x, int y) {
+        int controlWidth = AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
+        if (!isScrollToBottomControlVisible()
+                || y != SCROLL_TO_BOTTOM_CONTROL_Y
+                || x < SCROLL_TO_BOTTOM_CONTROL_X
+                || x >= SCROLL_TO_BOTTOM_CONTROL_X + controlWidth) {
+            return false;
+        }
+        return scrollToBottom();
+    }
+
     /** Snapshot of the actual transcript rows selected by the current viewport. */
     public List<String> getVisibleContentLines() {
         synchronized (drawLock) {
@@ -236,6 +364,95 @@ public class KompileTui {
 
     public boolean isTemporaryWindowActive() {
         return temporaryWindowActive;
+    }
+
+    /**
+     * Attach the active JLine reader. Redraw requests that arrive while a prompt
+     * is live are dispatched through a JLine widget, so the reader lock serializes
+     * them with printAbove/redisplay instead of letting ANSI frames interleave.
+     */
+    public void attachLineReader(LineReader reader) {
+        this.lineReader = reader;
+        if (reader == null) return;
+        this.clearInputWidget = reader.getWidgets().get(LineReader.CLEAR);
+        this.redisplayWidget = reader.getWidgets().get(LineReader.REDISPLAY);
+        reader.getWidgets().put(REDRAW_WIDGET, this::redrawReaderFrame);
+    }
+
+    /** Detach the reader before terminal shutdown. */
+    public void detachLineReader() {
+        this.lineReader = null;
+        this.clearInputWidget = null;
+        this.redisplayWidget = null;
+    }
+
+    /**
+     * Repaint from inside an active JLine widget. Clearing JLine's cached display
+     * before the cursor-addressed frame is essential: a plain REDISPLAY sees an
+     * unchanged prompt, emits nothing, and leaves the physical cursor at column 1.
+     */
+    public boolean redrawForInputWidget() {
+        if (!started || lineReader == null) return false;
+        // This synchronous key-driven frame already includes every pending state
+        // change, so a queued asynchronous frame may safely become a no-op.
+        redrawDirty.set(false);
+        redrawReaderFrame();
+        return true;
+    }
+
+    private boolean redrawReaderFrame() {
+        // Match LineReader.printAbove's ordering while replacing the whole frame:
+        // remove the cached input, draw at absolute rows, then let JLine restore
+        // both the prompt and its exact editing cursor.
+        Widget clearInput = clearInputWidget;
+        if (clearInput != null) {
+            clearInput.apply();
+        }
+        renderFrame();
+        Widget redisplay = redisplayWidget;
+        boolean applied = redisplay == null || redisplay.apply();
+        // A frame/status redraw can occur while JLine has the cursor hidden.
+        writeTerminal(ESC + "?25h");
+        return applied;
+    }
+
+    /** Coalesced redraw entry point used by status/activity listeners. */
+    public void requestRedraw() {
+        if (!started) return;
+        redrawDirty.set(true);
+        if (!redrawQueued.compareAndSet(false, true)) return;
+        try {
+            redrawExecutor.execute(this::runAsyncRedraw);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            redrawQueued.set(false);
+        }
+    }
+
+    private void runAsyncRedraw() {
+        try {
+            long remaining = MIN_ASYNC_FRAME_NANOS
+                    - (System.nanoTime() - lastFrameNanos);
+            if (remaining > 0L) LockSupport.parkNanos(remaining);
+            if (!started || Thread.currentThread().isInterrupted()) return;
+
+            // State accumulated before this point belongs to this frame. Updates
+            // arriving during render set dirty again and receive one trailing frame.
+            if (!redrawDirty.getAndSet(false)) return;
+            LineReader active = lineReader;
+            try {
+                if (active != null && active.isReading()) {
+                    active.callWidget(REDRAW_WIDGET);
+                } else if (started) {
+                    renderFrame();
+                }
+            } catch (RuntimeException ignored) {
+                // Prompt teardown can race a background diagnostic/status frame.
+                if (started && lineReader == null) renderFrame();
+            }
+        } finally {
+            redrawQueued.set(false);
+            if (started && redrawDirty.get()) requestRedraw();
+        }
     }
 
     /**
@@ -268,7 +485,9 @@ public class KompileTui {
             contentViewLines = temporaryWindowLines;
             contentScrollOffset = 0;
             contentViewPinsHeader = false;
-            replaceScrollRegion(contentViewLines, false);
+            // The previous JLine prompt belongs to the readLine call that just
+            // finished. Clear its row before the picker owns the input anchor.
+            replaceScrollRegion(contentViewLines, false, true);
         }
         if (!started) {
             window.forEach(System.out::println);
@@ -287,7 +506,7 @@ public class KompileTui {
             contentViewKey = savedContentViewKey == null ? MAIN_CONTENT_VIEW : savedContentViewKey;
             contentViewTitle = savedContentViewTitle == null ? "Main chat" : savedContentViewTitle;
             if (MAIN_CONTENT_VIEW.equals(contentViewKey)) {
-                contentViewLines = List.copyOf(mainTranscriptLines);
+                contentViewLines = mainTranscriptSnapshot();
             } else {
                 contentViewLines = savedContentViewLines == null ? List.of() : savedContentViewLines;
             }
@@ -297,7 +516,9 @@ public class KompileTui {
             savedContentViewTitle = null;
             savedContentViewLines = null;
             temporaryWindowLines = List.of();
-            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            // The nested picker readLine has finished. Leave a clean cursor row
+            // for the outer chat loop to render the normal "kompile> " prompt.
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader, true);
         }
     }
 
@@ -328,17 +549,9 @@ public class KompileTui {
 
         // Clear screen and draw initial layout
         synchronized (drawLock) {
-            PrintStream out = System.out;
-            out.print(ESC + "2J" + ESC + "H"); // clear + home
-            out.flush();
-
-            // Draw top bar
-            topBar.redraw();
-
-            // Set scroll region
-            setScrollRegion();
-
-            // Draw status bar (starts its refresh thread)
+            writeTerminal(ESC + "2J" + ESC + "H"); // clear + home
+            // Starts the status refresh thread. Its initial redraw is routed
+            // through the same frame coordinator installed in the constructor.
             statusBar.start(terminal);
         }
 
@@ -347,11 +560,8 @@ public class KompileTui {
             updateTerminalSize();
             topBar.setTerminalWidth(terminalWidth);
             recalcReservedMiddleRows(reservedRowsCalculator);
-            synchronized (drawLock) {
-                setScrollRegion();
-                topBar.redraw();
-                statusBar.requestRedraw();
-            }
+            statusBar.syncTerminalSize();
+            requestRedraw();
             fireResizeListeners();
         });
     }
@@ -365,11 +575,8 @@ public class KompileTui {
         updateTerminalSize();
         topBar.setTerminalWidth(terminalWidth);
         recalcReservedMiddleRows(reservedRowsCalculator);
-        synchronized (drawLock) {
-            setScrollRegion();
-            topBar.redraw();
-            statusBar.requestRedraw();
-        }
+        statusBar.syncTerminalSize();
+        requestRedraw();
         fireResizeListeners();
     }
 
@@ -381,13 +588,13 @@ public class KompileTui {
         started = false;
 
         statusBar.stop();
+        detachLineReader();
+        redrawExecutor.shutdownNow();
 
         synchronized (drawLock) {
-            // Reset scroll region to full terminal
-            System.out.print(ESC + "r");
-            // Clear screen
-            System.out.print(ESC + "2J" + ESC + "H");
-            System.out.flush();
+            // Reset the region and clear through JLine's terminal stream so no
+            // buffered stdout frame can arrive after shutdown.
+            writeTerminal(ESC + "r" + ESC + "2J" + ESC + "H");
         }
     }
 
@@ -399,10 +606,7 @@ public class KompileTui {
      */
     public void redrawBars() {
         if (!started) return;
-        synchronized (drawLock) {
-            topBar.redraw();
-            statusBar.requestRedraw();
-        }
+        requestRedraw();
     }
 
     /**
@@ -413,8 +617,9 @@ public class KompileTui {
     public void redrawContentView() {
         if (!started || temporaryWindowActive) return;
         synchronized (drawLock) {
-            setScrollRegion();
-            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            writeTerminal(scrollRegionSequence()
+                    + renderScrollToBottomControl()
+                    + renderContentRegion(contentViewLines, contentViewPinsHeader, false));
         }
     }
 
@@ -432,9 +637,60 @@ public class KompileTui {
      * moving the cursor from a non-JLine thread.
      */
     public void recordInScrollRegion(String text) {
+        List<String> lines = splitLines(text);
         synchronized (drawLock) {
-            rememberMainLines(splitLines(text));
+            int addedRows = visualRows(lines).size();
+            rememberMainLines(lines);
+            if (isMainContentView() && contentScrollOffset > 0) {
+                contentScrollOffset = clampScrollOffset(
+                        contentScrollOffset + addedRows, contentViewLines, false);
+            }
         }
+        // Managed output is rendered only by a complete cursor-addressed frame.
+        // Never echo raw tool text into JLine's scroll region: one long logical
+        // line can auto-wrap through the row reserved for the user's input.
+        if (started) requestRedraw();
+    }
+
+    /**
+     * Insert or replace one live tool/process block in the main transcript.
+     * The block is retained while an activity view or modal is open and becomes
+     * visible again when the user returns to the main chat.
+     */
+    public boolean upsertMainTranscriptBlock(String key, String text) {
+        if (key == null || key.isBlank()) return false;
+        List<String> lines = splitLines(text);
+        synchronized (drawLock) {
+            int previousRows = 0;
+            TranscriptEntry matched = null;
+            for (TranscriptEntry entry : mainTranscriptEntries) {
+                if (key.equals(entry.key)) {
+                    matched = entry;
+                    previousRows = visualRows(entry.lines).size();
+                    mainTranscriptLineCount -= entry.lines.size();
+                    break;
+                }
+            }
+            if (matched == null) {
+                matched = new TranscriptEntry(key, List.of());
+                mainTranscriptEntries.addLast(matched);
+            }
+            matched.lines = List.copyOf(lines);
+            mainTranscriptLineCount += matched.lines.size();
+            trimMainTranscript();
+
+            if (isMainContentView()) {
+                contentViewLines = mainTranscriptSnapshot();
+                int nextRows = visualRows(matched.lines).size();
+                if (contentScrollOffset > 0 && nextRows > previousRows) {
+                    contentScrollOffset = clampScrollOffset(
+                            contentScrollOffset + nextRows - previousRows,
+                            contentViewLines, false);
+                }
+            }
+        }
+        requestRedraw();
+        return started;
     }
 
     public void printInScrollRegion(String text) {
@@ -456,14 +712,10 @@ public class KompileTui {
                 // Keep an explicitly scrolled viewport stable while new agent output
                 // arrives. The user returns to the live tail with PageDown.
                 contentScrollOffset = clampScrollOffset(
-                        contentScrollOffset + lines.size(), contentViewLines, false);
-                replaceScrollRegion(contentViewLines, false);
-                return;
-            }
-            for (String line : lines) {
-                writeScrollLine(line);
+                        contentScrollOffset + visualRows(lines).size(), contentViewLines, false);
             }
         }
+        requestRedraw();
     }
 
     /**
@@ -508,13 +760,14 @@ public class KompileTui {
         lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
         lines.addAll(splitLines(content));
         synchronized (drawLock) {
-            int previousSize = contentViewLines.size();
+            int previousSize = visualBodyRows(contentViewLines, true).size();
             boolean followingTail = contentScrollOffset == 0;
             contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
             contentViewLines = List.copyOf(lines);
             contentViewPinsHeader = true;
-            if (!followingTail && lines.size() > previousSize) {
-                contentScrollOffset += lines.size() - previousSize;
+            int nextSize = visualBodyRows(lines, true).size();
+            if (!followingTail && nextSize > previousSize) {
+                contentScrollOffset += nextSize - previousSize;
             }
             contentScrollOffset = clampScrollOffset(
                     followingTail ? 0 : contentScrollOffset, contentViewLines, true);
@@ -528,7 +781,7 @@ public class KompileTui {
         synchronized (drawLock) {
             contentViewKey = MAIN_CONTENT_VIEW;
             contentViewTitle = "Main chat";
-            List<String> lines = new ArrayList<>(mainTranscriptLines);
+            List<String> lines = mainTranscriptSnapshot();
             contentViewLines = List.copyOf(lines);
             contentScrollOffset = 0;
             contentViewPinsHeader = false;
@@ -574,15 +827,36 @@ public class KompileTui {
     }
 
     private void rememberMainLines(List<String> lines) {
-        for (String line : lines) {
-            mainTranscriptLines.addLast(line);
-            while (mainTranscriptLines.size() > MAX_MAIN_TRANSCRIPT_LINES) {
-                mainTranscriptLines.removeFirst();
+        List<String> retained = List.copyOf(lines);
+        mainTranscriptEntries.addLast(new TranscriptEntry(null, retained));
+        mainTranscriptLineCount += retained.size();
+        trimMainTranscript();
+        if (isMainContentView()) {
+            contentViewLines = mainTranscriptSnapshot();
+        }
+    }
+
+    private void trimMainTranscript() {
+        while (mainTranscriptLineCount > MAX_MAIN_TRANSCRIPT_LINES
+                && !mainTranscriptEntries.isEmpty()) {
+            TranscriptEntry first = mainTranscriptEntries.peekFirst();
+            int overflow = mainTranscriptLineCount - MAX_MAIN_TRANSCRIPT_LINES;
+            if (first.lines.size() <= overflow) {
+                mainTranscriptEntries.removeFirst();
+                mainTranscriptLineCount -= first.lines.size();
+            } else {
+                first.lines = List.copyOf(first.lines.subList(overflow, first.lines.size()));
+                mainTranscriptLineCount -= overflow;
             }
         }
-        if (isMainContentView()) {
-            contentViewLines = List.copyOf(mainTranscriptLines);
+    }
+
+    private List<String> mainTranscriptSnapshot() {
+        List<String> lines = new ArrayList<>(mainTranscriptLineCount);
+        for (TranscriptEntry entry : mainTranscriptEntries) {
+            lines.addAll(entry.lines);
         }
+        return List.copyOf(lines);
     }
 
     private static List<String> splitLines(String text) {
@@ -593,34 +867,184 @@ public class KompileTui {
     }
 
     private void writeScrollLine(String line) {
-        PrintStream out = System.out;
-        out.printf("%s%d;%dr", ESC, scrollTop(), scrollBottom());
-        out.printf("%s%d;1H%s2K%s\n", ESC, scrollBottom(), ESC, line);
-        out.flush();
+        writeTerminal(ESC + scrollTop() + ";" + scrollBottom() + "r"
+                + ESC + scrollBottom() + ";1H" + ESC + "2K" + line + '\n');
     }
 
-    private void replaceScrollRegion(List<String> lines, boolean preserveHeader) {
-        if (!started) {
-            return;
+    /** Emit one complete cursor-addressed frame through the process terminal stream. */
+    private void renderFrame() {
+        if (!started) return;
+        synchronized (drawLock) {
+            StringBuilder frame = new StringBuilder();
+            frame.append(scrollRegionSequence());
+            frame.append(topBar.render(terminalWidth));
+            frame.append(renderScrollToBottomControl());
+            if (!temporaryWindowActive) {
+                frame.append(renderContentRegion(contentViewLines, contentViewPinsHeader, false));
+            } else {
+                frame.append(renderContentRegion(temporaryWindowLines, false, false));
+            }
+            frame.append(renderQueueRegion());
+            frame.append(statusBar.render(terminalHeight, terminalWidth));
+            frame.append(ESC).append(scrollBottom()).append(";1H");
+            writeTerminal(frame.toString());
+            lastFrameNanos = System.nanoTime();
         }
-        PrintStream out = System.out;
+    }
+
+    private String scrollRegionSequence() {
         int top = scrollTop();
         int bottom = scrollBottom();
-        // The bottom scroll row belongs to JLine's live prompt. Process output
-        // occupies only the transcript rows above it, then REDISPLAY restores the
-        // input without either surface overwriting the other.
+        if (bottom <= top + 2) return "";
+        return ESC + top + ";" + bottom + "r" + ESC + bottom + ";1H";
+    }
+
+    private String renderContentRegion(List<String> lines, boolean preserveHeader,
+                                       boolean clearInputRow) {
+        int top = scrollTop();
+        int bottom = scrollBottom();
         int contentBottom = Math.max(top, bottom - 1);
-        out.printf("%s%d;%dr", ESC, top, bottom);
+        StringBuilder frame = new StringBuilder();
+        frame.append(ESC).append(top).append(';').append(bottom).append('r');
         for (int row = top; row <= contentBottom; row++) {
-            out.printf("%s%d;1H%s2K", ESC, row, ESC);
+            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
         }
         List<String> visible = visibleContentLines(lines, preserveHeader);
         int row = top;
         for (int i = 0; i < visible.size() && row <= contentBottom; i++, row++) {
-            out.printf("%s%d;1H%s", ESC, row, visible.get(i));
+            frame.append(ESC).append(row).append(";1H").append(visible.get(i));
         }
-        out.printf("%s%d;1H", ESC, bottom);
-        out.flush();
+        if (clearInputRow) {
+            frame.append(ESC).append(bottom).append(";1H").append(ESC).append("2K");
+        }
+        frame.append(ESC).append(bottom).append(";1H");
+        return frame.toString();
+    }
+
+    /**
+     * Paint or erase the scroll shortcut within the existing top separator.
+     * Replacing only these cells keeps the fixed layout and transcript capacity
+     * unchanged while allowing partial content repaints to update the control.
+     */
+    private String renderScrollToBottomControl() {
+        int width = terminalWidth > 0 ? terminalWidth : 80;
+        int available = Math.max(0, width - SCROLL_TO_BOTTOM_CONTROL_X - 1);
+        int cells = Math.min(
+                AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL), available);
+        if (cells <= 0) return "";
+
+        String content = isScrollToBottomControlVisible()
+                ? BOLD + CYAN + SCROLL_TO_BOTTOM_CONTROL + RESET
+                : DIM + HORIZONTAL_LINE.repeat(cells) + RESET;
+        return ESC + TopBar.TOP_HEIGHT + ";"
+                + (SCROLL_TO_BOTTOM_CONTROL_X + 1) + "H" + content;
+    }
+
+    private String renderQueueRegion() {
+        int rows = getQueueRegionRows();
+        if (rows <= 0) return "";
+        int top = queueTop();
+        StringBuilder frame = new StringBuilder();
+        for (int row = top; row < top + rows; row++) {
+            frame.append(ESC).append(row).append(";1H").append(ESC).append("2K");
+        }
+        List<String> visible = visibleQueueLines();
+        for (int i = 0; i < visible.size() && i < rows; i++) {
+            frame.append(ESC).append(top + i).append(";1H").append(visible.get(i));
+        }
+        return frame.toString();
+    }
+
+    List<String> visibleQueueLines() {
+        int rows = getQueueRegionRows();
+        if (rows <= 0) return List.of();
+        List<MessageQueue.QueuedMessage> messages =
+                messageQueue == null ? List.of() : messageQueue.getAll();
+        int width = terminalWidth > 0 ? terminalWidth : 80;
+        if (messages.isEmpty()) {
+            return List.of();
+        }
+
+        if (rows == 1) {
+            MessageQueue.QueuedMessage next = messages.get(0);
+            return List.of(renderer.cyan(" Queue " + messages.size() + " · next ["
+                    + next.getId() + "] ")
+                    + truncateQueueLine(singleLine(next.getContent()), Math.max(8, width - 30)));
+        }
+
+        int itemSlots = rows - 1;
+        int shown = Math.min(itemSlots, messages.size());
+        int hidden = messages.size() - shown;
+        List<String> lines = new ArrayList<>(rows);
+        String header = " Queue · " + messages.size() + " pending · ↑ edits latest"
+                + (hidden > 0 ? " · +" + hidden + " more" : "");
+        lines.add(renderer.bold(renderer.cyan(truncateQueueLine(header, width))));
+        List<Integer> visibleIndexes = new ArrayList<>(shown);
+        for (int i = 0; i < shown; i++) visibleIndexes.add(i);
+        int editingIndex = -1;
+        for (int i = 0; i < messages.size(); i++) {
+            if (messages.get(i).getStatus()
+                    == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING) {
+                editingIndex = i;
+                break;
+            }
+        }
+        // The upcoming item is always pinned. If an edit lease belongs to a
+        // message beyond the visible head, pin that item in the final slot too.
+        if (editingIndex >= shown && shown > 1) {
+            visibleIndexes.set(shown - 1, editingIndex);
+        }
+        for (int visibleIndex : visibleIndexes) {
+            MessageQueue.QueuedMessage message = messages.get(visibleIndex);
+            boolean editing = message.getStatus()
+                    == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING;
+            String role = visibleIndex == 0
+                    ? "→ upcoming" : "  queued " + (visibleIndex + 1);
+            String prefix = " " + role + " [" + message.getId() + "] ";
+            String content = truncateQueueLine(
+                    singleLine(message.getContent()), Math.max(8, width - prefix.length() - 12));
+            String suffix = editing ? renderer.yellow("  ✎ editing") : "";
+            lines.add((visibleIndex == 0 ? renderer.cyan(prefix) : renderer.dim(prefix))
+                    + content + suffix);
+        }
+        return List.copyOf(lines);
+    }
+
+    private static String singleLine(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").strip();
+    }
+
+    private static String truncateQueueLine(String value, int maxLength) {
+        if (value == null || maxLength <= 0) return "";
+        if (value.length() <= maxLength) return value;
+        return value.substring(0, Math.max(0, maxLength - 1)) + "…";
+    }
+
+    private void replaceScrollRegion(List<String> lines, boolean preserveHeader) {
+        replaceScrollRegion(lines, preserveHeader, false);
+    }
+
+    /**
+     * Repaint the transcript and optionally clear the row owned by JLine's
+     * current prompt. Modal windows use the clearing form when transitioning
+     * between nested readLine calls; normal asynchronous redraws must leave
+     * the live input row to JLine.
+     */
+    private void replaceScrollRegion(List<String> lines, boolean preserveHeader,
+                                     boolean clearInputRow) {
+        if (!started) {
+            return;
+        }
+        // Never query JLine's reader lock while holding drawLock. The redraw
+        // worker takes the inverse order (reader lock, then drawLock), so checking
+        // isReading here would deadlock a producer during an active prompt.
+        LineReader reader = lineReader;
+        if (reader != null) {
+            requestRedraw();
+            return;
+        }
+        writeTerminal(renderScrollToBottomControl()
+                + renderContentRegion(lines, preserveHeader, clearInputRow));
     }
 
     private List<String> visibleContentLines(List<String> lines, boolean preserveHeader) {
@@ -629,26 +1053,57 @@ public class KompileTui {
         int offset = clampScrollOffset(contentScrollOffset, lines, preserveHeader);
         if (preserveHeader && capacity > 1) {
             int bodyCapacity = capacity - 1;
-            int bodySize = Math.max(0, lines.size() - 1);
+            List<String> headerRows = visualRows(List.of(lines.get(0)));
+            List<String> bodyRows = visualBodyRows(lines, true);
+            int bodySize = bodyRows.size();
             int end = Math.max(0, bodySize - offset);
             int start = Math.max(0, end - bodyCapacity);
             List<String> visible = new ArrayList<>(capacity);
-            visible.add(lines.get(0));
-            visible.addAll(lines.subList(1 + start, 1 + end));
+            visible.add(headerRows.isEmpty() ? "" : headerRows.get(0));
+            visible.addAll(bodyRows.subList(start, end));
             return visible;
         }
-        int end = Math.max(0, lines.size() - offset);
+        List<String> rows = visualRows(lines);
+        int end = Math.max(0, rows.size() - offset);
         int start = Math.max(0, end - capacity);
-        return List.copyOf(lines.subList(start, end));
+        return List.copyOf(rows.subList(start, end));
     }
 
     private int clampScrollOffset(int requested, List<String> lines, boolean preserveHeader) {
         int capacity = transcriptCapacity();
-        int lineCount = lines == null ? 0 : lines.size();
-        int bodyCount = preserveHeader && lineCount > 0 ? lineCount - 1 : lineCount;
+        int bodyCount = visualBodyRows(lines, preserveHeader).size();
         int bodyCapacity = preserveHeader && capacity > 1 ? capacity - 1 : capacity;
         int maximum = Math.max(0, bodyCount - Math.max(1, bodyCapacity));
         return Math.max(0, Math.min(requested, maximum));
+    }
+
+    private List<String> visualBodyRows(List<String> lines, boolean preserveHeader) {
+        if (lines == null || lines.isEmpty()) return List.of();
+        return visualRows(preserveHeader ? lines.subList(1, lines.size()) : lines);
+    }
+
+    /**
+     * Convert retained logical lines into bounded terminal rows. JLine performs
+     * ANSI-aware column measurement, including wide Unicode, while width-1 keeps
+     * the terminal's automatic right-margin wrap from advancing into input.
+     */
+    private List<String> visualRows(List<String> lines) {
+        if (lines == null || lines.isEmpty()) return List.of();
+        int width = Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
+        List<String> rows = new ArrayList<>();
+        Terminal active = terminal;
+        for (String line : lines) {
+            AttributedString attributed = AttributedString.fromAnsi(line == null ? "" : line);
+            List<AttributedString> wrapped = attributed.columnSplitLength(width);
+            if (wrapped.isEmpty()) {
+                rows.add("");
+                continue;
+            }
+            for (AttributedString row : wrapped) {
+                rows.add(active == null ? row.toAnsi() : row.toAnsi(active));
+            }
+        }
+        return rows;
     }
 
     private int transcriptCapacity() {
@@ -676,12 +1131,12 @@ public class KompileTui {
 
     public void setSessionId(String sessionId) {
         topBar.setSessionId(sessionId);
-        if (started) topBar.redraw();
+        if (started) redrawBars();
     }
 
     public void setMode(String mode) {
         topBar.setMode(mode);
-        if (started) topBar.redraw();
+        if (started) redrawBars();
     }
 
     public void setPlanningMode(boolean planning) {
@@ -698,14 +1153,23 @@ public class KompileTui {
 
     // ── Internal ──────────────────────────────────────────────────────────
 
+    /** Keep TUI cursor controls and JLine input on one ordered terminal stream. */
+    private void writeTerminal(String text) {
+        Terminal active = terminal;
+        if (active != null) {
+            active.writer().print(text);
+            active.writer().flush();
+            return;
+        }
+        System.out.print(text);
+        System.out.flush();
+    }
+
     private void setScrollRegion() {
         int top = scrollTop();
         int bottom = scrollBottom();
         if (bottom <= top + 2) return; // Too small
-        System.out.printf("%s%d;%dr", ESC, top, bottom);
-        // Position cursor inside the scroll region
-        System.out.printf("%s%d;1H", ESC, bottom);
-        System.out.flush();
+        writeTerminal(scrollRegionSequence());
     }
 
     private void updateTerminalSize() {

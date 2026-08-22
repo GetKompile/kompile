@@ -74,7 +74,9 @@ public class ConversationSummarizer {
         DirectLlmClient.StreamResult result = directLlmClient.streamOneShot(
                 prompt, SUMMARY_SYSTEM_PROMPT, modelOverride);
 
-        return new SummaryResult(result.text, result.inputTokens, result.outputTokens);
+        return new SummaryResult(
+                result.text, result.inputTokens, result.outputTokens,
+                !result.failed && !result.cancelled);
     }
 
     private String buildPrompt(String transcript, String focusInstruction) {
@@ -166,16 +168,24 @@ public class ConversationSummarizer {
         private final String summary;
         private final long inputTokens;
         private final long outputTokens;
+        private final boolean successful;
 
         public SummaryResult(String summary, long inputTokens, long outputTokens) {
+            this(summary, inputTokens, outputTokens, true);
+        }
+
+        public SummaryResult(
+                String summary, long inputTokens, long outputTokens, boolean successful) {
             this.summary = summary;
             this.inputTokens = inputTokens;
             this.outputTokens = outputTokens;
+            this.successful = successful;
         }
 
         public String getSummary() { return summary; }
         public long getInputTokens() { return inputTokens; }
         public long getOutputTokens() { return outputTokens; }
-        public boolean isEmpty() { return summary == null || summary.isBlank(); }
+        public boolean isSuccessful() { return successful; }
+        public boolean isEmpty() { return !successful || summary == null || summary.isBlank(); }
     }
 }

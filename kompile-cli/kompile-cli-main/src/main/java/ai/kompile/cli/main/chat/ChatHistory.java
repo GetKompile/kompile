@@ -24,6 +24,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -35,7 +36,7 @@ import java.util.*;
  * Each session is stored at {@code ~/.kompile/conversations/<session-id>.txt}
  * with a human-readable format:
  * <pre>
- * ──── Conversation: cli-a1b2c3d4 ────
+ * ──── Conversation: 123e4567-e89b-12d3-a456-426614174000 ────
  * Started: 2025-06-15 14:30:00
  * Server:  http://localhost:8080
  * Agent:   claude
@@ -277,6 +278,26 @@ public class ChatHistory {
         return turns;
     }
 
+    /** Returns the newest non-empty assistant turn as clean transcript text. */
+    public synchronized Optional<String> latestAssistantMessage() {
+        if (writer != null) {
+            writer.flush();
+        }
+        try {
+            List<ChatTurn> turns = KompileTranscriptFormat.readTurns(transcriptFile);
+            for (int i = turns.size() - 1; i >= 0; i--) {
+                ChatTurn turn = turns.get(i);
+                if ("assistant".equalsIgnoreCase(turn.role())
+                        && turn.content() != null && !turn.content().isBlank()) {
+                    return Optional.of(turn.content());
+                }
+            }
+        } catch (IOException ignored) {
+            // A missing or partially-written transcript simply has nothing to copy.
+        }
+        return Optional.empty();
+    }
+
     public synchronized void close() {
         if (writer != null) {
             writer.close();
@@ -288,7 +309,7 @@ public class ChatHistory {
      * Lists all saved conversations from the index.
      */
     public static List<ConversationSummary> listConversations() {
-        return listConversations(true);
+        return listConversations(true, null);
     }
 
     /**
@@ -296,10 +317,22 @@ public class ChatHistory {
      * multi-task/subagent transcripts before any transcript file is opened.
      */
     public static List<ConversationSummary> listResumableConversations() {
-        return listConversations(false);
+        return listConversations(false, null);
     }
 
-    private static List<ConversationSummary> listConversations(boolean includeSubagents) {
+    /**
+     * Lists resumable conversations recorded for exactly the requested working directory.
+     * Legacy transcripts without usable CWD metadata remain available through explicit IDs
+     * and the unscoped listing, but cannot be assumed to belong to a local project.
+     */
+    public static List<ConversationSummary> listResumableConversations(Path workingDirectory) {
+        Path scope = workingDirectory == null
+                ? null : workingDirectory.toAbsolutePath().normalize();
+        return listConversations(false, scope);
+    }
+
+    private static List<ConversationSummary> listConversations(
+            boolean includeSubagents, Path workingDirectory) {
         Path dir = KompileHome.homeDirectory().toPath().resolve("conversations");
         List<ConversationSummary> results = new ArrayList<>();
 
@@ -330,19 +363,26 @@ public class ChatHistory {
             String sid = fileName.substring(0, fileName.length() - ".txt".length());
             String title = "";
             List<String> harvested = new ArrayList<>();
-            try (BufferedReader reader = new BufferedReader(new FileReader(file, StandardCharsets.UTF_8))) {
-                // Read header to get metadata
+            try (BufferedReader reader = new BufferedReader(
+                    new FileReader(file, StandardCharsets.UTF_8))) {
                 String line;
                 String started = "";
                 String agent = "";
+                String recordedDirectory = null;
+                boolean metadataWindow = true;
                 while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("Started:")) {
-                        started = line.substring(8).trim();
-                    } else if (line.startsWith("Agent:")) {
-                        agent = line.substring(6).trim();
-                    } else if (line.startsWith("[harvested:") && line.endsWith("]")) {
+                    if (line.startsWith("[harvested:") && line.endsWith("]")) {
                         harvested.add(line.substring(11, line.length() - 1));
-                    } else if (line.startsWith("> ")) {
+                    }
+                    if (line.startsWith("[resumed")) {
+                        metadataWindow = true;
+                        continue;
+                    }
+                    if (line.startsWith("> ")) {
+                        metadataWindow = false;
+                        if (!title.isEmpty()) {
+                            continue;
+                        }
                         String candidate = line.substring(2).trim();
                         // Skip Claude Code internal command messages — not real user content
                         if (candidate.startsWith("<local-command-") || candidate.startsWith("<command-")) {
@@ -357,8 +397,22 @@ public class ChatHistory {
                                 title = userPrompt;
                             }
                         }
-                        break;
+                        continue;
                     }
+                    if (line.startsWith("< ") || line.startsWith("[agent:")) {
+                        metadataWindow = false;
+                    } else if (metadataWindow && line.startsWith("Started:")) {
+                        started = line.substring(8).trim();
+                    } else if (metadataWindow && line.startsWith("Agent:")) {
+                        agent = line.substring(6).trim();
+                    } else if (metadataWindow && line.startsWith("CWD:")) {
+                        recordedDirectory = line.substring(4).trim();
+                    }
+                }
+
+                if (workingDirectory != null
+                        && !workingDirectoryMatches(recordedDirectory, workingDirectory)) {
+                    continue;
                 }
                 // Skip empty sessions (header-only stubs with no user messages)
                 if (title.isEmpty()) {
@@ -370,7 +424,8 @@ public class ChatHistory {
                         started,
                         agent,
                         transcript.lastModified(),
-                        harvested
+                        harvested,
+                        recordedDirectory
                 ));
             } catch (IOException e) {
                 // Skip unreadable files
@@ -380,12 +435,71 @@ public class ChatHistory {
         return results;
     }
 
+    private static boolean workingDirectoryMatches(String recordedDirectory, Path workingDirectory) {
+        if (recordedDirectory == null || recordedDirectory.isBlank()) {
+            return false;
+        }
+        try {
+            Path recordedPath = Path.of(recordedDirectory);
+            return recordedPath.isAbsolute()
+                    && workingDirectory.equals(recordedPath.normalize());
+        } catch (RuntimeException invalidPath) {
+            return false;
+        }
+    }
+
     /**
      * Checks if a conversation transcript exists for the given session ID.
      */
     public static boolean exists(String sessionId) {
         Path dir = KompileHome.homeDirectory().toPath().resolve("conversations");
         return Files.exists(dir.resolve(sessionId + ".txt"));
+    }
+
+    /** Resolves the latest working directory recorded in a Kompile transcript. */
+    public static Optional<Path> resolveWorkingDirectory(String sessionId) throws IOException {
+        if (sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        Path file = KompileHome.homeDirectory().toPath()
+                .resolve("conversations").resolve(sessionId + ".txt");
+        String recordedDirectory = KompileTranscriptFormat.readHeader(file).workingDirectory();
+        if (recordedDirectory == null || recordedDirectory.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            Path path = Path.of(recordedDirectory);
+            return path.isAbsolute() ? Optional.of(path.normalize()) : Optional.empty();
+        } catch (RuntimeException invalidPath) {
+            throw new IOException("Invalid transcript working directory: " + recordedDirectory,
+                    invalidPath);
+        }
+    }
+
+    /**
+     * Records a native session id created while reconstructing this Kompile transcript.
+     * The marker is append-only so older transcripts remain readable and the existing
+     * last-marker resolution semantics continue to work after a native store rebuild.
+     */
+    public static synchronized void recordNativeSessionId(String sessionId, String nativeSessionId)
+            throws IOException {
+        if (sessionId == null || sessionId.isBlank()
+                || nativeSessionId == null || nativeSessionId.isBlank()) {
+            return;
+        }
+        Path file = KompileHome.homeDirectory().toPath()
+                .resolve("conversations").resolve(sessionId + ".txt");
+        if (!Files.exists(file)) {
+            return;
+        }
+        String marker = "[harvested:" + nativeSessionId + "]";
+        String existing = Files.readString(file, StandardCharsets.UTF_8);
+        if (existing.lines().anyMatch(marker::equals)) {
+            return;
+        }
+        String prefix = existing.endsWith("\n") ? "" : "\n";
+        Files.writeString(file, prefix + marker + "\n", StandardCharsets.UTF_8,
+                StandardOpenOption.APPEND);
     }
 
     /**
@@ -478,12 +592,13 @@ public class ChatHistory {
         String line;
         boolean foundUserPromptHeader = false;
         while ((line = reader.readLine()) != null) {
-            if (line.startsWith("## User Prompt")) {
+            String contentLine = line.startsWith("> ") ? line.substring(2) : line;
+            if (contentLine.startsWith("## User Prompt")) {
                 foundUserPromptHeader = true;
                 continue;
             }
             if (foundUserPromptHeader) {
-                String trimmed = line.trim();
+                String trimmed = contentLine.trim();
                 // Skip blank lines right after the header
                 if (trimmed.isEmpty()) continue;
                 // Stop at the next section header or end marker
@@ -518,10 +633,18 @@ public class ChatHistory {
             String started,
             String agent,
             long lastModified,
-            List<String> harvestedSourceIds
+            List<String> harvestedSourceIds,
+            String workingDirectory
     ) {
-        public ConversationSummary(String sessionId, String title, String started, String agent, long lastModified) {
-            this(sessionId, title, started, agent, lastModified, List.of());
+        public ConversationSummary(
+                String sessionId, String title, String started, String agent, long lastModified) {
+            this(sessionId, title, started, agent, lastModified, List.of(), null);
+        }
+
+        public ConversationSummary(
+                String sessionId, String title, String started, String agent, long lastModified,
+                List<String> harvestedSourceIds) {
+            this(sessionId, title, started, agent, lastModified, harvestedSourceIds, null);
         }
     }
 }

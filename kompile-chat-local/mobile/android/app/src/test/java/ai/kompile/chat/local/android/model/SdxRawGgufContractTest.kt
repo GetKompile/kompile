@@ -8,6 +8,21 @@ import org.junit.Test
 class SdxRawGgufContractTest {
 
     @Test
+    fun runtimeDiagnosticsHonorThePersistedSettingsSelection() {
+        ModelDiagnosticMode.entries.forEach { selected ->
+            assertEquals(selected, effectiveDiagnosticModeForRuntime(selected))
+        }
+        assertEquals("VERIFY", ModelDiagnosticMode.OP_SANITY.dspCategories)
+        assertEquals("full", ModelDiagnosticMode.OP_SANITY.dspLevel)
+        assertEquals(true, ModelDiagnosticMode.OP_SANITY.nativeOpSanity)
+        assertEquals(true, ModelDiagnosticMode.OP_SANITY.capturesDspTrace)
+        assertEquals(false, ModelDiagnosticMode.DSP_DIAGNOSTICS.nativeOpSanity)
+        val restored = ModelPreparationOptions.fromWire(null, null, 4, true, "OP_SANITY")
+        assertEquals(ModelDiagnosticMode.OP_SANITY, restored.diagnosticMode)
+        assertEquals(true, restored.optionsJson(null, null).contains("\"diagnosticMode\":\"op_sanity\""))
+    }
+
+    @Test
     fun preparedProofSchemaSeparatesRawCanonicalAndOptimizationIdentity() {
         assertEquals("sdx-prepared-text-model-v5", SdxRawGgufContract.PREPARED_SCHEMA)
         assertEquals("sourceSha256", SdxRawGgufContract.SOURCE_SHA256_FIELD)
@@ -39,7 +54,7 @@ class SdxRawGgufContractTest {
         )
 
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v5\"," +
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v7\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
@@ -52,7 +67,7 @@ class SdxRawGgufContractTest {
             )
         )
         assertEquals(
-            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v5\"," +
+            "{\"graphImportAbi\":\"ggml-runtime-packed-gdn-v7\"," +
                 "\"conversionMode\":\"RUNTIME_QUANTIZED_INT8\",\"requantizeType\":\"Q8_0\"," +
                 "\"embeddingDataType\":\"HALF\",\"logitsMode\":\"LAST_POSITION_ONLY\"," +
                 "\"kvQuantFormat\":4,\"tensorBatchSize\":12,\"useMemoryMapping\":false," +
@@ -69,6 +84,10 @@ class SdxRawGgufContractTest {
         assertEquals(
             baseline.profileSha256(),
             baseline.copy(diagnosticMode = ModelDiagnosticMode.DSP_DIAGNOSTICS).profileSha256(),
+        )
+        assertEquals(
+            baseline.profileSha256(),
+            baseline.copy(diagnosticMode = ModelDiagnosticMode.OP_SANITY).profileSha256(),
         )
         assertNotEquals(
             baseline.profileSha256(),

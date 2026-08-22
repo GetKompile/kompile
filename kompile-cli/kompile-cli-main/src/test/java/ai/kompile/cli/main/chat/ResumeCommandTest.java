@@ -160,6 +160,8 @@ class ResumeCommandTest {
     @Test
     void automaticResumeTargetKeepsLiteralStandardChatInKompile() {
         assertTrue(ResumeCommand.shouldResumeStandardChat(
+                "123e4567-e89b-12d3-a456-426614174000", "auto", "coder", null));
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
                 "cli-standard", "auto", "coder", null));
         assertTrue(ResumeCommand.shouldResumeStandardChat(
                 "cli-standard", "kompile", "", null));
@@ -171,6 +173,14 @@ class ResumeCommandTest {
                 "cli-wrapper", "auto", "codex", null));
         assertFalse(ResumeCommand.shouldResumeStandardChat(
                 "cli-wrapper", "auto", "coder", "native-session"));
+        assertFalse(ResumeCommand.shouldResumeStandardChat(
+                (ChatHistory.ConversationSummary) null, "auto", null),
+                "an external UUID without a Kompile transcript must remain eligible for native resume");
+        assertTrue(ResumeCommand.shouldResumeStandardChat(
+                new ChatHistory.ConversationSummary(
+                        "123e4567-e89b-12d3-a456-426614174000",
+                        "saved standard chat", "", "coder", 0L),
+                "auto", null));
         assertEquals("claude", ResumeCommand.effectiveTargetAgent("auto"));
         assertEquals("codex", ResumeCommand.effectiveTargetAgent("codex"));
     }
@@ -199,6 +209,86 @@ class ResumeCommandTest {
         } finally {
             System.setOut(originalOut);
             System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @Test
+    void listFlagScopesKompileSessionsToCurrentDirectory() throws Exception {
+        String originalHome = System.getProperty("user.home");
+        String originalUserDir = System.getProperty("user.dir");
+        PrintStream originalOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        Path home = tempDir.resolve("scoped-list-home");
+        Path currentProject = tempDir.resolve("project-a").toAbsolutePath().normalize();
+        Path otherProject = tempDir.resolve("project-b").toAbsolutePath().normalize();
+        Files.createDirectories(currentProject);
+        Files.createDirectories(otherProject);
+        System.setProperty("user.home", home.toString());
+        System.setProperty("user.dir", currentProject.toString());
+        System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+        try {
+            ChatHistory local = new ChatHistory("local-project-session");
+            local.open("(local)", "coder", false, otherProject);
+            local.logUserMessage("""
+                    # Enforcer-Controlled Task
+                    ## User Prompt
+                    conversation before moving projects
+                    Produce the response now
+                    """);
+            local.close();
+            ChatHistory resumedLocally = new ChatHistory("local-project-session");
+            resumedLocally.open("(local)", "coder", false, currentProject);
+            resumedLocally.logUserMessage("local project conversation");
+            resumedLocally.close();
+
+            ChatHistory remote = new ChatHistory("other-project-session");
+            remote.open("(local)", "coder", false, otherProject);
+            remote.logUserMessage("other project conversation");
+            remote.close();
+
+            ChatHistory legacy = new ChatHistory("legacy-without-cwd");
+            legacy.open("(local)", "coder", false, (Path) null);
+            legacy.logUserMessage("legacy global conversation");
+            legacy.close();
+
+            Path relativeCwd = legacy.getTranscriptFile().resolveSibling("relative-cwd.txt");
+            Files.writeString(relativeCwd, """
+                    ──── Conversation: relative-cwd ────
+                    Started: 2026-08-22 12:00:00
+                    Server:  (local)
+                    Agent:   coder
+                    RAG:     disabled
+                    CWD:     .
+
+                    ──────────────────────────────────
+
+                    > relative cwd conversation
+                    """, StandardCharsets.UTF_8);
+
+            assertEquals(List.of("local-project-session"),
+                    ChatHistory.listResumableConversations(currentProject).stream()
+                            .map(ChatHistory.ConversationSummary::sessionId)
+                            .toList());
+            assertEquals(4, ChatHistory.listResumableConversations().size(),
+                    "The unscoped API must retain global and legacy explicit-ID discovery");
+            assertTrue(ChatHistory.resolveWorkingDirectory("relative-cwd").isEmpty(),
+                    "Relative legacy CWD metadata must not be attributed to the caller's project");
+
+            int exitCode = new CommandLine(new ResumeCommand()).execute(
+                    "--list", "--filter-source", "kompile");
+
+            String output = captured.toString(StandardCharsets.UTF_8);
+            assertEquals(0, exitCode);
+            assertTrue(output.contains("local-project-session"));
+            assertFalse(output.contains("other-project-session"));
+            assertFalse(output.contains("legacy-without-cwd"));
+            assertFalse(output.contains("relative-cwd"));
+            assertEquals(otherProject,
+                    ChatHistory.resolveWorkingDirectory("other-project-session").orElseThrow());
+        } finally {
+            System.setOut(originalOut);
+            System.setProperty("user.home", originalHome);
+            System.setProperty("user.dir", originalUserDir);
         }
     }
 

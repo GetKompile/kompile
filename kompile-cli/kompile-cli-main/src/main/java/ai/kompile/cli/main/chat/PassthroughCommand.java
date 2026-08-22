@@ -298,13 +298,13 @@ public class PassthroughCommand implements Callable<Integer> {
                     realtimeTap.close();
                     // Restore original settings to prevent pollution
                     McpToolInjection.removeTools(injectedSettingsFile);
-                    // Restore instruction files modified by system prompt injection
-                    if (systemPromptManager != null) {
-                        systemPromptManager.cleanup();
-                    }
-                    // Restore instruction files modified by skills injection
+                    // Restore context mutations in reverse installation order. Skills may
+                    // augment the AGENTS.md produced by system-prompt injection.
                     if (skillsInjection != null) {
                         skillsInjection.cleanup();
+                    }
+                    if (systemPromptManager != null) {
+                        systemPromptManager.cleanup();
                     }
                     // Remove injected enforcer rules from CLAUDE.md, AGENTS.md, and the standalone file
                     if (enforcerRulesFile != null) {

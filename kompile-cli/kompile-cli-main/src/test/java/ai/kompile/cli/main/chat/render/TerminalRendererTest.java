@@ -2,6 +2,9 @@ package ai.kompile.cli.main.chat.render;
 
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import org.jline.terminal.impl.LineDisciplineTerminal;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +23,67 @@ class TerminalRendererTest {
     void setUp() {
         // Disable ANSI for predictable test output
         renderer = new TerminalRenderer(false);
+    }
+
+    @Test
+    void terminalTitleAnimatesWhileBusyAndStopsAtReady() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LineDisciplineTerminal terminal = new LineDisciplineTerminal(
+                "title-test", "xterm", output, StandardCharsets.UTF_8);
+        TerminalTitleController controller = new TerminalTitleController();
+        try {
+            controller.attach(terminal, "kompile chat — coder");
+            output.reset();
+
+            controller.update(ChatActivityPhase.WORKING, "read src/Main.java");
+            String initial = output.toString(StandardCharsets.UTF_8);
+            assertTrue(initial.contains("\033]2;⠋ kompile chat — coder · Working · read src/Main.java\007"));
+
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (!output.toString(StandardCharsets.UTF_8).contains("\033]2;⠙ ")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("\033]2;⠙ "),
+                    "busy title should advance its spinner frame");
+
+            controller.update(ChatActivityPhase.READY, "");
+            String ready = output.toString(StandardCharsets.UTF_8);
+            assertTrue(ready.endsWith("\033]2;kompile chat — coder\007"));
+            int readyLength = output.size();
+            Thread.sleep(220);
+            assertEquals(readyLength, output.size(),
+                    "no busy frames may be written after work completes");
+        } finally {
+            controller.detach();
+            terminal.close();
+        }
+    }
+
+    @Test
+    void terminalTitleRemovesBusyMarkerForTerminalStatesAndDetach() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LineDisciplineTerminal terminal = new LineDisciplineTerminal(
+                "title-terminal-state-test", "xterm", output, StandardCharsets.UTF_8);
+        TerminalTitleController controller = new TerminalTitleController();
+        try {
+            controller.attach(terminal, "kompile chat (local)");
+            controller.setReadyTitle("kompile chat (local) — gpt-5");
+            output.reset();
+            controller.update(ChatActivityPhase.THINKING, "");
+            controller.update(ChatActivityPhase.INTERRUPTED, "");
+            String interrupted = output.toString(StandardCharsets.UTF_8);
+            assertTrue(interrupted.endsWith(
+                    "\033]2;kompile chat (local) — gpt-5 · Interrupted\007"));
+
+            output.reset();
+            controller.detach();
+            assertTrue(output.toString(StandardCharsets.UTF_8)
+                    .endsWith("\033]2;kompile chat (local) — gpt-5\007"),
+                    "detach must restore the ready title even during teardown");
+        } finally {
+            terminal.close();
+        }
     }
 
     // ========================================================================
@@ -194,6 +258,26 @@ class TerminalRendererTest {
         ToolResult result = ToolResult.success("Added task #1: Implement feature");
         String output = renderer.renderToolCallComplete("todowrite", result);
         assertTrue(output.contains("Todowrite"));
+    }
+
+    @Test
+    void largeToolDetailIsBoundedForInteractiveRows() {
+        StringBuilder largeOutput = new StringBuilder();
+        for (int i = 0; i < 200; i++) {
+            largeOutput.append("line-").append(i).append('\n');
+        }
+
+        String rendered = renderer.renderToolCallComplete(
+                "read", "{\"file_path\":\"large.txt\"}",
+                ToolResult.success(largeOutput.toString()));
+
+        assertTrue(rendered.contains("line-0"), "the interactive preview should retain its head");
+        assertTrue(rendered.contains("tool detail truncated"),
+                "large results should advertise that the inline preview was bounded");
+        assertTrue(rendered.split("\\R", -1).length <= 52,
+                "a single tool result must not consume the entire input viewport");
+        assertFalse(rendered.contains("line-199"),
+                "the full result belongs in the activity detail view, not the live row");
     }
 
     @Test

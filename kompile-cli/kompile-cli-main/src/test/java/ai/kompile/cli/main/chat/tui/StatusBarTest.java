@@ -60,6 +60,31 @@ class StatusBarTest {
     }
 
     @Test
+    void showsBackgroundHintOnlyWhileCurrentTaskCanTransition() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager("status-background-hint-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            tasks.startTask("LLM response");
+            ChatCompleter.setActivity("Thinking");
+
+            String running = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
+            assertTrue(running.contains("(use Ctrl+B to background this)"), running);
+            assertEquals(running.indexOf("use Ctrl+B"), running.lastIndexOf("use Ctrl+B"));
+
+            tasks.requestBackground();
+            String backgrounded = AnsiConstants.stripAnsi(bar.buildStatusContent(120));
+            assertFalse(backgrounded.contains("use Ctrl+B"), backgrounded);
+
+            tasks.completeCurrentTask();
+            assertFalse(tasks.isCurrentTaskBackgroundable());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void rendersInterruptedActivityAsTerminalWithoutSpinner() {
         BackgroundProcessManager processes = new BackgroundProcessManager("status-bar-interrupted-test");
         try {

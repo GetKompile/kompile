@@ -37,15 +37,24 @@ internal object SdxAndroidLlmLibrary {
             )
         }
 
-        // Graal snapshots this process-local environment when it creates the isolate.
+        // Graal snapshots this process-local environment when it creates the isolate, so apply
+        // the persisted Settings selection before the native runtime is created.
+        val effectiveDiagnosticMode = effectiveDiagnosticModeForRuntime(diagnosticMode)
         Os.setenv("SDX_NATIVE_LIB_DIR", nativeDirectory.absolutePath, true)
-        diagnosticMode.dspCategories?.let {
+        effectiveDiagnosticMode.dspCategories?.let {
             Os.setenv("ND4J_DSP_DIAGNOSTICS", it, true)
         } ?: Os.unsetenv("ND4J_DSP_DIAGNOSTICS")
-        diagnosticMode.dspLevel?.let {
+        effectiveDiagnosticMode.dspLevel?.let {
             Os.setenv("ND4J_DSP_DIAGNOSTICS_LEVEL", it, true)
         } ?: Os.unsetenv("ND4J_DSP_DIAGNOSTICS_LEVEL")
-        if (diagnosticMode == ModelDiagnosticMode.DSP_DIAGNOSTICS) {
+        if (effectiveDiagnosticMode.nativeOpSanity) {
+            Os.setenv("ND4J_DSP_NATIVE_DUMP_OUTPUTS", "1", true)
+            Os.setenv("ND4J_DSP_DIAG_EXEC_LIMIT", "1", true)
+        } else {
+            Os.unsetenv("ND4J_DSP_NATIVE_DUMP_OUTPUTS")
+            Os.unsetenv("ND4J_DSP_DIAG_EXEC_LIMIT")
+        }
+        if (effectiveDiagnosticMode.capturesDspTrace) {
             val diagnosticFile = DspDiagnosticsTraceLog(context).prepareCapture()
             Os.setenv("ND4J_DSP_DIAGNOSTICS_FILE", diagnosticFile.absolutePath, true)
         } else {

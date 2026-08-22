@@ -23,6 +23,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Metadata sidecar for a single subprocess run, written as
@@ -52,4 +53,6 @@ public class SubprocessLogMetadata {
     private String heapSize;
     private Boolean oomDetected;
     private Boolean gpuOomDetected;
+    /** Explicit process identity/correlation fields (model, pipeline, crawl, transport). */
+    private Map<String, String> attributes;
 }

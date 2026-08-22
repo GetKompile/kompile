@@ -16,6 +16,8 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.main.CliProcessLauncher;
 import ai.kompile.cli.common.util.JsonUtils;
@@ -47,6 +49,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -99,7 +102,24 @@ public final class KompileLocalServingBootstrap {
             LauncherArtifact launcher,
             Process process,
             Path argsFile,
-            Thread outputReader) implements AutoCloseable {
+            Thread outputReader,
+            String subprocessRunId,
+            Path logFile,
+            Path metaFile,
+            SubprocessLogWriter logWriter) implements AutoCloseable {
+
+        public StartupResult(
+                String modelId,
+                Path modelPath,
+                Path tokenizerPath,
+                URI baseUrl,
+                LauncherArtifact launcher,
+                Process process,
+                Path argsFile,
+                Thread outputReader) {
+            this(modelId, modelPath, tokenizerPath, baseUrl, launcher, process, argsFile,
+                    outputReader, null, null, null, null);
+        }
 
         void applyTo(ChatConfig config) {
             config.setModel(modelId);
@@ -114,6 +134,18 @@ public final class KompileLocalServingBootstrap {
                     outputReader.join(1000);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                }
+            }
+            if (logWriter != null) {
+                try {
+                    Integer exitCode = process != null && !process.isAlive()
+                            ? process.exitValue() : null;
+                    logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "TERMINATED", exitCode, null, false, false));
+                } catch (Exception ignored) {
+                    // The process is already stopped; retain every line written so far.
+                } finally {
+                    logWriter.close();
                 }
             }
             if (argsFile != null) {
@@ -159,13 +191,59 @@ public final class KompileLocalServingBootstrap {
             throw new BootstrapException("Resolved project model does not exist: " + modelPath);
         }
         Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
+        return startResolved(
+                new ResolvedModel(
+                        firstNonBlank(modelId, modelPath.getFileName().toString()),
+                        modelPath.toAbsolutePath().normalize(),
+                        tokenizerPath == null ? null : tokenizerPath.toAbsolutePath().normalize()),
+                timeoutSeconds,
+                componentDirectory(),
+                runtimeProperties(options),
+                System.getenv(),
+                childEnvironment(options),
+                options);
+    }
+
+    /**
+     * Start the standalone serving component for a user-supplied model file or
+     * directory. Directories are resolved with the same GGUF/SDZ and tokenizer
+     * rules used by local chat, so CLI entry points share one launcher contract.
+     */
+    public static StartupResult ensureReady(
+            String modelId,
+            Path modelCandidate,
+            int timeoutSeconds,
+            Map<String, Object> runtimeOptions) throws BootstrapException {
+        if (modelCandidate == null) {
+            throw new BootstrapException("Local model path is required");
+        }
+        Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
+        try {
+            ResolvedModel resolved = resolveLocalModel(modelCandidate, modelId);
+            return startResolved(
+                    resolved,
+                    timeoutSeconds,
+                    componentDirectory(),
+                    runtimeProperties(options),
+                    System.getenv(),
+                    childEnvironment(options),
+                    options);
+        } catch (IOException e) {
+            throw new BootstrapException(e.getMessage(), e);
+        }
+    }
+
+    private static Properties runtimeProperties(Map<String, Object> options) {
         Properties properties = new Properties();
         properties.putAll(System.getProperties());
         copyOption(properties, SERVING_EXECUTABLE_PROPERTY, options, "servingExecutable");
         copyOption(properties, SERVING_JAR_PROPERTY, options, "servingJar");
         copyOption(properties, JAVA_EXECUTABLE_PROPERTY, options, "javaExecutable");
         copyOption(properties, HEAP_PROPERTY, options, "heapSize");
+        return properties;
+    }
 
+    private static Map<String, String> childEnvironment(Map<String, Object> options) {
         Map<String, String> childEnvironment = new java.util.LinkedHashMap<>();
         Object environment = options.get("environment");
         if (environment instanceof Map<?, ?> values) {
@@ -176,17 +254,7 @@ public final class KompileLocalServingBootstrap {
                 }
             }
         }
-        return startResolved(
-                new ResolvedModel(
-                        firstNonBlank(modelId, modelPath.getFileName().toString()),
-                        modelPath.toAbsolutePath().normalize(),
-                        tokenizerPath == null ? null : tokenizerPath.toAbsolutePath().normalize()),
-                timeoutSeconds,
-                componentDirectory(),
-                properties,
-                System.getenv(),
-                childEnvironment,
-                options);
+        return childEnvironment;
     }
 
     private static StartupResult startResolved(
@@ -201,13 +269,16 @@ public final class KompileLocalServingBootstrap {
         Process process = null;
         Path argsFile = null;
         Thread outputReader = null;
+        SubprocessLogWriter logWriter = null;
+        String subprocessRunId = UUID.randomUUID().toString();
         List<String> outputTail = new ArrayList<>();
 
         try {
             LauncherArtifact launcher = resolveLauncher(
                     installHome, componentDirectory, properties, environment);
-            int port = resolvePort(properties);
-            URI baseUrl = URI.create("http://" + HOST + ":" + port);
+            int port = resolvePort(properties, runtimeOptions);
+            String host = stringOption(runtimeOptions, "host", HOST);
+            URI baseUrl = URI.create("http://" + host + ":" + port);
             argsFile = writeServingArgs(model, port, runtimeOptions);
 
             List<String> command = buildCommand(launcher, argsFile, properties);
@@ -215,7 +286,20 @@ public final class KompileLocalServingBootstrap {
             processBuilder.redirectErrorStream(true);
             processBuilder.environment().putAll(childEnvironment);
             process = processBuilder.start();
-            outputReader = drainOutput(process, outputTail);
+            String projectRoot = stringOption(runtimeOptions, "projectRoot", null);
+            // A pooled model runtime can serve several projects. Keep the process log global and
+            // link each project/job through request-level trace events.
+            logWriter = new SubprocessLogWriter("model-serving", subprocessRunId);
+            logWriter.putMetadata("processType", "model-serving");
+            logWriter.putMetadata("modelId", model.modelId());
+            logWriter.putMetadata("modelPath", model.modelPath().toString());
+            logWriter.putMetadata("launcher", launcher.path().toString());
+            logWriter.putMetadata("streamMode", "COMBINED");
+            logWriter.putMetadata("initialProjectRoot", projectRoot);
+            logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    model.modelId(), command, projectRoot, process.pid(),
+                    property(properties, HEAP_PROPERTY)));
+            outputReader = drainOutput(process, outputTail, logWriter);
 
             waitForReady(
                     process, baseUrl, model.modelId(), Math.max(1, timeoutSeconds), outputTail);
@@ -232,15 +316,21 @@ public final class KompileLocalServingBootstrap {
 
             return new StartupResult(
                     model.modelId(), model.modelPath(), model.tokenizerPath(), baseUrl,
-                    launcher, process, argsFile, outputReader);
+                    launcher, process, argsFile, outputReader,
+                    subprocessRunId,
+                    logWriter.getLogFile().toPath(),
+                    logWriter.getMetaFile().toPath(),
+                    logWriter);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             stopProcess(process);
+            endLog(logWriter, process, "INTERRUPTED", e.getMessage());
             deleteQuietly(argsFile);
             throw new BootstrapException(
                     "Interrupted while starting the Kompile serving subprocess", e);
         } catch (IOException | RuntimeException e) {
             stopProcess(process);
+            endLog(logWriter, process, "FAILED", e.getMessage());
             deleteQuietly(argsFile);
             throw new BootstrapException(e.getMessage(), e);
         }
@@ -423,7 +513,7 @@ public final class KompileLocalServingBootstrap {
         Map<String, Object> options = runtimeOptions == null ? Map.of() : runtimeOptions;
         ObjectNode root = MAPPER.createObjectNode();
         root.put("port", port);
-        root.put("host", HOST);
+        root.put("host", stringOption(options, "host", HOST));
         root.putNull("stagingUrl");
         root.put("modelId", model.modelId());
         root.put("modelPath", model.modelPath().toAbsolutePath().normalize().toString());
@@ -490,6 +580,15 @@ public final class KompileLocalServingBootstrap {
         }
         throw new IllegalArgumentException(
                 "Local serving runtime option '" + key + "' must be numeric");
+    }
+
+    private static String stringOption(
+            Map<String, Object> options, String key, String defaultValue) {
+        Object value = options.get(key);
+        if (value == null || String.valueOf(value).isBlank()) {
+            return defaultValue;
+        }
+        return String.valueOf(value).trim();
     }
 
     private static void putOptionalDouble(
@@ -578,7 +677,10 @@ public final class KompileLocalServingBootstrap {
                         + formatOutputTail(outputTail));
     }
 
-    private static Thread drainOutput(Process process, List<String> outputTail) {
+    private static Thread drainOutput(
+            Process process,
+            List<String> outputTail,
+            SubprocessLogWriter logWriter) {
         Thread reader = new Thread(() -> {
             try (BufferedReader lines = new BufferedReader(new InputStreamReader(
                     process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -590,6 +692,13 @@ public final class KompileLocalServingBootstrap {
                             outputTail.remove(0);
                         }
                     }
+                    if (logWriter != null) {
+                        try {
+                            logWriter.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                        } catch (IOException ignored) {
+                            // Continue draining so a logging failure cannot block the child.
+                        }
+                    }
                 }
             } catch (IOException ignored) {
                 // Closing the child closes its output stream.
@@ -598,6 +707,24 @@ public final class KompileLocalServingBootstrap {
         reader.setDaemon(true);
         reader.start();
         return reader;
+    }
+
+    private static void endLog(
+            SubprocessLogWriter writer,
+            Process process,
+            String state,
+            String error) {
+        if (writer == null) return;
+        try {
+            Integer exitCode = process != null && !process.isAlive()
+                    ? process.exitValue() : null;
+            writer.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, error, false, false));
+        } catch (Exception ignored) {
+            // Preserve every line that was written successfully.
+        } finally {
+            writer.close();
+        }
     }
 
     private static String formatOutputTail(List<String> outputTail) {
@@ -630,7 +757,18 @@ public final class KompileLocalServingBootstrap {
         }
     }
 
-    private static int resolvePort(Properties properties) throws IOException {
+    private static int resolvePort(
+            Properties properties, Map<String, Object> runtimeOptions) throws IOException {
+        Number requested = numericOption(
+                runtimeOptions == null ? Map.of() : runtimeOptions, "port");
+        if (requested != null) {
+            int port = requested.intValue();
+            if (port < 1 || port > 65535) {
+                throw new IOException("Local serving runtime option 'port' must be from 1 to 65535");
+            }
+            return port;
+        }
+
         String configured = property(properties, PORT_PROPERTY);
         if (configured != null && !configured.isBlank()) {
             try {

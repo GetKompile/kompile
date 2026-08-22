@@ -124,9 +124,8 @@ class McpStdioCommandTest {
     }
 
     @Test
-    void architectRoleKeepsCodexDefaultsWithFullAccess() {
-        assertEquals("gpt-5.6-sol", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").getModel());
-        assertEquals("xhigh", BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex").resolveThinking("gpt-5.6-sol"));
+    void architectRoleLeavesModelAndThinkingToTheSelectedAgent() {
+        assertNull(BuiltInRoles.ARCHITECT.getAgentDefaultsFor("codex"));
         assertTrue(BuiltInRoles.ARCHITECT.isCanSpawnSubagents());
         assertEquals(Set.of("*"), BuiltInRoles.ARCHITECT.getEnabledTools());
         assertTrue(BuiltInRoles.ARCHITECT.getPermissionOverrides().isEmpty());

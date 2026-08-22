@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.run;
 
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.KompileLocalServingBootstrap;
 import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.cli.common.util.JsonUtils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -29,16 +31,15 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Run a local LLM with a single command — download (if needed) and serve.
@@ -105,10 +106,19 @@ public class RunCommand implements Callable<Integer> {
 
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private volatile Process serverProcess;
+    private volatile KompileLocalServingBootstrap.StartupResult servingRuntime;
 
     @Override
     public Integer call() throws Exception {
-        // 1. Resolve model to a local path
+        try {
+            validateRequestedBackend(
+                    backend, KompileHome.installDirectory().toPath().toAbsolutePath().normalize());
+        } catch (IOException e) {
+            System.err.println("Error: " + e.getMessage());
+            return 1;
+        }
+
+        // 1. Resolve model to a local path.
         Path modelPath;
         try {
             modelPath = resolveModelPath();
@@ -117,27 +127,20 @@ public class RunCommand implements Callable<Integer> {
             return 1;
         }
 
-        // 2. Find the serving JAR
-        File shadedJar = findShadedJar();
-        if (shadedJar == null) {
-            System.err.println("Error: kompile-sdk-serving shaded JAR not found.");
-            System.err.println();
-            System.err.println("Searched:");
-            System.err.println("  ~/.kompile/lib/");
-            System.err.println("  kompile-sdk-serving/target/");
-            System.err.println("  current directory");
-            System.err.println();
-            System.err.println("Build it with:");
-            System.err.println("  cd kompile-sdk-serving && mvn clean package -DskipTests");
-            System.err.println("Then copy to ~/.kompile/lib/");
-            return 1;
+        if (!"auto".equalsIgnoreCase(chatTemplate)) {
+            System.err.println("Warning: --chat-template is ignored by the current serving runtime; "
+                    + "the model/tokenizer metadata selects the template.");
         }
 
-        // 3. Launch server subprocess
+        // 2. Launch the distribution's canonical model-serving component. The
+        // bootstrap writes the current JSON argument contract and waits for the
+        // model-specific status endpoint to report ready.
         System.out.println("Loading model...");
         try {
-            serverProcess = launchServer(modelPath, shadedJar);
-        } catch (IOException e) {
+            servingRuntime = KompileLocalServingBootstrap.ensureReady(
+                    resolvedModelId(modelPath), modelPath, 180, runtimeOptions());
+            serverProcess = servingRuntime.process();
+        } catch (KompileLocalServingBootstrap.BootstrapException e) {
             System.err.println("Error launching server: " + e.getMessage());
             return 1;
         }
@@ -145,36 +148,26 @@ public class RunCommand implements Callable<Integer> {
         // Register shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(this::stopServer, "kompile-run-shutdown"));
 
-        // 4. Wait for server to become healthy
-        String serverUrl = "http://" + host + ":" + port;
-        if (!waitForServer(serverUrl, 180)) {
-            if (serverProcess != null && !serverProcess.isAlive()) {
-                System.err.println("Error: Server process exited with code " + serverProcess.exitValue());
-            } else {
-                System.err.println("Error: Server did not become ready within 180 seconds.");
-                System.err.println("The model may require more memory or a faster machine.");
-            }
-            stopServer();
-            return 1;
-        }
-
-        // 5. Print endpoint info
-        String modelId = model.contains("/") ? model : new File(model).getName();
+        // 3. Print the endpoints actually exposed by ServingSubprocessMain.
+        String serverUrl = servingRuntime.baseUrl().toString();
+        String modelId = servingRuntime.modelId();
         System.out.println();
         System.out.println("Model ready: " + modelId);
-        System.out.println("  OpenAI API: " + serverUrl + "/v1/chat/completions");
-        System.out.println("  Health:     " + serverUrl + "/health");
-        System.out.println("  Models:     " + serverUrl + "/v1/models");
+        System.out.println("  Chat:       " + serverUrl + "/api/llm/chat");
+        System.out.println("  Generate:   " + serverUrl + "/api/llm/generate");
+        System.out.println("  Status:     " + serverUrl + "/api/llm/status");
 
         if (serveOnly) {
             System.out.println();
             System.out.println("Running as API server. Press Ctrl+C to stop.");
             serverProcess.waitFor();
-            return serverProcess.exitValue();
+            int exitCode = serverProcess.exitValue();
+            stopServer();
+            return exitCode;
         }
 
-        // 6. Enter interactive chat REPL
-        runRepl(serverUrl, modelId);
+        // 4. Enter interactive chat REPL.
+        runRepl(serverUrl);
 
         stopServer();
         return 0;
@@ -234,137 +227,63 @@ public class RunCommand implements Callable<Integer> {
 
     // ==================== Server Launch ====================
 
-    private Process launchServer(Path modelPath, File shadedJar) throws IOException {
-        List<String> cmd = new ArrayList<>();
-        cmd.add(getJavaExecutable());
-
-        // Backend-specific JVM args
-        if ("cuda".equalsIgnoreCase(backend)) {
-            cmd.add("-Dnd4j.backend=nd4j-cuda");
-        }
-
-        cmd.add("-jar");
-        cmd.add(shadedJar.getAbsolutePath());
-        cmd.add("--model-path");
-        cmd.add(modelPath.toAbsolutePath().toString());
-        cmd.add("--port");
-        cmd.add(String.valueOf(port));
-        cmd.add("--host");
-        cmd.add(host);
-        cmd.add("--temperature");
-        cmd.add(String.valueOf(temperature));
-        cmd.add("--max-tokens");
-        cmd.add(String.valueOf(maxTokens));
-        cmd.add("--chat-template");
-        cmd.add(chatTemplate);
-        cmd.add("--model-id");
-        cmd.add(model.replace("/", "_"));
-
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        // Let server logs flow to our stderr so user sees loading progress
-        pb.redirectErrorStream(false);
-        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-
-        // Propagate relevant env vars. Device selection is device-agnostic (ND4J placement), so the
-        // vendor CUDA_VISIBLE_DEVICES is deliberately NOT propagated.
-        Map<String, String> env = pb.environment();
-        propagateEnv(env, "ND4J_BACKEND", "OMP_NUM_THREADS",
-                "MKL_NUM_THREADS", "KOMPILE_MODELS_DIR", "JAVACPP_PLATFORM");
-
-        return pb.start();
+    Map<String, Object> runtimeOptions() {
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("port", port);
+        options.put("host", host);
+        options.put("maxNewTokens", maxTokens);
+        options.put("temperature", temperature);
+        return options;
     }
 
-    private void propagateEnv(Map<String, String> env, String... keys) {
-        for (String key : keys) {
-            String val = System.getenv(key);
-            if (val != null && !val.isEmpty()) {
-                env.put(key, val);
-            }
+    private String resolvedModelId(Path modelPath) {
+        if (!isLocalModelSelection()) {
+            return model;
         }
-        // Also propagate all ND4J_ and KOMPILE_ prefixed vars
-        for (Map.Entry<String, String> e : System.getenv().entrySet()) {
-            if ((e.getKey().startsWith("ND4J_") || e.getKey().startsWith("KOMPILE_"))
-                    && !env.containsKey(e.getKey())) {
-                env.put(e.getKey(), e.getValue());
-            }
-        }
+        Path fileName = modelPath.getFileName();
+        return fileName == null ? model : fileName.toString();
     }
 
-    private File findShadedJar() {
-        String home = System.getProperty("user.home");
-        String[] searchPaths = {
-                home + "/.kompile/lib",
-                home + "/.kompile/jars",
-                "kompile-sdk-serving/target",
-                "."
-        };
-
-        for (String path : searchPaths) {
-            File dir = new File(path);
-            if (dir.isDirectory()) {
-                File[] matches = dir.listFiles((d, name) ->
-                        name.startsWith("kompile-sdk-serving") && name.endsWith("-shaded.jar"));
-                if (matches != null && matches.length > 0) {
-                    Arrays.sort(matches, Comparator.comparingLong(File::lastModified).reversed());
-                    return matches[0];
-                }
-            }
-        }
-        return null;
+    private boolean isLocalModelSelection() {
+        File localCandidate = new File(model);
+        return localCandidate.isAbsolute() || model.startsWith("./")
+                || model.startsWith("../") || model.startsWith("~");
     }
 
-    private String getJavaExecutable() {
-        String javaHome = System.getProperty("java.home");
-        if (javaHome != null) {
-            return javaHome + File.separator + "bin" + File.separator + "java";
+    static void validateRequestedBackend(String requestedBackend, Path installHome)
+            throws IOException {
+        if (requestedBackend == null || requestedBackend.isBlank()) {
+            return;
         }
-        return "java";
-    }
-
-    // ==================== Health Polling ====================
-
-    private boolean waitForServer(String serverUrl, int timeoutSeconds) {
-        long deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
-        String healthUrl = serverUrl + "/health";
-        boolean firstAttempt = true;
-
-        while (System.currentTimeMillis() < deadline) {
-            // Check if process died
-            if (serverProcess != null && !serverProcess.isAlive()) {
-                return false;
-            }
-
-            try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(healthUrl).openConnection();
-                conn.setConnectTimeout(1000);
-                conn.setReadTimeout(1000);
-                int code = conn.getResponseCode();
-                conn.disconnect();
-                if (code == 200) {
-                    return true;
-                }
-            } catch (IOException ignored) {
-                // Server not ready yet
-            }
-
-            if (firstAttempt) {
-                firstAttempt = false;
-            }
-
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
+        String requested = requestedBackend.trim().toLowerCase(Locale.ROOT);
+        if (!"cpu".equals(requested) && !"cuda".equals(requested)) {
+            throw new IOException("Unsupported backend '" + requestedBackend
+                    + "'; expected cpu or cuda.");
         }
-        return false;
+
+        Path metadata = installHome.resolve(".dist-info.json");
+        if (!Files.isRegularFile(metadata)) {
+            return;
+        }
+        String installed = JsonUtils.standardMapper()
+                .readTree(metadata.toFile()).path("backend").asText("")
+                .trim().toLowerCase(Locale.ROOT);
+        if (installed.isBlank()) {
+            return;
+        }
+        boolean matches = "cuda".equals(requested)
+                ? installed.startsWith("nd4j-cuda")
+                : installed.startsWith("nd4j-native");
+        if (!matches) {
+            throw new IOException("Requested " + requested + " backend, but this distribution "
+                    + "contains " + installed + ". Install a matching distribution; "
+                    + "the backend cannot be switched at runtime.");
+        }
     }
 
     // ==================== Interactive Chat REPL ====================
 
-    private void runRepl(String serverUrl, String modelId) {
+    private void runRepl(String serverUrl) {
         System.out.println();
         System.out.println("Type your message. Commands:");
         System.out.println("  /exit   - quit");
@@ -400,7 +319,7 @@ public class RunCommand implements Callable<Integer> {
 
             history.add(createMessage("user", input));
 
-            String response = sendChatCompletion(serverUrl, modelId, history);
+            String response = sendChatCompletion(serverUrl, history);
             if (response == null) {
                 System.err.println("Error: Failed to get response from server.");
                 // Remove the user message we just added
@@ -423,10 +342,10 @@ public class RunCommand implements Callable<Integer> {
         return msg;
     }
 
-    private String sendChatCompletion(String serverUrl, String modelId,
-                                       List<Map<String, String>> messages) {
+    String sendChatCompletion(
+            String serverUrl, List<Map<String, String>> messages) {
         try {
-            String url = serverUrl + "/v1/chat/completions";
+            String url = serverUrl + "/api/llm/chat";
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
@@ -434,11 +353,18 @@ public class RunCommand implements Callable<Integer> {
             conn.setReadTimeout(120_000); // LLM generation can be slow
             conn.setRequestProperty("Content-Type", "application/json");
 
-            // Build request body
+            // Build the canonical standalone-serving chat request.
+            Map<String, Object> structured = new LinkedHashMap<>();
+            structured.put("messages", messages);
+            structured.put("tools", List.of());
+            structured.put("addGenerationPrompt", true);
+            structured.put("toolDefinitionFormat", "FLAT");
+            structured.put("toolCallFormat", "NATIVE");
+            structured.put("toolChoice", "NONE");
+
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("model", modelId);
-            body.put("messages", messages);
-            body.put("stream", false);
+            body.put("request", structured);
+            body.put("maxTokens", maxTokens);
 
             byte[] requestBytes = objectMapper.writeValueAsBytes(body);
             try (OutputStream out = conn.getOutputStream()) {
@@ -456,18 +382,16 @@ public class RunCommand implements Callable<Integer> {
             String responseBody = readStream(conn.getInputStream());
             conn.disconnect();
 
-            // Parse response: {"choices": [{"message": {"content": "..."}}]}
+            // Parse the canonical response: content is user-visible text, while
+            // rawText preserves the unparsed model output as a fallback.
             JsonNode root = objectMapper.readTree(responseBody);
-            JsonNode choices = root.get("choices");
-            if (choices != null && choices.isArray() && choices.size() > 0) {
-                JsonNode message = choices.get(0).get("message");
-                if (message != null && message.has("content")) {
-                    return message.get("content").asText();
-                }
+            String finishReason = root.path("finishReason").asText("");
+            if (finishReason.startsWith("error")) {
+                System.err.println("Serving error: " + finishReason);
+                return null;
             }
-
-            System.err.println("Unexpected response format: " + responseBody);
-            return null;
+            String content = root.path("content").asText("");
+            return content.isBlank() ? root.path("rawText").asText("") : content;
 
         } catch (IOException e) {
             System.err.println("Request failed: " + e.getMessage());
@@ -485,18 +409,11 @@ public class RunCommand implements Callable<Integer> {
     // ==================== Server Lifecycle ====================
 
     private void stopServer() {
-        Process p = serverProcess;
-        if (p != null && p.isAlive()) {
-            p.destroy();
-            try {
-                boolean exited = p.waitFor(5, TimeUnit.SECONDS);
-                if (!exited) {
-                    p.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                p.destroyForcibly();
-            }
+        KompileLocalServingBootstrap.StartupResult runtime = servingRuntime;
+        servingRuntime = null;
+        serverProcess = null;
+        if (runtime != null) {
+            runtime.close();
         }
     }
 }

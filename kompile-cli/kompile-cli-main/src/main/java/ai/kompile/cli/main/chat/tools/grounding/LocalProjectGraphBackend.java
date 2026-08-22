@@ -13,6 +13,7 @@ import ai.kompile.cli.main.project.LocalCrawlCliAgentRunner;
 import ai.kompile.cli.main.project.LocalCrawlServingSession;
 import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.ProcessingRouteConfig;
+import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
 import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.graphrag.GraphConstants;
 import ai.kompile.core.graphrag.model.Entity;
@@ -112,6 +113,7 @@ public final class LocalProjectGraphBackend {
                                         Long factSheetId,
                                         String projectId,
                                         List<CodeProjectSource> codeProjects,
+                                        String crawlJobId,
                                         JsonNode request) throws Exception {
         Path directory = projectRoot.resolve("data/crawls").resolve(knowledgeBaseId).normalize();
         Path graphPath = directory.resolve(GRAPH_FILE);
@@ -156,7 +158,7 @@ public final class LocalProjectGraphBackend {
                 projectId, factSheetId, codeProjects == null ? List.of() : codeProjects);
         SemanticExtractionSummary semanticExtraction = addSemanticExtraction(
                 graph, projectRoot, directory, knowledgeBaseNode, knowledgeBaseId,
-                factSheetId, request);
+                factSheetId, crawlJobId, request);
 
         retainCompatibleAssets(previous, graph);
         TrainingRequest training = TrainingRequest.from(request);
@@ -408,7 +410,8 @@ public final class LocalProjectGraphBackend {
         }
         try {
             return switch (action) {
-                case "list_graphs", "list_fact_sheets", "list_snapshots" ->
+                case "list_fact_sheets" -> localFactSheetInventory(context);
+                case "list_graphs", "list_snapshots" ->
                         localGraphInventory(action, context);
                 case "overview", "stats", "graph_health", "report", "get_fact_sheet",
                      "get_active_fact_sheet", "opinions", "facts_by_tier", "reasoning_layers",
@@ -429,6 +432,71 @@ public final class LocalProjectGraphBackend {
         } catch (Exception e) {
             return ToolResult.error("knowledge_graph local error: " + message(e));
         }
+    }
+
+    private ToolResult localFactSheetInventory(ToolContext context) throws Exception {
+        Path root = projectRoot(context.getWorkingDirectory());
+        ArrayNode factSheets = mapper.createArrayNode();
+        ArrayNode warnings = mapper.createArrayNode();
+        Set<String> seen = new LinkedHashSet<>();
+
+        // Crawl summaries are the authoritative project-local inventory. Listing fact sheets must
+        // not deserialize every graph archive: one truncated or incompatible graph must not hide
+        // otherwise healthy knowledge bases.
+        ArrayNode inventory = new LocalProjectCrawlBackend(mapper, this)
+                .knowledgeBaseInventory(context.getWorkingDirectory());
+        for (JsonNode candidate : inventory) {
+            if (!candidate.isObject()) continue;
+            ObjectNode item = (ObjectNode) candidate.deepCopy();
+            String id = item.path("id").asText("");
+            if (!id.isBlank()) seen.add(id);
+            item.put("inventorySource", "crawl-summary");
+            factSheets.add(item);
+        }
+
+        // Preserve discovery of legacy graph-only folders, but isolate decode failures per file.
+        Path crawls = root.resolve("data/crawls");
+        if (Files.isDirectory(crawls)) {
+            List<Path> paths;
+            try (Stream<Path> directories = Files.list(crawls)) {
+                paths = directories.map(path -> path.resolve(GRAPH_FILE))
+                        .filter(Files::isRegularFile).sorted().toList();
+            }
+            for (Path path : paths) {
+                String folderId = path.getParent().getFileName().toString();
+                if (seen.contains(folderId)) continue;
+                try {
+                    UnifiedGraph graph = UnifiedGraph.load(path);
+                    ObjectNode item = factSheets.addObject();
+                    String id = firstNonBlank(stringMeta(graph, "knowledgeBaseId"), folderId);
+                    item.put("id", id);
+                    item.put("name", firstNonBlank(
+                            stringMeta(graph, "knowledgeBaseName"), graph.graphId(), id));
+                    item.put("graphId", graph.graphId());
+                    if (graph.factSheetId() != null) item.put("factSheetId", graph.factSheetId());
+                    item.put("graphEntityCount", graph.entities().size());
+                    item.put("graphRelationCount", graph.relations().size());
+                    item.put("graphPath", path.toString());
+                    item.put("backend", "project-local");
+                    item.put("inventorySource", "legacy-graph");
+                    seen.add(id);
+                } catch (Exception e) {
+                    warnings.addObject()
+                            .put("id", folderId)
+                            .put("graphPath", path.toString())
+                            .put("message", "Skipped unreadable legacy graph: " + message(e));
+                }
+            }
+        }
+
+        ObjectNode result = mapper.createObjectNode();
+        result.put("backend", "project-local");
+        result.put("projectRoot", root.toString());
+        result.put("count", factSheets.size());
+        result.put("skippedUnreadableGraphs", warnings.size());
+        result.set("factSheets", factSheets);
+        result.set("warnings", warnings);
+        return localSuccess("list_fact_sheets", result);
     }
 
     private ToolResult localGraphInventory(String action, ToolContext context) throws Exception {
@@ -1607,6 +1675,7 @@ public final class LocalProjectGraphBackend {
                                                             String knowledgeBaseNode,
                                                             String knowledgeBaseId,
                                                             Long factSheetId,
+                                                            String crawlJobId,
                                                             JsonNode request) {
         if (!semanticExtractionRequested(request)) {
             return SemanticExtractionSummary.none();
@@ -1663,10 +1732,15 @@ public final class LocalProjectGraphBackend {
             LocalCrawlCliAgentRunner runner = new LocalCrawlCliAgentRunner(
                     projectRoot, extraction.getModelName(), mapper);
             Map<String, Object> modelRuntime = request.path("modelRuntime").isObject()
-                    ? mapper.convertValue(
+                    ? new LinkedHashMap<>(mapper.convertValue(
                             request.path("modelRuntime"),
-                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { })
-                    : Map.of();
+                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { }))
+                    : new LinkedHashMap<>();
+            modelRuntime.put("projectRoot", projectRoot.toAbsolutePath().normalize().toString());
+            if (LocalCrawlJobRegistry.isJobId(crawlJobId)) {
+                modelRuntime.put("crawlJobId", crawlJobId);
+                modelRuntime.put("knowledgeBaseId", knowledgeBaseId);
+            }
             LocalCrawlServingSession servingSession = requiresLocalServing(route)
                     ? LocalCrawlServingSession.start(
                             projectRoot,
@@ -1676,10 +1750,17 @@ public final class LocalProjectGraphBackend {
                     : null;
             try (servingSession;
                  HeadlessUnifiedCorpusExtractor extractor =
-                         new HeadlessUnifiedCorpusExtractor(runner, servingSession, parallelism)) {
+                         new HeadlessUnifiedCorpusExtractor(
+                                 runner,
+                                 servingSession,
+                                 parallelism,
+                                 call -> persistLlmTrace(projectRoot, crawlJobId, call),
+                                 trace -> persistExtractionTrace(projectRoot, crawlJobId, trace))) {
                 HeadlessUnifiedCorpusExtractor.Result result = extractor.extract(
                         corpus, extraction, route, runtimeConfig,
-                        "local-" + knowledgeBaseId + "-" + UUID.randomUUID(),
+                        LocalCrawlJobRegistry.isJobId(crawlJobId)
+                                ? crawlJobId
+                                : "local-" + knowledgeBaseId + "-" + UUID.randomUUID(),
                         factSheetId);
                 SemanticExtractionSummary merged = mergeSemanticGraph(
                         graph, knowledgeBaseNode, knowledgeBaseId, result.graph(), result.errors());
@@ -1694,9 +1775,40 @@ public final class LocalProjectGraphBackend {
                 return merged;
             }
         } catch (Exception failure) {
+            if (LocalCrawlJobRegistry.isJobId(crawlJobId)) {
+                ObjectNode event = mapper.createObjectNode();
+                event.put("eventType", "SEMANTIC_EXTRACTION_FAILURE");
+                event.put("crawlJobId", crawlJobId);
+                event.put("knowledgeBaseId", knowledgeBaseId);
+                event.put("error", message(failure));
+                LocalCrawlJobStore.appendTrace(projectRoot, crawlJobId, event);
+            }
             return SemanticExtractionSummary.failed(
                     "Unified-corpus semantic extraction failed: " + message(failure));
         }
+    }
+
+    private void persistLlmTrace(
+            Path projectRoot,
+            String crawlJobId,
+            UnifiedCrawlJob.LlmCallRecord call) {
+        if (!LocalCrawlJobRegistry.isJobId(crawlJobId) || call == null) return;
+        ObjectNode event = mapper.createObjectNode();
+        event.put("eventType", "LLM_CALL");
+        event.put("crawlJobId", crawlJobId);
+        event.set("payload", mapper.valueToTree(call));
+        LocalCrawlJobStore.appendTrace(projectRoot, crawlJobId, event);
+    }
+
+    private void persistExtractionTrace(
+            Path projectRoot,
+            String crawlJobId,
+            Map<String, Object> trace) {
+        if (!LocalCrawlJobRegistry.isJobId(crawlJobId) || trace == null) return;
+        ObjectNode event = mapper.valueToTree(trace);
+        if (!event.hasNonNull("eventType")) event.put("eventType", "EXTRACTION_TRACE");
+        event.put("crawlJobId", crawlJobId);
+        LocalCrawlJobStore.appendTrace(projectRoot, crawlJobId, event);
     }
 
     private ProcessingRouteConfig configuredProcessingRoute(JsonNode request,

@@ -73,8 +73,18 @@ public class CodexAdapter implements ChatSourceAdapter {
         return "OpenAI Codex";
     }
 
+    public static Path configuredCodexHome() {
+        String configured = System.getProperty("kompile.codex.home");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("CODEX_HOME");
+        }
+        return configured == null || configured.isBlank()
+                ? ChatAdapterSupport.userHome().resolve(".codex")
+                : Path.of(configured).toAbsolutePath().normalize();
+    }
+
     protected Path codexHome() {
-        return ChatAdapterSupport.userHome().resolve(".codex");
+        return configuredCodexHome();
     }
 
     protected Path sessionsDir() {
@@ -743,16 +753,124 @@ public class CodexAdapter implements ChatSourceAdapter {
     }
 
     /**
+     * Checks only Codex's authoritative native projections. Rollout/history fallback files
+     * are intentionally not enough for a native resume because a corrupt state database can
+     * leave those files readable while {@code codex resume <id>} still fails.
+     */
+    public boolean isNativeThreadPresent(String sessionId, Path workingDirectory) {
+        // Native resume targets are global by UUID. Do not apply picker CWD filtering, and do
+        // not let app-server repair stale rollouts into the state DB while probing presence.
+        Optional<List<ChatSessionSummary>> appServer = listAuthoritativeAppServerThreads();
+        if (appServer.isPresent()) {
+            return appServer.get().stream()
+                    .anyMatch(summary -> sessionId.equals(summary.sessionId()));
+        }
+        Optional<List<ChatSessionSummary>> indexed = listIndexedThreads(null);
+        if (indexed.isPresent()) {
+            return indexed.get().stream()
+                    .anyMatch(summary -> sessionId.equals(summary.sessionId()));
+        }
+
+        // Older Codex versions may have no SQLite projection at all. In that case a
+        // rollout/history record is the only native identity available. If a state database
+        // exists but neither authoritative projection can read it, treat the store as corrupt
+        // instead of pretending a readable rollout is resumable.
+        if (stateDatabase().isEmpty()) {
+            try {
+                if (findRollout(sessionId).isPresent()) {
+                    return true;
+                }
+            } catch (IOException ignored) {
+            }
+            if (Files.isRegularFile(historyFile())) {
+                try {
+                    return readHistoryGrouped(historyFile()).containsKey(sessionId);
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Recreates a missing native Codex thread through the supported app-server lifecycle.
+     * This intentionally avoids writing Codex's private SQLite schema directly. Codex assigns
+     * the new native id; callers must persist that replacement id in their own metadata.
+     */
+    public Optional<String> recreateThread(List<ChatTurn> turns, Path workingDirectory) {
+        if (turns == null || turns.isEmpty()) {
+            return Optional.empty();
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (ChatTurn turn : turns) {
+            if (turn == null || turn.content() == null || turn.content().isBlank()) {
+                continue;
+            }
+            Map<String, Object> content = new LinkedHashMap<>();
+            content.put("type", turn.isAssistant() ? "output_text" : "input_text");
+            content.put("text", turn.content());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "message");
+            item.put("role", turn.isAssistant() ? "assistant" : "user");
+            item.put("content", List.of(content));
+            items.add(item);
+        }
+        if (items.isEmpty()) {
+            return Optional.empty();
+        }
+
+        try (CodexAppServerSession session = CodexAppServerSession.open()) {
+            Map<String, Object> startParams = new LinkedHashMap<>();
+            if (workingDirectory != null) {
+                startParams.put("cwd", workingDirectory.toAbsolutePath().normalize().toString());
+            }
+            JsonNode started = session.request("thread/start", startParams);
+            String threadId = started.path("thread").path("id").asText(null);
+            if (threadId == null || threadId.isBlank()) {
+                threadId = started.path("id").asText(null);
+            }
+            if (!isUuid(threadId)) {
+                return Optional.empty();
+            }
+
+            Map<String, Object> injectParams = new LinkedHashMap<>();
+            injectParams.put("threadId", threadId);
+            injectParams.put("items", items);
+            session.request("thread/inject_items", injectParams);
+
+            Map<String, Object> readParams = new LinkedHashMap<>();
+            readParams.put("threadId", threadId);
+            readParams.put("includeTurns", true);
+            JsonNode verified = session.request("thread/read", readParams);
+            String verifiedId = verified.path("thread").path("id").asText(null);
+            return threadId.equals(verifiedId) ? Optional.of(threadId) : Optional.empty();
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Uses Codex's own app-server projection so UUIDs, titles, filtering, ordering, and rollout
      * repair are identical to the native resume picker. Direct SQLite/JSONL parsing remains a
      * compatibility fallback for Codex releases that do not expose app-server.
      */
     protected Optional<List<ChatSessionSummary>> listAppServerThreads(Path workingDirectory) {
+        return listAppServerThreads(workingDirectory, false);
+    }
+
+    /** State-DB-only global listing for native resume verification; never repairs rollouts. */
+    protected Optional<List<ChatSessionSummary>> listAuthoritativeAppServerThreads() {
+        return listAppServerThreads(null, true);
+    }
+
+    private Optional<List<ChatSessionSummary>> listAppServerThreads(
+            Path workingDirectory, boolean stateDbOnly) {
         try (CodexAppServerSession session = CodexAppServerSession.open()) {
             List<ChatSessionSummary> summaries = new ArrayList<>();
             String cursor = null;
             do {
-                JsonNode result = session.request("thread/list", threadListParams(cursor, workingDirectory));
+                JsonNode result = session.request(
+                        "thread/list", threadListParams(cursor, workingDirectory, stateDbOnly));
                 for (JsonNode thread : result.path("data")) {
                     String id = thread.path("id").asText(null);
                     if (!isUuid(id)) {
@@ -813,14 +931,15 @@ public class CodexAdapter implements ChatSourceAdapter {
         }
     }
 
-    private static Map<String, Object> threadListParams(String cursor, Path workingDirectory) {
+    static Map<String, Object> threadListParams(
+            String cursor, Path workingDirectory, boolean stateDbOnly) {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("cursor", cursor);
         params.put("limit", 100);
         params.put("sortKey", "updated_at");
         params.put("sourceKinds", List.of("cli", "vscode"));
         params.put("archived", false);
-        params.put("useStateDbOnly", false);
+        params.put("useStateDbOnly", stateDbOnly);
         if (workingDirectory != null) {
             params.put("cwd", List.of(workingDirectory.toString()));
         }
@@ -852,7 +971,10 @@ public class CodexAdapter implements ChatSourceAdapter {
         }
 
         static CodexAppServerSession open() throws IOException {
-            String executable = System.getenv("CODEX_EXECUTABLE");
+            String executable = System.getProperty("kompile.codex.executable");
+            if (executable == null || executable.isBlank()) {
+                executable = System.getenv("CODEX_EXECUTABLE");
+            }
             if (executable == null || executable.isBlank()) executable = "codex";
             Process process = new ProcessBuilder(executable, "app-server", "--stdio")
                     .redirectError(ProcessBuilder.Redirect.DISCARD)

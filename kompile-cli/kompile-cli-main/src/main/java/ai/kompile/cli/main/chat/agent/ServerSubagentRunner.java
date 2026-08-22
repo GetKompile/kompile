@@ -36,6 +36,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Runs subagents by sending tasks to the kompile-app server's agent streaming
@@ -53,6 +58,22 @@ public class ServerSubagentRunner implements SubagentRunner {
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
     private volatile LifecycleListener lifecycleListener;
+    private final Map<String, ServerSession> sessions = new ConcurrentHashMap<>();
+
+    private static final class ServerSession {
+        private final String id;
+        private final ToolContext parentContext;
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicBoolean terminalClaimed = new AtomicBoolean(false);
+        private final AtomicReference<java.io.InputStream> responseBody = new AtomicReference<>();
+        private volatile String remoteProcessId;
+        private volatile Thread ownerThread;
+
+        private ServerSession(String id, ToolContext parentContext) {
+            this.id = id;
+            this.parentContext = parentContext;
+        }
+    }
 
     public ServerSubagentRunner(String baseUrl, ToolRegistry toolRegistry,
                                  PermissionService permissionService, ObjectMapper objectMapper,
@@ -75,7 +96,11 @@ public class ServerSubagentRunner implements SubagentRunner {
     @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
-        String subagentId = agent.getName() + "-" + Long.toHexString(startTime);
+        String subagentId = agent.getName() + "-"
+                + UUID.randomUUID().toString().substring(0, 8);
+        ServerSession session = new ServerSession(subagentId, parentContext);
+        session.ownerThread = Thread.currentThread();
+        sessions.put(subagentId, session);
         if (lifecycleListener != null) {
             lifecycleListener.onSubagentStart(subagentId, agent.getName(), StringUtils.truncate(prompt, 60));
         }
@@ -110,6 +135,7 @@ public class ServerSubagentRunner implements SubagentRunner {
 
         HttpResponse<java.io.InputStream> response = httpClient.send(
                 httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+        session.responseBody.set(response.body());
 
         if (response.statusCode() != 200) {
             emitActivity(subagentId, "failed · HTTP " + response.statusCode(),
@@ -128,7 +154,7 @@ public class ServerSubagentRunner implements SubagentRunner {
             String line;
 
             while ((line = reader.readLine()) != null) {
-                if (parentContext.isAborted()) {
+                if (session.cancelled.get() || parentContext.isAborted()) {
                     emitActivity(subagentId, "aborted",
                             renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
                     notifyStatus(subagentId, "aborted");
@@ -142,6 +168,17 @@ public class ServerSubagentRunner implements SubagentRunner {
                 } else if (line.isEmpty() && eventType != null) {
                     String data = dataBuffer.toString();
                     switch (eventType) {
+                        case "start":
+                            try {
+                                JsonNode start = objectMapper.readTree(data);
+                                session.remoteProcessId = start.path("processId").asText(null);
+                                if (session.remoteProcessId == null
+                                        || session.remoteProcessId.isBlank()) {
+                                    session.remoteProcessId = start.path("process_id").asText(null);
+                                }
+                            } catch (Exception ignored) {
+                            }
+                            break;
                         case "chunk":
                             notifyStatus(subagentId, "responding");
                             String chunk = data;
@@ -155,7 +192,7 @@ public class ServerSubagentRunner implements SubagentRunner {
 
                         case "tool_call":
                             String toolResult = handleToolCall(
-                                    data, subagentId, agent, parentContext);
+                                    data, subagentId, agent, parentContext, session);
                             break;
 
                         case "error":
@@ -182,6 +219,11 @@ public class ServerSubagentRunner implements SubagentRunner {
         long durationMs = System.currentTimeMillis() - startTime;
         String result = fullResponse.toString().trim();
 
+        if (!session.terminalClaimed.compareAndSet(false, true)) {
+            notifyStatus(subagentId, "aborted");
+            return result + "\n[Subagent aborted]";
+        }
+
         if (!result.isBlank()) emitActivity(subagentId, "responded", "", parentContext);
         notifyStatus(subagentId, "completed");
         emitActivity(subagentId, "completed",
@@ -189,7 +231,8 @@ public class ServerSubagentRunner implements SubagentRunner {
 
         return result.isEmpty() ? "(subagent returned empty response)" : result;
         } catch (Exception e) {
-            if (parentContext.isAborted() || e instanceof InterruptedException) {
+            if (session.cancelled.get() || parentContext.isAborted()
+                    || e instanceof InterruptedException) {
                 notifyStatus(subagentId, "aborted");
                 emitActivity(subagentId, "aborted",
                         renderer.renderSubagentError(agent.getName(), "Aborted"), parentContext);
@@ -200,10 +243,49 @@ public class ServerSubagentRunner implements SubagentRunner {
                     renderer.renderSubagentError(agent.getName(), e.getMessage()), parentContext);
             throw e;
         } finally {
+            java.io.InputStream bodyStream = session.responseBody.getAndSet(null);
+            if (bodyStream != null) {
+                try { bodyStream.close(); } catch (Exception ignored) { }
+            }
+            session.ownerThread = null;
+            if (session.cancelled.get()) Thread.interrupted();
+            sessions.remove(subagentId, session);
             if (lifecycleListener != null) {
                 lifecycleListener.onSubagentEnd(subagentId);
             }
         }
+    }
+
+    @Override
+    public boolean canCancel(String subagentId) {
+        ServerSession session = sessions.get(subagentId);
+        return session != null && !session.terminalClaimed.get() && !session.cancelled.get();
+    }
+
+    @Override
+    public boolean cancel(String subagentId) {
+        ServerSession session = sessions.get(subagentId);
+        if (session == null || !session.terminalClaimed.compareAndSet(false, true)) return false;
+        session.cancelled.set(true);
+        notifyStatus(subagentId, "cancelling");
+        java.io.InputStream bodyStream = session.responseBody.getAndSet(null);
+        if (bodyStream != null) {
+            try { bodyStream.close(); } catch (Exception ignored) { }
+        }
+        if (session.remoteProcessId != null && !session.remoteProcessId.isBlank()) {
+            try {
+                httpClient.sendAsync(HttpRequest.newBuilder(
+                                URI.create(baseUrl + "/api/agents/chat/cancel/"
+                                        + session.remoteProcessId))
+                        .timeout(Duration.ofSeconds(5))
+                        .POST(HttpRequest.BodyPublishers.noBody())
+                        .build(), HttpResponse.BodyHandlers.discarding());
+            } catch (RuntimeException ignored) {
+            }
+        }
+        Thread owner = session.ownerThread;
+        if (owner != null && owner != Thread.currentThread()) owner.interrupt();
+        return true;
     }
 
     private void notifyStatus(String subagentId, String status) {
@@ -213,7 +295,8 @@ public class ServerSubagentRunner implements SubagentRunner {
     }
 
     private String handleToolCall(String data, String subagentId,
-                                  AgentConfig agent, ToolContext parentContext) {
+                                  AgentConfig agent, ToolContext parentContext,
+                                  ServerSession session) {
         try {
             JsonNode toolCall = objectMapper.readTree(data);
             String toolName = toolCall.path("name").asText("");
@@ -247,7 +330,8 @@ public class ServerSubagentRunner implements SubagentRunner {
                     parentContext.getWorkingDirectory(),
                     toolRegistry
             );
-            subContext.linkAbortSignal(parentContext.getAbortSignal());
+            subContext.linkAbortCheck(
+                    () -> session.cancelled.get() || parentContext.isAborted());
             subContext.setOutputConsumer(parentContext.getOutputConsumer());
 
             ToolResult result = tool.execute(arguments, subContext);

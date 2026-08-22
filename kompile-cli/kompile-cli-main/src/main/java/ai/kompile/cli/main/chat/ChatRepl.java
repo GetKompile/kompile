@@ -20,12 +20,14 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.*;
+import ai.kompile.cli.main.codeindex.CodeIndexDiagnostics;
 import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.project.KompileProjectChatSession;
 import ai.kompile.project.KompileProjectStore;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
+import ai.kompile.cli.main.chat.config.ModelDiscovery;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.enforcer.EnforcerActivationPrompt;
 import ai.kompile.cli.main.chat.enforcer.EnforcerConfig;
@@ -60,6 +62,7 @@ import org.jline.utils.InfoCmp;
 
 import java.io.File;
 import java.io.IOError;
+import java.io.PrintStream;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,7 +71,11 @@ import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -118,16 +125,21 @@ public class ChatRepl {
     private final AgenticChatLoop agenticLoop;
     private final DirectLlmClient directClient;
     private final BackgroundProcessManager processManager;
+    private final AtomicBoolean acceptingProcessWakeups = new AtomicBoolean(false);
+    private final BackgroundProcessManager.MonitorCallback processExitWakeListener =
+            this::handleProcessExitWakeup;
     private final TerminalRenderer renderer;
     private AsciiRenderer ascii;
+    private final Path workingDirectory;
+    private volatile ScheduledLoopManager scheduledLoopManager;
 
     // Mode
     private final boolean localMode;
     private ChatConfig chatConfig; // non-null in local mode
-    private static final String ADD_MODEL_OPTION = "Add new model...";
-
     // Message queue for queued chats
     private final MessageQueue messageQueue;
+    /** Queue item currently leased into the JLine input buffer for editing. */
+    private volatile String editingQueuedMessageId;
 
     // Flag to track if LLM is currently processing a response
     private volatile boolean llmBusy = false;
@@ -218,6 +230,14 @@ public class ChatRepl {
     public ChatRepl(McpSseClient mcpClient, String baseUrl, String sessionId,
                     boolean ragEnabled, String agentName, boolean memoryEnabled,
                     ChatConfig chatConfig) {
+        this(mcpClient, baseUrl, sessionId, ragEnabled, agentName, memoryEnabled,
+                chatConfig, null);
+    }
+
+    /** Full constructor with an explicit project directory for resumed sessions. */
+    public ChatRepl(McpSseClient mcpClient, String baseUrl, String sessionId,
+                    boolean ragEnabled, String agentName, boolean memoryEnabled,
+                    ChatConfig chatConfig, Path workingDirectory) {
         this.mcpClient = mcpClient;
         this.localMode = (mcpClient == null);
         this.chatConfig = chatConfig;
@@ -259,7 +279,10 @@ public class ChatRepl {
                     "  Enter y=yes, n=no, a=allow for session, v=deny for session"));
         });
 
-        Path workDir = Paths.get(System.getProperty("user.dir"));
+        this.workingDirectory = workingDirectory == null
+                ? Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                : workingDirectory.toAbsolutePath().normalize();
+        Path workDir = this.workingDirectory;
 
         // Load custom agents from .kompile/agents/ and ~/.kompile/agents/
         CustomAgentLoader customAgentLoader = new CustomAgentLoader(workDir);
@@ -296,7 +319,8 @@ public class ChatRepl {
 
         this.agenticLoop = new AgenticChatLoop(
                 baseUrl, objectMapper, toolRegistry, permissionService,
-                agentRegistry, workDir, directClient, processManager);
+                agentRegistry, workDir, directClient, processManager, skillRegistry);
+        this.agenticLoop.configureConversationSession(sessionId);
 
         // Initialize message queue for queued chats
         this.messageQueue = new MessageQueue(sessionId);
@@ -356,6 +380,7 @@ public class ChatRepl {
 
         // Wire up extracted collaborators
         initCollaborators();
+        processManager.addMonitorListener(processExitWakeListener);
     }
 
     /**
@@ -485,7 +510,8 @@ public class ChatRepl {
             throw new IllegalArgumentException("Headless crawl message must not be blank");
         }
         lifecycleManager.restoreSession();
-        chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled);
+        chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
+                workingDirectory);
         if (!localMode) {
             try {
                 cachedTools = mcpClient.listTools();
@@ -502,12 +528,15 @@ public class ChatRepl {
                 crawlRunStore.event("headless_completed", runController.state().name());
             }
         } finally {
+            acceptingProcessWakeups.set(false);
+            messageHandler.shutdown();
+            processManager.removeMonitorListener(processExitWakeListener);
             stopGeneratingSpinner();
             if (crawlRunStore != null && runController != null) {
                 crawlRunStore.checkpoint(runController, "headless_closed");
                 crawlRunStore.event("session_closed", runController.state().name());
             }
-            lifecycleManager.printSessionSummary();
+            lifecycleManager.printSessionSummary(false);
             chatHistory.close();
             Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
             sessionMetrics.saveToFile(metricsFile, objectMapper);
@@ -517,11 +546,12 @@ public class ChatRepl {
     }
 
     public void run() throws Exception {
-        // Set initial terminal title
-        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        // The real terminal is not available until after JLine is built; attach the
+        // title controller below so OSC updates reach the active terminal stream.
 
         // Open transcript file for writing
-        chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled);
+        chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
+                workingDirectory);
 
         // Pre-cache tools for completion (server mode only)
         if (!localMode) {
@@ -535,6 +565,11 @@ public class ChatRepl {
         }
 
         Terminal terminal = ChatCompleter.buildSystemTerminal();
+        Runnable codeIndexAlertCleanup = () -> { };
+        renderer.attachTerminal(terminal, "kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        // Clear tracking modes left behind by an older session so the host terminal
+        // retains native transcript selection and paste behavior.
+        disableTranscriptMouse(terminal);
 
         // Re-create AsciiRenderer with actual terminal width now that the terminal is available
         int termW = terminal.getWidth();
@@ -564,6 +599,7 @@ public class ChatRepl {
         reader.getHistory().load();
         this.activeReader = reader;
         this.activeTerminal = terminal;
+        tui.attachLineReader(reader);
 
         // Auto-trigger slash command completion as the user types
         ChatCompleter.enableAutoTrigger(reader);
@@ -572,32 +608,33 @@ public class ChatRepl {
         // Up navigates back toward the prompt, Enter inspects, and Del kills an
         // owned process. Normal typing/history remain the fallback.
         bindStandardChatActivityKeys(
-                (LineReaderImpl) reader, messageQueue, activityPanel, tui);
+                (LineReaderImpl) reader, messageQueue, activityPanel, tui,
+                id -> editingQueuedMessageId = id,
+                () -> ClipboardUtil.readFromClipboard().orElse(""));
 
-        // Bind Ctrl+B to background current task
-        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
-            new Reference("background-task"),
-            KeyMap.ctrl('B')
-        );
+        // Bind Ctrl+B in every possible active JLine map.
+        bindBackgroundKey(((LineReaderImpl) reader).getKeyMaps());
 
         ((LineReaderImpl) reader).getWidgets().put("background-task", new Widget() {
             @Override
             public boolean apply() {
-                if (llmBusy && backgroundTaskManager.getCurrentTask() != null) {
-                    backgroundTaskManager.requestBackground();
-                    sessionMetrics.recordTaskBackgrounded();
+                if (messageHandler.requestBackground()) {
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
                     int queueSize = messageQueue.size();
-                    System.out.println();
-                    System.out.println(renderer.yellow("  ◐ Task backgrounded") + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
+                    ChatCompleter.printAbove("");
+                    ChatCompleter.printAbove(renderer.yellow("  ◐ Task backgrounded")
+                            + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
                     if (queueSize > 0) {
-                        System.out.println(renderer.dim("    " + queueSize + " queued message(s) will auto-send when complete"));
+                        ChatCompleter.printAbove(renderer.dim("    " + queueSize
+                                + " queued message(s) will steer at the next tool boundary"));
                     } else {
-                        System.out.println(renderer.dim("    Response will complete in background"));
+                        ChatCompleter.printAbove(renderer.dim("    Output is now retained in the task log"));
                     }
-                    System.out.println(renderer.dim("    Use /jobs to check status"));
-                    System.out.println();
-                    System.out.flush();
+                    statusBar.getActiveSubagents().forEach(entry ->
+                            refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), true));
+                    ChatCompleter.printAbove(renderer.dim(
+                            "    Use the rows below (↓ then Enter) or /jobs to inspect; keep typing to queue guidance"));
+                    ChatCompleter.printAbove("");
                 }
                 return true;
             }
@@ -634,6 +671,15 @@ public class ChatRepl {
                     ChatCompleter.markInterrupted();
                     requestStatusRedraw();
                     throw new UserInterruptException("");
+                }
+                if (editingQueuedMessageId != null) {
+                    String editId = editingQueuedMessageId;
+                    editingQueuedMessageId = null;
+                    messageQueue.cancelEdit(editId);
+                    lineReader.getBuffer().clear();
+                    activityPanel.refresh();
+                    redisplayWithContent(lineReader, tui);
+                    return true;
                 }
                 boolean cancelled = false;
                 if (messageHandler != null) {
@@ -789,8 +835,10 @@ public class ChatRepl {
         tui.setPlanningMode(agenticLoop.isPlanningMode());
         tui.setReservedRowsCalculator(StandardChatActivityPanel::reservedRowsForTerminal);
         tui.start(terminal);
-        activityPanel.refresh();
+        // The managed transcript owns wheel events while chat is active. This is
+        // reasserted before every prompt because JLine may reset terminal modes.
         enableTranscriptMouse(terminal);
+        activityPanel.refresh();
 
         // KompileTui.start() clears the terminal while establishing its bars and
         // scroll region. Restore only after that clear, and route each line through
@@ -807,40 +855,66 @@ public class ChatRepl {
         processManager.addChangeListener(activityRedraw);
         // Process lifecycle listeners only fire on launch/exit. Subscribe to the
         // capture stream as well so an opened process view follows output line-by-line.
-        processManager.addOutputListener((entry, line) -> activityRedraw.run());
+        AtomicBoolean processOutputRefreshQueued = new AtomicBoolean(false);
+        processManager.addOutputListener((entry, line) -> {
+            if (!processOutputRefreshQueued.compareAndSet(false, true)) return;
+            CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> {
+                processOutputRefreshQueued.set(false);
+                activityRedraw.run();
+            });
+        });
         tui.addResizeListener(activityRedraw);
 
         // Wire subagent lifecycle tracking into the status bar
         SubagentRunner runner = toolRegistry.getSubagentRunner();
         if (runner != null) {
+            activityPanel.setSubagentRunner(runner);
+            Set<String> dirtySubagentOutputs = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            AtomicBoolean subagentOutputRefreshQueued = new AtomicBoolean(false);
+            Runnable scheduleSubagentOutputRefresh = () -> {
+                if (!subagentOutputRefreshQueued.compareAndSet(false, true)) return;
+                CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> {
+                    subagentOutputRefreshQueued.set(false);
+                    Set<String> ids = Set.copyOf(dirtySubagentOutputs);
+                    dirtySubagentOutputs.removeAll(ids);
+                    ids.forEach(id -> refreshInlineSubagentBlock(
+                            tui, activityPanel, id, false));
+                    refreshCurrentActivityView(tui, activityPanel);
+                });
+            };
             runner.setLifecycleListener(new SubagentRunner.LifecycleListener() {
                 @Override
                 public void onSubagentStart(String id, String type, String description) {
                     statusBar.registerSubagent(id, type, description);
                     activityPanel.refresh();
+                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                 }
                 @Override
                 public void onSubagentStatus(String id, String status) {
                     statusBar.updateSubagentStatus(id, status);
                     activityPanel.refresh();
+                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                 }
                 @Override
                 public void onSubagentActivity(String id, String summary, String detail) {
                     statusBar.appendSubagentActivity(id, summary, detail);
                     activityPanel.refresh();
+                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                 }
                 @Override
                 public void onSubagentOutput(String id, String chunk) {
                     statusBar.appendSubagentOutput(id, chunk);
-                    refreshCurrentActivityView(tui, activityPanel);
+                    dirtySubagentOutputs.add(id);
+                    scheduleSubagentOutputRefresh.run();
                 }
                 @Override
                 public void onSubagentEnd(String id) {
                     statusBar.unregisterSubagent(id);
                     activityPanel.refresh();
+                    refreshInlineSubagentBlock(tui, activityPanel, id, false);
                     refreshCurrentActivityView(tui, activityPanel);
                 }
             });
@@ -850,20 +924,37 @@ public class ChatRepl {
         // Streamed lines are recorded in the TUI, then emitted through JLine's
         // thread-safe printAbove path so background output cannot corrupt typing.
         ChatCompleter.setTerminalRef(reader, terminal);
+        ChatCompleter.setActivityListener(renderer::updateActivity);
         // REDISPLAY is invoked synchronously by the input thread for completion
         // changes; repaint the authoritative transcript before it restores input.
-        ChatCompleter.setContentRedraw(tui::redrawContentView);
-        ChatCompleter.setContentOutput(tui::recordInScrollRegion);
+        if (tui.isStarted()) {
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.setContentOutput(tui::recordInScrollRegion);
+            ChatCompleter.setTranscriptBlockOutput(tui::upsertMainTranscriptBlock);
+        } else {
+            ChatCompleter.setContentRedraw(null);
+            ChatCompleter.setContentOutput(null);
+            ChatCompleter.setTranscriptBlockOutput(null);
+        }
 
+        if (tui.isStarted()) {
+            codeIndexAlertCleanup = CodeIndexDiagnostics.installAlertSink(tui::showAlert);
+        }
+        if (!forceAgentic) {
+            getScheduledLoopManager();
+        }
+        processManager.addMonitorListener(processExitWakeListener);
+        messageHandler.startAcceptingExternalMessages();
+        acceptingProcessWakeups.set(true);
         try {
             while (true) {
                 String line;
                 try {
                     int termWidth = terminal.getWidth() > 0 ? terminal.getWidth() : 80;
                     tui.reestablishScrollRegion();
-                    // JLine may reset terminal mouse tracking while entering readLine.
-                    // Reassert it for every prompt so wheel events keep scrolling the
-                    // managed transcript rather than the terminal's native scrollback.
+                    // JLine can reset mouse modes while entering a prompt. Reassert
+                    // capture immediately before readLine so wheel reports reach the
+                    // viewport widget for every prompt.
                     forceTranscriptMouseCapture(terminal);
                     ChatCompleter.schedulePostRestore();
                     String prompt = buildPrompt(termWidth);
@@ -880,6 +971,14 @@ public class ChatRepl {
                     // shutdown or when the terminal is interrupted. Exit
                     // cleanly instead of crashing.
                     break;
+                }
+
+                // Queue editing owns the whole line, including leading slash text.
+                // Saving updates the existing queue item in place instead of
+                // dispatching or appending a duplicate message.
+                if (editingQueuedMessageId != null) {
+                    finishQueuedMessageEdit(line);
+                    continue;
                 }
 
                 // A background tool may be waiting for a permission decision. JLine
@@ -928,6 +1027,17 @@ public class ChatRepl {
                 }
             }
         } finally {
+            acceptingProcessWakeups.set(false);
+            messageHandler.shutdown();
+            processManager.removeMonitorListener(processExitWakeListener);
+            ScheduledLoopManager loops = scheduledLoopManager;
+            if (loops != null) loops.shutdown();
+            codeIndexAlertCleanup.run();
+            tui.clearAlert();
+            if (editingQueuedMessageId != null) {
+                messageQueue.cancelEdit(editingQueuedMessageId);
+                editingQueuedMessageId = null;
+            }
             permissionService.cancelPendingPrompts();
             reader.getHistory().save();
 
@@ -936,8 +1046,9 @@ public class ChatRepl {
                 crawlRunStore.event("session_closed", runController.state().name());
             }
 
-            // Log session summary to transcript and save metrics
-            lifecycleManager.printSessionSummary();
+            // Log session summary to transcript and save metrics. The copyable resume
+            // command is emitted once after terminal restoration below.
+            lifecycleManager.printSessionSummary(false);
             chatHistory.close();
 
             // Save metrics JSON alongside transcript
@@ -950,9 +1061,11 @@ public class ChatRepl {
             exportTranscriptToProject();
 
             // Stop the unified TUI (resets scroll regions, stops refresh threads)
+            tui.detachLineReader();
             tui.stop();
             ChatCompleter.clearTerminalRef(reader);
             ChatCompleter.setQueueSupplier(null);
+            renderer.detachTerminal();
             activeReader = null;
             activeTerminal = null;
             modelPickerActive = false;
@@ -977,7 +1090,79 @@ public class ChatRepl {
             } catch (Exception | IOError e) {
                 // Ignore cleanup errors - terminal may already be in bad state
             }
+
+            printPostExitResumeCommand(
+                    System.out,
+                    sessionId,
+                    shouldPrintPostExitResumeCommand(forceAgentic, chatHistory.getTranscriptFile()));
         }
+    }
+
+    static boolean shouldPrintPostExitResumeCommand(boolean forceAgentic, Path transcriptFile) {
+        // Server chat uses MCP transport but is still standard Kompile Chat. Only
+        // force-agentic crawl flows and sessions without a persisted transcript are excluded.
+        return !forceAgentic && transcriptFile != null && Files.isRegularFile(transcriptFile);
+    }
+
+    static void printPostExitResumeCommand(PrintStream out, String sessionId, boolean enabled) {
+        if (!enabled || out == null || sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        out.println();
+        out.println("Resume this chat:");
+        out.println("  kompile chat --resume " + sessionId + " --mode standard");
+        out.flush();
+    }
+
+    ScheduledLoopManager getScheduledLoopManager() {
+        ScheduledLoopManager existing = scheduledLoopManager;
+        if (existing != null) return existing;
+        synchronized (this) {
+            if (scheduledLoopManager == null) {
+                scheduledLoopManager = new ScheduledLoopManager(
+                        this::dispatchScheduledLoop,
+                        ScheduledLoopManager.stateFileForProject(workingDirectory));
+            }
+            return scheduledLoopManager;
+        }
+    }
+
+    void dispatchScheduledLoop(String prompt) {
+        if (prompt == null || prompt.isBlank() || forceAgentic) return;
+        messageHandler.runIfAcceptingDispatches(() -> {
+            ChatCompleter.printAbove(renderer.cyan("  ⟳ Scheduled loop fired")
+                    + renderer.dim(" → " + StringUtils.truncate(prompt, 60)));
+            if (prompt.stripLeading().startsWith("/")) {
+                commandRouter.handleSlashCommand(prompt.strip());
+            } else {
+                messageHandler.handleChatMessage(prompt.strip());
+            }
+            statusBar.requestRedraw();
+        });
+    }
+
+    private void handleProcessExitWakeup(BackgroundProcessManager.ProcessEntry entry,
+                                         BackgroundProcessManager.ProcessMonitor monitor) {
+        if (!acceptingProcessWakeups.get() || forceAgentic || entry == null
+                || monitor == null) {
+            return;
+        }
+        int exitCode = entry.getExitCode() == null ? -1 : entry.getExitCode();
+        String description = entry.getDescription() == null
+                ? entry.getCommand() : entry.getDescription();
+        String message = "[System process completion]\n"
+                + "Process " + entry.getId() + " finished with state "
+                + entry.getState().name().toLowerCase(Locale.ROOT)
+                + " and exit code " + exitCode + ".\n"
+                + "Description: " + description + "\n"
+                + "Duration: " + ProcessManagementTool.formatDuration(entry.getDuration()) + "\n"
+                + "Output log: " + entry.getOutputFile() + "\n"
+                + (monitor.message().isBlank() ? ""
+                : "Monitor instructions: " + monitor.message() + "\n")
+                + "Inspect the process output if relevant, then continue the parent task.";
+        ChatCompleter.printAbove(renderer.cyan("  ↻ Monitored process " + entry.getId()
+                + " exited; waking agent"));
+        messageHandler.handleExternalMessage(message);
     }
 
     /**
@@ -997,7 +1182,7 @@ public class ChatRepl {
                 return;
             }
             KompileProjectStore store = new KompileProjectStore();
-            Optional<Path> projectRoot = store.findProjectRoot(Paths.get("").toAbsolutePath());
+            Optional<Path> projectRoot = store.findProjectRoot(workingDirectory);
             if (projectRoot.isEmpty()) {
                 return;
             }
@@ -1136,6 +1321,9 @@ public class ChatRepl {
         if (!viewedSubagent.isBlank()) {
             prompt.append("[").append(viewedSubagent).append("]");
         }
+        if (editingQueuedMessageId != null) {
+            prompt.append("[edit:").append(editingQueuedMessageId).append("]");
+        }
 
         // Queue count and chain progress are live status-bar state. Embedding them
         // in readLine's immutable prompt leaves stale kompile[N] text after dequeue
@@ -1166,7 +1354,7 @@ public class ChatRepl {
             // JLine owns the editable row. Activity belongs in the fixed status
             // bar; a carriage-return spinner corrupts the prompt and can scroll.
             ChatCompleter.setActivity("Thinking");
-            renderer.setTerminalTitle("⏳ Kompiling..." + (chainInfo.isEmpty() ? "" : " " + AnsiConstants.stripAnsi(chainInfo)));
+            // ChatCompleter.setActivity drives both the status bar and the tab title.
             statusBar.requestRedraw();
             return;
         }
@@ -1183,21 +1371,72 @@ public class ChatRepl {
             generatingSpinner = null;
         }
         if (ChatCompleter.hasLineReader()) {
-            renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+            // First output is the transition from model thinking to streamed response.
+            // Completion/error paths clear the activity explicitly later.
+            String activity = ChatCompleter.getActivity();
+            if (activity != null && activity.toLowerCase(Locale.ROOT).contains("think")) {
+                ChatCompleter.setActivity("Responding");
+            }
             statusBar.requestRedraw();
+        }
+    }
+
+    // ── Queue editing / auto-dequeue ─────────────────────────────────────────
+
+    private void finishQueuedMessageEdit(String line) {
+        String id = editingQueuedMessageId;
+        editingQueuedMessageId = null;
+        if (id == null) return;
+
+        String content = line == null ? "" : line.strip();
+        if (content.isBlank()) {
+            messageQueue.cancelEdit(id);
+            tui.printInScrollRegion(renderer.dim("  Queue edit cancelled [" + id + "]"));
+            activityPanel.refresh();
+            return;
+        }
+
+        if (!messageQueue.update(id, content)) {
+            tui.printInScrollRegion(renderer.yellow(
+                    "  Queued message no longer exists [" + id + "]"));
+            activityPanel.refresh();
+            return;
+        }
+
+        tui.printInScrollRegion(renderer.green("  ✓ Updated queued message [" + id + "]"));
+        activityPanel.refresh();
+        if (!llmBusy && isAutoDequeueEnabled()) {
+            MessageQueue.QueuedMessage next = messageQueue.peek();
+            if (next != null && next.getId().equals(id)) {
+                queueManager.sendNextQueuedMessage();
+            }
         }
     }
 
     // ── Auto-dequeue / task completion ───────────────────────────────────────
 
     /**
-     * Completes the current task and auto-dequeues next message if available.
-     * Tracks queue chain progress for "Processing 2/5" indicators.
+     * Completes the current task. Successor dispatch is deferred until the
+     * ChatMessageHandler owner thread releases its active resources, where
+     * mandatory process events are prioritized ahead of ordinary user input.
      */
     public void completeTaskWithAutoDequeue() {
         backgroundTaskManager.completeCurrentTask();
-        llmBusy = false;
-        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        ChatCompleter.setActivity(null);
+    }
+
+    /**
+     * Called after ChatMessageHandler has cleared the completed dispatch owner.
+     * In particular, an Escape interruption reaches this point only after the old
+     * thread can no longer overwrite the next turn's active-thread references.
+     */
+    void dispatchQueuedMessageAfterTurnRelease() {
+        if (llmBusy) return;
+        dispatchNextQueuedMessageIfEligible();
+    }
+
+    private void dispatchNextQueuedMessageIfEligible() {
+        if (llmBusy) return;
 
         // Continue either the normal auto-dequeue policy or an explicit
         // /queue-send-all chain. Both consult the queue manager's single state.
@@ -1205,6 +1444,16 @@ public class ChatRepl {
                 && !messageQueue.isEmpty()) {
             MessageQueue.QueuedMessage nextMsg = messageQueue.peek();
             if (nextMsg != null) {
+                if (nextMsg.getStatus()
+                        == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING) {
+                    if (backgroundTaskManager.isInQueueChain()) {
+                        backgroundTaskManager.endQueueChain();
+                    }
+                    ChatCompleter.printAbove(renderer.yellow(
+                            "  Queue paused while [" + nextMsg.getId() + "] is being edited"));
+                    statusBar.requestRedraw();
+                    return;
+                }
                 // Start chain tracking if not already in a chain
                 if (!backgroundTaskManager.isInQueueChain()) {
                     backgroundTaskManager.startQueueChain(messageQueue.size());
@@ -1215,25 +1464,27 @@ public class ChatRepl {
                 int total = backgroundTaskManager.getQueueChainTotal();
                 int remaining = messageQueue.size() - 1;
 
+                MessageQueue.QueuedMessage dequeued =
+                        messageHandler.dispatchNextQueuedMessage();
+                if (dequeued == null) {
+                    backgroundTaskManager.endQueueChain();
+                    ChatCompleter.printAbove(renderer.yellow(
+                            "  Queue paused because the upcoming message is being edited"));
+                    statusBar.requestRedraw();
+                    return;
+                }
+
                 ChatCompleter.printAbove("");
                 ChatCompleter.printAbove(renderer.green("  ✓ Complete ")
                         + renderer.dim("→ sending next (" + current + "/" + total + ")"));
                 ChatCompleter.printAbove(renderer.dim("     → ")
-                        + StringUtils.truncate(nextMsg.getContent(), 60));
+                        + StringUtils.truncate(dequeued.getContent(), 60));
                 if (remaining > 0) {
                     ChatCompleter.printAbove(renderer.dim("     (" + remaining + " more queued)"));
                 }
                 ChatCompleter.printAbove("");
-                messageQueue.dequeue();
                 statusBar.requestRedraw();
                 sessionMetrics.recordMessageAutoDequeued();
-                // Small delay for clean transition
-                try {
-                    Thread.sleep(300);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                messageHandler.handleChatMessage(nextMsg.getContent());
                 return;
             }
         }
@@ -1249,11 +1500,15 @@ public class ChatRepl {
         }
     }
 
-    /** Finish an interrupted turn while leaving queued messages for explicit user control. */
+    /**
+     * Finish an interrupted turn. Its queued successor is intentionally not
+     * claimed here; dispatchTurn invokes the owner-release hand-off immediately
+     * after the interrupted thread has relinquished its active resources.
+     */
     public void completeTaskWithoutAutoDequeue() {
         backgroundTaskManager.completeCurrentTask();
-        llmBusy = false;
-        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        // requestCancel/setActivityAfterTurn already published the transient
+        // interruption state. Keep it visible until the next turn replaces it.
         statusBar.requestRedraw();
     }
 
@@ -1267,6 +1522,15 @@ public class ChatRepl {
     static final String STANDARD_CHAT_SCROLL_TOP_WIDGET = "standard-chat-transcript-top";
     static final String STANDARD_CHAT_SCROLL_BOTTOM_WIDGET = "standard-chat-transcript-bottom";
     static final String STANDARD_CHAT_SCROLL_MOUSE_WIDGET = "standard-chat-transcript-mouse";
+
+    static void bindBackgroundKey(Map<String, KeyMap<Binding>> keyMaps) {
+        Reference background = new Reference("background-task");
+        for (KeyMap<Binding> keyMap : keyMaps.values()) {
+            if (keyMap != null) {
+                keyMap.bind(background, KeyMap.ctrl('B'));
+            }
+        }
+    }
 
     enum StandardUpAction {
         MOVE_WITHIN_DRAFT,
@@ -1295,12 +1559,13 @@ public class ChatRepl {
     }
 
     static void bindStandardChatUpArrow(LineReaderImpl reader, MessageQueue queue) {
-        bindStandardChatUpArrow(reader, queue, null, null);
+        bindStandardChatUpArrow(reader, queue, null, null, ignored -> { });
     }
 
     private static void bindStandardChatUpArrow(
             LineReaderImpl reader, MessageQueue queue,
-            StandardChatActivityPanel activityPanel, KompileTui tui) {
+            StandardChatActivityPanel activityPanel, KompileTui tui,
+            Consumer<String> queueEditStarted) {
         reader.getWidgets().put(STANDARD_CHAT_UP_WIDGET, () -> {
             String text = reader.getBuffer().toString();
             if (activityPanel != null && activityPanel.isFocused()) {
@@ -1325,8 +1590,13 @@ public class ChatRepl {
             if (action == StandardUpAction.EDIT_LATEST_QUEUED) {
                 List<MessageQueue.QueuedMessage> queued = queue.getAll();
                 if (!queued.isEmpty()) {
-                    MessageQueue.QueuedMessage latest = queued.get(queued.size() - 1);
-                    if (queue.remove(latest.getId())) {
+                    MessageQueue.QueuedMessage latest = queued.stream()
+                            .filter(message -> message.getStatus()
+                                    == MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING)
+                            .findFirst()
+                            .orElse(queued.get(queued.size() - 1));
+                    if (queue.beginEdit(latest.getId())) {
+                        queueEditStarted.accept(latest.getId());
                         reader.getBuffer().write(latest.getContent());
                         if (activityPanel != null) {
                             activityPanel.refresh();
@@ -1353,7 +1623,28 @@ public class ChatRepl {
             MessageQueue queue,
             StandardChatActivityPanel activityPanel,
             KompileTui tui) {
-        bindStandardChatUpArrow(reader, queue, activityPanel, tui);
+        bindStandardChatActivityKeys(
+                reader, queue, activityPanel, tui, ignored -> { }, () -> "");
+    }
+
+    static void bindStandardChatActivityKeys(
+            LineReaderImpl reader,
+            MessageQueue queue,
+            StandardChatActivityPanel activityPanel,
+            KompileTui tui,
+            Consumer<String> queueEditStarted) {
+        bindStandardChatActivityKeys(
+                reader, queue, activityPanel, tui, queueEditStarted, () -> "");
+    }
+
+    static void bindStandardChatActivityKeys(
+            LineReaderImpl reader,
+            MessageQueue queue,
+            StandardChatActivityPanel activityPanel,
+            KompileTui tui,
+            Consumer<String> queueEditStarted,
+            Supplier<String> clipboardTextSupplier) {
+        bindStandardChatUpArrow(reader, queue, activityPanel, tui, queueEditStarted);
 
         Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
         reader.getWidgets().put(STANDARD_CHAT_DOWN_WIDGET, () -> {
@@ -1402,22 +1693,33 @@ public class ChatRepl {
             return changed;
         });
         reader.getWidgets().put(STANDARD_CHAT_SCROLL_MOUSE_WIDGET, () -> {
+            boolean changed = false;
             try {
-                if (tui != null) {
-                    MouseEvent event = reader.getTerminal().readMouseEvent();
-                    if (event != null) {
-                        switch (event.getButton()) {
-                            case WheelUp -> tui.scrollContent(3);
-                            case WheelDown -> tui.scrollContent(-3);
-                            default -> { /* consume clicks and motion */ }
+                MouseEvent event = reader.getTerminal().readMouseEvent();
+                if (event != null && tui != null) {
+                    switch (event.getButton()) {
+                        case WheelUp -> changed = tui.scrollContent(3);
+                        case WheelDown -> changed = tui.scrollContent(-3);
+                        case Button1 -> {
+                            if (event.getType() == MouseEvent.Type.Pressed) {
+                                changed = tui.handleScrollToBottomClick(
+                                        event.getX(), event.getY());
+                            }
                         }
+                        case Button2, Button3 -> {
+                            if (event.getType() == MouseEvent.Type.Pressed) {
+                                String clipboardText = clipboardTextSupplier.get();
+                                changed = ChatCompleter.insertPastedText(reader, clipboardText);
+                            }
+                        }
+                        default -> { /* consume clicks and motion */ }
                     }
                 }
             } catch (RuntimeException ignored) {
                 // A partial mouse report must never break the active prompt.
             }
             redisplayWithContent(reader, tui);
-            return true;
+            return changed;
         });
         // Page keys must follow the active JLine map as well (emacs/vi/inputrc);
         // otherwise scrolling works only in the default map.
@@ -1438,7 +1740,8 @@ public class ChatRepl {
             activityKeys.bind(new Reference(STANDARD_CHAT_SCROLL_BOTTOM_WIDGET),
                     "\033[1;5F", "\033[5F");
             activityKeys.bind(new Reference(STANDARD_CHAT_SCROLL_MOUSE_WIDGET),
-                    keySequences(reader, InfoCmp.Capability.key_mouse, "\033[M")
+                    keySequences(reader, InfoCmp.Capability.key_mouse,
+                            "\033[M", "\033[<")
                             .toArray(String[]::new));
         }
 
@@ -1512,10 +1815,11 @@ public class ChatRepl {
     }
 
     private static void redisplayWithContent(LineReaderImpl reader, KompileTui tui) {
-        // Keep the input renderer last: the TUI repaint moves the terminal cursor,
-        // while JLine REDISPLAY restores the prompt and cursor position.
-        if (tui != null) {
-            tui.redrawContentView();
+        // A plain content repaint moves the physical cursor but does not invalidate
+        // JLine's cached prompt. Let the TUI clear and restore the input in one
+        // synchronous widget frame so scrolling cannot leave the cursor at column 1.
+        if (tui != null && tui.redrawForInputWidget()) {
+            return;
         }
         reader.callWidget(LineReader.REDISPLAY);
     }
@@ -1543,7 +1847,7 @@ public class ChatRepl {
         forceTranscriptMouseCapture(terminal);
     }
 
-    /** Re-send mouse tracking even when the flag says it is already enabled. */
+    /** Re-send mouse tracking before each prompt because JLine may reset it. */
     private void forceTranscriptMouseCapture(Terminal terminal) {
         if (terminal == null) return;
         try {
@@ -1551,14 +1855,15 @@ public class ChatRepl {
             terminal.writer().flush();
             transcriptMouseEnabled = true;
         } catch (RuntimeException | IOError ignored) {
-            // Wheel capture is best-effort; page and modifier key bindings remain available.
+            // Wheel capture is best-effort; keyboard bindings remain available.
         }
     }
 
+    /** Disable modes left by a prior session during shutdown. */
     private void disableTranscriptMouse(Terminal terminal) {
-        if (terminal == null || !transcriptMouseEnabled) return;
+        if (terminal == null) return;
         try {
-            terminal.writer().print("\033[?1000l");
+            terminal.writer().print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l");
             terminal.writer().flush();
         } catch (RuntimeException | IOError ignored) {
             // The terminal may already be shutting down.
@@ -1592,6 +1897,18 @@ public class ChatRepl {
         // updateActivityView also performs an authoritative switch when a
         // selection changed between asynchronous refresh callbacks.
         tui.updateActivityView(view.key(), view.title(), view.content());
+    }
+
+    private static void refreshInlineSubagentBlock(
+            KompileTui tui,
+            StandardChatActivityPanel activityPanel,
+            String subagentId,
+            boolean includeBackgroundMarker) {
+        if (activityPanel.isCurrentTurnBackgrounded() && !includeBackgroundMarker) return;
+        String content = activityPanel.inlineSubagentTranscript(subagentId);
+        if (!content.isBlank()) {
+            tui.upsertMainTranscriptBlock("subagent:" + subagentId, content);
+        }
     }
 
     /**
@@ -1832,52 +2149,80 @@ public class ChatRepl {
                     continue;
                 }
                 selectedProvider = authentication.provider();
+                String selectedBaseUrl = null;
+                if ("custom".equalsIgnoreCase(selectedProvider)) {
+                    selectedBaseUrl = SetupWizard.promptBaseUrl(reader, selectedProvider);
+                    if (selectedBaseUrl == null || selectedBaseUrl.isBlank()) {
+                        tui.updateTemporaryWindow("Provider and model", List.of(
+                                "A custom endpoint URL is required.",
+                                "Enter a base URL or choose another provider."));
+                        continue;
+                    }
+                }
 
-                List<String> models = modelChoices(selectedProvider, selectedModel);
+                boolean sameProvider = selectedProvider.equalsIgnoreCase(chatConfig.getProvider());
+                ChatConfig discoveryConfig = new ChatConfig(
+                        selectedProvider,
+                        authentication.apiKey(),
+                        sameProvider ? chatConfig.getModel() : null,
+                        selectedBaseUrl);
+                if (sameProvider && (selectedBaseUrl == null || selectedBaseUrl.isBlank())) {
+                    discoveryConfig.setBaseUrl(chatConfig.getBaseUrl());
+                }
+                ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
+                        selectedProvider, authentication.apiKey(), discoveryConfig);
+                List<String> models = SetupWizard.modelOptions(
+                        discovery, sameProvider ? chatConfig.getModel() : null);
                 while (true) {
                     String defaultModel = models.isEmpty() ? null : models.get(0);
-                    List<String> pickerModels = new ArrayList<>(models);
-                    pickerModels.add(ADD_MODEL_OPTION);
-                    tui.updateTemporaryWindow("Provider and model", pickerLines(
+                    List<String> modelPickerLines = pickerLines(
                             "Choose a model for " + providerLabel(selectedVendor),
-                            pickerModels, defaultModel, selectedVendor, selectedProvider, selectedModel));
+                            models, defaultModel, selectedVendor, selectedProvider, selectedModel);
+                    if (!discovery.message().isBlank()) {
+                        modelPickerLines.add("");
+                        modelPickerLines.add("Discovery: "
+                                + discovery.status().name().toLowerCase().replace('_', ' '));
+                        modelPickerLines.add(discovery.message());
+                    }
+                    tui.updateTemporaryWindow("Provider and model", modelPickerLines);
                     String modelInput = reader.readLine(
-                            "picker model (number/name, Add new model..., blank uses default, Esc cancels): ");
+                            "picker model (number/name, refresh, blank uses default, Esc cancels): ");
                     if (modelInput == null || "cancel".equalsIgnoreCase(modelInput.trim())) {
                         return;
                     }
                     if ("back".equalsIgnoreCase(modelInput.trim())) {
                         break;
                     }
+                    if ("refresh".equalsIgnoreCase(modelInput.trim())) {
+                        discovery = SetupWizard.refreshModelDiscovery(
+                                selectedProvider, authentication.apiKey(), discoveryConfig);
+                        models = SetupWizard.modelOptions(
+                                discovery, sameProvider ? chatConfig.getModel() : null);
+                        continue;
+                    }
                     String modelChoice = modelInput.isBlank()
                             ? defaultModel
-                            : parsePickerChoice(modelInput, pickerModels);
-                    boolean addingModel = ADD_MODEL_OPTION.equals(modelChoice);
-                    if (addingModel) {
-                        String newModel = reader.readLine(
-                                "new model id (blank/back cancels, Esc cancels): ");
-                        if (newModel == null || "cancel".equalsIgnoreCase(newModel.trim())) {
-                            return;
-                        }
-                        if (newModel.isBlank() || "back".equalsIgnoreCase(newModel.trim())) {
-                            continue;
-                        }
-                        modelChoice = newModel.trim();
+                            : parsePickerChoice(modelInput, models);
+                    if (modelChoice == null && !modelInput.isBlank()) {
+                        modelChoice = modelInput.trim();
                     }
                     if (modelChoice == null || modelChoice.isBlank()) {
                         tui.updateTemporaryWindow("Provider and model", List.of(
                                 "No model was selected for " + providerLabel(selectedVendor) + ".",
-                                "Choose a listed model or Add new model....",
+                                "Choose a listed model, enter an id manually, refresh, or go back.",
                                 "Current: " + activeModelDisplayName()));
                         continue;
                     }
                     selectedModel = modelChoice;
 
-                    String selectedThinking = chatConfig.getThinking();
                     List<SetupWizard.ThinkingOption> thinkingOptions =
-                            SetupWizard.thinkingOptions(selectedProvider, selectedModel);
+                            SetupWizard.thinkingOptions(
+                                    selectedProvider, selectedModel, authentication.apiKey(),
+                                    discoveryConfig, discovery);
+                    String selectedThinking = SetupWizard.compatibleThinking(
+                            selectedProvider, selectedModel, chatConfig.getThinking(), discovery);
                     boolean backToModel = false;
-                    if (SetupWizard.supportsThinkingSelection(selectedProvider, selectedModel)) {
+                    if (thinkingOptions.size() > 1) {
                         List<String> thinkingChoices = thinkingOptions.stream()
                                 .map(SetupWizard.ThinkingOption::label)
                                 .toList();
@@ -1912,24 +2257,15 @@ public class ChatRepl {
                                 continue;
                             }
                             selectedThinking = thinkingOptions.get(thinkingChoices.indexOf(thinkingChoice)).value();
-                            if (SetupWizard.isCustomThinkingSelection(selectedProvider, selectedThinking)) {
-                                selectedThinking = SetupWizard.promptCustomThinking(reader, selectedProvider);
-                                if (selectedThinking == null) {
-                                    backToModel = true;
-                                }
-                            }
                             break;
                         }
-                    } else {
-                        // A model without a thinking control must not inherit the
-                        // previous model's provider-native effort.
-                        selectedThinking = null;
                     }
                     if (backToModel) {
                         continue;
                     }
 
-                    ChatConfig candidate = buildModelProviderCandidate(selectedProvider, selectedModel);
+                    ChatConfig candidate = buildModelProviderCandidate(
+                            selectedProvider, selectedModel, selectedBaseUrl);
                     candidate.setThinking(selectedThinking);
                     if (authentication.apiKey() != null && !authentication.apiKey().isBlank()) {
                         // API-key input is transient and write-only; it is never persisted
@@ -1949,9 +2285,6 @@ public class ChatRepl {
                                 "Run /setup to configure this provider, then try again.",
                                 "The current provider/model is still active."));
                         continue;
-                    }
-                    if (addingModel) {
-                        candidate.addModelToCatalog(selectedProvider, selectedModel);
                     }
                     if (commitModelProviderSelection(candidate)) {
                         committed = true;
@@ -1979,8 +2312,24 @@ public class ChatRepl {
     /** Apply the explicit `/model <name>` form through the same atomic path. */
     void applyModelSelection(String model) {
         if (model == null || model.isBlank() || chatConfig == null) return;
-        ChatConfig candidate = buildModelProviderCandidate(chatConfig.getProvider(), model.trim());
-        candidate.addModelToCatalog(chatConfig.getProvider(), model.trim());
+        String selected = model.trim();
+        ModelDiscovery.Result discovery = SetupWizard.modelDiscovery(
+                chatConfig.getProvider(), null, chatConfig);
+        boolean known = discovery.models().stream()
+                .map(modelEntry -> modelEntry.id())
+                .anyMatch(candidateModel -> candidateModel.equalsIgnoreCase(selected));
+        boolean authoritativeList = discovery.status() == ModelDiscovery.Status.SUCCESS
+                && !discovery.models().isEmpty()
+                && !discovery.message().toLowerCase(Locale.ROOT).contains("stale");
+        if (!known && authoritativeList) {
+            ChatCompleter.printAbove(renderer.yellow("  Model is not in the provider's live model list: ")
+                    + renderer.cyan(selected)
+                    + renderer.dim(" Refresh or enter it while discovery is unavailable."));
+            return;
+        }
+        ChatConfig candidate = buildModelProviderCandidate(chatConfig.getProvider(), selected);
+        candidate.setThinking(SetupWizard.compatibleThinking(
+                chatConfig.getProvider(), selected, chatConfig.getThinking(), discovery));
         if (!candidate.isValid()) {
             ChatCompleter.printAbove(renderer.yellow("  Cannot use model ") + renderer.cyan(model.trim())
                     + renderer.dim(" because the current provider is not configured."));
@@ -2012,18 +2361,27 @@ public class ChatRepl {
     }
 
     private ChatConfig buildModelProviderCandidate(String provider, String model) {
+        return buildModelProviderCandidate(provider, model, null);
+    }
+
+    private ChatConfig buildModelProviderCandidate(
+            String provider, String model, String baseUrlOverride) {
         ChatConfig candidate = new ChatConfig();
         candidate.applyLlmSettingsFrom(chatConfig);
         candidate.setProvider(provider);
         candidate.setModel(model);
+        // Thinking is resolved for the selected model below; never carry an
+        // incompatible value through the candidate-building step.
+        candidate.setThinking(null);
         // Never carry a credential across providers. For the current provider,
         // preserve the resolved in-memory credential without persisting it.
         if (provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
             candidate.setApiKey(chatConfig.getApiKey());
-            candidate.setBaseUrl(chatConfig.getBaseUrl());
+            candidate.setBaseUrl(baseUrlOverride == null
+                    ? chatConfig.getBaseUrl() : baseUrlOverride);
         } else {
             candidate.setApiKey(null);
-            candidate.setBaseUrl(null);
+            candidate.setBaseUrl(baseUrlOverride);
         }
         return candidate;
     }
@@ -2037,23 +2395,6 @@ public class ChatRepl {
             providers.add(currentVendor);
         }
         return List.copyOf(providers);
-    }
-
-    private List<String> modelChoices(String provider, String currentModel) {
-        LinkedHashSet<String> models = new LinkedHashSet<>();
-        if (currentModel != null && provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
-            models.add(currentModel);
-        }
-        for (String model : SetupWizard.modelOptions(provider, chatConfig)) {
-            models.add(model);
-        }
-        AgentConfig activeAgent = agentRegistry.get(localAgentName);
-        if (activeAgent == null) activeAgent = agentRegistry.getDefault();
-        if (activeAgent != null && activeAgent.getAllowedModels() != null
-                && provider != null && provider.equalsIgnoreCase(chatConfig.getProvider())) {
-            models.addAll(activeAgent.getAllowedModels());
-        }
-        return List.copyOf(models);
     }
 
     private static String parsePickerChoice(String input, List<String> choices) {
@@ -2093,7 +2434,7 @@ public class ChatRepl {
                 + " (" + provider + ")   Auth: " + auth + "   Model: " + model);
         String commands = heading.startsWith("Choose reasoning effort")
                 ? "number/name, blank keeps current, back, or Esc to cancel"
-                : "number/name, Add new model..., back, or Esc to cancel";
+                : "number/name, model id, back, or Esc to cancel";
         lines.add("Commands: " + commands);
         return lines;
     }
@@ -2111,7 +2452,7 @@ public class ChatRepl {
 
     private void refreshModelDisplay() {
         tui.setAgentName(activeModelDisplayName());
-        renderer.setTerminalTitle("kompile chat (local) — " + activeModelDisplayName());
+        renderer.setReadyTerminalTitle("kompile chat (local) — " + activeModelDisplayName());
         statusBar.requestRedraw();
     }
 
@@ -2119,9 +2460,14 @@ public class ChatRepl {
         return queueManager == null ? autoDequeueEnabled : queueManager.isAutoDequeueEnabled();
     }
 
+    /** Active terminal stream used by commands that emit OSC clipboard sequences. */
+    Terminal getActiveTerminal() {
+        return activeTerminal;
+    }
+
     /** Called by SessionLifecycleManager's showMainMenu() to run the setup wizard. */
     void runSetupFromMenu() {
-        ChatConfig newConfig = SetupWizard.run();
+        ChatConfig newConfig = SetupWizard.run(ChatConfig.Scope.PROJECT, workingDirectory);
         if (newConfig == null) {
             System.out.println("Setup cancelled.");
             return;

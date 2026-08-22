@@ -27,7 +27,9 @@ import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -87,6 +89,18 @@ public final class SubprocessLogWriter implements AutoCloseable {
 
     public File getMetaFile() {
         return metaFile;
+    }
+
+    /** Add unambiguous process-level identity before {@link #writeStart}. */
+    public synchronized void putMetadata(String key, String value) {
+        if (writer != null) {
+            throw new IllegalStateException("Process metadata must be set before writeStart");
+        }
+        if (key == null || key.isBlank() || value == null || value.isBlank()) return;
+        Map<String, String> attributes = metadata.getAttributes() == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(metadata.getAttributes());
+        attributes.put(key, value);
+        metadata.setAttributes(attributes);
     }
 
     /**

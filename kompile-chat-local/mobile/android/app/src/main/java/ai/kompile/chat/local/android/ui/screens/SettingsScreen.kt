@@ -1,9 +1,13 @@
 package ai.kompile.chat.local.android.ui.screens
 
 import android.Manifest
+import android.content.ClipData
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +65,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import ai.kompile.chat.local.android.BuildConfig
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
 import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
@@ -80,7 +85,11 @@ import ai.kompile.chat.local.android.viewmodel.ProjectImportOutcome
 import ai.kompile.chat.local.android.viewmodel.effectiveMaxTokensForTarget
 import ai.kompile.chat.local.android.viewmodel.maxGenerationTokensForTarget
 import ai.kompile.chat.local.android.viewmodel.stagingUrlProblem
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.nd4j.dsp.model.HuggingFaceGgmlResolver
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -137,6 +146,7 @@ fun SettingsScreen(
     var importErrorStackTrace by remember { mutableStateOf<String?>(null) }
     var importNotice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    var dspShareInProgress by remember { mutableStateOf(false) }
     var pendingHuggingFaceStart by remember { mutableStateOf<(() -> Boolean)?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -929,18 +939,79 @@ fun SettingsScreen(
                     }
                     OutlinedButton(
                         onClick = {
-                            clipboard.setText(
-                                AnnotatedString(DspDiagnosticsTraceLog(context).readContents())
-                            )
+                            if (!dspShareInProgress) {
+                                dspShareInProgress = true
+                                scope.launch {
+                                    try {
+                                        val snapshot = withContext(Dispatchers.IO) {
+                                            val exportContext = coroutineContext
+                                            DspDiagnosticsTraceLog(context).writeShareSnapshot {
+                                                exportContext.ensureActive()
+                                            }
+                                        }
+                                        val snapshotUri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            snapshot,
+                                        )
+                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_STREAM, snapshotUri)
+                                            putExtra(
+                                                Intent.EXTRA_SUBJECT,
+                                                "Kompile Chat DSP diagnostics",
+                                            )
+                                            putExtra(
+                                                Intent.EXTRA_TEXT,
+                                                "Complete DSP diagnostics attached as ${snapshot.name}.",
+                                            )
+                                            clipData = ClipData.newUri(
+                                                context.contentResolver,
+                                                "DSP diagnostics",
+                                                snapshotUri,
+                                            )
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(
+                                            Intent.createChooser(
+                                                sendIntent,
+                                                "Share DSP diagnostics",
+                                            )
+                                        )
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Throwable) {
+                                        Log.e(
+                                            "DspDiagnosticsShare",
+                                            "Unable to share DSP diagnostics",
+                                            failure,
+                                        )
+                                        Toast.makeText(
+                                            context,
+                                            "Unable to share DSP diagnostics. Check available storage and try again.",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    } finally {
+                                        dspShareInProgress = false
+                                    }
+                                }
+                            }
                         },
+                        enabled = !dspShareInProgress,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("copy_dsp_diagnostics_trace")
+                            .testTag("share_dsp_diagnostics_trace")
                     ) {
-                        Text("Copy DSP diagnostics")
+                        Text(
+                            if (dspShareInProgress) {
+                                "Preparing DSP diagnostics file…"
+                            } else {
+                                "Share DSP diagnostics file"
+                            }
+                        )
                     }
                     Text(
-                        text = "Both traces are retained in app-private storage with three rotating backups. Select DSP diagnostics in Model optimization before preparing or decoding to populate the deep report.",
+                        text = "Both traces are retained in app-private storage with three rotating backups. DSP diagnostics are streamed into a shareable file without loading the report into memory. Select DSP diagnostics in Model optimization before preparing or decoding to populate the deep report.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

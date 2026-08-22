@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 /** Radius gateway OAuth with browser PKCE and RFC 8628 device modes. */
-final class RadiusOAuthFlow implements OAuthProviderFlow {
+public final class RadiusOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "radius";
     static final String DEFAULT_GATEWAY = "https://radius.pi.dev";
 
@@ -28,7 +28,12 @@ final class RadiusOAuthFlow implements OAuthProviderFlow {
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
 
-    RadiusOAuthFlow() {
+    @Override
+    public String defaultBaseUrl() {
+        return DEFAULT_GATEWAY;
+    }
+
+    public RadiusOAuthFlow() {
         this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
     }
 

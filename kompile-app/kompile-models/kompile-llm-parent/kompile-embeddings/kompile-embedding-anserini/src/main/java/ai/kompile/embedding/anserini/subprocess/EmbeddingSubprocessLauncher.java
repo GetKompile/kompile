@@ -45,6 +45,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.jar.JarEntry;
@@ -131,6 +132,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
     /** Separate timeout for LoadModel requests; CPU SameDiff warm-up takes ~111s+. */
     private final long loadModelTimeoutMs;
     private final long heartbeatTimeoutMs;
+    private final Map<String, String> environment;
+    private final Path workingDirectory;
+    private final boolean localModelOnly;
 
     // Native image configuration
     private final LaunchMode launchMode;
@@ -932,6 +936,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         private LaunchMode launchMode = LaunchMode.AUTO;
         private String nativeExecutablePath;
         private String subprocessTypeFlag = "--subprocess=";
+        private final Map<String, String> environment = new LinkedHashMap<>();
+        private Path workingDirectory;
+        private boolean localModelOnly;
         private Consumer<EmbeddingSubprocessMessage.Heartbeat> heartbeatCallback;
         private Consumer<EmbeddingSubprocessMessage.Progress> progressCallback;
         private Consumer<EmbeddingSubprocessMessage.PhaseTransition> phaseTransitionCallback;
@@ -952,6 +959,35 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
 
         public Builder addClasspathEntry(String entry) {
             this.classpath.add(entry);
+            return this;
+        }
+
+        /**
+         * Add environment variables that are scoped to this subprocess only.
+         * Explicit values override inherited parent values.
+         */
+        public Builder environment(Map<String, String> environment) {
+            if (environment != null) {
+                environment.forEach((key, value) -> {
+                    if (key != null && !key.isBlank() && value != null) {
+                        this.environment.put(key, value);
+                    }
+                });
+            }
+            return this;
+        }
+
+        public Builder workingDirectory(Path workingDirectory) {
+            this.workingDirectory = workingDirectory;
+            return this;
+        }
+
+        /**
+         * Restrict model resolution to the subprocess-local registry/cache. When enabled,
+         * staging and archive configuration from the parent process is not forwarded.
+         */
+        public Builder localModelOnly(boolean localModelOnly) {
+            this.localModelOnly = localModelOnly;
             return this;
         }
 
@@ -1168,6 +1204,10 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         this.requestTimeoutMs = builder.requestTimeoutMs;
         this.loadModelTimeoutMs = builder.loadModelTimeoutMs;
         this.heartbeatTimeoutMs = builder.heartbeatTimeoutMs;
+        this.environment = Map.copyOf(builder.environment);
+        this.workingDirectory = builder.workingDirectory == null
+                ? null : builder.workingDirectory.toAbsolutePath().normalize();
+        this.localModelOnly = builder.localModelOnly;
         this.subprocessTypeFlag = builder.subprocessTypeFlag;
         this.heartbeatCallback = builder.heartbeatCallback;
         this.progressCallback = builder.progressCallback;
@@ -1461,9 +1501,16 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         // Start process
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false); // Keep stderr separate for logging
+        if (workingDirectory != null) {
+            pb.directory(workingDirectory.toFile());
+        }
 
         // Propagate all ND4J/CUDA/threading/Triton env vars via central propagator
         SubprocessEnvironmentPropagator.propagateToEnvironment(pb.environment());
+        pb.environment().putAll(environment);
+        if (localModelOnly) {
+            restrictToLocalModelSources(pb.environment());
+        }
 
         // Early native per-device memory bound (SD_MAX_DEVICE_BYTES). The matching physical ND4J cap
         // is also emitted by placement.jvmFlags() as nd4j.environment.maxDeviceMemory.
@@ -1805,22 +1852,24 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 logger.debug("Added -Dnd4j.backend.memory.fallback=true to embedding subprocess command");
             }
 
-            // Pass staging configuration to subprocess so it can find models
-            String stagingUrl = AnseriniEncoderFactory.getStagingUrl();
-            String stagingApiKey = AnseriniEncoderFactory.getStagingApiKey();
-            java.nio.file.Path archivePath = AnseriniEncoderFactory.getLoadedArchivePath();
+            if (!localModelOnly) {
+                // Managed deployments may resolve models through staging or a loaded archive.
+                String stagingUrl = AnseriniEncoderFactory.getStagingUrl();
+                String stagingApiKey = AnseriniEncoderFactory.getStagingApiKey();
+                java.nio.file.Path archivePath = AnseriniEncoderFactory.getLoadedArchivePath();
 
-            if (stagingUrl != null && !stagingUrl.isBlank()) {
-                command.add("-Dkompile.staging.url=" + stagingUrl);
-                logger.info("Passing staging URL to subprocess: {}", stagingUrl);
-            }
-            if (stagingApiKey != null && !stagingApiKey.isBlank()) {
-                command.add("-Dkompile.staging.apiKey=" + stagingApiKey);
-                logger.info("Passing staging API key to subprocess");
-            }
-            if (archivePath != null) {
-                command.add("-Dkompile.models.archivePath=" + archivePath.toAbsolutePath());
-                logger.info("Passing archive path to subprocess: {}", archivePath);
+                if (stagingUrl != null && !stagingUrl.isBlank()) {
+                    command.add("-Dkompile.staging.url=" + stagingUrl);
+                    logger.info("Passing staging URL to subprocess: {}", stagingUrl);
+                }
+                if (stagingApiKey != null && !stagingApiKey.isBlank()) {
+                    command.add("-Dkompile.staging.apiKey=" + stagingApiKey);
+                    logger.info("Passing staging API key to subprocess");
+                }
+                if (archivePath != null) {
+                    command.add("-Dkompile.models.archivePath=" + archivePath.toAbsolutePath());
+                    logger.info("Passing archive path to subprocess: {}", archivePath);
+                }
             }
 
             // Classpath
@@ -1928,12 +1977,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
      * Stop the subprocess gracefully.
      */
     public synchronized void stop() {
-        if (!running.get()) {
-            return;
-        }
-
-        logger.info("Stopping embedding subprocess...");
+        // Set this before inspecting process/running state. Crash handling may be sleeping in its
+        // restart backoff after it already marked the process dead; every such path re-checks this
+        // flag before it can spawn a replacement.
         shuttingDown.set(true);
+        logger.info("Stopping embedding subprocess...");
 
         // Send shutdown request
         try {
@@ -1947,13 +1995,13 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
                 boolean exited = process.waitFor(5, TimeUnit.SECONDS);
                 if (!exited) {
                     logger.warn("Subprocess did not exit gracefully, forcing termination");
-                    process.destroyForcibly();
+                    forceTerminate(process, "graceful shutdown timeout");
                 }
             }
         } catch (Exception e) {
             logger.warn("Error during graceful shutdown: {}", e.getMessage());
             if (process != null) {
-                process.destroyForcibly();
+                forceTerminate(process, "graceful shutdown error");
             }
         }
 
@@ -2015,6 +2063,22 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         logger.info("Embedding subprocess stopped");
     }
 
+    /** True while the underlying OS process still exists, independent of launcher state flags. */
+    public boolean isProcessAlive() {
+        Process current = process;
+        return current != null && current.isAlive();
+    }
+
+    /** Remove inherited JVM/model-source options that can redirect a local-only child. */
+    static void restrictToLocalModelSources(Map<String, String> environment) {
+        environment.remove("JAVA_TOOL_OPTIONS");
+        environment.remove("_JAVA_OPTIONS");
+        environment.remove("JDK_JAVA_OPTIONS");
+        environment.remove("KOMPILE_STAGING_URL");
+        environment.remove("KOMPILE_STAGING_API_KEY");
+        environment.remove("KOMPILE_MODELS_ARCHIVE_PATH");
+    }
+
     /** Returns true if the embedding lane was permanently disabled due to a device-level CUDA error. */
     public boolean isLaneUnavailable() { return laneUnavailable.get(); }
 
@@ -2024,11 +2088,11 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
             p.destroy();
             try {
                 if (!p.waitFor(5, TimeUnit.SECONDS)) {
-                    p.destroyForcibly();
+                    forceTerminate(p, "termination timeout");
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                p.destroyForcibly();
+                forceTerminate(p, "interrupted termination");
             }
         }
         if (subprocessRegistry != null) {
@@ -2036,6 +2100,23 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable, RestartableSu
         }
         running.set(false);
         modelLoaded = false;
+    }
+
+    private void forceTerminate(Process target, String reason) {
+        if (target == null || !target.isAlive()) return;
+        try {
+            target.destroyForcibly();
+            if (!target.waitFor(5, TimeUnit.SECONDS)) {
+                logger.error("Embedding subprocess remains alive after forced termination ({})", reason);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.error("Interrupted while waiting for forced embedding subprocess termination ({})",
+                    reason);
+        } catch (Exception e) {
+            logger.error("Failed to force embedding subprocess termination ({}): {}", reason,
+                    e.getMessage());
+        }
     }
 
     /**

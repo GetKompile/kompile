@@ -51,6 +51,7 @@ public class MessageQueue {
 
         public enum QueuedMessageStatus {
             PENDING,
+            EDITING,
             SENDING_NOW,
             FAILED
         }
@@ -133,7 +134,7 @@ public class MessageQueue {
      * @param content the message content
      * @return the queued message
      */
-    public QueuedMessage enqueue(String content) {
+    public synchronized QueuedMessage enqueue(String content) {
         QueuedMessage message = new QueuedMessage(content);
         queue.add(message);
         saveQueue();
@@ -146,7 +147,7 @@ public class MessageQueue {
      * @param id the message ID
      * @return true if removed, false if not found
      */
-    public boolean remove(String id) {
+    public synchronized boolean remove(String id) {
         boolean removed = queue.removeIf(msg -> msg.getId().equals(id));
         if (removed) {
             saveQueue();
@@ -161,21 +162,83 @@ public class MessageQueue {
      * @param content the new message content
      * @return true if updated, false if not found
      */
-    public boolean update(String id, String content) {
+    public synchronized boolean update(String id, String content) {
         if (id == null || content == null) return false;
         for (int i = 0; i < queue.size(); i++) {
             QueuedMessage existing = queue.get(i);
             if (existing.getId().equals(id)) {
+                QueuedMessage.QueuedMessageStatus nextStatus =
+                        existing.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING
+                                ? QueuedMessage.QueuedMessageStatus.PENDING
+                                : existing.getStatus();
                 QueuedMessage replacement = new QueuedMessage(
                         existing.getId(),
                         content,
                         existing.getCreatedAt(),
                         Instant.now(),
-                        existing.getStatus());
+                        nextStatus);
                 queue.set(i, replacement);
                 saveQueue();
                 return true;
             }
+        }
+        return false;
+    }
+
+    /**
+     * Marks one queued message as being edited without removing it from the
+     * visible queue. Only one edit lease may be active at a time.
+     */
+    public synchronized boolean beginEdit(String id) {
+        if (id == null || id.isBlank()) return false;
+        for (QueuedMessage message : queue) {
+            if (message.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING) {
+                return message.getId().equals(id);
+            }
+        }
+        return replaceStatus(id, QueuedMessage.QueuedMessageStatus.EDITING);
+    }
+
+    /** Return an abandoned edit lease to the normal pending state. */
+    public synchronized boolean cancelEdit(String id) {
+        QueuedMessage message = get(id);
+        if (message == null
+                || message.getStatus() != QueuedMessage.QueuedMessageStatus.EDITING) {
+            return false;
+        }
+        return replaceStatus(id, QueuedMessage.QueuedMessageStatus.PENDING);
+    }
+
+    /**
+     * Moves a queued message to a zero-based position while preserving its ID,
+     * timestamps, content, and status.
+     */
+    public synchronized boolean move(String id, int targetIndex) {
+        if (id == null || id.isBlank() || queue.isEmpty()) return false;
+        int sourceIndex = -1;
+        for (int i = 0; i < queue.size(); i++) {
+            if (queue.get(i).getId().equals(id)) {
+                sourceIndex = i;
+                break;
+            }
+        }
+        if (sourceIndex < 0) return false;
+        int destination = Math.max(0, Math.min(targetIndex, queue.size() - 1));
+        if (sourceIndex == destination) return true;
+        QueuedMessage message = queue.remove(sourceIndex);
+        queue.add(destination, message);
+        saveQueue();
+        return true;
+    }
+
+    private boolean replaceStatus(String id, QueuedMessage.QueuedMessageStatus status) {
+        for (int i = 0; i < queue.size(); i++) {
+            QueuedMessage existing = queue.get(i);
+            if (!existing.getId().equals(id)) continue;
+            queue.set(i, new QueuedMessage(
+                    existing.getId(), existing.getContent(), existing.getCreatedAt(),
+                    Instant.now(), status));
+            return true;
         }
         return false;
     }
@@ -216,8 +279,11 @@ public class MessageQueue {
      *
      * @return the first message, or null if queue is empty
      */
-    public QueuedMessage dequeue() {
+    public synchronized QueuedMessage dequeue() {
         if (queue.isEmpty()) {
+            return null;
+        }
+        if (queue.get(0).getStatus() == QueuedMessage.QueuedMessageStatus.EDITING) {
             return null;
         }
         QueuedMessage message = queue.remove(0);
@@ -225,10 +291,26 @@ public class MessageQueue {
         return message;
     }
 
+    /** Atomically claims a specific non-editing message for dispatch. */
+    public synchronized QueuedMessage takeForSend(String id) {
+        if (id == null || id.isBlank()) return null;
+        for (int i = 0; i < queue.size(); i++) {
+            QueuedMessage message = queue.get(i);
+            if (!message.getId().equals(id)) continue;
+            if (message.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING) {
+                return null;
+            }
+            queue.remove(i);
+            saveQueue();
+            return message;
+        }
+        return null;
+    }
+
     /**
      * Clears all messages from the queue.
      */
-    public void clear() {
+    public synchronized void clear() {
         queue.clear();
         saveQueue();
     }
@@ -274,7 +356,17 @@ public class MessageQueue {
         try {
             String json = Files.readString(queueFile);
             List<QueuedMessage> loaded = objectMapper.readValue(json, new TypeReference<List<QueuedMessage>>() {});
-            queue.addAll(loaded);
+            for (QueuedMessage message : loaded) {
+                // EDITING is an in-memory lease. A process exit must never leave
+                // a persisted queue permanently blocked on its next launch.
+                if (message.getStatus() == QueuedMessage.QueuedMessageStatus.EDITING) {
+                    queue.add(new QueuedMessage(
+                            message.getId(), message.getContent(), message.getCreatedAt(),
+                            message.getUpdatedAt(), QueuedMessage.QueuedMessageStatus.PENDING));
+                } else {
+                    queue.add(message);
+                }
+            }
         } catch (IOException e) {
             System.err.println("Warning: Failed to load message queue: " + e.getMessage());
         }

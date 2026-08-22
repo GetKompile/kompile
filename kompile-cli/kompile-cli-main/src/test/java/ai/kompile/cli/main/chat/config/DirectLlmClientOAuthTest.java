@@ -71,6 +71,98 @@ class DirectLlmClientOAuthTest {
     }
 
     @Test
+    void anthropicNativeCompactionIsRequestedParsedAndReplayed() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server("/v1/messages", exchange -> {
+            headers.set(exchange.getRequestHeaders());
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (calls.getAndIncrement() == 0) {
+                respondSse(exchange,
+                        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n"
+                                + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"compaction\",\"content\":null}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"compaction_delta\",\"content\":\"native summary\"}}\n\n"
+                                + "data: {\"type\":\"content_block_stop\"}\n\n"
+                                + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n"
+                                + "data: {\"type\":\"content_block_stop\"}\n\n"
+                                + "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2,\"iterations\":[{\"type\":\"compaction\",\"input_tokens\":50000,\"output_tokens\":500}]}}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n"
+                                + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"next\"}}\n\n"
+                                + "data: {\"type\":\"content_block_stop\"}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+            }
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "anthropic", "test-key", "claude-test", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            client.setOutputConsumer(ignored -> { });
+            client.setNativeCompactionTriggerTokens(50_000);
+
+            DirectLlmClient.StreamResult first =
+                    client.streamChat("hello", "system", null, null);
+            assertEquals("native summary", first.nativeCompactionSummary);
+            assertEquals(50_000, first.compactionInputTokens);
+            assertEquals(500, first.compactionOutputTokens);
+            assertTrue(requests.get(0).has("context_management"));
+            assertTrue(first(headers.get(), "anthropic-beta").contains("compact-2026-01-12"));
+
+            client.streamChat("continue", "system", null, null);
+            assertTrue(requests.get(1).path("messages").toString()
+                    .contains("\"type\":\"compaction\""));
+            assertTrue(requests.get(1).path("messages").toString()
+                    .contains("native summary"));
+            assertFalse(requests.get(1).path("messages").toString().contains("hello"),
+                    "messages covered by the native block must be removed locally");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void anthropicUnsupportedNativeCompactionRetriesWithoutBetaPayload() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server("/v1/messages", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (calls.getAndIncrement() == 0) {
+                respond(exchange, 400, "{\"error\":{\"message\":\"unsupported beta\"}}");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n"
+                                + "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\"}}\n\n"
+                                + "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+                                + "data: {\"type\":\"content_block_stop\"}\n\n"
+                                + "data: {\"type\":\"message_stop\"}\n\n");
+            }
+        });
+        try {
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("anthropic", "key", "claude-unsupported", baseUrl(server)), mapper);
+            client.setOutputConsumer(ignored -> { });
+            client.setNativeCompactionTriggerTokens(50_000);
+
+            DirectLlmClient.StreamResult result =
+                    client.streamChat("hello", "system", null, null);
+
+            assertEquals("ok", result.text);
+            assertEquals(2, requests.size());
+            assertTrue(requests.get(0).has("context_management"));
+            assertFalse(requests.get(1).has("context_management"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void xaiOauthUsesBearerForOpenAiCompatibleRequest() throws Exception {
         withTemporaryHome(() -> {
             AtomicReference<Map<String, java.util.List<String>>> headers = new AtomicReference<>();
@@ -232,6 +324,85 @@ class DirectLlmClientOAuthTest {
                 server.stop(0);
             }
         });
+    }
+
+    @Test
+    void openAiResponsesCompactionItemIsRequestedCapturedAndReplayed() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> requests = new ArrayList<>();
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = server("/codex/responses", exchange -> {
+            requests.add(mapper.readTree(exchange.getRequestBody()));
+            if (calls.getAndIncrement() == 0) {
+                respondSse(exchange,
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+                                + "\"item\":{\"type\":\"compaction\",\"id\":\"cmp_1\","
+                                + "\"encrypted_content\":\"opaque-context\"}}\n\n"
+                                + "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,"
+                                + "\"delta\":\"answer\"}\n\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{"
+                                + "\"status\":\"completed\",\"output\":[{\"type\":\"compaction\","
+                                + "\"id\":\"cmp_1\",\"encrypted_content\":\"opaque-context\"}],"
+                                + "\"usage\":{\"input_tokens\":20,\"output_tokens\":2}}}\n\n");
+            } else {
+                respondSse(exchange,
+                        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,"
+                                + "\"delta\":\"next\"}\n\n"
+                                + "data: {\"type\":\"response.completed\",\"response\":{"
+                                + "\"status\":\"completed\",\"usage\":{\"input_tokens\":4,"
+                                + "\"output_tokens\":1}}}\n\n");
+            }
+        });
+        try {
+            ChatConfig config = new ChatConfig(
+                    "openai-codex", "key", "gpt-test", baseUrl(server));
+            DirectLlmClient client = new DirectLlmClient(config, mapper);
+            client.setOutputConsumer(ignored -> { });
+            client.setNativeCompactionTriggerTokens(10_000);
+
+            DirectLlmClient.StreamResult first =
+                    client.streamChat("hello", "system", null, null);
+            assertEquals("compaction", first.nativeCompactionPayload.path("type").asText());
+            assertEquals("opaque-context",
+                    first.nativeCompactionPayload.path("encrypted_content").asText());
+            assertEquals(10_000, requests.get(0).path("context_management")
+                    .path(0).path("compact_threshold").asInt());
+
+            client.streamChat("continue", "system", null, null);
+            assertTrue(requests.get(1).path("input").toString().contains("opaque-context"));
+            assertFalse(requests.get(1).path("input").toString().contains("hello"),
+                    "Responses input before the compaction item must not be replayed");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void explicitResponsesCompactionReturnsCanonicalPayloadWithoutEarlyMutation() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        AtomicReference<JsonNode> request = new AtomicReference<>();
+        HttpServer server = server("/codex/responses/compact", exchange -> {
+            request.set(mapper.readTree(exchange.getRequestBody()));
+            respond(exchange, 200,
+                    "{\"output\":[{\"type\":\"compaction\",\"id\":\"cmp_manual\","
+                            + "\"encrypted_content\":\"manual-opaque\"}]}");
+        });
+        try {
+            DirectLlmClient client = new DirectLlmClient(
+                    new ChatConfig("openai-codex", "key", "gpt-test", baseUrl(server)), mapper);
+            client.addToHistory("user", "long prior context");
+
+            DirectLlmClient.NativeCompactionResult result = client.tryNativeCompact(null);
+
+            assertTrue(result.applied());
+            assertEquals("manual-opaque",
+                    result.nativePayload().path(0).path("encrypted_content").asText());
+            assertTrue(request.get().path("input").toString().contains("long prior context"));
+            assertEquals(1, client.getHistorySize(),
+                    "wire history changes only after the ledger checkpoint commits");
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test
@@ -427,8 +598,7 @@ class DirectLlmClientOAuthTest {
         assertEquals("https://radius.pi.dev", ChatConfig.getDefaultBaseUrl("radius"));
         assertTrue(ChatConfig.PROVIDERS.containsKey("openai-codex"));
         assertTrue(ChatConfig.PROVIDERS.containsKey("radius"));
-        assertTrue(List.of(ChatConfig.getDefaultModels("openai-codex"))
-                .contains("gpt-5.6-terra"));
+        assertEquals(0, ChatConfig.getDefaultModels("openai-codex").length);
         assertEquals(0, ChatConfig.getDefaultModels("radius").length);
     }
 

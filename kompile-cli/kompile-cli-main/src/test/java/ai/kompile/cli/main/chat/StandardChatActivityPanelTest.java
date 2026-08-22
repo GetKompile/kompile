@@ -1,13 +1,17 @@
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessKind;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tui.StatusBar;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,7 +50,8 @@ class StandardChatActivityPanelTest {
             assertTrue(panel.isFocused());
             assertTrue(panel.inspectSelected().contains("synthetic-command"));
             assertFalse(panel.isViewingMain());
-            assertEquals("no kill handle for proc-001", panel.killSelected());
+            assertEquals("proc-001 is a non-owned watcher; inspect/logs only",
+                    panel.killSelected());
 
             assertTrue(panel.selectPrevious());
             StandardChatActivityPanel.ActivityView main = panel.openSelectedView();
@@ -56,6 +61,70 @@ class StandardChatActivityPanelTest {
 
             panel.clearSelection();
             assertFalse(panel.isFocused());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void completedProcessesLeaveLivePaneAndOwnedRunningProcessCanBeKilled() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager(
+                "standard-activity-live-process-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 4);
+
+            BackgroundProcessManager.ProcessEntry completed = processes.registerVirtual(
+                    ProcessKind.COMMAND, "done", "Old completed process", Map.of());
+            assertTrue(processes.complete(completed.getId()));
+            panel.refresh();
+            assertFalse(panel.currentMenuItems().stream()
+                    .anyMatch(item -> item.label().contains("Old completed process")));
+
+            BackgroundProcessManager.ProcessEntry running = processes.launch(
+                    "sleep 30", "Killable managed process", java.nio.file.Path.of("."));
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            StandardChatActivityPanel.ActivityView opened = panel.openSelectedView();
+            assertNotNull(opened);
+            assertFalse(opened.main());
+            assertEquals("kill requested for " + running.getId(), panel.killSelected());
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (running.isRunning() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertFalse(running.isRunning());
+            StandardChatActivityPanel.ActivityView completedView = panel.currentView();
+            assertFalse(completedView.main(),
+                    "an explicitly opened process log should remain visible after exit");
+            assertTrue(completedView.title().contains(running.getId()));
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void actionableProcessSortsAheadOfNewerWatcher() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes = new BackgroundProcessManager(
+                "standard-activity-actionable-order-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 3);
+            BackgroundProcessManager.ProcessEntry process = processes.launch(
+                    "sleep 30", "Actionable build", java.nio.file.Path.of("."));
+            processes.registerVirtual(
+                    ProcessKind.JUDGE, "judge", "Newer informational watcher", Map.of());
+
+            panel.refresh();
+
+            assertTrue(panel.currentMenuItems().get(1).label().contains(process.getId()),
+                    "bounded pane must show the killable process before a newer watcher");
         } finally {
             processes.close();
         }
@@ -136,6 +205,95 @@ class StandardChatActivityPanelTest {
             assertTrue(view.content().contains("line two"));
             assertTrue(view.content().contains("totalLines=2"));
             assertEquals("explore-1", panel.viewedSubagentId());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void mirrorsLiveSubagentActivityInlineAndExplainsBackgroundInspection() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("standard-activity-live-subagent-transcript-test");
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(false));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 4);
+
+            tasks.startTask("Parent turn");
+            bar.registerSubagent("research-1", "researcher", "Check provider docs");
+            bar.updateSubagentStatus("research-1", "responding");
+            bar.appendSubagentActivity("research-1", "Searching docs", "  searched provider docs");
+            bar.appendSubagentOutput("research-1", "live answer chunk");
+
+            String foreground = panel.inlineSubagentTranscript("research-1");
+            assertTrue(foreground.contains("Subagent [research-1] researcher"));
+            assertTrue(foreground.contains("Searching docs"));
+            assertTrue(foreground.contains("searched provider docs"));
+            assertTrue(foreground.contains("live answer chunk"));
+            assertTrue(foreground.contains("Ctrl+B background"));
+            assertTrue(foreground.contains("↓ then Enter to inspect below"));
+
+            assertNotNull(tasks.requestBackground());
+            String backgrounded = panel.inlineSubagentTranscript("research-1");
+            assertTrue(backgrounded.contains("Backgrounded"));
+            assertTrue(backgrounded.contains("output continues in the subagent row below"));
+            assertFalse(backgrounded.contains("live answer chunk"),
+                    "detached output must stop repainting the main transcript block");
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            StandardChatActivityPanel.ActivityView view = panel.openSelectedView();
+            assertNotNull(view);
+            assertTrue(view.content().contains("live answer chunk"),
+                    "the selectable subagent row must retain the full live transcript");
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void deleteCancelsSelectedRunningSubagentButNotRecentOne() {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("standard-activity-subagent-cancel-test");
+        AtomicReference<String> cancelled = new AtomicReference<>();
+        try {
+            StatusBar bar = new StatusBar(
+                    tasks, processes, null, new TerminalRenderer(true));
+            StandardChatActivityPanel panel = new StandardChatActivityPanel(
+                    tasks, processes, bar, () -> 3);
+            panel.setSubagentRunner(new SubagentRunner() {
+                @Override
+                public String runSubagent(
+                        AgentConfig agent, String prompt, ToolContext parentContext) {
+                    return "";
+                }
+
+                @Override
+                public boolean canCancel(String subagentId) {
+                    return "explore-running".equals(subagentId);
+                }
+
+                @Override
+                public boolean cancel(String subagentId) {
+                    cancelled.set(subagentId);
+                    return canCancel(subagentId);
+                }
+            });
+
+            bar.registerSubagent("explore-running", "explore", "Trace cancellation");
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            assertTrue(panel.activityItems().stream()
+                    .anyMatch(item -> item.id().equals("explore-running") && item.killable()));
+            assertEquals("cancel requested for subagent explore-running", panel.killSelected());
+            assertEquals("explore-running", cancelled.get());
+
+            bar.unregisterSubagent("explore-running");
+            panel.refresh();
+            assertTrue(panel.selectNext());
+            assertEquals("subagent is no longer running: explore-running", panel.killSelected());
         } finally {
             processes.close();
         }

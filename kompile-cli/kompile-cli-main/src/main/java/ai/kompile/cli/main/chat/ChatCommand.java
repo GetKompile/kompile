@@ -83,11 +83,16 @@ public class ChatCommand implements Callable<Integer> {
             "Seconds to wait for the installed chat subprocess (default: 120)")
     private int startupTimeoutSeconds;
 
-    @CommandLine.Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
+    @CommandLine.Option(names = {"--session-id"}, description =
+            "Transcript UUID/ID (a full UUID is generated if not provided)")
     private String sessionId;
 
     @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions (standard mode) or passthrough agent name (passthrough mode)")
     private String agentName;
+
+    @CommandLine.Option(names = {"--working-dir"}, description =
+            "Project directory for chat configuration, tools, and transcript metadata")
+    private Path workingDirectory;
 
     @CommandLine.Option(names = {"--model"}, description = {
             "Model passed to the passthrough agent CLI.",
@@ -102,7 +107,8 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--rag"}, negatable = true, description = "Enable RAG for chat (default: true)", defaultValue = "true")
     private boolean rag;
 
-    @CommandLine.Option(names = {"--resume", "-r"}, description = "Resume a previous conversation by session ID")
+    @CommandLine.Option(names = {"--resume", "-r"}, description =
+            "Resume a previous conversation by transcript UUID or legacy session ID")
     private String resumeSessionId;
 
     @CommandLine.Option(names = {"--continue", "-c"}, description = "Continue the most recent conversation", defaultValue = "false")
@@ -155,6 +161,28 @@ public class ChatCommand implements Callable<Integer> {
         return dangerouslySkipPermissions;
     }
 
+    static String newTranscriptUuid() {
+        return UUID.randomUUID().toString();
+    }
+
+    Path effectiveWorkingDirectory() {
+        return workingDirectory == null
+                ? Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                : workingDirectory.toAbsolutePath().normalize();
+    }
+
+    void inferResumeWorkingDirectory() {
+        if (workingDirectory != null || resumeSessionId == null || resumeSessionId.isBlank()) {
+            return;
+        }
+        try {
+            ChatHistory.resolveWorkingDirectory(resumeSessionId)
+                    .ifPresent(path -> workingDirectory = path);
+        } catch (IOException e) {
+            System.err.println("Warning: Could not resolve resumed chat directory: " + e.getMessage());
+        }
+    }
+
     @Override
     public Integer call() {
         // Handle --setup: run wizard and exit
@@ -188,12 +216,15 @@ public class ChatCommand implements Callable<Integer> {
         }
 
         boolean isResume = resumeSessionId != null && !resumeSessionId.isBlank();
+        if (isResume) {
+            inferResumeWorkingDirectory();
+        }
 
         // Resolve role: --role flag > role selection menu > none
         String resolvedRole = resolveRole();
 
         if (sessionId == null || sessionId.isBlank()) {
-            sessionId = "cli-" + UUID.randomUUID().toString().substring(0, 8);
+            sessionId = newTranscriptUuid();
         }
 
         // Explicit action flags retain their existing behavior and skip the session wizard.
@@ -203,7 +234,9 @@ public class ChatCommand implements Callable<Integer> {
         // Load saved chat settings. The legacy direct-LLM path can still fall back
         // to env-based provider config; passthrough configs are CLI-agent/session
         // state and do not require provider credentials.
-        ChatConfig config = globalConfig ? ChatConfig.loadGlobalOrFromEnv() : ChatConfig.loadOrFromEnv();
+        ChatConfig config = globalConfig
+                ? ChatConfig.loadGlobalOrFromEnv()
+                : ChatConfig.loadOrFromEnv(effectiveWorkingDirectory());
         boolean configSelectedInThisRun = false;
 
         if (config == null && hasExplicitAction) {
@@ -243,7 +276,9 @@ public class ChatCommand implements Callable<Integer> {
     }
 
     private ChatConfig runSetupWizard() {
-        return globalConfig ? SetupWizard.runGlobal() : SetupWizard.run();
+        return globalConfig
+                ? SetupWizard.runGlobal()
+                : SetupWizard.run(ChatConfig.Scope.PROJECT, effectiveWorkingDirectory());
     }
 
     ChatConfig normalizeResumeConfig(ChatConfig config, boolean isResume) {
@@ -356,13 +391,6 @@ public class ChatCommand implements Callable<Integer> {
                 System.err.println("Passthrough mode requires an agent.");
                 return 1;
             }
-            // Explicit CLI flags win; otherwise use the model/variant selected by setup.
-            if ((model == null || model.isBlank()) && config.getModel() != null) {
-                model = config.getModel();
-            }
-            if ((thinking == null || thinking.isBlank()) && config.getThinking() != null) {
-                thinking = config.getThinking();
-            }
             System.out.println("Starting passthrough mode with agent: " + agent);
 
             // Decide ONCE whether this session runs enforced. A direct passthrough
@@ -370,7 +398,7 @@ public class ChatCommand implements Callable<Integer> {
             // explicit rule flags. Enforcement is per-session opt-in: a project enforcer
             // config on disk never activates silently — the user is asked every run
             // (wizard answer for wizard runs, activation prompt otherwise).
-            Path wd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            Path wd = effectiveWorkingDirectory();
             boolean hasExplicitRuleFlags = (enforcerRules != null && !enforcerRules.isBlank())
                     || (enforcerRuleFile != null && !enforcerRuleFile.isBlank());
             boolean allowEnforcement = shouldConsiderEnforcement(config, hasExplicitRuleFlags);
@@ -518,7 +546,9 @@ public class ChatCommand implements Callable<Integer> {
 
             System.out.println("Type /help for commands, /quit to exit.\n");
 
-            ChatRepl repl = new ChatRepl(client, targetUrl, sessionId, rag, agentName, memory);
+            ChatRepl repl = new ChatRepl(
+                    client, targetUrl, sessionId, rag, agentName, memory, null,
+                    effectiveWorkingDirectory());
             repl.setDangerouslySkipPermissions(dangerouslySkipPermissions);
 
             // Assign role if specified
@@ -576,7 +606,8 @@ public class ChatCommand implements Callable<Integer> {
                     false,      // no RAG in local mode
                     agentName,
                     memory,
-                    config      // LLM config for direct calls
+                    config,     // LLM config for direct calls
+                    effectiveWorkingDirectory()
             );
             repl.setDangerouslySkipPermissions(dangerouslySkipPermissions);
 
@@ -624,7 +655,7 @@ public class ChatCommand implements Callable<Integer> {
             // that has full slash-command completion, auto-trigger, MCP tools, etc.
             EmulatedPassthroughCommand passthrough = new EmulatedPassthroughCommand();
             passthrough.agent = agent;
-            passthrough.workingDir = ".";
+            passthrough.workingDir = effectiveWorkingDirectory().toString();
             passthrough.skipPermissions = true;
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
@@ -671,7 +702,7 @@ public class ChatCommand implements Callable<Integer> {
         try {
             PassthroughCommand passthrough = new PassthroughCommand();
             passthrough.agent = agent;
-            passthrough.workingDir = ".";
+            passthrough.workingDir = effectiveWorkingDirectory().toString();
             passthrough.skipPermissions = true;
             passthrough.injectTools = true;
             passthrough.kompileUrl = "";
@@ -698,7 +729,7 @@ public class ChatCommand implements Callable<Integer> {
      */
     private int runEnforcedPassthroughMode(String agent, boolean isResume) {
         ObjectMapper objectMapper = JsonUtils.standardMapper();
-        Path wd = Path.of(".").toAbsolutePath().normalize();
+        Path wd = effectiveWorkingDirectory();
 
         String rules;
         try {
@@ -840,12 +871,12 @@ public class ChatCommand implements Callable<Integer> {
         System.out.println("Saved conversations:");
         System.out.println();
         for (ChatHistory.ConversationSummary c : conversations) {
-            System.out.printf("  %-24s  %-20s  agent=%-8s  %s%n",
+            System.out.printf("  %-36s  %-20s  agent=%-8s  %s%n",
                     c.sessionId(), c.started(), c.agent(),
                     c.title().isEmpty() ? "(empty)" : c.title());
         }
         System.out.println();
-        System.out.println("Resume with: kompile chat --resume <session-id>");
+        System.out.println("Resume with: kompile chat --resume <transcript-uuid-or-id>");
         System.out.println("Continue last: kompile chat --continue");
         return 0;
     }
@@ -919,7 +950,7 @@ public class ChatCommand implements Callable<Integer> {
      * Show interactive role selection menu.
      */
     private String promptForRole() {
-        RoleManager roleManager = new RoleManager(Paths.get(System.getProperty("user.dir")));
+        RoleManager roleManager = new RoleManager(effectiveWorkingDirectory());
         List<RoleConfig> roles = roleManager.getAllRoles();
 
         if (roles.isEmpty()) {

@@ -11,18 +11,15 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.ServiceConfigurationError;
+import java.util.ServiceLoader;
 
 /** Registry of OAuth flows supported directly by the managed CLI. */
 public final class OAuthProviderRegistry {
-    private static final Set<String> OAUTH_ONLY = Set.of(
-            OpenAiCodexOAuthFlow.PROVIDER_ID,
-            GitHubCopilotOAuthFlow.PROVIDER_ID);
-
     private final Map<String, OAuthProviderFlow> flows;
 
     public OAuthProviderRegistry() {
-        this(defaultFlows());
+        this(loadFlows());
     }
 
     OAuthProviderRegistry(Collection<OAuthProviderFlow> flows) {
@@ -53,7 +50,7 @@ public final class OAuthProviderRegistry {
     }
 
     public boolean isOAuthOnly(String providerId) {
-        return providerId != null && OAUTH_ONLY.contains(normalize(providerId));
+        return find(providerId).map(flow -> !flow.supportsApiKey()).orElse(false);
     }
 
     /**
@@ -66,31 +63,52 @@ public final class OAuthProviderRegistry {
             return Optional.empty();
         }
         String normalized = normalize(vendorId);
-        if ("openai".equals(normalized)) {
-            return find(OpenAiCodexOAuthFlow.PROVIDER_ID)
-                    .map(OAuthProviderFlow::providerId);
-        }
-        return find(normalized).map(OAuthProviderFlow::providerId);
+        return flows.values().stream()
+                .filter(flow -> normalized.equals(normalize(flow.userFacingProviderId()))
+                        || normalized.equals(normalize(flow.providerId())))
+                .map(OAuthProviderFlow::providerId)
+                .findFirst();
     }
 
     /** Whether the user-facing provider accepts an API-key credential. */
     public boolean supportsApiKey(String providerId) {
-        if (providerId == null || providerId.isBlank()
-                || "kompile".equalsIgnoreCase(providerId)
-                || "ollama".equalsIgnoreCase(providerId)) {
+        if (providerId == null || providerId.isBlank()) {
             return false;
         }
-        return !isOAuthOnly(providerId);
+        boolean flowSupportsApiKey = flows.values().stream()
+                .filter(flow -> normalize(providerId).equals(normalize(flow.providerId()))
+                        || normalize(providerId).equals(normalize(flow.userFacingProviderId())))
+                .anyMatch(OAuthProviderFlow::supportsApiKey);
+        if (flowSupportsApiKey) {
+            return true;
+        }
+        ai.kompile.cli.main.chat.config.ChatProvider provider =
+                ai.kompile.cli.main.chat.config.ChatProviderRegistry.find(providerId);
+        return provider != null && provider.supportsApiKey();
     }
 
-    private static Collection<OAuthProviderFlow> defaultFlows() {
-        return java.util.List.of(
-                new OpenAiCodexOAuthFlow(),
-                new AnthropicOAuthFlow(),
-                new GitHubCopilotOAuthFlow(),
-                new XaiOAuthFlow(),
-                new OpenRouterOAuthFlow(),
-                new RadiusOAuthFlow());
+    private static Collection<OAuthProviderFlow> loadFlows() {
+        Map<String, OAuthProviderFlow> loaded = new LinkedHashMap<>();
+        try {
+            ServiceLoader.load(OAuthProviderFlow.class).stream()
+                    .map(provider -> {
+                        try {
+                            return provider.get();
+                        } catch (ServiceConfigurationError error) {
+                            return null;
+                        }
+                    })
+                    .filter(flow -> flow != null)
+                    .forEach(flow -> {
+                        String id = normalize(flow.providerId());
+                        if (loaded.putIfAbsent(id, flow) != null) {
+                            throw new IllegalArgumentException("Duplicate OAuth provider: " + id);
+                        }
+                    });
+        } catch (ServiceConfigurationError ignored) {
+            // Optional provider plugins may be absent or unavailable in a distribution.
+        }
+        return loaded.values();
     }
 
     private static String normalize(String providerId) {

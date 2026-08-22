@@ -66,4 +66,14 @@ public interface SubagentRunner {
     default boolean sendMessage(String subagentId, String message) {
         return false;
     }
+
+    /** Whether the identified subagent currently owns cancellable work. */
+    default boolean canCancel(String subagentId) {
+        return false;
+    }
+
+    /** Cancel only the identified subagent, leaving its parent turn running. */
+    default boolean cancel(String subagentId) {
+        return false;
+    }
 }

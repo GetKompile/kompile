@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 /** xAI SuperGrok/X subscription OAuth device-code flow. */
-final class XaiOAuthFlow implements OAuthProviderFlow {
+public final class XaiOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "xai";
 
     private static final String CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -30,7 +30,7 @@ final class XaiOAuthFlow implements OAuthProviderFlow {
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
 
-    XaiOAuthFlow() {
+    public XaiOAuthFlow() {
         this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
     }
 

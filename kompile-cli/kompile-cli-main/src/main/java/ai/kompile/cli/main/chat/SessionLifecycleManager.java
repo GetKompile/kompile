@@ -202,6 +202,10 @@ public class SessionLifecycleManager {
      * Inspired by Claude Code /cost, Codex CLI stats, and Aider session metrics.
      */
     public void printSessionSummary() {
+        printSessionSummary(true);
+    }
+
+    void printSessionSummary(boolean includeResumeCommand) {
         Duration duration = sessionMetrics.getSessionDuration();
         StringBuilder body = new StringBuilder();
 
@@ -300,7 +304,10 @@ public class SessionLifecycleManager {
         body.append("\n").append(renderer.bold("Files")).append("\n");
         body.append("  Transcript: ").append(chatHistory.getTranscriptFile()).append("\n");
         body.append("  Metrics:    ").append(chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json")).append("\n");
-        body.append("  Resume:     kompile chat --resume ").append(sessionId).append("\n");
+        if (includeResumeCommand) {
+            body.append("  Resume:     kompile chat --resume ").append(sessionId)
+                    .append(" --mode standard\n");
+        }
 
         System.out.println();
         System.out.println(ascii.panel("Session Summary", body.toString(), AsciiRenderer.ROUNDED, "cyan"));

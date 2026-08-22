@@ -98,6 +98,14 @@ public final class LocalServingRuntimePool {
             return runtime().process();
         }
 
+        public String subprocessRunId() {
+            return runtime().subprocessRunId();
+        }
+
+        public Path logFile() {
+            return runtime().logFile();
+        }
+
         public boolean isAlive() {
             return delegate.isHealthy();
         }
@@ -210,11 +218,21 @@ public final class LocalServingRuntimePool {
                 modelId,
                 artifact(normalizedModel),
                 artifact(normalizedTokenizer),
-                canonical(options),
+                canonical(runtimeIdentityOptions(options)),
                 processConfiguration());
         return new RuntimeRequest(
                 modelId, normalizedModel, normalizedTokenizer,
                 options, Math.max(1, timeoutSeconds), key);
+    }
+
+    private static Map<String, Object> runtimeIdentityOptions(Map<String, Object> options) {
+        if (options == null || options.isEmpty()) return Map.of();
+        Map<String, Object> identity = new LinkedHashMap<>(options);
+        // Correlation changes per lease/request and must never force a duplicate resident model.
+        identity.remove("crawlJobId");
+        identity.remove("knowledgeBaseId");
+        identity.remove("projectRoot");
+        return identity;
     }
 
     private static boolean isAlive(KompileLocalServingBootstrap.StartupResult runtime) {

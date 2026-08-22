@@ -29,6 +29,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -37,6 +38,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * CLI tool for managing background processes. Allows the agent to launch
@@ -50,6 +52,9 @@ import java.util.function.BooleanSupplier;
  *   <li><b>kill</b> - Kill a process by ID</li>
  *   <li><b>output</b> - Read captured output of a process</li>
  *   <li><b>status</b> - Get detailed status of a specific process</li>
+ *   <li><b>monitor</b> - Wake the agent when a specific process exits</li>
+ *   <li><b>unmonitor</b> - Cancel a process completion monitor</li>
+ *   <li><b>monitors</b> - List active process completion monitors</li>
  *   <li><b>cleanup</b> - Remove old completed process entries</li>
  * </ul>
  */
@@ -58,6 +63,8 @@ public class ProcessManagementTool implements CliTool {
     private static final int DEFAULT_TAIL_LINES = 50;
     private static final int DEFAULT_STREAM_SECONDS = 5;
     private static final int MAX_STREAM_SECONDS = 30;
+    private static final int MAX_STREAM_OUTPUT_CHARS = 30_000;
+    private static final int MAX_STREAM_LINE_CHARS = 4_000;
 
     private final BackgroundProcessManager processManager;
     private final CoordinationStateManager coordinator;
@@ -82,7 +89,8 @@ public class ProcessManagementTool implements CliTool {
                 "to edit_coordinator when coordination is available, so other agents can see running builds. " +
                 "Actions: list (show local and shared WIP processes), launch (start a background command), " +
                 "kill (stop a local process by ID), output (live tail snapshot), stream (follow output briefly), " +
-                "status (detailed info plus recent output), cleanup (remove old local entries).";
+                "status (detailed info plus recent output), monitor (wake this agent when one local process exits), " +
+                "unmonitor (cancel a monitor), monitors (list active monitors), cleanup (remove old local entries).";
     }
 
     @Override
@@ -94,13 +102,14 @@ public class ProcessManagementTool implements CliTool {
 
         ObjectNode action = props.putObject("action");
         action.put("type", "string");
-        action.put("description", "Action to perform: list, launch, kill, output, stream, status, cleanup");
+        action.put("description", "Action to perform: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, cleanup");
         action.putArray("enum").add("list").add("launch").add("kill")
-                .add("output").add("stream").add("status").add("cleanup");
+                .add("output").add("stream").add("status").add("monitor")
+                .add("unmonitor").add("monitors").add("cleanup");
 
         ObjectNode processId = props.putObject("process_id");
         processId.put("type", "string");
-        processId.put("description", "Process ID (e.g. proc-001) for kill, output, and status actions");
+        processId.put("description", "Local process ID (e.g. proc-001) for kill, output, status, monitor, and unmonitor actions");
 
         ObjectNode command = props.putObject("command");
         command.put("type", "string");
@@ -109,6 +118,14 @@ public class ProcessManagementTool implements CliTool {
         ObjectNode desc = props.putObject("description");
         desc.put("type", "string");
         desc.put("description", "Human-readable description of what the process does");
+
+        ObjectNode monitor = props.putObject("monitor");
+        monitor.put("type", "boolean");
+        monitor.put("description", "For launch, atomically create a one-shot monitor that wakes the agent when the process exits (default: false)");
+
+        ObjectNode monitorMessage = props.putObject("monitor_message");
+        monitorMessage.put("type", "string");
+        monitorMessage.put("description", "Optional instructions included in the agent wake-up for monitor or monitored launch actions");
 
         ObjectNode tailLines = props.putObject("tail_lines");
         tailLines.put("type", "integer");
@@ -145,14 +162,20 @@ public class ProcessManagementTool implements CliTool {
             case "output":
                 return executeOutput(params);
             case "stream":
-                return executeStream(params);
+                return executeStream(params, context);
             case "status":
                 return executeStatus(params);
+            case "monitor":
+                return executeMonitor(params);
+            case "unmonitor":
+                return executeUnmonitor(params);
+            case "monitors":
+                return executeMonitors();
             case "cleanup":
                 return executeCleanup();
             default:
                 return ToolResult.error("Unknown action: " + action +
-                        ". Valid actions: list, launch, kill, output, stream, status, cleanup");
+                        ". Valid actions: list, launch, kill, output, stream, status, monitor, unmonitor, monitors, cleanup");
         }
     }
 
@@ -238,8 +261,14 @@ public class ProcessManagementTool implements CliTool {
         context.checkPermission(permissionKey(), "Launch background process: " + description);
 
         try {
+            boolean monitored = params.path("monitor").asBoolean(false);
+            String monitorMessage = params.path("monitor_message").asText("");
             BackgroundProcessManager.ProcessEntry entry =
-                    processManager.launch(command, description, context.getWorkingDirectory());
+                    monitored
+                            ? processManager.launchMonitored(command, description,
+                                    context.getWorkingDirectory(), monitorMessage)
+                            : processManager.launch(command, description,
+                                    context.getWorkingDirectory());
             publishProcess(entry, context);
 
             String output = String.format("Launched background process:\n" +
@@ -247,12 +276,14 @@ public class ProcessManagementTool implements CliTool {
                             "  PID:     %d\n" +
                             "  Command: %s\n" +
                             "  Output:  %s\n" +
-                            "  Desc:    %s",
+                            "  Desc:    %s%s",
                     entry.getId(), entry.getPid(), command,
-                    entry.getOutputFile(), description);
+                    entry.getOutputFile(), description,
+                    monitored ? "\n  Monitor: agent wake-up on exit" : "");
 
             return ToolResult.success("launched " + entry.getId(), output,
-                    Map.of("processId", entry.getId(), "pid", entry.getPid()));
+                    Map.of("processId", entry.getId(), "pid", entry.getPid(),
+                            "monitored", monitored));
 
         } catch (IOException e) {
             return ToolResult.error("Failed to launch process: " + e.getMessage());
@@ -325,7 +356,7 @@ public class ProcessManagementTool implements CliTool {
                         "tailLines", tailLines, "scope", "shared"));
     }
 
-    private ToolResult executeStream(JsonNode params) {
+    private ToolResult executeStream(JsonNode params, ToolContext context) {
         String processId = params.path("process_id").asText("");
         if (processId.isEmpty()) {
             return ToolResult.error("process_id is required for stream action");
@@ -335,19 +366,28 @@ public class ProcessManagementTool implements CliTool {
         int followSeconds = params.path("follow_seconds").asInt(DEFAULT_STREAM_SECONDS);
         if (followSeconds < 0) followSeconds = 0;
         if (followSeconds > MAX_STREAM_SECONDS) followSeconds = MAX_STREAM_SECONDS;
+        Consumer<String> liveOutput = context == null ? null : context.getOutputConsumer();
+        BooleanSupplier abortProbe = context == null
+                ? () -> Thread.currentThread().isInterrupted()
+                : context::isAborted;
 
         BackgroundProcessManager.ProcessEntry local = processManager.get(processId);
         if (local != null) {
             syncProcessState(local);
+            String liveHeader = localOutputHeader(local, "stream followed " + followSeconds + "s");
+            emitBlock(liveOutput, liveHeader);
             String output = followOutput(local.getOutputFile(), tailLines, followSeconds,
                     () -> {
                         syncProcessState(local);
                         return local.isRunning();
-                    });
+                    }, abortProbe, liveOutput);
+            String resultHeader = localOutputHeader(
+                    local, "stream followed " + followSeconds + "s");
             return ToolResult.success("stream " + processId,
-                    localOutputHeader(local, "stream followed " + followSeconds + "s") + output,
+                    resultHeader + output,
                     Map.of("processId", processId, "state", local.getState().name(),
                             "tailLines", tailLines, "followSeconds", followSeconds,
+                            ToolResult.OUTPUT_STREAMED_METADATA, liveOutput != null,
                             "scope", "local"));
         }
 
@@ -356,15 +396,20 @@ public class ProcessManagementTool implements CliTool {
             return ToolResult.error("Process not found: " + processId);
         }
         Path outputFile = pathOrNull(shared.getOutputFile());
+        String liveHeader = sharedOutputHeader(shared, "stream followed " + followSeconds + "s");
+        emitBlock(liveOutput, liveHeader);
         String output = followOutput(outputFile, tailLines, followSeconds,
-                () -> isSharedProcessRunning(shared));
+                () -> isSharedProcessRunning(shared), abortProbe, liveOutput);
         ProcessCoordEntry latest = findSharedProcess(firstNonBlank(shared.getSessionId(), "") + "/" + shared.getProcessId());
         if (latest == null) latest = shared;
+        String resultHeader = sharedOutputHeader(
+                latest, "stream followed " + followSeconds + "s");
         return ToolResult.success("stream " + latest.getProcessId(),
-                sharedOutputHeader(latest, "stream followed " + followSeconds + "s") + output,
+                resultHeader + output,
                 Map.of("processId", latest.getProcessId(),
                         "state", firstNonBlank(latest.getState(), "RUNNING"),
                         "tailLines", tailLines, "followSeconds", followSeconds,
+                        ToolResult.OUTPUT_STREAMED_METADATA, liveOutput != null,
                         "scope", "shared"));
     }
 
@@ -432,6 +477,68 @@ public class ProcessManagementTool implements CliTool {
                         "state", firstNonBlank(shared.getState(), "RUNNING"),
                         "pid", shared.getPid(),
                         "scope", "shared"));
+    }
+
+    private ToolResult executeMonitor(JsonNode params) {
+        String processId = params.path("process_id").asText("");
+        if (processId.isBlank()) {
+            return ToolResult.error("process_id is required for monitor action");
+        }
+        BackgroundProcessManager.ProcessEntry entry = processManager.get(processId);
+        if (entry == null) {
+            return ToolResult.error("Only local tracked processes can be monitored: " + processId);
+        }
+        if (!entry.isRunning()) {
+            return ToolResult.error("Process " + processId + " is already " + entry.getState()
+                    + "; no monitor was created");
+        }
+        String message = params.path("monitor_message").asText("");
+        BackgroundProcessManager.ProcessMonitor monitor =
+                processManager.monitor(processId, message);
+        if (monitor == null) {
+            return ToolResult.error("Process " + processId
+                    + " cannot be monitored or exited during registration");
+        }
+        String detail = "Monitoring " + processId + ". This agent will be woken when it exits."
+                + (monitor.message().isBlank() ? ""
+                : "\nWake-up instructions: " + monitor.message());
+        return ToolResult.success("monitoring " + processId, detail,
+                Map.of("processId", processId, "message", monitor.message()));
+    }
+
+    private ToolResult executeUnmonitor(JsonNode params) {
+        String processId = params.path("process_id").asText("");
+        if (processId.isBlank()) {
+            return ToolResult.error("process_id is required for unmonitor action");
+        }
+        if (!processManager.removeMonitor(processId)) {
+            return ToolResult.error("No active monitor for process: " + processId);
+        }
+        return ToolResult.success("unmonitored " + processId,
+                "Cancelled the completion monitor for " + processId + ".",
+                Map.of("processId", processId));
+    }
+
+    private ToolResult executeMonitors() {
+        List<BackgroundProcessManager.ProcessMonitor> monitors = processManager.listMonitors();
+        if (monitors.isEmpty()) {
+            return ToolResult.success("No active process monitors");
+        }
+        StringBuilder output = new StringBuilder();
+        for (BackgroundProcessManager.ProcessMonitor monitor : monitors) {
+            BackgroundProcessManager.ProcessEntry entry = processManager.get(monitor.processId());
+            output.append(monitor.processId());
+            if (entry != null) {
+                output.append(" · ").append(entry.getState())
+                        .append(" · ").append(entry.getDescription());
+            }
+            if (!monitor.message().isBlank()) {
+                output.append("\n  -> ").append(monitor.message());
+            }
+            output.append("\n");
+        }
+        return ToolResult.success("process monitors", output.toString().stripTrailing(),
+                Map.of("count", monitors.size()));
     }
 
     private ToolResult executeCleanup() {
@@ -535,19 +642,24 @@ public class ProcessManagementTool implements CliTool {
     }
 
     private static String followOutput(Path outputFile, int tailLines, int followSeconds,
-                                       BooleanSupplier runningProbe) {
-        StringBuilder sb = new StringBuilder();
+                                       BooleanSupplier runningProbe,
+                                       BooleanSupplier abortProbe,
+                                       Consumer<String> liveOutput) {
+        FollowBuffer buffer = new FollowBuffer(tailLines + 2);
         long observedLines = 0;
         try {
             BackgroundProcessManager.TailResult initial = BackgroundProcessManager.tailOutputFile(outputFile, tailLines);
-            appendTailResult(sb, initial);
-            observedLines = lineCount(outputFile);
+            appendTailResult(buffer, initial, liveOutput);
+            observedLines = initial.omittedLines() + initial.lines().size();
         } catch (IOException e) {
-            sb.append("Error reading output: ").append(e.getMessage()).append("\n");
+            String error = "Error reading output: " + e.getMessage();
+            buffer.add(error);
+            emitLine(liveOutput, error);
         }
 
         Instant deadline = Instant.now().plusSeconds(followSeconds);
-        while (followSeconds > 0 && runningProbe.getAsBoolean() && Instant.now().isBefore(deadline)) {
+        while (followSeconds > 0 && !abortProbe.getAsBoolean()
+                && runningProbe.getAsBoolean() && Instant.now().isBefore(deadline)) {
             try {
                 Thread.sleep(500);
             } catch (InterruptedException e) {
@@ -557,45 +669,112 @@ public class ProcessManagementTool implements CliTool {
             try {
                 LinesAfterResult after = readLinesAfter(outputFile, observedLines, Math.max(200, tailLines * 4));
                 observedLines = after.totalLines();
-                appendLinesAfterResult(sb, after);
+                appendLinesAfterResult(buffer, after, liveOutput);
             } catch (IOException e) {
-                appendWithNewline(sb, "Error reading output: " + e.getMessage());
+                String error = "Error reading output: " + e.getMessage();
+                buffer.add(error);
+                emitLine(liveOutput, error);
                 break;
             }
         }
 
-        if (sb.length() == 0) {
-            sb.append(outputFile == null || !Files.exists(outputFile) ? "(no output captured yet)" : "(no output)");
+        if (buffer.isEmpty()) {
+            String empty = outputFile == null || !Files.exists(outputFile)
+                    ? "(no output captured yet)" : "(no output)";
+            buffer.add(empty);
+            emitLine(liveOutput, empty);
         }
-        appendWithNewline(sb, "---");
-        appendWithNewline(sb, runningProbe.getAsBoolean() ? "stream status: process still running" : "stream status: process no longer running");
-        return sb.toString().stripTrailing();
+        buffer.add("---");
+        emitLine(liveOutput, "---");
+        String status = abortProbe.getAsBoolean()
+                ? "stream status: cancelled"
+                : runningProbe.getAsBoolean()
+                        ? "stream status: process still running"
+                        : "stream status: process no longer running";
+        buffer.add(status);
+        emitLine(liveOutput, status);
+        return buffer.render();
     }
 
-    private static void appendTailResult(StringBuilder sb, BackgroundProcessManager.TailResult tail) {
+    private static void appendTailResult(FollowBuffer buffer, BackgroundProcessManager.TailResult tail,
+                                         Consumer<String> liveOutput) {
         if (tail == null || tail.lines().isEmpty()) return;
         if (tail.omittedLines() > 0) {
-            appendWithNewline(sb, "... (" + tail.omittedLines() + " earlier lines omitted)");
+            String omitted = "... (" + tail.omittedLines() + " earlier lines omitted)";
+            buffer.add(omitted);
+            emitLine(liveOutput, omitted);
         }
         for (String line : tail.lines()) {
-            appendWithNewline(sb, line);
+            buffer.add(line);
+            emitLine(liveOutput, line);
         }
     }
 
-    private static void appendLinesAfterResult(StringBuilder sb, LinesAfterResult after) {
+    private static void appendLinesAfterResult(FollowBuffer buffer, LinesAfterResult after,
+                                               Consumer<String> liveOutput) {
         if (after == null || after.lines().isEmpty()) return;
         if (after.omittedNewLines() > 0) {
-            appendWithNewline(sb, "... (" + after.omittedNewLines() + " new lines omitted)");
+            String omitted = "... (" + after.omittedNewLines() + " new lines omitted)";
+            buffer.add(omitted);
+            emitLine(liveOutput, omitted);
         }
         for (String line : after.lines()) {
-            appendWithNewline(sb, line);
+            buffer.add(line);
+            emitLine(liveOutput, line);
         }
     }
 
-    private static long lineCount(Path file) throws IOException {
-        if (file == null || !Files.exists(file)) return 0;
-        try (java.util.stream.Stream<String> lines = Files.lines(file)) {
-            return lines.count();
+    private static void emitBlock(Consumer<String> output, String block) {
+        if (output == null || block == null || block.isEmpty()) return;
+        for (String line : block.stripTrailing().split("\\R", -1)) {
+            emitLine(output, line);
+        }
+    }
+
+    private static void emitLine(Consumer<String> output, String line) {
+        if (output == null) return;
+        try {
+            output.accept(line == null ? "" : line);
+        } catch (RuntimeException ignored) {
+            // A detached TUI/log sink must not terminate process following.
+        }
+    }
+
+    private static final class FollowBuffer {
+        private final int maxLines;
+        private final ArrayDeque<String> lines = new ArrayDeque<>();
+        private int chars;
+        private long omittedLines;
+
+        private FollowBuffer(int maxLines) {
+            this.maxLines = Math.max(3, maxLines);
+        }
+
+        private void add(String value) {
+            String line = value == null ? "" : value;
+            if (line.length() > MAX_STREAM_LINE_CHARS) {
+                line = line.substring(0, MAX_STREAM_LINE_CHARS - 1) + "…";
+            }
+            lines.addLast(line);
+            chars += line.length();
+            while (lines.size() > maxLines || chars > MAX_STREAM_OUTPUT_CHARS) {
+                chars -= lines.removeFirst().length();
+                omittedLines++;
+            }
+        }
+
+        private boolean isEmpty() {
+            return lines.isEmpty();
+        }
+
+        private String render() {
+            StringBuilder output = new StringBuilder(chars + lines.size() + 64);
+            if (omittedLines > 0) {
+                appendWithNewline(output,
+                        "... (" + omittedLines + " streamed lines omitted)");
+            }
+            for (String line : lines) appendWithNewline(output, line);
+            return output.toString().stripTrailing();
         }
     }
 

@@ -1,5 +1,6 @@
 package ai.kompile.chat.local.android.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.core.content.FileProvider
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -81,6 +84,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ai.kompile.chat.local.android.R
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
+import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
+import ai.kompile.chat.local.android.diagnostics.ExecutionDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.SmokeDecodeTraceLog
 import ai.kompile.chat.local.android.viewmodel.ChatViewModel
@@ -200,7 +205,7 @@ internal fun copyableChatTranscript(
     }
 }.trimEnd()
 
-internal fun copyableChatDebugTranscript(
+internal fun fullChatDebugTranscript(
     messages: List<UiMessage>,
     route: String,
     modelState: ModelUiState,
@@ -212,10 +217,12 @@ internal fun copyableChatDebugTranscript(
     errorStackTrace: String?,
     streaming: StreamingUiState?,
     smokeDecodeTrace: String,
+    dspDiagnosticsTrace: String = "",
     capturedAtEpochMillis: Long = System.currentTimeMillis()
 ): String = buildString {
     appendLine("Kompile Chat debug transcript")
     appendLine("captured_at_epoch_ms=${capturedAtEpochMillis}")
+    appendLine("execution_log_path=${ExecutionDiagnosticsTraceLog.LOG_RELATIVE_PATH}")
     appendLine("route=${route}")
     appendLine("model_state=${modelState.debugDescription()}")
     appendLine("graph_state=${graphState.debugDescription()}")
@@ -231,9 +238,42 @@ internal fun copyableChatDebugTranscript(
     appendLine("=== import diagnostics ===")
     appendLine(ImportDiagnosticPolicy.copyText(diagnostics).ifBlank { "none" })
     appendLine()
+    appendLine("=== persisted DSP execution trace ===")
+    appendLine(dspDiagnosticsTrace.trimEnd().ifBlank { "none" })
+    appendLine()
     appendLine("=== persisted smoke/native trace ===")
     appendLine(smokeDecodeTrace.trimEnd().ifBlank { "none" })
-}.trimEnd().let(::boundDebugClipboardText)
+}.trimEnd()
+
+internal fun copyableChatDebugTranscript(
+    messages: List<UiMessage>,
+    route: String,
+    modelState: ModelUiState,
+    graphState: GraphUiState,
+    importOperation: ImportOperationKind,
+    modelLoadProgress: ModelLoadProgressUi?,
+    diagnostics: List<ImportDiagnostic>,
+    error: String?,
+    errorStackTrace: String?,
+    streaming: StreamingUiState?,
+    smokeDecodeTrace: String,
+    dspDiagnosticsTrace: String = "",
+    capturedAtEpochMillis: Long = System.currentTimeMillis()
+): String = fullChatDebugTranscript(
+    messages = messages,
+    route = route,
+    modelState = modelState,
+    graphState = graphState,
+    importOperation = importOperation,
+    modelLoadProgress = modelLoadProgress,
+    diagnostics = diagnostics,
+    error = error,
+    errorStackTrace = errorStackTrace,
+    streaming = streaming,
+    smokeDecodeTrace = smokeDecodeTrace,
+    dspDiagnosticsTrace = dspDiagnosticsTrace,
+    capturedAtEpochMillis = capturedAtEpochMillis
+).let(::boundDebugClipboardText)
 
 private fun ModelUiState.debugDescription(): String = when (this) {
     ModelUiState.Checking -> "Checking"
@@ -279,25 +319,64 @@ fun ChatScreen(
             )
         )
     }
+    val captureFullDebugText: () -> String = {
+        val smokeDecodeTrace = SmokeDecodeTraceLog(traceContext).readContents()
+        val dspDiagnosticsTrace = DspDiagnosticsTraceLog(traceContext).contentsDescription()
+        val fullDebugText = fullChatDebugTranscript(
+            messages = messages,
+            route = route,
+            modelState = modelState,
+            graphState = graphState,
+            importOperation = importOperation,
+            modelLoadProgress = modelLoadProgress,
+            diagnostics = diagnostics,
+            error = error,
+            errorStackTrace = errorStackTrace,
+            streaming = streaming,
+            smokeDecodeTrace = smokeDecodeTrace,
+            dspDiagnosticsTrace = dspDiagnosticsTrace,
+        )
+        ExecutionDiagnosticsTraceLog(traceContext).writeSnapshot(fullDebugText)
+        fullDebugText
+    }
+
     val copyDebugTranscript: () -> Unit = {
         runCatching {
-            val debugText = copyableChatDebugTranscript(
-                messages = messages,
-                route = route,
-                modelState = modelState,
-                graphState = graphState,
-                importOperation = importOperation,
-                modelLoadProgress = modelLoadProgress,
-                diagnostics = diagnostics,
-                error = error,
-                errorStackTrace = errorStackTrace,
-                streaming = streaming,
-                smokeDecodeTrace = SmokeDecodeTraceLog(traceContext).readContents()
-            )
-            clipboard.setText(AnnotatedString(debugText))
+            clipboard.setText(AnnotatedString(boundDebugClipboardText(captureFullDebugText())))
         }.onFailure { failure ->
             // A clipboard/Binder failure must never take down the chat screen.
             Log.e(DEBUG_EXPORT_TAG, "Unable to copy debug transcript", failure)
+        }
+        Unit
+    }
+
+    val shareDebugTranscript: () -> Unit = {
+        runCatching {
+            captureFullDebugText()
+            val snapshotFile = ExecutionDiagnosticsTraceLog(traceContext).snapshotFile()
+            check(snapshotFile.isFile) {
+                "Complete execution diagnostics snapshot was not created."
+            }
+            val snapshotUri = FileProvider.getUriForFile(
+                traceContext,
+                "${traceContext.packageName}.fileprovider",
+                snapshotFile
+            )
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, snapshotUri)
+                putExtra(Intent.EXTRA_SUBJECT, "Kompile Chat execution diagnostics")
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "Execution summary attached as execution.log. Share the complete DSP trace separately from Settings."
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            traceContext.startActivity(
+                Intent.createChooser(sendIntent, "Share execution diagnostics")
+            )
+        }.onFailure { failure ->
+            Log.e(DEBUG_EXPORT_TAG, "Unable to share execution diagnostics", failure)
         }
         Unit
     }
@@ -411,6 +490,12 @@ fun ChatScreen(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text("Debug log", maxLines = 1)
+                    }
+                    IconButton(
+                        onClick = shareDebugTranscript,
+                        modifier = Modifier.testTag("share_debug_log_button")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "Share debug log")
                     }
                     // Small local context windows make resetting the conversation a
                     // first-class action, not a hidden side effect of Settings changes.

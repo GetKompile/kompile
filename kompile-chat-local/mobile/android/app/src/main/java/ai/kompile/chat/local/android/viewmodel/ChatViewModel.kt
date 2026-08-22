@@ -17,9 +17,11 @@ import ai.kompile.chat.local.GraphToolBackend
 import ai.kompile.chat.local.InferenceRouter
 import ai.kompile.chat.local.ProjectArchiveInstaller
 import ai.kompile.chat.local.android.BuildConfig
+import ai.kompile.chat.local.android.ChatGenerationForegroundService
 import ai.kompile.chat.local.android.HuggingFaceImportForegroundService
 import ai.kompile.chat.local.android.KompileChatApplication
 import ai.kompile.chat.local.android.acquisition.HuggingFaceGgmlAcquisition
+import ai.kompile.chat.local.android.diagnostics.DspDiagnosticsTraceLog
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnostic
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticPolicy
 import ai.kompile.chat.local.android.diagnostics.ImportDiagnosticSeverity
@@ -78,6 +80,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
 /**
@@ -640,19 +643,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (userText.isBlank()) return
         if (!sendGate.tryAcquire()) return
         viewModelScope.launch {
+            var foregroundGenerationId: Long? = null
             try {
+                withContext(Dispatchers.IO) {
+                    DspDiagnosticsTraceLog(context).resetForChat()
+                }
+                val generationId = ChatGenerationForegroundService.start(context) {
+                    localModel?.cancel()
+                }
+                foregroundGenerationId = generationId
                 appendUiMessage(UiMessage(role = "user", content = userText))
                 _thinking.value = true
                 _streaming.value = StreamingUiState()
                 _error.value = null
                 _errorStackTrace.value = null
                 val streamParser = StreamingTextParser()
+                val generatedCharacters = AtomicInteger(0)
                 val listener = object : ChatStreamListener {
                     override fun onStatus(status: String) {
+                        ChatGenerationForegroundService.publish(generationId, phase = status)
                         mutateStreaming { it.copy(phase = status) }
                     }
 
                     override fun onText(text: String) {
+                        ChatGenerationForegroundService.publish(
+                            generationId,
+                            generatedCharacters = generatedCharacters.addAndGet(text.length)
+                        )
                         streamParser.append(text) { reasoning, content ->
                             mutateStreaming {
                                 it.copy(reasoning = reasoning, content = content)
@@ -661,6 +678,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     override fun onToolCall(tool: String, argsJson: String) {
+                        ChatGenerationForegroundService.publish(generationId, phase = "running tool")
                         mutateStreaming {
                             it.copy(
                                 phase = "running_tool",
@@ -715,6 +733,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     override fun onResponse(response: ChatResponse) {
+                        ChatGenerationForegroundService.publish(generationId, phase = "Finalizing reply")
                         streamParser.finish { reasoning, content ->
                             mutateStreaming { it.copy(reasoning = reasoning, content = content) }
                         }
@@ -789,6 +808,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 )
                             }
                         } catch (failure: Exception) {
+                            if (failure is CancellationException) throw failure
+                            currentCoroutineContext().ensureActive()
                             val summary = if (failure is ChatException) {
                                 failure.message ?: "Local chat generation failed."
                             } else {
@@ -815,7 +836,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                val summary = "Android could not start protected background generation: " +
+                    (failure.message ?: failure.javaClass.name)
+                Log.e(TAG, "Background generation lease failed", failure)
+                _streaming.value = null
+                _error.value = summary
+                _errorStackTrace.value = failure.stackTraceToString()
             } finally {
+                foregroundGenerationId?.let { generationId ->
+                    ChatGenerationForegroundService.stop(context, generationId)
+                }
                 _thinking.value = false
                 sendGate.release()
             }
@@ -1103,6 +1136,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     prefs.maxTokens,
                     BuildConfig.SDX_TARGET_PROFILE
                 ),
+                preparationOptions = prefs.modelPreparationOptions,
                 onPreparationStage = ::publishModelPreparationStage,
             )
         } catch (failure: Throwable) {
@@ -2552,6 +2586,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             _localModelOptimizationState.value = HuggingFaceImportUiState.Working(progress)
             val sourceSha256 = sha256(source)
+            val tokenizerPath = HuggingFaceGgmlAcquisition
+                .existingTokenizerJsonPath(source.toPath())
+                ?.toString()
+            require(tokenizerPath != null) {
+                "Canonical tokenizer.json is unavailable for ${source.name}. " +
+                    "Models downloaded through Hugging Face retain this verified sidecar; " +
+                    "manually retained models must provide tokenizer.json beside the GGUF."
+            }
             progress = progress.copy(
                 message = "Verified ${source.name}; preparing ${options.weightOptimization.label}",
                 completedBytes = source.length(),
@@ -2573,6 +2615,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 activateStandaloneModelLocked(
                     modelPath = source.absolutePath,
                     previousSelection = previousSelection,
+                    tokenizerPath = tokenizerPath,
                     verifiedSourceSha256 = sourceSha256,
                     verifiedSourceBytes = source.length(),
                     preparationOptions = options,

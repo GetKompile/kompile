@@ -19,7 +19,9 @@ package ai.kompile.cli.main.chat.render;
 import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.TodoWriteTool;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.utils.AnsiConstants;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.jline.terminal.Terminal;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
@@ -62,7 +64,13 @@ public class TerminalRenderer {
     private static final int MAX_CONTEXT_TOOL_BUCKETS = 4;
     private static final int MAX_SUBAGENT_TOOL_OUTPUT_CHARS = 8_000;
     private static final int MAX_SUBAGENT_EDIT_DIFF_CHARS = 8_000;
-    private static final int MAX_INLINE_TOOL_DETAIL_CHARS = 12_000;
+    /**
+     * Interactive tool rows are printed above a live JLine prompt. Keep their
+     * inline payload small enough that a single completion cannot consume the
+     * entire viewport; the full result remains available in the activity panel.
+     */
+    private static final int MAX_INLINE_TOOL_DETAIL_CHARS = 2_400;
+    private static final int MAX_INLINE_TOOL_DETAIL_LINES = 48;
 
     // Tool markers — bold white text, no emojis
     private static final Map<String, String> TOOL_ICONS = Map.ofEntries(
@@ -149,6 +157,7 @@ public class TerminalRenderer {
             "body", "config_json", "content", "new_string", "old_string", "patch", "prompt");
 
     private final boolean ansiEnabled;
+    private volatile TerminalTitleController titleController;
 
     public TerminalRenderer() {
         this.ansiEnabled = detectAnsiSupport();
@@ -208,6 +217,11 @@ public class TerminalRenderer {
         return renderToolCallComplete(toolName, rawInput, result, true);
     }
 
+    /** Render only the stable completion row for a managed live tool block. */
+    public String renderToolCallSummary(String toolName, String rawInput, ToolResult result) {
+        return renderToolCallComplete(toolName, rawInput, result, false);
+    }
+
     private String renderToolCallComplete(String toolName, String rawInput, ToolResult result,
                                           boolean includeDetail) {
         String cleanName = stripMcpPrefix(toolName);
@@ -215,6 +229,7 @@ public class TerminalRenderer {
         String icon = TOOL_ICONS.getOrDefault(cleanName, "▸");
         StringBuilder sb = new StringBuilder();
         String action = prettifyToolInput(cleanName, rawInput, 96);
+        Map<String, Object> meta = result.getMetadata();
 
         if (result.isError()) {
             sb.append("  ").append(icon).append(" ").append(bold(red(displayName)));
@@ -222,7 +237,8 @@ public class TerminalRenderer {
                 sb.append(" ").append(dim(action));
             }
             sb.append(" ").append(red("✗"));
-            String errorPreview = truncatePreview(result.getOutput(), 120);
+            String errorPreview = result.isOutputStreamed()
+                    ? "" : truncatePreview(result.getOutput(), 120);
             if (!errorPreview.isBlank()) {
                 sb.append(" ").append(red(errorPreview));
             }
@@ -241,14 +257,13 @@ public class TerminalRenderer {
             }
 
             // Show metadata summary
-            Map<String, Object> meta = result.getMetadata();
             if (!meta.isEmpty()) {
                 sb.append(" ").append(dim(renderMetadata(meta)));
             }
 
             // Show output preview for certain tools
             String output = result.getOutput();
-            if (output != null && !output.isEmpty()) {
+            if (!result.isOutputStreamed() && output != null && !output.isEmpty()) {
                 if (shouldShowPreview(cleanName, meta)
                         || ((result.getTitle() == null || result.getTitle().isBlank()) && meta.isEmpty())) {
                     String preview = firstOutputLine(output, 140);
@@ -275,7 +290,7 @@ public class TerminalRenderer {
      * the source-side changes for edit/patch calls.
      */
     public String renderToolResultDetail(String toolName, String rawInput, ToolResult result) {
-        if (result == null) return "";
+        if (result == null || result.isOutputStreamed()) return "";
 
         String cleanName = stripMcpPrefix(toolName);
         StringBuilder detail = new StringBuilder();
@@ -298,6 +313,36 @@ public class TerminalRenderer {
         return detail.toString();
     }
 
+    /**
+     * Render live tool/process output as a nested transcript body. Cursor-control
+     * escapes are stripped because the managed TUI owns cursor positioning.
+     */
+    public String renderToolOutput(String output) {
+        String normalized = printableToolOutput(output)
+                .replace("\r\n", "\n")
+                .replace('\r', '\n');
+        String[] lines = normalized.split("\n", -1);
+        StringBuilder rendered = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) rendered.append('\n');
+            rendered.append("  ").append(cyan("│")).append(" ").append(lines[i]);
+        }
+        return rendered.toString();
+    }
+
+    private static String printableToolOutput(String output) {
+        String stripped = AnsiConstants.stripAnsi(output == null ? "" : output);
+        StringBuilder safe = new StringBuilder(stripped.length());
+        stripped.codePoints().forEach(codePoint -> {
+            if (codePoint == '\n' || codePoint == '\r' || codePoint == '\t'
+                    || (codePoint >= 0x20 && codePoint != 0x7f
+                    && !(codePoint >= 0x80 && codePoint <= 0x9f))) {
+                safe.appendCodePoint(codePoint);
+            }
+        });
+        return safe.toString();
+    }
+
     private static List<String> renderWriteContentLines(String rawInput) {
         if (rawInput == null || rawInput.isBlank()) return List.of();
         try {
@@ -315,9 +360,11 @@ public class TerminalRenderer {
         if (lines == null || lines.isEmpty()) return;
         detail.append("  ").append(dim("↳ " + label + ":"));
         int shownChars = 0;
+        int shownLines = 0;
         boolean truncated = false;
         for (String line : lines) {
-            if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS) {
+            if (shownChars >= MAX_INLINE_TOOL_DETAIL_CHARS
+                    || shownLines >= MAX_INLINE_TOOL_DETAIL_LINES) {
                 truncated = true;
                 break;
             }
@@ -329,11 +376,13 @@ public class TerminalRenderer {
             }
             detail.append("\n     ").append(diff ? colorDiffLine(visible) : visible);
             shownChars += visible.length();
+            shownLines++;
             if (truncated) break;
         }
         if (truncated) {
             detail.append("\n     ").append(dim("… (tool detail truncated at "
-                    + MAX_INLINE_TOOL_DETAIL_CHARS + " chars)"));
+                    + MAX_INLINE_TOOL_DETAIL_CHARS + " chars / "
+                    + MAX_INLINE_TOOL_DETAIL_LINES + " lines)"));
         }
     }
 
@@ -847,15 +896,15 @@ public class TerminalRenderer {
     public SpinnerHandle startStaticSpinner(String chainInfo) {
         if (chainInfo == null) chainInfo = "";
         final String chain = chainInfo;
-        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
+        setActivity(ChatActivityPhase.THINKING, titleChainDetail(chain));
 
         if (ansiEnabled) {
             System.out.print("\r" + ESC + "2K"
                     + "  " + DIM + "Kompiling..." + RESET + chain
-                    + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+                    + DIM + "  (Esc to cancel)" + RESET);
             System.out.flush();
         } else {
-            System.out.println("  Kompiling..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.println("  Kompiling..." + chain + "  (Esc to cancel)");
             System.out.flush();
         }
 
@@ -872,10 +921,11 @@ public class TerminalRenderer {
             @Override
             public void setPhase(String phase) {
                 super.setPhase(phase);
+                setActivity(ChatActivityPhase.fromLabel(phase), titleChainDetail(chain));
                 if (ansiEnabled && phase != null) {
                     System.out.print("\r" + ESC + "2K"
                             + "  " + DIM + phase + "..." + RESET + chain
-                            + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+                            + DIM + "  (Esc to cancel)" + RESET);
                     System.out.flush();
                 }
             }
@@ -894,11 +944,10 @@ public class TerminalRenderer {
         if (chainInfo == null) chainInfo = "";
         final String chain = chainInfo;
 
-        // Set terminal title to show generating state
-        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
+        setActivity(ChatActivityPhase.THINKING, titleChainDetail(chain));
 
         if (!ansiEnabled) {
-            System.out.println("  Kompiling..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.println("  Kompiling..." + chain + "  (Esc to cancel)");
             System.out.flush();
             return new SpinnerHandle(null) {
                 @Override
@@ -938,7 +987,7 @@ public class TerminalRenderer {
                 System.out.print("\r" + ESC + "2K"
                         + "  " + yellow(spinner) + " " + DIM + phase + RESET
                         + chain
-                        + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+                        + DIM + "  (Esc to cancel)" + RESET);
                 System.out.flush();
                 frame++;
                 try {
@@ -970,7 +1019,7 @@ public class TerminalRenderer {
         if (chainInfo == null) chainInfo = "";
         final String chain = chainInfo;
 
-        setTerminalTitle("⏳ Kompiling..." + (chain.isEmpty() ? "" : " " + chain));
+        setActivity(ChatActivityPhase.THINKING, titleChainDetail(chain));
 
         if (!ansiEnabled) {
             System.out.println("  Kompiling..." + chain);
@@ -1036,22 +1085,71 @@ public class TerminalRenderer {
     // Terminal title management
     // ========================================================================
 
+    /** Attach title output to the actual JLine terminal used by the chat session. */
+    public void attachTerminal(Terminal terminal, String readyTitle) {
+        if (titleController == null) {
+            titleController = new TerminalTitleController();
+        }
+        titleController.attach(terminal, readyTitle);
+    }
+
+    /** Detach title output when the JLine terminal is closing. */
+    public void detachTerminal() {
+        TerminalTitleController controller = titleController;
+        if (controller != null) controller.detach();
+    }
+
+    /** Update the tab title from the same activity label shown in the status bar. */
+    public void updateActivity(String activity) {
+        TerminalTitleController controller = titleController;
+        if (controller != null) controller.updateLabel(activity);
+    }
+
+    /** Update the tab title from a typed foreground phase. */
+    public void setActivity(ChatActivityPhase phase, String detail) {
+        TerminalTitleController controller = titleController;
+        if (controller != null) controller.update(phase, detail);
+    }
+
     /**
      * Set the terminal tab/window title using OSC escape sequence.
-     * Works on most modern terminals (xterm, iTerm2, GNOME Terminal, Windows Terminal, etc.)
+     * Works on most modern terminals (xterm, iTerm2, GNOME Terminal, Windows Terminal, etc.).
      */
     public void setTerminalTitle(String title) {
+        TerminalTitleController controller = titleController;
+        if (controller != null) {
+            controller.setRawTitle(title);
+            return;
+        }
         if (!ansiEnabled) return;
-        // OSC 0 ; title BEL
+        // Keep the pre-attach behavior for callers that use the renderer without JLine.
         System.out.print("\033]0;" + title + "\007");
         System.out.flush();
     }
 
-    /**
-     * Reset the terminal title to the default kompile chat title.
-     */
+    /** Update the stable title restored after foreground work completes. */
+    public void setReadyTerminalTitle(String title) {
+        TerminalTitleController controller = titleController;
+        if (controller != null) {
+            controller.setReadyTitle(title);
+        } else {
+            setTerminalTitle(title);
+        }
+    }
+
+    /** Reset the terminal title to the attached session's ready title. */
     public void resetTerminalTitle() {
-        setTerminalTitle("kompile chat");
+        TerminalTitleController controller = titleController;
+        if (controller != null) {
+            controller.reset();
+        } else {
+            setTerminalTitle("kompile chat");
+        }
+    }
+
+    private static String titleChainDetail(String chain) {
+        if (chain == null || chain.isBlank()) return "";
+        return AnsiConstants.stripAnsi(chain).trim();
     }
 
     // ========================================================================
@@ -1292,6 +1390,7 @@ public class TerminalRenderer {
             String key = entry.getKey();
             // Skip verbose metadata
             if ("path".equals(key) || "created".equals(key) || "matchType".equals(key)
+                    || ToolResult.OUTPUT_STREAMED_METADATA.equals(key)
                     || isSensitiveParam(key)) continue;
             if (!first) sb.append(", ");
             sb.append(key).append("=").append(entry.getValue());

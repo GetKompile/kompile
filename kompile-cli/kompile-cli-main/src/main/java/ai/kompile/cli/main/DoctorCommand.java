@@ -15,6 +15,7 @@
  */
 package ai.kompile.cli.main;
 
+import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.config.GpuProbe;
 import ai.kompile.cli.common.config.HardwareAutoConfigurator;
 import ai.kompile.cli.common.http.KompileHttpClient;
@@ -28,6 +29,7 @@ import ai.kompile.cli.common.util.JavaRuntimeLocator;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import ai.kompile.core.agent.AgentProvider;
 import ai.kompile.core.agent.CliAgentRegistry;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import picocli.CommandLine;
@@ -233,7 +235,9 @@ public class DoctorCommand implements Callable<Integer> {
             ComponentRegistry reg = new ComponentRegistry();
             boolean jarTierInstalled =
                     reg.findInstalledJar(ComponentRegistry.KOMPILE_APP_MAIN) != null
-                    || reg.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING) != null;
+                    || reg.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_STAGING) != null
+                    || reg.findInstalledJar(ComponentRegistry.KOMPILE_MODEL_SERVING) != null
+                    || reg.findInstalledJar(ComponentRegistry.KOMPILE_PIPELINE_SERVING) != null;
             if (jarTierInstalled) {
                 out.add(CheckResult.fail("Java runtime",
                         "not found: " + e.getMessage(),
@@ -251,30 +255,19 @@ public class DoctorCommand implements Callable<Integer> {
     List<CheckResult> checkComponents() {
         List<CheckResult> out = new ArrayList<>();
         ComponentRegistry reg = new ComponentRegistry();
-        Path kompileHome = Info.homeDirectory().toPath();
-        boolean localDistribution = isLocalDistribution(kompileHome);
-
-        List<String> required = localDistribution
-                ? List.of(ComponentRegistry.KOMPILE_MODEL_STAGING,
-                        ComponentRegistry.KOMPILE_MODEL_SERVING,
-                        ComponentRegistry.KOMPILE_PIPELINE_SERVING)
-                : List.of(ComponentRegistry.KOMPILE_APP_MAIN, ComponentRegistry.KOMPILE_MODEL_STAGING);
-        // Standard chat and crawl run inside the CLI in a local distribution. Persona apps are
-        // required only by the full/web execution model.
-        List<String> personas = localDistribution
-                ? List.of()
-                : List.of(ComponentRegistry.KOMPILE_APP_CHAT,
-                        ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER);
+        Path installHome = KompileHome.installDirectory().toPath().toAbsolutePath().normalize();
+        DistributionComponentContract contract = distributionComponentContract(installHome);
+        List<String> required = contract.required();
+        List<String> optional = contract.optional();
         List<String> all = new ArrayList<>(required);
-        all.addAll(personas);
+        all.addAll(optional);
 
         for (String id : all) {
             try {
                 File artifact = reg.findInstalledJar(id);
                 if (artifact == null) {
                     String fix = "Install with: kompile install " + id
-                            + "  — or reinstall the "
-                            + (localDistribution ? "local" : "full")
+                            + "  — or reinstall the " + contract.variant()
                             + " distribution (install.sh)";
                     out.add(required.contains(id)
                             ? CheckResult.fail(id, "not installed", fix)
@@ -292,6 +285,59 @@ public class DoctorCommand implements Callable<Integer> {
             }
         }
         return out;
+    }
+
+    record DistributionComponentContract(
+            String variant, List<String> required, List<String> optional) {
+    }
+
+    /**
+     * Resolve the component closure from the distribution manifest. The manifest
+     * is authoritative: a component marked absent is intentionally omitted and
+     * must not make doctor fail. Legacy installs without metadata retain the old
+     * local/full fallback contract.
+     */
+    static DistributionComponentContract distributionComponentContract(Path installHome) {
+        Path metadata = installHome.resolve(".dist-info.json");
+        if (Files.isRegularFile(metadata)) {
+            try {
+                JsonNode root = JSON.readTree(metadata.toFile());
+                String variant = root.path("variant").asText("distribution");
+                JsonNode components = root.path("components");
+                LinkedHashMap<String, String> componentIds = new LinkedHashMap<>();
+                componentIds.put("server", ComponentRegistry.KOMPILE_APP_MAIN);
+                componentIds.put("model-staging", ComponentRegistry.KOMPILE_MODEL_STAGING);
+                componentIds.put("model-serving", ComponentRegistry.KOMPILE_MODEL_SERVING);
+                componentIds.put("pipeline-serving", ComponentRegistry.KOMPILE_PIPELINE_SERVING);
+                componentIds.put("chat", ComponentRegistry.KOMPILE_APP_CHAT);
+                componentIds.put("crawl-manager", ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER);
+
+                List<String> required = new ArrayList<>();
+                componentIds.forEach((metadataId, registryId) -> {
+                    if (components.path(metadataId).path("present").asBoolean(false)) {
+                        required.add(registryId);
+                    }
+                });
+                return new DistributionComponentContract(variant, List.copyOf(required), List.of());
+            } catch (IOException ignored) {
+                // Fall through to the legacy marker contract for older/corrupt installs.
+            }
+        }
+
+        boolean localDistribution = isLocalDistribution(installHome);
+        return localDistribution
+                ? new DistributionComponentContract(
+                        "local",
+                        List.of(ComponentRegistry.KOMPILE_MODEL_STAGING,
+                                ComponentRegistry.KOMPILE_MODEL_SERVING,
+                                ComponentRegistry.KOMPILE_PIPELINE_SERVING),
+                        List.of())
+                : new DistributionComponentContract(
+                        "full",
+                        List.of(ComponentRegistry.KOMPILE_APP_MAIN,
+                                ComponentRegistry.KOMPILE_MODEL_STAGING),
+                        List.of(ComponentRegistry.KOMPILE_APP_CHAT,
+                                ComponentRegistry.KOMPILE_APP_CRAWL_MANAGER));
     }
 
     static boolean isLocalDistribution(Path kompileHome) {

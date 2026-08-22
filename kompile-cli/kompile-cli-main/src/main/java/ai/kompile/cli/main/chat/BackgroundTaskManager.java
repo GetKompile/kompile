@@ -38,10 +38,11 @@ public class BackgroundTaskManager {
         private final String id;
         private final String description;
         private final Instant startedAt;
-        private BackgroundTaskStatus status;
-        private Instant completedAt;
+        private volatile BackgroundTaskStatus status;
+        private volatile Instant completedAt;
         private String output;
-        private Throwable error;
+        private volatile Throwable error;
+        private volatile boolean backgrounded;
 
         public enum BackgroundTaskStatus {
             RUNNING,
@@ -80,17 +81,26 @@ public class BackgroundTaskManager {
 
         public void setStatus(BackgroundTaskStatus status) {
             this.status = status;
+            if (status == BackgroundTaskStatus.BACKGROUNDED) {
+                this.backgrounded = true;
+            }
             if (status == BackgroundTaskStatus.COMPLETED || status == BackgroundTaskStatus.FAILED) {
                 this.completedAt = Instant.now();
             }
         }
 
-        public String getOutput() {
+        public boolean wasBackgrounded() {
+            return backgrounded;
+        }
+
+        public synchronized String getOutput() {
             return output;
         }
 
-        public void appendOutput(String text) {
-            this.output += text;
+        public synchronized void appendOutput(String text) {
+            if (text != null) {
+                this.output += text;
+            }
         }
 
         public Throwable getError() {
@@ -142,7 +152,7 @@ public class BackgroundTaskManager {
 
     private final Map<String, BackgroundTask> tasks;
     private final List<String> taskOrder;
-    private BackgroundTask currentTask;
+    private volatile BackgroundTask currentTask;
     private volatile boolean backgroundRequested = false;
 
     // Queue chain tracking
@@ -213,7 +223,7 @@ public class BackgroundTaskManager {
     /**
      * Starts tracking a new background task.
      */
-    public BackgroundTask startTask(String description) {
+    public synchronized BackgroundTask startTask(String description) {
         BackgroundTask task = new BackgroundTask(description);
         tasks.put(task.getId(), task);
         taskOrder.add(task.getId());
@@ -227,15 +237,27 @@ public class BackgroundTaskManager {
         return currentTask;
     }
 
+    /** True only while Ctrl+B can transition the current foreground turn. */
+    public synchronized boolean isCurrentTaskBackgroundable() {
+        return currentTask != null
+                && currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.RUNNING
+                && !backgroundRequested;
+    }
+
     /**
      * Signals that the current task should be backgrounded.
      */
-    public void requestBackground() {
-        backgroundRequested = true;
-        if (currentTask != null) {
-            currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.BACKGROUNDED);
-            fireChange();
+    public synchronized BackgroundTask requestBackground() {
+        if (currentTask == null
+                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED
+                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.COMPLETED
+                || currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.FAILED) {
+            return null;
         }
+        backgroundRequested = true;
+        currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.BACKGROUNDED);
+        fireChange();
+        return currentTask;
     }
 
     public boolean isBackgroundRequested() {
@@ -250,15 +272,18 @@ public class BackgroundTaskManager {
      * Marks the current task as completed. If it was backgrounded,
      * adds to pending notifications.
      */
-    public void completeCurrentTask() {
+    public synchronized void completeCurrentTask() {
         if (currentTask != null) {
-            boolean wasBackgrounded = currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
-            currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.COMPLETED);
+            boolean wasBackgrounded = currentTask.wasBackgrounded();
+            if (currentTask.getStatus() != BackgroundTask.BackgroundTaskStatus.FAILED) {
+                currentTask.setStatus(BackgroundTask.BackgroundTaskStatus.COMPLETED);
+            }
             if (wasBackgrounded) {
                 pendingNotifications.add(currentTask);
             }
             BackgroundTask finished = currentTask;
             currentTask = null;
+            backgroundRequested = false;
             fireCompletion(finished);
             fireChange();
         }
@@ -270,15 +295,16 @@ public class BackgroundTaskManager {
      * pending notifications so the REPL surfaces the failure at the next
      * prompt.
      */
-    public void failCurrentTask(Throwable error) {
+    public synchronized void failCurrentTask(Throwable error) {
         if (currentTask != null) {
-            boolean wasBackgrounded = currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+            boolean wasBackgrounded = currentTask.wasBackgrounded();
             currentTask.setError(error);
             if (wasBackgrounded) {
                 pendingNotifications.add(currentTask);
             }
             BackgroundTask finished = currentTask;
             currentTask = null;
+            backgroundRequested = false;
             fireCompletion(finished);
             fireChange();
         }
@@ -369,7 +395,8 @@ public class BackgroundTaskManager {
 
     public boolean removeTask(String id) {
         BackgroundTask task = tasks.get(id);
-        if (task != null && task.getStatus() != BackgroundTask.BackgroundTaskStatus.RUNNING) {
+        if (task != null && (task.getStatus() == BackgroundTask.BackgroundTaskStatus.COMPLETED
+                || task.getStatus() == BackgroundTask.BackgroundTaskStatus.FAILED)) {
             tasks.remove(id);
             taskOrder.remove(id);
             return true;

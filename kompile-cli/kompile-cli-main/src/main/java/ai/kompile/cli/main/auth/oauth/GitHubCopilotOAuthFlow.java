@@ -18,7 +18,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** GitHub Copilot OAuth device flow, including GitHub Enterprise hosts. */
-final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
+public final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "github-copilot";
 
     private static final String CLIENT_ID = "Iv1.b507a08c87ecfe98";
@@ -32,7 +32,7 @@ final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
     private final OAuthSupport.HttpTransport http;
     private final OAuthSupport.DeviceCodePoller poller;
 
-    GitHubCopilotOAuthFlow() {
+    public GitHubCopilotOAuthFlow() {
         this(OAuthSupport.defaultTransport(), new OAuthSupport.DeviceCodePoller());
     }
 
@@ -46,6 +46,11 @@ final class GitHubCopilotOAuthFlow implements OAuthProviderFlow {
     @Override
     public String providerId() {
         return PROVIDER_ID;
+    }
+
+    @Override
+    public boolean supportsApiKey() {
+        return false;
     }
 
     @Override

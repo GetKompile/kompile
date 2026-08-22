@@ -361,11 +361,11 @@ public class EvalRunner {
                     mapper, "", agentRegistry, permissionService,
                     renderer, processManager, chatConfig, null);
 
+            String sessionId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
             AgenticChatLoop loop = new AgenticChatLoop(
                     null, mapper, toolRegistry, permissionService,
                     agentRegistry, workDir, directClient, processManager);
-
-            String sessionId = "eval-" + UUID.randomUUID().toString().substring(0, 8);
+            loop.configureConversationSession(sessionId);
 
             // Execute with timeout
             ExecutorService executor = Executors.newSingleThreadExecutor();

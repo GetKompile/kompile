@@ -80,6 +80,20 @@ class SubagentOutputRoutingTest {
     }
 
     @Test
+    void additionalAbortCheckComposesWithoutMutatingOwnedSignal() {
+        AtomicBoolean parent = new AtomicBoolean(false);
+        ToolContext context = new ToolContext(
+                "composed-cancel-session", null, null,
+                Path.of(".").toAbsolutePath(), null);
+        context.linkAbortCheck(parent::get);
+
+        parent.set(true);
+
+        assertEquals(true, context.isAborted());
+        assertFalse(context.getAbortSignal().get());
+    }
+
+    @Test
     void blankAndNullEntriesArePreservedForTranscriptSpacing() {
         List<String> output = new ArrayList<>();
         ToolContext context = new ToolContext(

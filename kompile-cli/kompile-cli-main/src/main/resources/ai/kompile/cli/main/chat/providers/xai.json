@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "provider": "xai",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "xAI reasoning effort guide",
+    "url": "https://docs.x.ai/docs/guides/reasoning",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": [
+    {
+      "modelPatterns": [
+        "^grok-4\\.6(?:$|[-.].*)",
+        "^grok-4\\.20-multi-agent(?:$|[-.].*)"
+      ],
+      "defaultValue": "high",
+      "mandatory": true,
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^grok-4\\.5(?:$|[-.].*)"
+      ],
+      "defaultValue": "high",
+      "mandatory": true,
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        }
+      ]
+    }
+  ]
+}

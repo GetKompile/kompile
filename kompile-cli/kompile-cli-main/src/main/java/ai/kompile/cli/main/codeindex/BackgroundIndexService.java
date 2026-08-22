@@ -301,7 +301,7 @@ public final class BackgroundIndexService {
         } catch (Exception e) {
             job.error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             job.status = JobStatus.FAILED;
-            System.err.println("[code-index] background index failed for '"
+            CodeIndexDiagnostics.alert("[code-index] background index failed for '"
                     + job.projectId() + "': " + job.error);
         } finally {
             job.finishedAt = Instant.now();
@@ -427,7 +427,7 @@ public final class BackgroundIndexService {
             if (note == null) return inProgress;
             return inProgress == null ? note : note + "\n" + inProgress;
         } catch (Exception e) {
-            System.err.println("[code-index] background freshness skipped for '"
+            CodeIndexDiagnostics.alert("[code-index] background freshness skipped for '"
                     + projectId + "': " + e.getMessage());
             return null;
         }
@@ -477,7 +477,7 @@ public final class BackgroundIndexService {
             state.writeSeq.incrementAndGet();
             scheduleRefresh(state, 0);
         } catch (Exception e) {
-            System.err.println("[code-index] write notification dropped: " + e.getMessage());
+            CodeIndexDiagnostics.alert("[code-index] write notification dropped: " + e.getMessage());
         }
     }
 
@@ -573,7 +573,7 @@ public final class BackgroundIndexService {
             }
             state.lastRefreshCompletedMs = System.currentTimeMillis();
         } catch (Exception e) {
-            System.err.println("[code-index] background refresh failed for '"
+            CodeIndexDiagnostics.alert("[code-index] background refresh failed for '"
                     + state.projectId + "': " + e.getMessage());
             // Don't wedge waiters on a persistently failing project.
             state.cleanSeq = Math.max(state.cleanSeq, seqBefore);
@@ -668,7 +668,7 @@ public final class BackgroundIndexService {
             } catch (Exception e) {
                 // Typically inotify watch exhaustion — degrade to polling.
                 state.watcherFailed = true;
-                System.err.println("[code-index] watcher unavailable for '"
+                CodeIndexDiagnostics.alert("[code-index] watcher unavailable for '"
                         + state.projectId + "' (falling back to periodic refresh): "
                         + e.getMessage());
                 return false;

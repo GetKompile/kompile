@@ -4,6 +4,7 @@ import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tui.KompileTui;
+import ai.kompile.cli.main.chat.tui.VirtualTerminal;
 import org.jline.reader.*;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
@@ -247,6 +248,97 @@ class ChatCompleterTtyTest {
     // ========================================================================
 
     @Test
+    void largeBracketedPasteStaysCompactUntilSubmission() throws Exception {
+        ChatCompleter.enableAutoTrigger(reader);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            String pasted = "x".repeat(1_200);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+
+            keyboardPipe.write("\033[200~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write(pasted.getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write("\033[201~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!reader.getBuffer().toString().contains("[Pasted 1,200 characters]")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals("[Pasted 1,200 characters]", reader.getBuffer().toString());
+            assertTrue(terminalOutput.toString(StandardCharsets.UTF_8)
+                    .contains("[Pasted 1,200 characters]"));
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals(pasted, line.get(5, TimeUnit.SECONDS),
+                    "ACCEPT_LINE must expand the compact token to the exact pasted text");
+        } finally {
+            ChatCompleter.clearTerminalRef(reader);
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void rightClickPastesClipboardThroughManagedMouseWithoutExpandingLargeText() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-right-click-paste-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-right-click-paste-" + UUID.randomUUID());
+        queue.clear();
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true));
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), () -> 3);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        String pasted = "clipboard ".repeat(150);
+        try {
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.enableAutoTrigger(reader);
+            ChatRepl.bindStandardChatActivityKeys(
+                    (LineReaderImpl) reader, queue, activityPanel, tui,
+                    ignored -> { }, () -> pasted);
+            tui.start(terminal);
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+            // X10 Button3 press at x=1,y=1. Mouse tracking would normally consume
+            // this and prevent the terminal emulator's native context-menu paste.
+            keyboardPipe.write("\033[M\"!!".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+
+            int chars = pasted.codePointCount(0, pasted.length());
+            String token = "[Pasted " + String.format(Locale.ROOT, "%,d", chars)
+                    + " characters]";
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!token.equals(reader.getBuffer().toString())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(token, reader.getBuffer().toString());
+            assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains(token));
+
+            keyboardPipe.write(" tail".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals(pasted + " tail", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            queue.clear();
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @Test
     void emptyQueueDoesNotReservePermanentPostRows() {
         ChatCompleter.setQueueSupplier(List::of);
         assertEquals("", ChatCompleter.buildPostWithQueue());
@@ -420,6 +512,539 @@ class ChatCompleterTtyTest {
             executor.shutdownNow();
             tui.stop();
             System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void largeRepeatedActivityFramesPreservePrintableInput() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-large-frame-test");
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes,
+                new MessageQueue("chat-completer-large-frame-queue"),
+                new TerminalRenderer(true));
+        PrintStream previousOut = System.out;
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            System.setOut(new PrintStream(terminalOutput, true, StandardCharsets.UTF_8));
+            tui.start(terminal);
+            tui.attachLineReader(reader);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+
+            String largeContent = String.join("\n",
+                    Collections.nCopies(200, "large tool result row"));
+            for (int i = 0; i < 20; i++) {
+                tui.showActivityView("process:large", "large result " + i, largeContent);
+            }
+            Thread.sleep(150);
+            String redrawOutput = terminalOutput.toString(StandardCharsets.UTF_8);
+            assertTrue(redrawOutput.contains("kompile > "),
+                    "large redraws must redisplay the complete chat prompt");
+            assertTrue(redrawOutput.contains("\033[?25h"),
+                    "large redraws must leave the input cursor visible");
+
+            keyboardPipe.write("typed".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("typed", line.get(5, TimeUnit.SECONDS),
+                    "coalesced full-frame redraws must not move the input anchor");
+        } finally {
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void oversizedAnsiToolLineNeverWrapsIntoInputOrFixedRows() throws Exception {
+        terminal.setSize(new Size(48, 20));
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-hard-input-boundary-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-hard-input-boundary-" + UUID.randomUUID());
+        queue.clear();
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true));
+        tui.setReservedRowsCalculator((height, width) -> 2);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.setContentOutput(tui::recordInScrollRegion);
+            ChatCompleter.enableAutoTrigger(reader);
+            tui.start(terminal);
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            keyboardPipe.write("draft".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (reader.getBuffer().length() < 5 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+
+            terminalOutput.reset();
+            String oversized = "  ▸ Tool " + "\033[36m" + "x".repeat(2_000) + "\033[0m";
+            ChatCompleter.printAbove(oversized);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("kompile > draft")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            VirtualTerminal frame = new VirtualTerminal(20, 48);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            int inputRow = tui.scrollBottom() - 1;
+            assertTrue(frame.getRow(inputRow).contains("kompile > draft"),
+                    () -> "oversized tool output must preserve the input row\n" + frame.screenDump());
+            assertFalse(frame.getRow(inputRow).contains("xxx"),
+                    "tool content must never auto-wrap into the input row");
+            for (int row = tui.queueTop() - 1; row < 20; row++) {
+                assertFalse(frame.getRow(row).contains("xxx"),
+                        "tool output must not enter queue/activity/status rows");
+            }
+            assertEquals(inputRow, frame.getCursorRow());
+            assertEquals("kompile > draft".length(), frame.getCursorCol());
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("draft", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            queue.clear();
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @Test
+    void viewportScrollingRepaintsContentAndRestoresCursorAfterPrompt() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-scroll-cursor-test");
+        MessageQueue queue = new MessageQueue("chat-completer-scroll-cursor-queue");
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true)) {
+            @Override
+            public void requestRedraw() {
+                // Exercise the input widget's synchronous repaint contract. A
+                // later background frame must not be allowed to hide the race.
+            }
+        };
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), () -> 3);
+        PrintStream previousOut = System.out;
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            System.setOut(new PrintStream(terminalOutput, true, StandardCharsets.UTF_8));
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            for (int i = 1; i <= 80; i++) {
+                tui.recordInScrollRegion("retained line " + i);
+            }
+            ChatRepl.bindStandardChatActivityKeys(
+                    (LineReaderImpl) reader, queue, activityPanel, tui);
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+            keyboardPipe.write("\033[5~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(tui.getContentScrollOffset() > 0,
+                    "PageUp must move the managed transcript viewport");
+
+            keyboardPipe.write("\033[1;5F".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, tui.getContentScrollOffset(),
+                    "Ctrl+End must return the viewport to the live tail");
+
+            terminalOutput.reset();
+            keyboardPipe.write("\033[M`!!".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("kompile > ")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            assertTrue(tui.getContentScrollOffset() > 0,
+                    "mouse wheel up must move the managed transcript viewport");
+            assertFalse(tui.getVisibleContentLines().contains("retained line 80"),
+                    "the scrolled viewport must no longer show the live tail");
+
+            VirtualTerminal frame = new VirtualTerminal(40, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(frame.getRow(2).contains("[↓ Bottom]"),
+                    () -> "scrolled viewport must show the clickable bottom control\n"
+                            + frame.screenDump());
+            assertTrue(frame.getRow(tui.scrollBottom() - 1).contains("kompile >"),
+                    () -> "the prompt must be repainted on the input row\n" + frame.screenDump());
+            assertEquals(tui.scrollBottom() - 1, frame.getCursorRow(),
+                    "viewport repaint must return the cursor to the input row");
+            assertEquals("kompile > ".length(), frame.getCursorCol(),
+                    "the text cursor must be restored after the prompt");
+
+            terminalOutput.reset();
+            // X10 Button1 press at zero-based x=2,y=2, inside [↓ Bottom].
+            keyboardPipe.write("\033[M ##".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, tui.getContentScrollOffset(),
+                    "clicking the separator control must return to the live tail");
+            assertTrue(tui.getVisibleContentLines().contains("retained line 80"));
+
+            VirtualTerminal bottomFrame = new VirtualTerminal(40, 120);
+            bottomFrame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertFalse(bottomFrame.getRow(2).contains("[↓ Bottom]"),
+                    () -> "control must disappear after reaching the live tail\n"
+                            + bottomFrame.screenDump());
+            assertTrue(bottomFrame.getRow(tui.scrollBottom() - 1).contains("kompile >"),
+                    () -> "click repaint must preserve the prompt row\n"
+                            + bottomFrame.screenDump());
+            assertEquals(tui.scrollBottom() - 1, bottomFrame.getCursorRow());
+            assertEquals("kompile > ".length(), bottomFrame.getCursorCol());
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void queuePaneSurvivesViewportScrollingAndLatestMessageEditsInPlace() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-queue-pane-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-queue-pane-" + UUID.randomUUID());
+        queue.clear();
+        MessageQueue.QueuedMessage first = queue.enqueue("first upcoming instruction");
+        MessageQueue.QueuedMessage second = queue.enqueue("second queued revision");
+        queue.enqueue("third queued follow-up");
+        MessageQueue.QueuedMessage latest = queue.enqueue("latest hidden queued edit");
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true));
+        tui.setReservedRowsCalculator((height, width) -> 3);
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), tui::getReservedMiddleRows);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            activityPanel.refresh();
+            for (int i = 1; i <= 80; i++) {
+                tui.recordInScrollRegion("retained queue test line " + i);
+            }
+            ChatRepl.bindStandardChatActivityKeys(
+                    (LineReaderImpl) reader, queue, activityPanel, tui);
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+            keyboardPipe.write("\033[5~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertTrue(tui.getContentScrollOffset() > 0);
+
+            VirtualTerminal frame = new VirtualTerminal(40, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            StringBuilder queuePane = new StringBuilder();
+            for (int row = tui.queueTop() - 1; row <= tui.queueBottom() - 1; row++) {
+                queuePane.append(frame.getRow(row)).append('\n');
+            }
+            assertTrue(queuePane.toString().contains("upcoming"));
+            assertTrue(queuePane.toString().contains(first.getId()));
+            assertTrue(queuePane.toString().contains("first upcoming instruction"));
+            assertTrue(queuePane.toString().contains(second.getId()));
+            assertTrue(queuePane.toString().contains("second queued revision"));
+
+            keyboardPipe.write("\033[A".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!latest.getContent().equals(reader.getBuffer().toString())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(latest.getContent(), reader.getBuffer().toString());
+            assertEquals(4, queue.size(), "editing must keep the message visible in the queue");
+            assertEquals(MessageQueue.QueuedMessage.QueuedMessageStatus.EDITING,
+                    queue.get(latest.getId()).getStatus());
+
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains("editing")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            queuePane.setLength(0);
+            for (int row = tui.queueTop() - 1; row <= tui.queueBottom() - 1; row++) {
+                queuePane.append(frame.getRow(row)).append('\n');
+            }
+            assertTrue(queuePane.toString().contains("editing"));
+            assertTrue(queuePane.toString().contains(latest.getId()),
+                    "an edited item beyond the normal preview must be pinned into view");
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals(latest.getContent(), line.get(5, TimeUnit.SECONDS));
+        } finally {
+            queue.cancelEdit(latest.getId());
+            queue.clear();
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @Test
+    void codeIndexAlertStaysAboveTranscriptAndPreservesLiveDraft() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-top-alert-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-top-alert-queue-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            tui.recordInScrollRegion("retained transcript sentinel");
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            keyboardPipe.write("visible draft".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!"visible draft".equals(reader.getBuffer().toString())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            terminalOutput.reset();
+            String warning = "[code-index] watcher unavailable; periodic refresh enabled";
+            tui.showAlert(warning);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while ((!terminalOutput.toString(StandardCharsets.UTF_8).contains(warning)
+                    || !terminalOutput.toString(StandardCharsets.UTF_8).contains("visible draft"))
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            VirtualTerminal frame = new VirtualTerminal(40, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(frame.getRow(1).contains("watcher unavailable"), frame::screenDump);
+            assertFalse(tui.getContentViewLines().stream().anyMatch(row -> row.contains("code-index")),
+                    "alerts must never become retained transcript lines");
+            String inputRow = frame.getRow(tui.scrollBottom() - 1);
+            assertTrue(inputRow.contains("kompile > visible draft"), frame::screenDump);
+            assertFalse(inputRow.contains("code-index"), frame::screenDump);
+            assertEquals(tui.scrollBottom() - 1, frame.getCursorRow());
+            assertEquals("kompile > visible draft".length(), frame.getCursorCol());
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("visible draft", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @Test
+    void burstToolOutputIsBatchedWithoutFlickeringThePrompt() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-burst-redraw-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-burst-redraw-queue-" + UUID.randomUUID());
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes, queue, new TerminalRenderer(true));
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            tui.attachLineReader(reader);
+            tui.start(terminal);
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            keyboardPipe.write("draft".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!"draft".equals(reader.getBuffer().toString())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            terminalOutput.reset();
+            for (int i = 0; i < 200; i++) {
+                tui.recordInScrollRegion("burst tool line " + i);
+            }
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while ((!tui.getVisibleContentLines().contains("burst tool line 199")
+                    || !terminalOutput.toString(StandardCharsets.UTF_8).contains("burst tool line 199"))
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(150);
+
+            String output = terminalOutput.toString(StandardCharsets.UTF_8);
+            assertTrue(tui.getVisibleContentLines().contains("burst tool line 199"));
+            assertTrue(countOccurrences(output, "\033[1;1H") <= 8,
+                    "200 output lines should be rendered in a small number of full frames");
+
+            VirtualTerminal frame = new VirtualTerminal(40, 120);
+            frame.feed(output);
+            assertTrue(frame.getRow(tui.scrollBottom() - 1).contains("kompile > draft"),
+                    frame::screenDump);
+            assertEquals(tui.scrollBottom() - 1, frame.getCursorRow());
+            assertEquals("kompile > draft".length(), frame.getCursorCol());
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("draft", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    private static int countOccurrences(String value, String needle) {
+        int count = 0;
+        for (int at = 0; (at = value.indexOf(needle, at)) >= 0; at += needle.length()) count++;
+        return count;
+    }
+
+    @Test
+    void incrementalTypingRemainsFullyVisibleAcrossTuiRedraws() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-incremental-input-test");
+        MessageQueue queue = new MessageQueue("chat-completer-incremental-input-queue");
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true));
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), () -> 3);
+        PrintStream previousOut = System.out;
+        ByteArrayOutputStream redirectedStdout = new ByteArrayOutputStream();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            System.setOut(new PrintStream(redirectedStdout, true, StandardCharsets.UTF_8));
+            tui.attachLineReader(reader);
+            ChatCompleter.enableAutoTrigger(reader);
+            ChatRepl.bindStandardChatActivityKeys(
+                    (LineReaderImpl) reader, queue, activityPanel, tui);
+            ChatCompleter.setActivity("Thinking");
+            tui.start(terminal);
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+
+            String draft = "visible incremental draft";
+            for (int i = 0; i < draft.length(); i++) {
+                keyboardPipe.write(draft.charAt(i));
+                keyboardPipe.flush();
+                int expectedLength = i + 1;
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (reader.getBuffer().length() < expectedLength
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(5);
+                }
+                // Keep input active across several animated status-bar frames.
+                Thread.sleep(30);
+            }
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            String expectedRow = "kompile > " + draft;
+            while (!terminalOutput.toString(StandardCharsets.UTF_8).contains(expectedRow)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            VirtualTerminal frame = new VirtualTerminal(40, 120);
+            frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(frame.getRow(tui.scrollBottom() - 1).contains(expectedRow),
+                    () -> "the input row must retain the complete draft\n" + frame.screenDump());
+            assertEquals(tui.scrollBottom() - 1, frame.getCursorRow(),
+                    "typing redraws must keep the cursor on the input row");
+            assertEquals(expectedRow.length(), frame.getCursorCol(),
+                    "typing redraws must leave the cursor after the complete draft");
+            assertFalse(redirectedStdout.toString(StandardCharsets.UTF_8).contains("\033["),
+                    "live TUI cursor controls must use JLine's terminal writer, not System.out");
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals(draft, line.get(5, TimeUnit.SECONDS));
+        } finally {
+            ChatCompleter.setActivity(null);
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            System.setOut(previousOut);
+            processes.close();
+        }
+    }
+
+    @Test
+    void modelPickerRestorationClearsTheNestedPromptRow() throws Exception {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-model-picker-test");
+        KompileTui tui = new KompileTui(
+                new BackgroundTaskManager(), processes,
+                new MessageQueue("chat-completer-model-picker-queue"),
+                new TerminalRenderer(true));
+        try {
+            // The picker is a nested JLine readLine. Closing it must clear its
+            // prompt row before the outer loop writes the normal kompile prompt.
+            tui.start(terminal);
+            tui.showTemporaryWindow("Provider and model", List.of("Choose a model"));
+            terminalOutput.reset();
+
+            tui.closeTemporaryWindow();
+
+            String output = terminalOutput.toString(StandardCharsets.UTF_8);
+            String clearPromptRow = "\033[" + tui.scrollBottom() + ";1H\033[2K";
+            assertTrue(output.contains(clearPromptRow),
+                    "closing /model must clear the nested prompt row and leave the cursor at the chat anchor");
+        } finally {
+            tui.stop();
             processes.close();
         }
     }

@@ -78,6 +78,42 @@ class CrawlResultToolTest {
         server.verify();
     }
 
+    @Test
+    void strictLocalJobIdReturnsDurableResultWithoutCallingConfiguredManager() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        LocalCrawlJobStore.initialize(tempDir, jobId, "notes", mapper.createObjectNode());
+        ObjectNode state = LocalCrawlJobStore.load(tempDir, jobId).orElseThrow();
+        state.put("status", "COMPLETED");
+        state.put("terminal", true);
+        state.put("resultAvailable", true);
+        state.put("stage", "COMPLETED");
+        state.put("progressPercent", 100);
+        state.put("finishedAt", "2026-08-21T00:00:00Z");
+        ObjectNode completed = state.putObject("result");
+        completed.put("title", "crawl_documents");
+        completed.put("output", "local-result");
+        completed.putObject("metadata").put("status", "COMPLETED");
+        completed.put("error", false);
+        LocalCrawlJobStore.persist(tempDir, state, "JOB_TERMINAL");
+
+        RestTemplate restTemplate = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.createServer(restTemplate);
+        CrawlResultTool tool = new CrawlResultTool(
+                new GroundingBackendClient("http://crawl", restTemplate), mapper);
+        PermissionService permissions = new PermissionService();
+        AgentConfig agent = AgentConfig.builder("reader").enabledTools(Set.of("crawl_result")).build();
+        ToolContext context = new ToolContext("local-result-test", agent, permissions, tempDir,
+                new ToolRegistry(mapper));
+
+        ToolResult result = tool.execute(mapper.createObjectNode().put("jobId", jobId), context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertEquals("local-result", result.getOutput());
+        assertEquals(jobId, result.getMetadata().get("jobId"));
+        server.verify();
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> castMap(Object value) {
         return (Map<String, Object>) value;

@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -40,6 +41,7 @@ public class ToolContext {
     private final PermissionService permissionService;
     private final Path workingDirectory;
     private volatile AtomicBoolean aborted;
+    private volatile BooleanSupplier additionalAbortCheck;
     private final ToolRegistry toolRegistry;
     private volatile Consumer<String> outputConsumer;
     private volatile boolean autoApproveAll = false;
@@ -78,7 +80,10 @@ public class ToolContext {
     public Path getWorkingDirectory() { return workingDirectory; }
     public ToolRegistry getToolRegistry() { return toolRegistry; }
 
-    public boolean isAborted() { return aborted.get(); }
+    public boolean isAborted() {
+        BooleanSupplier additional = additionalAbortCheck;
+        return aborted.get() || (additional != null && additional.getAsBoolean());
+    }
     public void abort() { aborted.set(true); }
     public AtomicBoolean getAbortSignal() { return aborted; }
 
@@ -93,6 +98,11 @@ public class ToolContext {
         }
     }
 
+    /** Observe another cancellation source without sharing mutation ownership. */
+    public void linkAbortCheck(BooleanSupplier additionalAbortCheck) {
+        this.additionalAbortCheck = additionalAbortCheck;
+    }
+
     /**
      * Returns the output consumer for streaming progress to the caller, or null if not set.
      */
@@ -103,6 +113,21 @@ public class ToolContext {
      */
     public void setOutputConsumer(Consumer<String> outputConsumer) {
         this.outputConsumer = outputConsumer;
+    }
+
+    /**
+     * Create an execution-local view for one synchronous tool call. It shares
+     * the turn abort signal and immutable session services, but its output sink
+     * can be detached independently if the worker outlives a cancelled owner.
+     */
+    public ToolContext forkForToolExecution() {
+        ToolContext child = new ToolContext(
+                sessionId, agent, permissionService, workingDirectory, toolRegistry);
+        child.linkAbortSignal(aborted);
+        child.linkAbortCheck(additionalAbortCheck);
+        child.setAutoApproveAll(autoApproveAll);
+        child.setOutputConsumer(outputConsumer);
+        return child;
     }
 
     /**

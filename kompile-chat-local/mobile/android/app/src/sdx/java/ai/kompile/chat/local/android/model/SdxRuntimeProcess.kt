@@ -72,6 +72,7 @@ private const val KEY_OPTIONS_JSON = "options_json"
 private const val KEY_CHUNK = "chunk"
 private const val SERVICE_BIND_TIMEOUT_MILLIS = 30_000L
 private const val SERVICE_OPEN_TIMEOUT_MILLIS = 15L * 60L * 1_000L
+private const val SERVICE_COLD_GENERATE_TIMEOUT_MILLIS = 15L * 60L * 1_000L
 private const val SERVICE_MIN_GENERATE_TIMEOUT_MILLIS = 5L * 60L * 1_000L
 private const val SERVICE_MAX_GENERATE_TIMEOUT_MILLIS = 2L * 60L * 60L * 1_000L
 private const val SERVICE_TOKEN_TIMEOUT_MILLIS = 15_000L
@@ -192,6 +193,7 @@ internal object SdxPlatformChatSession {
         override val modelId: String
     ) : PlatformLocalChatSession {
         private val closed = AtomicBoolean(false)
+        private val coldCompilationPending = AtomicBoolean(true)
 
         override fun generate(
             request: ChatRequest,
@@ -212,7 +214,10 @@ internal object SdxPlatformChatSession {
                 putString(KEY_OPTIONS_JSON, opts.toOptionsJson())
                 putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
             }
-            val timeout = sdxRuntimeGenerationTimeoutMillis(opts.maxTokens())
+            val timeout = sdxRuntimeGenerationTimeoutMillis(
+                opts.maxTokens(),
+                coldCompilationPending.get()
+            )
             return try {
                 val structuredJson = executeJournaledRequest(
                     applicationContext,
@@ -225,6 +230,7 @@ internal object SdxPlatformChatSession {
                     timeout,
                     onChunk
                 ).requireString(KEY_STRUCTURED_RESPONSE_JSON)
+                coldCompilationPending.set(false)
                 ChatResponse.fromStructuredJson(structuredJson)
             } catch (failure: Throwable) {
                 if (!connection.isProcessAlive(processId)) {
@@ -516,8 +522,12 @@ internal fun decodeSdxRuntimeGenerationOptions(json: String): GenOptions {
         .build()
 }
 
-internal fun sdxRuntimeGenerationTimeoutMillis(maxTokens: Int): Long =
-    (max(SERVICE_MIN_GENERATE_TIMEOUT_MILLIS, maxTokens.toLong() * SERVICE_TOKEN_TIMEOUT_MILLIS))
+internal fun sdxRuntimeGenerationTimeoutMillis(maxTokens: Int, coldCompilation: Boolean): Long =
+    (max(
+        if (coldCompilation) SERVICE_COLD_GENERATE_TIMEOUT_MILLIS
+        else SERVICE_MIN_GENERATE_TIMEOUT_MILLIS,
+        maxTokens.toLong() * SERVICE_TOKEN_TIMEOUT_MILLIS
+    ))
         .coerceAtMost(SERVICE_MAX_GENERATE_TIMEOUT_MILLIS)
 
 private fun Bundle.requireString(key: String): String =

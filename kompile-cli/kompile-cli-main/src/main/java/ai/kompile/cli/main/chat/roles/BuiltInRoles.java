@@ -73,7 +73,6 @@ public class BuiltInRoles {
                     """)
             .enabledTools(Set.of("*"))
             .permissionOverrides(Map.of())
-            .agentDefaults(Map.of("codex", new RoleAgentDefaults("gpt-5.6-sol", "xhigh", Map.of())))
             .canSpawnSubagents(true)
             .isBuiltIn(true)
             .build();

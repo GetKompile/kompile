@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "provider": "groq",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "Groq reasoning models guide",
+    "url": "https://console.groq.com/docs/reasoning",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": [
+    {
+      "modelPatterns": [
+        "^(?:openai/)?gpt-oss-(?:20b|120b)$"
+      ],
+      "defaultValue": "",
+      "mandatory": false,
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^(?:qwen/)?qwen3\\.6-27b$"
+      ],
+      "defaultValue": "default",
+      "mandatory": false,
+      "options": [
+        {
+          "value": "none",
+          "label": "None"
+        },
+        {
+          "value": "default",
+          "label": "Default"
+        }
+      ]
+    }
+  ]
+}

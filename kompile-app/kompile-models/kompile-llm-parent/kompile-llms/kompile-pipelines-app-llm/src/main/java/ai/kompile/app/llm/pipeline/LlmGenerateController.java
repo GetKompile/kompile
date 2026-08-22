@@ -167,11 +167,18 @@ public class LlmGenerateController {
             body.put("parseErrors", response.parseErrors());
             body.put("finishReason", "completed");
             body.put("totalTimeMs", System.currentTimeMillis() - startMs);
+            if (request.get("correlation") != null) {
+                body.put("correlation", request.get("correlation"));
+            }
             return ResponseEntity.ok(body);
         } catch (Exception e) {
             logger.error("POST /api/llm/chat: structured generation failed for model '{}'",
                     languageModel.getLoadedModelId(), e);
-            return ResponseEntity.ok(structuredErrorResponse(e.getMessage()));
+            Map<String, Object> body = structuredErrorResponse(e.getMessage());
+            if (request.get("correlation") != null) {
+                body.put("correlation", request.get("correlation"));
+            }
+            return ResponseEntity.ok(body);
         }
     }
 

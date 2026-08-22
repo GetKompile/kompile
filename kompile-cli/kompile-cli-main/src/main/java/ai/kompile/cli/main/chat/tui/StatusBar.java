@@ -87,6 +87,9 @@ public class StatusBar {
      */
     private final boolean externalScrollManagement;
 
+    /** Optional owner for serialized redraws (installed by KompileTui). */
+    private volatile Runnable redrawRequester;
+
     // ========================================================================
     // Subagent tracking
     // ========================================================================
@@ -232,6 +235,16 @@ public class StatusBar {
         this.externalScrollManagement = externalScrollManagement;
     }
 
+    /** Route redraw requests through the owning TUI frame coordinator. */
+    public void setRedrawRequester(Runnable redrawRequester) {
+        this.redrawRequester = redrawRequester;
+    }
+
+    /** Refresh dimensions when an externally-managed TUI receives WINCH. */
+    void syncTerminalSize() {
+        updateTerminalSize();
+    }
+
     // ========================================================================
     // Lifecycle
     // ========================================================================
@@ -287,7 +300,7 @@ public class StatusBar {
                     // An idle status bar is event-driven. Rewriting it forever can
                     // disturb JLine and, on wrap-prone terminals, scroll blank rows.
                     if (visible && (active || active != wasActive)) {
-                        redraw();
+                        requestRedraw();
                     }
                     wasActive = active;
                 } catch (InterruptedException e) {
@@ -299,7 +312,7 @@ public class StatusBar {
         refreshThread.start();
 
         // Initial draw
-        redraw();
+        requestRedraw();
     }
 
     /**
@@ -346,7 +359,7 @@ public class StatusBar {
             if (!externalScrollManagement) {
                 setScrollRegion();
             }
-            redraw();
+            requestRedraw();
         } else if (!enabled && wasEnabled) {
             synchronized (drawLock) {
                 if (!externalScrollManagement) {
@@ -529,7 +542,10 @@ public class StatusBar {
      * Request an immediate redraw (called after state changes).
      */
     public void requestRedraw() {
-        if (canDraw()) {
+        Runnable requester = redrawRequester;
+        if (requester != null) {
+            requester.run();
+        } else if (canDraw()) {
             redraw();
         }
     }
@@ -547,63 +563,68 @@ public class StatusBar {
 
         synchronized (drawLock) {
             PrintStream out = System.out;
-            List<MenuItem> items = this.menuItems;
-            String msg = this.menuMessage;
-            int availableMenuRows = Math.max(0, terminalHeight - STATUS_HEIGHT);
-            int requestedMenuRows = items.size() + (msg.isEmpty() ? 0 : 1);
-            int menuRows = Math.min(requestedMenuRows, availableMenuRows);
-            int totalRows = STATUS_HEIGHT + menuRows;
-            int sepRow = Math.max(1, terminalHeight - totalRows + 1);
-            int contentRow = sepRow + 1;
-
-            // Save cursor position
             out.print(SAVE_CURSOR);
-
-            // Draw separator line
-            out.print(ESC + sepRow + ";1H");
-            out.print(ESC + "2K");
-            out.print(DIM + HORIZONTAL_LINE.repeat(Math.min(safeDrawWidth(terminalWidth), 200)) + RESET);
-
-            // Draw status content line
-            out.print(ESC + contentRow + ";1H");
-            out.print(ESC + "2K");
-            out.print(buildStatusContent());
-
-            // Draw menu items below status line
-            int menuRow = contentRow + 1;
-            for (MenuItem item : items) {
-                if (menuRow > terminalHeight) break;
-                out.print(ESC + menuRow + ";1H");
-                out.print(ESC + "2K");
-                String line = "  " + item.label();
-                if (item.status() != null && !item.status().isEmpty()) {
-                    line += DIM + " " + item.status() + RESET;
-                }
-                String truncated = line.length() > terminalWidth
-                        ? line.substring(0, Math.max(0, terminalWidth - 1)) : line;
-                out.print(item.selected() ? INVERSE + truncated + RESET : truncated);
-                menuRow++;
-            }
-
-            // Draw menu message/hint
-            if (!msg.isEmpty() && menuRow <= terminalHeight) {
-                out.print(ESC + menuRow + ";1H");
-                out.print(ESC + "2K");
-                String truncMsg = msg.length() > terminalWidth
-                        ? msg.substring(0, Math.max(0, terminalWidth - 1)) : msg;
-                out.print(DIM + truncMsg + RESET);
-            }
-
-            // Restore cursor position
+            out.print(render(terminalHeight, terminalWidth));
             out.print(RESTORE_CURSOR);
             out.flush();
         }
     }
 
+    /**
+     * Render the status/menu rows without cursor save/restore or flushing.
+     * This is intentionally bounded by terminal rows and visible columns.
+     */
+    public String render(int height, int width) {
+        if (!canDraw(height, width)) return "";
+        List<MenuItem> items = this.menuItems;
+        String msg = this.menuMessage;
+        int availableMenuRows = Math.max(0, height - STATUS_HEIGHT);
+        int requestedMenuRows = items.size() + (msg.isEmpty() ? 0 : 1);
+        int menuRows = Math.min(requestedMenuRows, availableMenuRows);
+        int totalRows = STATUS_HEIGHT + menuRows;
+        int sepRow = Math.max(1, height - totalRows + 1);
+        int contentRow = sepRow + 1;
+        StringBuilder frame = new StringBuilder();
+
+        frame.append(ESC).append(sepRow).append(";1H").append(ESC).append("2K")
+                .append(DIM).append(HORIZONTAL_LINE.repeat(Math.min(safeDrawWidth(width), 200)))
+                .append(RESET);
+        frame.append(ESC).append(contentRow).append(";1H").append(ESC).append("2K")
+                .append(buildStatusContent(width));
+
+        int menuRow = contentRow + 1;
+        int drawWidth = safeDrawWidth(width);
+        for (MenuItem item : items) {
+            if (menuRow > height) break;
+            frame.append(ESC).append(menuRow).append(";1H").append(ESC).append("2K");
+            String line = "  " + item.label();
+            if (item.status() != null && !item.status().isEmpty()) {
+                line += DIM + " " + item.status() + RESET;
+            }
+            String truncated = AnsiConstants.stripAnsi(line);
+            if (truncated.length() > drawWidth) {
+                truncated = truncated.substring(0, Math.max(0, drawWidth));
+            }
+            frame.append(item.selected() ? INVERSE : "").append(truncated)
+                    .append(item.selected() ? RESET : "");
+            menuRow++;
+        }
+        if (!msg.isEmpty() && menuRow <= height) {
+            frame.append(ESC).append(menuRow).append(";1H").append(ESC).append("2K");
+            String truncated = msg.length() > drawWidth
+                    ? msg.substring(0, Math.max(0, drawWidth)) : msg;
+            frame.append(DIM).append(truncated).append(RESET);
+        }
+        return frame.toString();
+    }
+
     private boolean canDraw() {
+        return canDraw(terminalHeight, terminalWidth);
+    }
+
+    private boolean canDraw(int height, int width) {
         return enabled && visible && renderer.isAnsiEnabled()
-                && terminalHeight >= STATUS_HEIGHT
-                && terminalWidth > 0;
+                && height >= STATUS_HEIGHT && width > 0;
     }
 
     /**
@@ -624,7 +645,10 @@ public class StatusBar {
                 segments.add(YELLOW + "■" + RESET + " " + YELLOW + activity + RESET);
             } else {
                 String spinner = YELLOW + SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length] + RESET;
-                segments.add(spinner + " " + YELLOW + activity + RESET);
+                String backgroundHint = taskManager.isCurrentTaskBackgroundable()
+                        ? DIM + " (use Ctrl+B to background this)" + RESET
+                        : "";
+                segments.add(spinner + " " + YELLOW + activity + RESET + backgroundHint);
             }
         }
 

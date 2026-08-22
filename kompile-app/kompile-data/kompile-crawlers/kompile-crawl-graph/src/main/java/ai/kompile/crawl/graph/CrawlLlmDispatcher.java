@@ -50,8 +50,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -88,6 +91,11 @@ class CrawlLlmDispatcher {
     }
 
     private final ThreadLocal<LlmCallScope> activeCallScope = new ThreadLocal<>();
+    private Consumer<UnifiedCrawlJob.LlmCallRecord> llmCallObserver;
+
+    void setLlmCallObserver(Consumer<UnifiedCrawlJob.LlmCallRecord> observer) {
+        this.llmCallObserver = observer;
+    }
     private final ThreadLocal<Throwable> lastCallFailure =
             new ThreadLocal<>();
 
@@ -428,27 +436,41 @@ class CrawlLlmDispatcher {
             recordTokenUsage(job, backendId, renderedRequest, response.rawText());
             boolean usable = !response.toolCalls().isEmpty() || !response.content().isBlank()
                     || !response.parseErrors().isEmpty();
-            recordLlmCall(job, backendId, taskType, latencyMs, renderedRequest,
-                    response.rawText(), usable, false, false, false,
-                    usable ? null : "BAD_RESPONSE",
-                    usable ? null : "Structured model returned no content, calls, or parser diagnostics");
+            boolean protocolClean = response.parseErrors().isEmpty();
+            recordStructuredLlmCall(job, backendId, taskType, latencyMs, request, response,
+                    usable && protocolClean, false,
+                    !protocolClean ? "PARSER_ERROR" : usable ? null : "BAD_RESPONSE",
+                    !protocolClean ? String.join("; ", response.parseErrors())
+                            : usable ? null
+                            : "Structured model returned no content, calls, or parser diagnostics");
             return response;
         } catch (TimeoutException e) {
             future.cancel(true);
             lastCallFailure.set(e);
+            recordStructuredLlmCall(job, backendId, taskType,
+                    (System.nanoTime() - startNanos) / 1_000_000L, request, null,
+                    false, true, "TIMEOUT",
+                    "Structured model timed out after " + llmCallTimeoutSeconds + "s");
             throw new IllegalStateException("Structured model timed out after "
                     + llmCallTimeoutSeconds + "s", e);
         } catch (InterruptedException e) {
             future.cancel(true);
             Thread.currentThread().interrupt();
             lastCallFailure.set(e);
+            recordStructuredLlmCall(job, backendId, taskType,
+                    (System.nanoTime() - startNanos) / 1_000_000L, request, null,
+                    false, false, "INTERRUPTED", "Structured model call interrupted");
             throw new IllegalStateException("Structured model call interrupted", e);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() instanceof CompletionException
                     && e.getCause().getCause() != null ? e.getCause().getCause() : e.getCause();
             lastCallFailure.set(cause == null ? e : cause);
+            String message = cause == null ? e.getMessage() : cause.getMessage();
+            recordStructuredLlmCall(job, backendId, taskType,
+                    (System.nanoTime() - startNanos) / 1_000_000L, request, null,
+                    false, false, categorizeError(message), message);
             throw new IllegalStateException("Structured model call failed: "
-                    + (cause == null ? e.getMessage() : cause.getMessage()),
+                    + message,
                     cause == null ? e : cause);
         }
     }
@@ -711,6 +733,11 @@ class CrawlLlmDispatcher {
 
     private String servingBackendId(String modelId) {
         return modelId != null && !modelId.isBlank() ? "serving:" + modelId.trim() : "serving";
+    }
+
+    private static boolean isServingBackend(String backendId) {
+        return backendId != null
+                && (backendId.equals("serving") || backendId.startsWith("serving:"));
     }
 
     private String callLocalServingWithTimeout(
@@ -1052,6 +1079,7 @@ class CrawlLlmDispatcher {
 
         LlmCallScope scope = activeCallScope.get();
         UnifiedCrawlJob.LlmCallRecord record = UnifiedCrawlJob.LlmCallRecord.builder()
+                .llmCallId(UUID.randomUUID().toString())
                 .timestamp(Instant.now())
                 .backendId(backendId)
                 .taskType(taskType)
@@ -1078,8 +1106,15 @@ class CrawlLlmDispatcher {
                 .responseChars(responseChars)
                 .promptText(prompt)
                 .responseText(response)
+                .subprocessRunId(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.subprocessRunId())
+                .subprocessLogPath(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.subprocessLogPath())
+                .transportRequestId(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.lastTransportRequestId())
                 .build();
         job.recordLlmCall(record);
+        notifyLlmCallObserver(record);
 
         // Persist transcript to crawl history for audit
         if (transcriptLogger != null) {
@@ -1092,6 +1127,96 @@ class CrawlLlmDispatcher {
                 log.debug("Failed to persist LLM transcript for job {}: {}",
                         job.getJobId(), e.getMessage());
             }
+        }
+    }
+
+    private void recordStructuredLlmCall(
+            UnifiedCrawlJob job,
+            String backendId,
+            String taskType,
+            long latencyMs,
+            StructuredChatLanguageModel.Request request,
+            StructuredChatLanguageModel.Response response,
+            boolean success,
+            boolean timedOut,
+            String errorCategory,
+            String errorMessage) {
+        if (job == null) return;
+        String requestJson = safeJson(request);
+        String responseJson = safeJson(response);
+        String rawText = response == null ? null : response.rawText();
+        int promptChars = requestJson == null ? 0 : requestJson.length();
+        int responseChars = rawText == null ? 0 : rawText.length();
+        String truncatedError = errorMessage != null && errorMessage.length() > 200
+                ? errorMessage.substring(0, 200) : errorMessage;
+        LlmCallScope scope = activeCallScope.get();
+        UnifiedCrawlJob.LlmCallRecord record = UnifiedCrawlJob.LlmCallRecord.builder()
+                .llmCallId(UUID.randomUUID().toString())
+                .timestamp(Instant.now())
+                .backendId(backendId)
+                .taskType(taskType)
+                .phase(scope != null ? scope.phase() : null)
+                .passId(scope != null ? scope.passId() : null)
+                .passInvocation(scope != null ? scope.passInvocation() : 0)
+                .taskId(scope != null ? scope.taskId() : null)
+                .partitionId(scope != null ? scope.partitionId() : null)
+                .chunkId(scope != null ? scope.chunkId() : null)
+                .corpusSnapshotId(scope != null ? scope.corpusSnapshotId() : null)
+                .graphRevision(scope != null ? scope.graphRevision() : null)
+                .graphEntities(scope != null ? scope.graphEntities() : 0)
+                .graphRelationships(scope != null ? scope.graphRelationships() : 0)
+                .latencyMs(latencyMs)
+                .inputTokens(Math.max(0, promptChars / 4))
+                .outputTokens(Math.max(0, responseChars / 4))
+                .success(success)
+                .timedOut(timedOut)
+                .errorCategory(errorCategory)
+                .errorMessage(truncatedError)
+                .promptChars(promptChars)
+                .responseChars(responseChars)
+                .promptText(structuredRequestText(request))
+                .responseText(rawText)
+                .structured(true)
+                .structuredRequestJson(requestJson)
+                .structuredResponseJson(responseJson)
+                .subprocessRunId(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.subprocessRunId())
+                .subprocessLogPath(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.subprocessLogPath())
+                .transportRequestId(localServingBackend == null || !isServingBackend(backendId)
+                        ? null : localServingBackend.lastTransportRequestId())
+                .build();
+        job.recordLlmCall(record);
+        notifyLlmCallObserver(record);
+        if (transcriptLogger != null) {
+            try {
+                transcriptLogger.logTranscript(
+                        job.getJobId(), backendId, transcriptTaskType(taskType, scope),
+                        requestJson, responseJson, latencyMs, success, truncatedError,
+                        AgentCallContext.getSessionId());
+            } catch (Exception e) {
+                log.debug("Failed to persist structured LLM transcript for job {}: {}",
+                        job.getJobId(), e.getMessage());
+            }
+        }
+    }
+
+    private String safeJson(Object value) {
+        if (value == null) return null;
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return "{\"serializationError\":\"" + e.getClass().getSimpleName() + "\"}";
+        }
+    }
+
+    private void notifyLlmCallObserver(UnifiedCrawlJob.LlmCallRecord record) {
+        Consumer<UnifiedCrawlJob.LlmCallRecord> observer = llmCallObserver;
+        if (observer == null || record == null) return;
+        try {
+            observer.accept(record);
+        } catch (RuntimeException e) {
+            log.debug("LLM call observer failed: {}", e.getMessage());
         }
     }
 

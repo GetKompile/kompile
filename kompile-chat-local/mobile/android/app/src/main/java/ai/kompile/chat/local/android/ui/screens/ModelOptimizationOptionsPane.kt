@@ -78,6 +78,8 @@ internal fun ModelOptimizationOptionsPane(
                     "Bounded preparation, activation, IPC, and smoke-decode logging."
                 ModelDiagnosticMode.VERBOSE ->
                     "Adds DSP compile, execute, timing, and memory diagnostics."
+                ModelDiagnosticMode.OP_SANITY ->
+                    "Captures comparable per-op value fingerprints and finite-value statistics for the initial warmup and compiled passes."
                 ModelDiagnosticMode.DSP_DIAGNOSTICS ->
                     "Captures all DSP categories at full detail under files/diagnostics/dsp."
             },

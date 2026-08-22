@@ -61,6 +61,9 @@ public class AgentProvider {
     // Model discovery: command to list available models for this agent
     private List<String> modelListCommand;
 
+    // Whether this CLI also exposes a standalone Kompile Chat provider route.
+    private boolean chatProvider;
+
     // Native authentication command, when the agent owns its provider credentials.
     private List<String> authCommand;
 
@@ -208,6 +211,11 @@ public class AgentProvider {
 
         public Builder modelListCommand(List<String> modelListCommand) {
             provider.modelListCommand = modelListCommand;
+            return this;
+        }
+
+        public Builder chatProvider(boolean chatProvider) {
+            provider.chatProvider = chatProvider;
             return this;
         }
 

@@ -57,8 +57,10 @@ import reactor.core.publisher.Flux;
 
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
+import org.nd4j.autodiff.samediff.serde.ModelSizeInfo;
 import org.nd4j.ggml.GGMLModelImport;
 import org.nd4j.ggml.convert.ConversionOptions;
+import org.nd4j.ggml.convert.GGMLToSameDiffConverter;
 import org.nd4j.ggml.format.GGUFReader;
 import org.nd4j.linalg.api.device.DeviceMemoryManager;
 import org.nd4j.linalg.factory.Nd4j;
@@ -380,10 +382,11 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
 
     private void loadModelOnExecutionLane(String modelId, Path modelFile, Path tokenizerFile,
                                           Map<String, Object> opts) throws Exception {
+        long requiredLoadBytes = estimateModelLoadPeakBytes(modelFile, opts);
         Integer existingExecutionDevice = this.modelExecutionDevice;
         int executionDevice = existingExecutionDevice != null
                 ? existingExecutionDevice
-                : modelDeviceContext.selectDeviceForModel();
+                : modelDeviceContext.selectDeviceForModel(requiredLoadBytes);
         modelDeviceContext.switchTo(executionDevice, "model-load-start");
 
         String tokenizerType = stringOpt(opts, "tokenizerType", "huggingface");
@@ -876,6 +879,25 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
         return modelFile.getFileName().toString()
                 .toLowerCase(java.util.Locale.ROOT)
                 .endsWith(".gguf");
+    }
+
+    static long estimateModelLoadPeakBytes(Path modelFile, Map<String, Object> opts) {
+        if (!isDirectGgufDecoder(modelFile)) {
+            return 0;
+        }
+        ConversionOptions conversionOptions = ConversionOptions.forInference();
+        ModelSizeInfo modelSize = new GGMLToSameDiffConverter(conversionOptions)
+                .estimateModelSize(modelFile.toFile());
+        long residentBytes = modelSize.getTotalBytes();
+        boolean optimizerEnabled = booleanOpt(opts, "graphOptimizerEnabled", true);
+        return modelLoadPeakBytes(residentBytes, optimizerEnabled);
+    }
+
+    static long modelLoadPeakBytes(long residentBytes, boolean optimizerEnabled) {
+        if (residentBytes < 0) {
+            throw new IllegalArgumentException("residentBytes must not be negative");
+        }
+        return optimizerEnabled ? Math.multiplyExact(residentBytes, 2L) : residentBytes;
     }
 
     private static GenerationPipeline.ModelLoader directGgufModelLoader(
@@ -1428,7 +1450,7 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
     }
 
     interface ModelDeviceContext {
-        int selectDeviceForModel();
+        int selectDeviceForModel(long requiredBytes);
 
         int currentDevice();
 
@@ -1437,10 +1459,25 @@ public class SameDiffLanguageModelImpl implements LanguageModel, StructuredChatL
 
     private static final class Nd4jModelDeviceContext implements ModelDeviceContext {
         @Override
-        public int selectDeviceForModel() {
-            // On CUDA, first access dynamically selects the available device with the most
-            // free memory and performs the authoritative native context switch.
-            return Nd4j.getAffinityManager().getDeviceForCurrentThread();
+        public int selectDeviceForModel(long requiredBytes) {
+            if (requiredBytes <= 0 || !Nd4j.getBackendDeviceType().isGpu()) {
+                return Nd4j.getAffinityManager().getDeviceForCurrentThread();
+            }
+            List<Integer> candidates = Nd4j.getAffinityManager().getAvailableDeviceIds();
+            DeviceMemoryManager memoryManager = DeviceMemoryManager.getInstance();
+            int selected = memoryManager.selectBestGpuForAllocation(requiredBytes, candidates);
+            if (selected == DeviceMemoryManager.NO_DEVICE_AVAILABLE) {
+                StringBuilder available = new StringBuilder();
+                for (int candidate : candidates) {
+                    if (available.length() > 0) available.append(", ");
+                    available.append("cuda:").append(candidate).append('=')
+                            .append(memoryManager.getPoolAwareFreeMemory(candidate) / (1024 * 1024))
+                            .append(" MB");
+                }
+                throw new IllegalStateException("No eligible GPU can admit the planned model-load peak of "
+                        + requiredBytes / (1024 * 1024) + " MB (pool-aware available: " + available + ")");
+            }
+            return selected;
         }
 
         @Override

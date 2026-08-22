@@ -96,13 +96,20 @@ enum class ModelDiagnosticMode(
     val wireValue: String,
     val dspCategories: String?,
     val dspLevel: String?,
+    val nativeOpSanity: Boolean,
+    val capturesDspTrace: Boolean,
 ) {
-    STANDARD("Standard", "standard", null, null),
-    VERBOSE("Verbose", "verbose", "COMPILE,EXECUTE,TIMING,MEMORY", "detailed"),
-    DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full"),
+    STANDARD("Standard", "standard", null, null, false, false),
+    VERBOSE("Verbose", "verbose", "COMPILE,EXECUTE,TIMING,MEMORY", "detailed", false, false),
+    OP_SANITY("Op sanity", "op_sanity", "VERIFY", "full", true, true),
+    DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full", false, true),
 }
 
-internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI = "ggml-runtime-packed-gdn-v5"
+/** The persisted Settings selection is authoritative for every build and accelerator flavor. */
+internal fun effectiveDiagnosticModeForRuntime(requested: ModelDiagnosticMode): ModelDiagnosticMode =
+    requested
+
+internal const val MODEL_PREPARATION_GRAPH_IMPORT_ABI = "ggml-runtime-packed-gdn-v7"
 internal const val MODEL_PREPARATION_EMBEDDING_DATA_TYPE = "HALF"
 internal const val MODEL_PREPARATION_LOGITS_MODE = "LAST_POSITION_ONLY"
 

@@ -430,7 +430,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
             case DOCTAGS:
                 return "Convert this document to DocTags format with structure tags and bounding boxes.";
             case MARKDOWN:
-                return "Convert this document to Markdown format, preserving headers, lists, and tables.";
+                // Markdown is a renderer over parsed DocTags, not a model-native response format.
+                // Request the structured format that the parser consumes, then convert it below.
+                return "Convert this document to DocTags format with structure tags and bounding boxes.";
             case FLORENCE2:
                 return "<OCR>";
             case DONUT:
@@ -527,7 +529,6 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
                     BufferedImage pageImage = renderPageSafe(renderer, document, pageNum - 1, config.getPdfRenderDpi());
                     ImageTiler.SplitImageResult splitResult = ImageTiler.splitImageForVLM(pageImage, tileSize, config.getMaxTiles());
-                    pageImage = null; // Allow GC of rendered image
 
                     logger.debug("Page {}: split into {} tiles ({}x{} grid)",
                             pageNum, splitResult.getTileCount(), splitResult.numCols, splitResult.numRows);
@@ -572,6 +573,21 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     long generateTimeMs = System.currentTimeMillis() - pageStartTime;
 
                     GenerationResult genResult = pageGenResults[0];
+                    if (genResult.getFinishReason() == GenerationResult.FinishReason.MAX_TOKENS) {
+                        if (hasUsableStructuredPrefix(genResult, config.getVlmOutputFormat())) {
+                            logger.warn("Page {} exhausted {} tokens after producing a usable structured "
+                                            + "prefix; accepting complete parsed elements and ignoring the "
+                                            + "unfinished tail",
+                                    pageNum, genResult.getGeneratedTokenCount());
+                        } else {
+                            logger.warn("Page {} exhausted {} tokens without usable structure; retrying "
+                                            + "as adaptive regions",
+                                    pageNum, genResult.getGeneratedTokenCount());
+                            genResult = generateDensePageRegions(pageImage, prompt, samplingConfig, tileSize,
+                                    config.getMaxTiles(), pageNum);
+                        }
+                    }
+                    pageImage = null;
                     String generatedText = genResult.getText();
                     int generatedTokens = genResult.getGeneratedTokenCount();
                     int promptTokens = genResult.getPromptTokenCount();
@@ -1018,7 +1034,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 logger.info("Auto-detecting maxKvLen: GPU 0 has {}MB total memory", totalMemMb);
                 if (totalMemMb >= 70000) return 8192;   // 80GB+ GPU (A100, H100)
                 if (totalMemMb >= 40000) return 4096;   // 48GB GPU (A6000, RTX 6000)
-                if (totalMemMb >= 20000) return 3072;   // 24GB GPU (RTX 3090/4090) - prefill ~2K + ~1K gen headroom
+                if (totalMemMb >= 20000) return 4096;   // 24GB GPU (RTX 3090/4090) - dense pages retry as bounded regions
                 if (totalMemMb >= 10000) return 2048;   // 16GB GPU
                 return 1024;  // Small GPU
             }
@@ -1798,6 +1814,312 @@ public class VlmDocumentPipeline implements OcrPipeline {
      */
     public void setDocTagsParser(DocTagsParser parser) {
         this.docTagsParser = parser;
+    }
+
+    private GenerationResult generateDensePageRegions(BufferedImage pageImage,
+                                                       String prompt,
+                                                       SamplingConfig samplingConfig,
+                                                       int tileSize,
+                                                       int maxTiles,
+                                                       int pageNumber) {
+        if (pageImage.getWidth() > tileSize * 2 && pageImage.getHeight() > pageImage.getWidth()) {
+            return generateDensePageColumns(
+                    pageImage, prompt, samplingConfig, tileSize, maxTiles, pageNumber);
+        }
+
+        int height = pageImage.getHeight();
+        int firstSplit = findLowInkRow(pageImage, height / 3, Math.max(32, height / 10));
+        int secondSplit = findLowInkRow(pageImage, (height * 2) / 3, Math.max(32, height / 10));
+        if (firstSplit < 64 || secondSplit - firstSplit < 64 || height - secondSplit < 64) {
+            throw new IllegalStateException("Unable to split dense page " + pageNumber
+                    + ": height=" + height + ", splits=" + firstSplit + "," + secondSplit);
+        }
+        List<BufferedImage> regions = List.of(
+                pageImage.getSubimage(0, 0, pageImage.getWidth(), firstSplit),
+                pageImage.getSubimage(0, firstSplit, pageImage.getWidth(), secondSplit - firstSplit),
+                pageImage.getSubimage(0, secondSplit, pageImage.getWidth(), height - secondSplit));
+        List<GenerationResult> parts = new ArrayList<>();
+        for (int i = 0; i < regions.size(); i++) {
+            parts.addAll(generateDenseRegion(regions.get(i), prompt, samplingConfig, tileSize,
+                    maxTiles, pageNumber, "region " + (i + 1) + "/" + regions.size(), 0));
+        }
+        return mergeDenseResults(parts, pageNumber);
+    }
+
+    private boolean hasUsableStructuredPrefix(GenerationResult result, VlmOutputFormat format) {
+        if (result == null || result.getText() == null || result.getText().isBlank()) {
+            return false;
+        }
+        if (format != VlmOutputFormat.DOCTAGS && format != VlmOutputFormat.MARKDOWN) {
+            return false;
+        }
+        try {
+            DocumentStructure parsed = docTagsParser.parse(result.getText());
+            String text = parsed.getFullText();
+            return parsed.getElementCount() >= 5 && text != null && text.length() >= 200;
+        } catch (RuntimeException e) {
+            logger.debug("Unable to parse MAX_TOKENS output as a structured prefix: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private GenerationResult generateDensePageColumns(BufferedImage pageImage,
+                                                       String prompt,
+                                                       SamplingConfig samplingConfig,
+                                                       int tileSize,
+                                                       int maxTiles,
+                                                       int pageNumber) {
+        int width = pageImage.getWidth();
+        int firstSplit = findLowInkColumn(pageImage, width / 3, Math.max(32, width / 10));
+        int secondSplit = findLowInkColumn(pageImage, (width * 2) / 3, Math.max(32, width / 10));
+        if (firstSplit < 64 || secondSplit - firstSplit < 64 || width - secondSplit < 64) {
+            throw new IllegalStateException("Unable to split dense multi-column page " + pageNumber
+                    + ": width=" + width + ", splits=" + firstSplit + "," + secondSplit);
+        }
+        logger.info("Dense page {} uses column-first OCR at columns {},{} (page={}x{})",
+                pageNumber, firstSplit, secondSplit, width, pageImage.getHeight());
+        List<BufferedImage> columns = List.of(
+                pageImage.getSubimage(0, 0, firstSplit, pageImage.getHeight()),
+                pageImage.getSubimage(firstSplit, 0, secondSplit - firstSplit, pageImage.getHeight()),
+                pageImage.getSubimage(secondSplit, 0, width - secondSplit, pageImage.getHeight()));
+        List<GenerationResult> parts = new ArrayList<>();
+        for (int i = 0; i < columns.size(); i++) {
+            parts.addAll(generateDenseRegion(columns.get(i), prompt, samplingConfig, tileSize,
+                    maxTiles, pageNumber, "column " + (i + 1) + "/" + columns.size(), 0));
+        }
+        return mergeDenseResults(parts, pageNumber);
+    }
+
+    private GenerationResult mergeDenseResults(List<GenerationResult> parts, int pageNumber) {
+        vlm.resetSessionsForDecode();
+
+        List<Integer> tokenIds = new ArrayList<>();
+        StringBuilder body = new StringBuilder();
+        int generatedTokens = 0;
+        int promptTokens = 0;
+        long generationTimeMs = 0;
+        long firstTokenLatencyMs = 0;
+        for (GenerationResult part : parts) {
+            String partBody = docTagsBody(part.getText());
+            if (!partBody.isBlank()) {
+                if (body.length() > 0) body.append('\n');
+                body.append(partBody);
+            }
+            if (part.getTokenIds() != null) {
+                for (int tokenId : part.getTokenIds()) tokenIds.add(tokenId);
+            }
+            generatedTokens += part.getGeneratedTokenCount();
+            promptTokens += part.getPromptTokenCount();
+            generationTimeMs += part.getGenerationTimeMs();
+            firstTokenLatencyMs += part.getFirstTokenLatencyMs();
+        }
+        int[] mergedTokenIds = tokenIds.stream().mapToInt(Integer::intValue).toArray();
+        double tokensPerSecond = generationTimeMs > 0
+                ? generatedTokens * 1000.0 / generationTimeMs : 0.0;
+        logger.info("Dense page {} completed as {} regions: {} tokens in {}ms",
+                pageNumber, parts.size(), generatedTokens, generationTimeMs);
+        return GenerationResult.builder()
+                .text("<doctag>" + body + "</doctag>")
+                .tokenIds(mergedTokenIds)
+                .generatedTokenCount(generatedTokens)
+                .promptTokenCount(promptTokens)
+                .totalTokenCount(promptTokens + generatedTokens)
+                .finishReason(GenerationResult.FinishReason.EOS)
+                .firstTokenLatencyMs(firstTokenLatencyMs)
+                .generationTimeMs(generationTimeMs)
+                .tokensPerSecond(tokensPerSecond)
+                .build();
+    }
+
+    private List<GenerationResult> generateDenseRegion(BufferedImage region,
+                                                       String prompt,
+                                                       SamplingConfig samplingConfig,
+                                                       int tileSize,
+                                                       int maxTiles,
+                                                       int pageNumber,
+                                                       String label,
+                                                       int depth) {
+        if (!hasVisibleInk(region)) {
+            logger.info("Dense page {} {} is blank; skipping model generation", pageNumber, label);
+            return Collections.singletonList(GenerationResult.builder()
+                    .text("<doctag></doctag>")
+                    .tokenIds(new int[0])
+                    .generatedTokenCount(0)
+                    .promptTokenCount(0)
+                    .totalTokenCount(0)
+                    .finishReason(GenerationResult.FinishReason.EOS)
+                    .firstTokenLatencyMs(0)
+                    .generationTimeMs(0)
+                    .tokensPerSecond(0.0)
+                    .build());
+        }
+        ImageTiler.SplitImageResult tiles =
+                ImageTiler.splitImageForVLMPreservingScale(region, tileSize, maxTiles);
+        GenerationResult result = vlm.generatePagesTiled(
+                Collections.singletonList(tiles), prompt,
+                samplingConfig.getMaxNewTokens(), samplingConfig.isDoSample(),
+                samplingConfig.getTemperature(), tileSize)[0];
+        if (result.getFinishReason() != GenerationResult.FinishReason.MAX_TOKENS) {
+            return Collections.singletonList(result);
+        }
+        logDenseGenerationDiagnostics(pageNumber, label, region, result);
+        if (region.getWidth() > tileSize) {
+            int splitX = findLowInkColumn(region, region.getWidth() / 2,
+                    Math.max(16, region.getWidth() / 6));
+            if (splitX >= 64 && region.getWidth() - splitX >= 64) {
+                logger.warn("Dense page {} {} exhausted {} tokens; vertically splitting at column {}",
+                        pageNumber, label, result.getGeneratedTokenCount(), splitX);
+                List<GenerationResult> parts = new ArrayList<>();
+                parts.addAll(generateDenseRegion(
+                        region.getSubimage(0, 0, splitX, region.getHeight()),
+                        prompt, samplingConfig, tileSize, maxTiles, pageNumber,
+                        label + ".left", depth + 1));
+                parts.addAll(generateDenseRegion(
+                        region.getSubimage(splitX, 0, region.getWidth() - splitX, region.getHeight()),
+                        prompt, samplingConfig, tileSize, maxTiles, pageNumber,
+                        label + ".right", depth + 1));
+                return parts;
+            }
+        }
+        if (region.getHeight() < 128) {
+            throw new IllegalStateException("Dense page " + pageNumber + " " + label
+                    + " still exhausted " + result.getGeneratedTokenCount()
+                    + " tokens at minimum splittable height " + region.getHeight()
+                    + " after " + depth + " recursive splits");
+        }
+        int split = findLowInkRow(region, region.getHeight() / 2,
+                Math.max(16, region.getHeight() / 6));
+        if (split < 64 || region.getHeight() - split < 64) {
+            throw new IllegalStateException("Unable to recursively split dense page " + pageNumber
+                    + " " + label + ": height=" + region.getHeight() + ", split=" + split);
+        }
+        logger.warn("Dense page {} {} exhausted {} tokens; recursively splitting at row {}",
+                pageNumber, label, result.getGeneratedTokenCount(), split);
+        List<GenerationResult> parts = new ArrayList<>();
+        parts.addAll(generateDenseRegion(region.getSubimage(0, 0, region.getWidth(), split),
+                prompt, samplingConfig, tileSize, maxTiles, pageNumber, label + ".1", depth + 1));
+        parts.addAll(generateDenseRegion(region.getSubimage(0, split, region.getWidth(),
+                        region.getHeight() - split), prompt, samplingConfig, tileSize, maxTiles,
+                pageNumber, label + ".2", depth + 1));
+        return parts;
+    }
+
+    private void logDenseGenerationDiagnostics(int pageNumber, String label,
+                                               BufferedImage region, GenerationResult result) {
+        int[] tokenIds = result.getTokenIds() != null ? result.getTokenIds() : new int[0];
+        Set<Integer> distinct = new HashSet<>();
+        int longestRun = 0;
+        int currentRun = 0;
+        int previous = Integer.MIN_VALUE;
+        for (int tokenId : tokenIds) {
+            distinct.add(tokenId);
+            currentRun = tokenId == previous ? currentRun + 1 : 1;
+            longestRun = Math.max(longestRun, currentRun);
+            previous = tokenId;
+        }
+        int repeatedTailPeriod = 0;
+        for (int period = 1; period <= 64 && period * 2 <= tokenIds.length; period++) {
+            boolean repeated = true;
+            for (int i = 0; i < period; i++) {
+                if (tokenIds[tokenIds.length - 1 - i] != tokenIds[tokenIds.length - 1 - period - i]) {
+                    repeated = false;
+                    break;
+                }
+            }
+            if (repeated) {
+                repeatedTailPeriod = period;
+                break;
+            }
+        }
+        String text = result.getText() != null ? result.getText() : "";
+        String normalized = text.replace("\r", "\\r").replace("\n", "\\n");
+        String prefix = normalized.substring(0, Math.min(240, normalized.length()));
+        String suffix = normalized.substring(Math.max(0, normalized.length() - 240));
+        logger.warn("Dense page {} {} MAX_TOKENS diagnostic: region={}x{}, chars={}, tokens={}, "
+                        + "distinctTokens={}, longestRun={}, repeatedTailPeriod={}, prefix='{}', suffix='{}'",
+                pageNumber, label, region.getWidth(), region.getHeight(), text.length(), tokenIds.length,
+                distinct.size(), longestRun, repeatedTailPeriod, prefix, suffix);
+    }
+
+    private boolean hasVisibleInk(BufferedImage region) {
+        int darkSamples = 0;
+        for (int y = 0; y < region.getHeight(); y += 4) {
+            for (int x = 0; x < region.getWidth(); x += 4) {
+                int rgb = region.getRGB(x, y);
+                int red = (rgb >>> 16) & 0xff;
+                int green = (rgb >>> 8) & 0xff;
+                int blue = rgb & 0xff;
+                if ((red + green + blue) / 3 < 235 && ++darkSamples >= 4) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private int findLowInkColumn(BufferedImage image, int target, int radius) {
+        int minChildWidth = 64;
+        int start = Math.max(minChildWidth, target - radius);
+        int end = Math.min(image.getWidth() - minChildWidth, target + radius);
+        if (start > end) {
+            return Math.max(minChildWidth,
+                    Math.min(image.getWidth() - minChildWidth, target));
+        }
+        int bestColumn = Math.max(start, Math.min(end, target));
+        int bestInk = Integer.MAX_VALUE;
+        for (int x = start; x <= end; x++) {
+            int ink = 0;
+            for (int y = 0; y < image.getHeight(); y += 4) {
+                int rgb = image.getRGB(x, y);
+                int red = (rgb >>> 16) & 0xff;
+                int green = (rgb >>> 8) & 0xff;
+                int blue = rgb & 0xff;
+                if ((red + green + blue) / 3 < 235) ink++;
+            }
+            if (ink < bestInk) {
+                bestInk = ink;
+                bestColumn = x;
+            }
+        }
+        return bestColumn;
+    }
+
+    private int findLowInkRow(BufferedImage image, int target, int radius) {
+        int minChildHeight = 64;
+        int start = Math.max(minChildHeight, target - radius);
+        int end = Math.min(image.getHeight() - minChildHeight, target + radius);
+        if (start > end) {
+            return Math.max(minChildHeight,
+                    Math.min(image.getHeight() - minChildHeight, target));
+        }
+        int bestRow = Math.max(start, Math.min(end, target));
+        int bestInk = Integer.MAX_VALUE;
+        for (int y = start; y <= end; y++) {
+            int ink = 0;
+            for (int x = 0; x < image.getWidth(); x += 4) {
+                int rgb = image.getRGB(x, y);
+                int red = (rgb >>> 16) & 0xff;
+                int green = (rgb >>> 8) & 0xff;
+                int blue = rgb & 0xff;
+                if ((red + green + blue) / 3 < 235) ink++;
+            }
+            if (ink < bestInk) {
+                bestInk = ink;
+                bestRow = y;
+            }
+        }
+        return bestRow;
+    }
+
+    private String docTagsBody(String rawOutput) {
+        if (rawOutput == null) return "";
+        String body = rawOutput.replace("<end_of_utterance>", "")
+                .replace("<|im_end|>", "").replace("<|im_start|>", "").trim();
+        int start = body.indexOf("<doctag>");
+        if (start >= 0) body = body.substring(start + "<doctag>".length());
+        int end = body.lastIndexOf("</doctag>");
+        if (end >= 0) body = body.substring(0, end);
+        return body.trim();
     }
 
     /**

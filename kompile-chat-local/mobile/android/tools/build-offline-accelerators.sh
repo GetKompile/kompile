@@ -726,9 +726,9 @@ verify_sdx_aot_sdk_receipt() {
   fi
   require_receipt_value "SDX AOT SDK" maven "${SDX_AOT_RECEIPT_VALUES[maven]}" "$expected_maven" || return 1
   require_receipt_value "SDX AOT SDK" maven_sha256 "${SDX_AOT_RECEIPT_VALUES[maven_sha256]}" "$(sha256_file "$expected_maven")" || return 1
-  require_receipt_value "SDX AOT SDK" maven_version_sha256 "${SDX_AOT_RECEIPT_VALUES[maven_version_sha256]}" "$(printf '%s' "$maven_version" | sha256sum | cut -d ' ' -f 1)" || return 1
+  require_receipt_value "SDX AOT SDK" maven_version_sha256 "${SDX_AOT_RECEIPT_VALUES[maven_version_sha256]}" "$(printf '%s\n' "$maven_version" | sha256sum | cut -d ' ' -f 1)" || return 1
   require_receipt_value "SDX AOT SDK" java_home "${SDX_AOT_RECEIPT_VALUES[java_home]}" "$(realpath -e -- "$JAVA_HOME_ARG")" || return 1
-  require_receipt_value "SDX AOT SDK" java_version_sha256 "${SDX_AOT_RECEIPT_VALUES[java_version_sha256]}" "$(printf '%s' "$java_version" | sha256sum | cut -d ' ' -f 1)" || return 1
+  require_receipt_value "SDX AOT SDK" java_version_sha256 "${SDX_AOT_RECEIPT_VALUES[java_version_sha256]}" "$(printf '%s\n' "$java_version" | sha256sum | cut -d ' ' -f 1)" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_jar "${SDX_AOT_RECEIPT_VALUES[javacpp_jar]}" "$(realpath -e -- "$JAVACPP_JAR")" || return 1
   require_receipt_value "SDX AOT SDK" javacpp_jar_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_jar_sha256]}" "$(sha256_file "$JAVACPP_JAR")" || return 1
   require_receipt_value "SDX AOT SDK" ndk_revision_sha256 "${SDX_AOT_RECEIPT_VALUES[ndk_revision_sha256]}" "$(sha256_file "$ANDROID_NDK_ARG/source.properties")" || return 1

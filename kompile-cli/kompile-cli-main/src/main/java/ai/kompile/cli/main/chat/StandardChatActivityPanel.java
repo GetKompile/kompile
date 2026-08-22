@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.main.chat.BackgroundTaskManager.BackgroundTask;
+import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager.ProcessEntry;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -85,6 +86,9 @@ final class StandardChatActivityPanel {
 
     static final String MAIN_KEY = "main";
     private static final int MAX_RETAINED_TOOL_ACTIVITIES = 64;
+    private static final int MAX_INLINE_SUBAGENT_LINES = 80;
+    private static final int MAX_INLINE_SUBAGENT_CHARS = 16_000;
+    private static final int MAX_INLINE_SUBAGENT_LINE_CHARS = 2_000;
 
     private final BackgroundTaskManager taskManager;
     private final BackgroundProcessManager processManager;
@@ -100,6 +104,7 @@ final class StandardChatActivityPanel {
     private volatile List<StatusBar.MenuItem> currentMenuItems = List.of();
     private final Object toolActivityLock = new Object();
     private final Map<String, ToolActivity> toolActivities = new LinkedHashMap<>();
+    private volatile SubagentRunner subagentRunner;
 
     private static final class ToolActivity {
         private final String key;
@@ -133,6 +138,86 @@ final class StandardChatActivityPanel {
         this.processManager = processManager;
         this.statusBar = statusBar;
         this.reservedRowSupplier = reservedRowSupplier;
+    }
+
+    void setSubagentRunner(SubagentRunner subagentRunner) {
+        this.subagentRunner = subagentRunner;
+        refresh();
+    }
+
+    /**
+     * Build the replaceable main-transcript block for one subagent. The selected
+     * activity view remains the full transcript; this is only a bounded live tail.
+     */
+    String inlineSubagentTranscript(String id) {
+        SubagentEntry entry = findSubagent(id);
+        if (entry == null) return "";
+
+        String description = entry.getDescription();
+        String status = entry.getStatus();
+        if (status == null || status.isBlank()) {
+            status = entry.isActive() ? "running" : "completed";
+        }
+
+        boolean backgrounded = isCurrentTurnBackgrounded();
+        StringBuilder block = new StringBuilder()
+                .append("  ◉ Subagent [").append(entry.getId()).append("] ")
+                .append(entry.getType());
+        if (description != null && !description.isBlank()) {
+            block.append(" — ").append(description);
+        }
+        block.append("\n  ").append(status).append(" · ").append(entry.getElapsed());
+        if (backgrounded) {
+            block.append("\n  ◐ Backgrounded · output continues in the subagent row below")
+                    .append(" · ↓ then Enter to inspect");
+            return block.toString();
+        }
+
+        block.append("\n  Live activity · Ctrl+B background")
+                .append(" · ↓ then Enter to inspect below");
+        String transcript = boundedInlineTranscript(entry.getTranscript());
+        if (!transcript.isBlank()) {
+            block.append('\n').append(transcript);
+        }
+        return block.toString();
+    }
+
+    boolean isCurrentTurnBackgrounded() {
+        BackgroundTask task = taskManager.getCurrentTask();
+        return task != null
+                && task.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+    }
+
+    private static String boundedInlineTranscript(String transcript) {
+        if (transcript == null || transcript.isBlank()) return "";
+        String[] lines = transcript.split("\\R", -1);
+        int minimum = Math.max(0, lines.length - MAX_INLINE_SUBAGENT_LINES);
+        int first = lines.length;
+        int chars = 0;
+        for (int i = lines.length - 1; i >= minimum; i--) {
+            String line = boundedInlineLine(lines[i]);
+            int added = line.length() + (first == lines.length ? 0 : 1);
+            if (chars + added > MAX_INLINE_SUBAGENT_CHARS && first < lines.length) break;
+            first = i;
+            chars += added;
+        }
+
+        StringBuilder bounded = new StringBuilder(chars + 64);
+        if (first > 0) {
+            bounded.insert(0, "  … earlier subagent activity available below\n");
+        }
+        for (int i = first; i < lines.length; i++) {
+            if (bounded.length() > 0 && bounded.charAt(bounded.length() - 1) != '\n') {
+                bounded.append('\n');
+            }
+            bounded.append(boundedInlineLine(lines[i]));
+        }
+        return bounded.toString().stripTrailing();
+    }
+
+    private static String boundedInlineLine(String line) {
+        if (line.length() <= MAX_INLINE_SUBAGENT_LINE_CHARS) return line;
+        return "…" + line.substring(line.length() - MAX_INLINE_SUBAGENT_LINE_CHARS + 1);
     }
 
     static int reservedRowsForTerminal(int terminalHeight, int terminalWidth) {
@@ -231,7 +316,10 @@ final class StandardChatActivityPanel {
         for (SubagentEntry entry : statusBar.getRecentSubagents()) {
             rawItems.add(subagentItem(entry, false));
         }
-        List<ProcessEntry> processes = processManager.listAll();
+        // The fixed bottom pane is live work, not process history. Keeping terminal
+        // entries here crowds out actionable rows and produces misleading Delete
+        // failures because completed processes no longer have a kill owner.
+        List<ProcessEntry> processes = processManager.listRunning();
         Map<Long, String> processKeysByPid = new HashMap<>();
         Set<String> processKeys = new HashSet<>();
         for (ProcessEntry entry : processes) {
@@ -293,7 +381,8 @@ final class StandardChatActivityPanel {
         }
 
         Comparator<ActivityItem> itemOrder = Comparator
-                .comparing(ActivityItem::active).reversed()
+                .comparing(ActivityItem::killable).reversed()
+                .thenComparing(Comparator.comparing(ActivityItem::active).reversed())
                 .thenComparing(ActivityItem::startedAt,
                         Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing(ActivityItem::id);
@@ -339,6 +428,8 @@ final class StandardChatActivityPanel {
         if (status == null || status.isBlank()) {
             status = active ? "running" : "completed";
         }
+        SubagentRunner runner = subagentRunner;
+        boolean killable = active && runner != null && runner.canCancel(entry.getId());
         return new ActivityItem(
                 "subagent:" + entry.getId(),
                 entry.getId(),
@@ -346,7 +437,7 @@ final class StandardChatActivityPanel {
                 truncate(label, 64),
                 status + " · " + entry.getElapsed(),
                 active,
-                false,
+                killable,
                 entry.getStartedAt(),
                 MAIN_KEY,
                 0);
@@ -446,6 +537,8 @@ final class StandardChatActivityPanel {
             int hidden = Math.max(0, items.size() - visibleItems.size());
             hint = isViewingMain()
                     ? "↓ manage process tree · Enter opens output in transcript"
+                    + (taskManager.isCurrentTaskBackgroundable()
+                    ? " · Ctrl+B backgrounds current turn" : "")
                     : "Viewing " + viewedKey.replaceFirst("^[^:]+:", "")
                     + (viewedKey.startsWith("subagent:")
                     ? " · type to send follow-up · PageUp/PageDown scroll"
@@ -557,6 +650,24 @@ final class StandardChatActivityPanel {
                 return activityView(item);
             }
         }
+        if (viewedKey.startsWith("process:")) {
+            String id = viewedKey.substring("process:".length());
+            ProcessEntry process = processManager.get(id);
+            if (process != null) {
+                return activityView(new ActivityItem(
+                        viewedKey,
+                        id,
+                        ActivityKind.PROCESS,
+                        truncate(process.getDescription(), 64),
+                        process.getState().name().toLowerCase(Locale.ROOT)
+                                + " · " + FormatUtils.formatDuration(process.getDuration()),
+                        process.isRunning(),
+                        process.isRunning() && !process.isVirtual(),
+                        process.getStartTime(),
+                        MAIN_KEY,
+                        1));
+            }
+        }
         return new ActivityView(MAIN_KEY, "Main chat", "", true);
     }
 
@@ -647,16 +758,33 @@ final class StandardChatActivityPanel {
         if (item == null) {
             return "No activity selected";
         }
-        if (item.kind() != ActivityKind.PROCESS || !item.killable()) {
-            panelMessage = "no kill handle for " + item.id();
+        if (!item.killable()) {
+            panelMessage = switch (item.kind()) {
+                case PROCESS -> item.active()
+                        ? item.id() + " is a non-owned watcher; inspect/logs only"
+                        : "process is no longer running: " + item.id();
+                case SUBAGENT -> "subagent is no longer running: " + item.id();
+                default -> item.id() + " is informational; inspect/logs only";
+            };
             refresh();
             return panelMessage;
         }
 
-        boolean killed = processManager.kill(item.id());
-        panelMessage = killed
-                ? "kill requested for " + item.id()
-                : "process is no longer running: " + item.id();
+        boolean killed;
+        if (item.kind() == ActivityKind.PROCESS) {
+            killed = processManager.kill(item.id());
+            panelMessage = killed
+                    ? "kill requested for " + item.id()
+                    : "process is no longer running: " + item.id();
+        } else if (item.kind() == ActivityKind.SUBAGENT) {
+            SubagentRunner runner = subagentRunner;
+            killed = runner != null && runner.cancel(item.id());
+            panelMessage = killed
+                    ? "cancel requested for subagent " + item.id()
+                    : "subagent is no longer running: " + item.id();
+        } else {
+            panelMessage = item.id() + " is informational; inspect/logs only";
+        }
         refresh();
         return panelMessage;
     }
@@ -683,6 +811,14 @@ final class StandardChatActivityPanel {
             return;
         }
         if (items.isEmpty()) {
+            focused = false;
+            selectedKey = "";
+            selectedIndex = -1;
+            return;
+        }
+        if (!selectedKey.isBlank()) {
+            // An asynchronously completed/evicted row must not transfer a pending
+            // Delete action to whichever process now occupies the same index.
             focused = false;
             selectedKey = "";
             selectedIndex = -1;

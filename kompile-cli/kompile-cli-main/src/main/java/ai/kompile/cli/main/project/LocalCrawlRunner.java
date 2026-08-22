@@ -69,6 +69,7 @@ public final class LocalCrawlRunner {
                     graphContext.factSheetId(),
                     graphContext.projectId(),
                     graphContext.codeProjects(),
+                    graphContext.crawlJobId(),
                     request);
         } catch (Exception e) {
             throw new IOException("Project-local graph lifecycle failed: " + rootMessage(e), e);
@@ -88,7 +89,17 @@ public final class LocalCrawlRunner {
                                String knowledgeBaseName,
                                Long factSheetId,
                                String projectId,
-                               List<LocalProjectGraphBackend.CodeProjectSource> codeProjects) {
+                               List<LocalProjectGraphBackend.CodeProjectSource> codeProjects,
+                               String crawlJobId) {
+        public GraphContext(
+                String knowledgeBaseId,
+                String knowledgeBaseName,
+                Long factSheetId,
+                String projectId,
+                List<LocalProjectGraphBackend.CodeProjectSource> codeProjects) {
+            this(knowledgeBaseId, knowledgeBaseName, factSheetId, projectId, codeProjects, null);
+        }
+
         public GraphContext {
             codeProjects = codeProjects == null ? List.of() : List.copyOf(codeProjects);
         }

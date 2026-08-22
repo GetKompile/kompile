@@ -32,6 +32,11 @@ import java.time.Duration;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -82,7 +87,7 @@ public class CustomToolBridge implements CliTool {
         ExecuteConfig exec = definition.getExecute();
         return switch (exec.getType()) {
             case "bash" -> executeBash(exec, params, context);
-            case "http" -> executeHttp(exec, params);
+            case "http" -> executeHttp(exec, params, context);
             default -> ToolResult.error("Unknown execute type: " + exec.getType());
         };
     }
@@ -98,8 +103,8 @@ public class CustomToolBridge implements CliTool {
 
         int timeoutMs = definition.getTimeoutSeconds() * 1000;
 
-        ProcessManager.ProcessResult result = ProcessManager.execute(
-                command, workDir, timeoutMs, context.getAbortSignal());
+        ProcessManager.ProcessResult result = ProcessManager.executeInterruptibly(
+                command, workDir, timeoutMs, context::isAborted);
 
         String output = result.getOutput();
         Map<String, Object> meta = new LinkedHashMap<>();
@@ -121,11 +126,16 @@ public class CustomToolBridge implements CliTool {
         return ToolResult.success(definition.getName(), output, meta);
     }
 
-    private ToolResult executeHttp(ExecuteConfig exec, JsonNode params) {
+    private ToolResult executeHttp(
+            ExecuteConfig exec, JsonNode params, ToolContext context) {
         String url = substituteTemplateVars(exec.getUrl(), params, false);
         String method = exec.getMethod() != null ? exec.getMethod().toUpperCase() : "GET";
+        CompletableFuture<HttpResponse<String>> pending = null;
 
         try {
+            if (context.isAborted()) {
+                return ToolResult.error("HTTP request aborted");
+            }
             HttpClient client = HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(10))
                     .followRedirects(HttpClient.Redirect.NORMAL)
@@ -160,8 +170,21 @@ public class CustomToolBridge implements CliTool {
                 reqBuilder.GET();
             }
 
-            HttpResponse<String> response = client.send(
+            pending = client.sendAsync(
                     reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response;
+            while (true) {
+                if (context.isAborted()) {
+                    pending.cancel(true);
+                    return ToolResult.error("HTTP request aborted");
+                }
+                try {
+                    response = pending.get(100, TimeUnit.MILLISECONDS);
+                    break;
+                } catch (TimeoutException ignored) {
+                    // Poll the composed parent/child cancellation predicate.
+                }
+            }
 
             String body = response.body();
             if (body != null && body.length() > MAX_HTTP_RESPONSE) {
@@ -180,6 +203,15 @@ public class CustomToolBridge implements CliTool {
 
             return ToolResult.success(definition.getName(), body != null ? body : "", meta);
 
+        } catch (InterruptedException e) {
+            if (pending != null) pending.cancel(true);
+            Thread.currentThread().interrupt();
+            return ToolResult.error("HTTP request aborted");
+        } catch (CancellationException e) {
+            return ToolResult.error("HTTP request aborted");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            return ToolResult.error("HTTP request failed: " + cause.getMessage());
         } catch (Exception e) {
             return ToolResult.error("HTTP request failed: " + e.getMessage());
         }

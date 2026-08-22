@@ -24,6 +24,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -70,6 +71,34 @@ class CrawlDocumentsToolTest {
         assertTrue(schema.path("properties").has("config"));
         assertTrue(schema.path("properties").path("documents").path("items")
                 .path("properties").has("pipelineId"));
+        assertTrue(schema.path("properties").path("dryRun").path("description").asText()
+                .contains("effectiveRequest"));
+        assertTrue(schema.path("properties").path("pipelines").path("items").path("properties")
+                .path("registeredPipelineId").path("description").asText()
+                .contains("Inherited options are effective defaults"));
+        assertTrue(schema.path("properties").path("pipelines").path("items").path("properties")
+                .path("options").path("description").asText()
+                .contains("maxNewTokens"));
+    }
+
+    @Test
+    void warnsWhenInheritedVlmConfigurationIsImplicit() {
+        ObjectNode request = mapper.createObjectNode();
+        request.putArray("pipelines").addObject()
+                .put("pipelineId", "vlm-ocr-pdf")
+                .put("pipelineType", "VLM")
+                .put("registeredPipelineId", "vlm-ocr-pdf");
+
+        List<String> warnings = CrawlDocumentsTool.pipelineConfigurationWarnings(request);
+
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("bind modelId/modelBindings explicitly"));
+        assertTrue(warnings.get(0).contains("set options.outputFormat explicitly"));
+
+        ObjectNode explicit = (ObjectNode) request.withArray("pipelines").get(0);
+        explicit.put("modelId", "smoldocling-256m");
+        explicit.putObject("options").put("outputFormat", "MARKDOWN");
+        assertTrue(CrawlDocumentsTool.pipelineConfigurationWarnings(request).isEmpty());
     }
 
     @Test
@@ -159,6 +188,10 @@ class CrawlDocumentsToolTest {
         assertEquals("crawl-123", result.getMetadata().get("jobId"));
         assertEquals(2, result.getMetadata().get("sourceCount"));
         assertEquals(42L, result.getMetadata().get("factSheetId"));
+        JsonNode requestedConfiguration = (JsonNode) result.getMetadata().get("requestedConfiguration");
+        assertEquals("reports", requestedConfiguration.path("defaultPipelineId").asText());
+        assertTrue(result.getMetadata().containsKey("configurationWarnings"));
+        assertTrue(result.getMetadata().get("configurationWarnings") instanceof List);
         assertTrue(result.getMetadata().get("crawlResult").toString()
                 .contains("kompile-crawl-result/v1"));
         assertTrue(result.getMetadata().get("nextActions").toString()

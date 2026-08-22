@@ -188,6 +188,7 @@ class UiValidationTest {
             errorStackTrace = "stack line",
             streaming = null,
             smokeDecodeTrace = "event=native_chunk chunk_utf8_sha256=abc" + "x".repeat(300_000),
+            dspDiagnosticsTrace = "dsp_event=execute_segment",
             capturedAtEpochMillis = 1234L
         )
 
@@ -196,6 +197,9 @@ class UiValidationTest {
         assertTrue(debug.contains("model_state=Ready"))
         assertTrue(debug.contains("graph_state=Ready"))
         assertTrue(debug.contains("model_load_progress.detail=Restored device cache"))
+        assertTrue(debug.contains("execution_log_path=files/diagnostics/execution.log"))
+        assertTrue(debug.contains("persisted DSP execution trace"))
+        assertTrue(debug.contains("dsp_event=execute_segment"))
         assertTrue(debug.contains("native_chunk chunk_utf8_sha256=abc"))
         assertTrue(debug.contains("debug log truncated for clipboard safety"))
         assertTrue(debug.toByteArray(Charsets.UTF_8).size <= 200_000)
@@ -211,7 +215,45 @@ class UiValidationTest {
         assertTrue(source.contains("contentDescription = \"Copy transcript\""))
         assertTrue(source.contains("contentDescription = \"Copy debug log\""))
         assertTrue(source.contains("testTag(\"copy_debug_log_button\")"))
+        assertTrue(source.contains("contentDescription = \"Share debug log\""))
+        assertTrue(source.contains("testTag(\"share_debug_log_button\")"))
+        assertTrue(source.contains("FileProvider.getUriForFile("))
+        assertTrue(source.contains("Intent.ACTION_SEND"))
+        assertTrue(source.contains("Intent.EXTRA_STREAM"))
+        assertTrue(source.contains("Intent.FLAG_GRANT_READ_URI_PERMISSION"))
+        assertTrue(source.contains("fullChatDebugTranscript("))
+        assertTrue(source.contains("ExecutionDiagnosticsTraceLog(traceContext).writeSnapshot(fullDebugText)"))
         assertTrue(source.contains("copyableChatTranscript(messages, route, error, errorStackTrace, streaming)"))
+    }
+
+    @Test
+    fun settingsSharesDspDiagnosticsAsAFileWithoutClipboardMaterialization() {
+        val settings = File(
+            "src/main/java/ai/kompile/chat/local/android/ui/screens/SettingsScreen.kt"
+        ).readText()
+        val chat = File(
+            "src/main/java/ai/kompile/chat/local/android/ui/screens/ChatScreen.kt"
+        ).readText()
+
+        assertTrue(settings.contains("DspDiagnosticsTraceLog(context).writeShareSnapshot {"))
+        assertTrue(settings.contains("withContext(Dispatchers.IO)"))
+        assertTrue(settings.contains("exportContext.ensureActive()"))
+        assertTrue(settings.contains("FileProvider.getUriForFile("))
+        assertTrue(settings.contains("Intent.ACTION_SEND"))
+        assertTrue(settings.contains("Intent.EXTRA_STREAM"))
+        assertTrue(settings.contains("Intent.FLAG_GRANT_READ_URI_PERMISSION"))
+        assertTrue(settings.contains("ClipData.newUri("))
+        assertTrue(settings.contains("catch (cancelled: CancellationException)"))
+        assertTrue(settings.contains("testTag(\"share_dsp_diagnostics_trace\")"))
+        assertFalse(
+            settings.contains(
+                "AnnotatedString(DspDiagnosticsTraceLog(context).readContents())"
+            )
+        )
+        assertTrue(
+            chat.contains("DspDiagnosticsTraceLog(traceContext).contentsDescription()")
+        )
+        assertFalse(chat.contains("DspDiagnosticsTraceLog(traceContext).readContents()"))
     }
 
     @Test

@@ -23,7 +23,9 @@ import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.ResumeTool;
+import ai.kompile.cli.main.chat.tools.NativeResumeCoordinator;
 import ai.kompile.cli.main.chat.tools.CrossAgentResumeCompactor;
+import ai.kompile.cli.main.chat.format.ConversationExporter;
 import picocli.CommandLine;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -72,7 +74,8 @@ import java.util.concurrent.TimeUnit;
 )
 public class ResumeCommand implements Callable<Integer> {
 
-    @CommandLine.Option(names = {"--session-id", "-s"}, description = "Resume a specific conversation by session ID")
+    @CommandLine.Option(names = {"--session-id", "-s"}, description =
+            "Resume a specific conversation by transcript UUID or legacy session ID")
     private String sessionId;
 
     @CommandLine.Option(names = {"--target-session-id", "-t"}, description = "UUID to use as the target session ID when resuming (instead of generating a new one)")
@@ -96,7 +99,7 @@ public class ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--view", "-v"}, description = "View conversation transcript and exit", defaultValue = "false")
     private boolean viewOnly;
 
-    @CommandLine.Option(names = {"--list", "-l"}, description = "List all conversations and exit", defaultValue = "false")
+    @CommandLine.Option(names = {"--list", "-l"}, description = "List conversations for the current directory and exit", defaultValue = "false")
     private boolean listOnly;
 
     @CommandLine.Option(names = {"--inject-tools"}, description = "Inject kompile tools (RAG, Graph RAG, etc.) into the agent via MCP", defaultValue = "true")
@@ -169,7 +172,8 @@ public class ResumeCommand implements Callable<Integer> {
     private int listConversations() {
         try {
             List<ChatHistory.ConversationSummary> conversations =
-                    ChatHistory.listResumableConversations();
+                    ChatHistory.listResumableConversations(
+                            Path.of(System.getProperty("user.dir")));
             List<ChatSessionSummary> piConversations = listPiConversations();
             if (conversations.isEmpty() && piConversations.isEmpty()) {
                 System.out.println("No saved conversations found.");
@@ -189,7 +193,7 @@ public class ResumeCommand implements Callable<Integer> {
                         && !"kompile".equalsIgnoreCase(filterSource)) {
                     continue;
                 }
-                System.out.printf("  %-24s  %-20s  agent=%-8s  %s%n",
+                System.out.printf("  %-36s  %-20s  agent=%-8s  %s%n",
                         c.sessionId(), c.started(), displayAgent,
                         c.title().isEmpty() ? "(empty)" : c.title());
                 printed++;
@@ -201,7 +205,7 @@ public class ResumeCommand implements Callable<Integer> {
                     continue;
                 }
                 String title = c.title() == null || c.title().isBlank() ? "(untitled)" : c.title();
-                System.out.printf("  %-24s  %-20s  agent=%-8s  %s (%d messages)%n",
+                System.out.printf("  %-36s  %-20s  agent=%-8s  %s (%d messages)%n",
                         c.sessionId(), String.valueOf(c.lastModifiedMillis()), "pi", title, c.messageCount());
                 printed++;
             }
@@ -209,7 +213,7 @@ public class ResumeCommand implements Callable<Integer> {
                 System.out.println("No conversations matched the requested filters.");
             }
             System.out.println();
-            System.out.println("Resume with: kompile resume --session-id <session-id>");
+            System.out.println("Resume with: kompile resume --session-id <transcript-uuid-or-id>");
             return 0;
         } catch (Exception e) {
             System.err.println("Error listing conversations: " + e.getMessage());
@@ -225,10 +229,30 @@ public class ResumeCommand implements Callable<Integer> {
         }
         try {
             ChatSourceAdapter adapter = ChatSourceRegistry.getInstance().find("pi").orElse(null);
-            return adapter == null ? List.of() : adapter.list();
+            if (adapter == null) {
+                return List.of();
+            }
+            Path currentDirectory = Path.of(System.getProperty("user.dir"))
+                    .toAbsolutePath().normalize();
+            return adapter.list(currentDirectory).stream()
+                    .filter(summary -> workingDirectoryMatches(
+                            summary.workingDirectory(), currentDirectory))
+                    .toList();
         } catch (IOException e) {
             System.err.println("Warning: Could not list Pi sessions: " + e.getMessage());
             return List.of();
+        }
+    }
+
+    private static boolean workingDirectoryMatches(String recordedDirectory, Path expected) {
+        if (recordedDirectory == null || recordedDirectory.isBlank()) {
+            return false;
+        }
+        try {
+            Path recorded = Path.of(recordedDirectory);
+            return recorded.isAbsolute() && expected.equals(recorded.normalize());
+        } catch (RuntimeException invalidPath) {
+            return false;
         }
     }
 
@@ -383,6 +407,14 @@ public class ResumeCommand implements Callable<Integer> {
                 sessionId, "kompile", recordedAgent, nativeSessionId);
     }
 
+    static boolean shouldResumeStandardChat(
+            ChatHistory.ConversationSummary kompileSummary,
+            String requestedAgent,
+            String nativeSessionId) {
+        return kompileSummary != null && shouldResumeStandardChat(
+                kompileSummary.sessionId(), requestedAgent, kompileSummary.agent(), nativeSessionId);
+    }
+
     static String effectiveTargetAgent(String requestedAgent) {
         return requestedAgent == null
                 || requestedAgent.isBlank()
@@ -403,18 +435,21 @@ public class ResumeCommand implements Callable<Integer> {
                             .orElse(null);
             String recordedAgent = kompileSummary == null ? "" : kompileSummary.agent();
             String nativeSessionId = ChatHistory.resolveNativeSessionId(sessionId, recordedAgent);
-            if (shouldResumeStandardChat(
-                    sessionId, agent, recordedAgent, nativeSessionId)) {
+            Path transcriptWorkingDirectory = ChatHistory.resolveWorkingDirectory(sessionId)
+                    .orElse(Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize());
+            if (shouldResumeStandardChat(kompileSummary, agent, nativeSessionId)) {
                 System.out.println("Resuming Kompile standard chat: " + sessionId);
                 return new CommandLine(new ChatCommand()).execute(
-                        "--resume", sessionId, "--mode", "standard");
+                        "--resume", sessionId, "--mode", "standard",
+                        "--working-dir", transcriptWorkingDirectory.toString());
             }
+            boolean automaticTarget = agent == null || agent.isBlank() || "auto".equalsIgnoreCase(agent);
             agent = effectiveTargetAgent(agent);
-
-            // Short-circuit: if the target agent is opencode and a target session UUID
-            // is specified directly, just launch `opencode --session <uuid>` without exporting.
-            if ("opencode".equalsIgnoreCase(agent) && targetSessionId != null && !targetSessionId.isBlank()) {
-                return resumeOpenCodeDirect(targetSessionId);
+            if (automaticTarget && NativeResumeCoordinator.FIRST_PARTY_AGENTS.contains(
+                    NativeResumeCoordinator.normalizeAgent(recordedAgent))) {
+                // Provider-backed Kompile wrappers should return to their original vendor;
+                // falling back to Claude here loses the native session identity.
+                agent = NativeResumeCoordinator.normalizeAgent(recordedAgent);
             }
 
             ai.kompile.cli.main.chat.format.ConversationReader reader =
@@ -422,12 +457,32 @@ public class ResumeCommand implements Callable<Integer> {
 
             List<ChatHistory.Turn> turns = null;
             String source = "kompile";
-            Path workingDirectory = Path.of(System.getProperty("user.dir"))
-                    .toAbsolutePath()
-                    .normalize();
+            Path workingDirectory = transcriptWorkingDirectory;
 
-            // Check if this is a known kompile session first
+            // Explicit IDs remain globally addressable, but resume them in the project where
+            // the transcript was actually recorded rather than the caller's current directory.
             boolean kompileSessionExists = ai.kompile.cli.main.chat.ChatHistory.exists(sessionId);
+            if (kompileSessionExists) {
+                workingDirectory = ChatHistory.resolveWorkingDirectory(sessionId)
+                        .orElse(workingDirectory);
+            }
+
+            // A caller-supplied OpenCode target already exists natively and needs no export,
+            // but it must still launch from the source transcript's recorded project.
+            if ("opencode".equalsIgnoreCase(agent)
+                    && targetSessionId != null && !targetSessionId.isBlank()) {
+                try {
+                    Path targetWorkingDirectory =
+                            ai.kompile.cli.main.chat.format.ConversationReader
+                                    .resolveExternalWorkingDirectory("opencode", targetSessionId);
+                    if (targetWorkingDirectory != null) {
+                        workingDirectory = targetWorkingDirectory;
+                    }
+                } catch (Exception ignored) {
+                    // A new caller-supplied UUID has no native metadata yet; use source CWD.
+                }
+                return resumeOpenCodeDirect(targetSessionId, workingDirectory);
+            }
 
             try {
                 turns = reader.readKompileSession(sessionId);
@@ -468,6 +523,24 @@ public class ResumeCommand implements Callable<Integer> {
                 return 1;
             }
 
+            String originalAgent = NativeResumeCoordinator.normalizeAgent(
+                    "kompile".equalsIgnoreCase(source) ? recordedAgent : source);
+            boolean sameFirstPartyVendor = NativeResumeCoordinator.FIRST_PARTY_AGENTS.contains(agent)
+                    && agent.equals(originalAgent)
+                    && targetSessionId == null
+                    && ChatHistory.exists(sessionId);
+            if (sameFirstPartyVendor) {
+                NativeResumeCoordinator.Result ensured = NativeResumeCoordinator.ensure(
+                        sessionId, agent, nativeSessionId, turns, source, workingDirectory);
+                if (ensured.recreated()) {
+                    System.out.println("✓ Recreated missing native " + ensured.agent()
+                            + " session: " + ensured.nativeSessionId());
+                }
+                return resumeNativeDirect(
+                        ensured.agent(), ensured.nativeSessionId(), ensured.launchToken(),
+                        ensured.workingDirectory());
+            }
+
             // Short-circuit: opencode→opencode needs no export/import.
             // The session already lives in OpenCode's DB/storage; re-importing
             // would create a duplicate with a mangled session ID.
@@ -475,7 +548,7 @@ public class ResumeCommand implements Callable<Integer> {
                 String nativeId = (targetSessionId != null && !targetSessionId.isBlank())
                         ? targetSessionId
                         : sessionId;
-                return resumeOpenCodeDirect(nativeId);
+                return resumeOpenCodeDirect(nativeId, workingDirectory);
             }
             if ("pi".equalsIgnoreCase(agent) && "pi".equalsIgnoreCase(source)) {
                 String nativeId = (targetSessionId != null && !targetSessionId.isBlank())
@@ -590,6 +663,67 @@ public class ResumeCommand implements Callable<Integer> {
     }
 
     /**
+     * Launch a verified native session without exporting it a second time.
+     */
+    private int resumeNativeDirect(String agent, String nativeSessionId,
+                                   String launchToken, Path sessionWorkingDirectory) {
+        Path workingDir = sessionWorkingDirectory != null
+                ? sessionWorkingDirectory.toAbsolutePath().normalize()
+                : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        String normalizedAgent = NativeResumeCoordinator.normalizeAgent(agent);
+        String resumeCommand = switch (normalizedAgent) {
+            case "claude" -> "claude --resume " + launchToken;
+            case "codex" -> "codex resume " + launchToken;
+            case "qwen" -> "qwen --resume " + launchToken;
+            case "opencode" -> "opencode --session " + launchToken;
+            case "gemini" -> "gemini --resume " + launchToken;
+            case "pi" -> "pi --session " + launchToken;
+            default -> throw new IllegalArgumentException("Unsupported native resume agent: " + agent);
+        };
+
+        Path injectedSettingsFile = null;
+        try {
+            if (injectTools) {
+                try {
+                    String sseUrl = resolveMcpUrl();
+                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                            workingDir, normalizedAgent, sseUrl);
+                } catch (IOException e) {
+                    System.err.println(YELLOW + "Warning: Could not inject MCP tools: "
+                            + e.getMessage() + RESET);
+                }
+            }
+
+            ConversationExporter.ExportResult nativeResult = new ConversationExporter.ExportResult(
+                    nativeSessionId, normalizedAgent, null, resumeCommand, workingDir);
+            List<String> command = buildAgentCommand(
+                    normalizedAgent, nativeResult, injectedSettingsFile != null);
+            System.out.println("Resuming " + normalizedAgent + " native session directly: " + nativeSessionId);
+            System.out.println(DIM + "  Command: " + String.join(" ", command) + RESET);
+            System.out.println(DIM + "  Working dir: " + workingDir + RESET);
+
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.directory(workingDir.toFile());
+            pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+            pb.inheritIO();
+            Process process = pb.start();
+            try {
+                return process.waitFor();
+            } catch (InterruptedException e) {
+                process.destroy();
+                if (process.isAlive()) process.destroyForcibly();
+                Thread.currentThread().interrupt();
+                return 130;
+            }
+        } catch (Exception e) {
+            System.err.println("Error resuming " + normalizedAgent + " session: " + e.getMessage());
+            return 1;
+        } finally {
+            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+        }
+    }
+
+    /**
      * Directly resume an existing Pi session by UUID without exporting. Pi's
      * {@code --resume} flag opens a picker; deterministic resume uses
      * {@code --session <id>} instead.
@@ -677,9 +811,11 @@ public class ResumeCommand implements Callable<Integer> {
      * Directly resume an existing OpenCode session by UUID without exporting.
      * Uses {@code opencode --session <uuid>} to attach to the session.
      */
-    private int resumeOpenCodeDirect(String opencodeSessionId) {
+    private int resumeOpenCodeDirect(String opencodeSessionId, Path sessionWorkingDirectory) {
         try {
-            Path workingDir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            Path workingDir = sessionWorkingDirectory == null
+                    ? Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                    : sessionWorkingDirectory.toAbsolutePath().normalize();
 
             System.out.println("Resuming OpenCode session directly: " + opencodeSessionId);
 

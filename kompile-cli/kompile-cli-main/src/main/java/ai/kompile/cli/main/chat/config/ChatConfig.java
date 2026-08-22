@@ -67,14 +67,6 @@ public class ChatConfig {
     private String model;
 
     /**
-     * User-added model ids keyed by provider. The built-in catalog remains the
-     * source of defaults; this overlay lets the picker discover additional
-     * upstream ids without hardcoding them in the application.
-     */
-    @JsonProperty
-    private Map<String, List<String>> modelCatalog = new LinkedHashMap<>();
-
-    /**
      * Optional reasoning effort for standard direct-model chat. A null/blank
      * value leaves the provider's model default unchanged.
      */
@@ -200,63 +192,35 @@ public class ChatConfig {
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
 
-    /** Return the persisted user model overlay keyed by provider. */
+    /**
+     * Legacy compatibility accessor. Model catalogs are no longer a source of
+     * truth; providers own model discovery and this value is intentionally empty.
+     */
     public Map<String, List<String>> getModelCatalog() {
-        if (modelCatalog == null) {
-            modelCatalog = new LinkedHashMap<>();
-        }
-        return modelCatalog;
+        return Map.of();
     }
 
     public void setModelCatalog(Map<String, List<String>> modelCatalog) {
-        this.modelCatalog = modelCatalog == null
-                ? new LinkedHashMap<>()
-                : new LinkedHashMap<>(modelCatalog);
+        // Kept as a no-op for older config readers. Runtime model discovery is authoritative.
+    }
+
+    /** Fetch the provider's current model ids from its live capability endpoint. */
+    public List<String> getConfiguredModels(String provider) {
+        String discoveryBaseUrl = provider != null && provider.equalsIgnoreCase(this.provider)
+                ? getBaseUrl() : null;
+        String discoveryApiKey = provider != null && provider.equalsIgnoreCase(this.provider)
+                ? getApiKey() : null;
+        return ModelDiscoveryHttp.discoverResult(provider, discoveryApiKey, discoveryBaseUrl).models().stream()
+                .map(LiveModelDiscovery.Model::id)
+                .toList();
     }
 
     /**
-     * Merge the startup catalog with user-added model ids for this provider.
-     * Provider matching is case-insensitive because wire provider ids may come
-     * from an auth route rather than the display catalog.
+     * Legacy compatibility method. Manual model catalog entries are rejected so
+     * the UI cannot bypass provider capability discovery.
      */
-    public List<String> getConfiguredModels(String provider) {
-        LinkedHashSet<String> models = new LinkedHashSet<>();
-        for (String defaultModel : getDefaultModels(provider)) {
-            if (defaultModel != null && !defaultModel.isBlank()) {
-                models.add(defaultModel);
-            }
-        }
-        if (provider != null && modelCatalog != null) {
-            for (Map.Entry<String, List<String>> entry : modelCatalog.entrySet()) {
-                if (!provider.equalsIgnoreCase(entry.getKey()) || entry.getValue() == null) {
-                    continue;
-                }
-                for (String addedModel : entry.getValue()) {
-                    if (addedModel != null && !addedModel.isBlank()) {
-                        models.add(addedModel.trim());
-                    }
-                }
-            }
-        }
-        return List.copyOf(models);
-    }
-
-    /** Add a model id to the provider overlay unless it is already known. */
     public boolean addModelToCatalog(String provider, String model) {
-        if (provider == null || provider.isBlank() || model == null || model.isBlank()) {
-            return false;
-        }
-        String providerId = provider.trim();
-        String modelId = model.trim();
-        if (getConfiguredModels(providerId).contains(modelId)) {
-            return false;
-        }
-        List<String> added = getModelCatalog().computeIfAbsent(providerId, ignored -> new ArrayList<>());
-        if (added.contains(modelId)) {
-            return false;
-        }
-        added.add(modelId);
-        return true;
+        return false;
     }
 
     public String getThinking() { return thinking; }
@@ -316,12 +280,6 @@ public class ChatConfig {
         // enable/threshold/reserve policy intentionally remains session-wide.
         this.contextWindowTokens = source.contextWindowTokens;
         this.maxOutputTokens = source.maxOutputTokens;
-        this.modelCatalog = new LinkedHashMap<>();
-        if (source.modelCatalog != null) {
-            source.modelCatalog.forEach((providerId, models) ->
-                    this.modelCatalog.put(providerId,
-                            models == null ? new ArrayList<>() : new ArrayList<>(models)));
-        }
         this.loadedFrom = source.loadedFrom;
     }
 
@@ -408,54 +366,23 @@ public class ChatConfig {
 
     public static String getDefaultBaseUrl(String provider) {
         if (provider == null) return null;
-        switch (provider.toLowerCase()) {
+        if ("kompile".equalsIgnoreCase(provider)) {
             // Server mode talks to /api/agents/chat, which kompile-app-chat owns.
-            case "kompile":       return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
-            // The bootstrap assigns a private loopback URL for each local chat session.
-            case "kompile-local": return null;
-            // OpenCode owns its native server lifecycle and provider routing.
-            case "opencode":    return null;
-            case "openai":     return "https://api.openai.com/v1";
-            case "anthropic":  return "https://api.anthropic.com";
-            case "gemini":     return "https://generativelanguage.googleapis.com/v1beta/openai";
-            case "ollama":     return "http://localhost:11434/v1";
-            case "openrouter": return "https://openrouter.ai/api/v1";
-            case "xai":        return "https://api.x.ai/v1";
-            case "github-copilot": return "https://api.individual.githubcopilot.com";
-            case "openai-codex": return "https://chatgpt.com/backend-api";
-            case "radius":     return "https://radius.pi.dev";
-            case "deepseek":   return "https://api.deepseek.com/v1";
-            case "groq":       return "https://api.groq.com/openai/v1";
-            default:           return null;
+            return KompileServiceEndpoints.resolve(KompileService.CHAT).baseUrl();
         }
+        String directUrl = ChatProviderRegistry.defaultBaseUrl(provider);
+        if (directUrl != null) {
+            return directUrl;
+        }
+        return new ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry().find(provider)
+                .map(ai.kompile.cli.main.auth.oauth.OAuthProviderFlow::defaultBaseUrl)
+                .orElse(null);
     }
 
     public static String[] getDefaultModels(String provider) {
-        if (provider == null) return new String[0];
-        switch (provider.toLowerCase()) {
-            case "kompile":       return new String[0]; // instance uses server-side agents
-            // OpenCode's model catalog is live and provider-owned; never freeze it here.
-            case "opencode":    return new String[0];
-            case "kompile-local": return new String[]{
-                    "Qwen2.5-0.5B-Instruct", "Qwen2.5-1.5B-Instruct"};
-            case "openai":     return new String[]{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini"};
-            case "anthropic":  return new String[]{"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"};
-            case "gemini":     return new String[]{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"};
-            case "ollama":     return new String[]{"llama3.3", "qwen2.5-coder:32b", "codellama:34b", "deepseek-coder-v2"};
-            case "openrouter": return new String[]{"anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro"};
-            case "xai":        return new String[]{"grok-4", "grok-4-fast-reasoning"};
-            case "github-copilot": return new String[]{
-                    "gpt-5.6-terra", "gpt-5.4", "gpt-4.1",
-                    "claude-sonnet-4.6", "gemini-3.1-pro-preview"};
-            case "openai-codex": return new String[]{
-                    "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna",
-                    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
-                    "gpt-5.3-codex-spark"};
-            case "radius":     return new String[0]; // loaded dynamically from /v1/config
-            case "deepseek":   return new String[]{"deepseek-chat", "deepseek-coder", "deepseek-reasoner"};
-            case "groq":       return new String[]{"llama-3.3-70b-versatile", "mixtral-8x7b-32768"};
-            default:           return new String[0];
-        }
+        // Kept only for source compatibility. The wizard and runtime use
+        // LiveModelDiscovery; no model id is maintained in application code.
+        return new String[0];
     }
 
     /**
@@ -666,69 +593,48 @@ public class ChatConfig {
     }
 
     private static String getEnvironmentVariable(String provider) {
-        if (provider == null) return null;
-        return switch (provider.toLowerCase()) {
-            case "openai" -> "OPENAI_API_KEY";
-            case "anthropic" -> "ANTHROPIC_API_KEY";
-            case "gemini" -> "GOOGLE_API_KEY";
-            case "openrouter" -> "OPENROUTER_API_KEY";
-            case "xai" -> "XAI_API_KEY";
-            case "github-copilot" -> "COPILOT_GITHUB_TOKEN";
-            case "radius" -> "RADIUS_API_KEY";
-            case "deepseek" -> "DEEPSEEK_API_KEY";
-            case "groq" -> "GROQ_API_KEY";
-            default -> null;
-        };
+        return ChatProviderRegistry.environmentVariable(provider);
     }
 
     private static ChatConfig fromEnv() {
-        ChatConfig config = new ChatConfig();
-
-        String openaiKey = System.getenv("OPENAI_API_KEY");
-        String anthropicKey = System.getenv("ANTHROPIC_API_KEY");
-        String geminiKey = System.getenv("GOOGLE_API_KEY");
-
-        if (anthropicKey != null && !anthropicKey.isBlank()) {
-            config.setProvider("anthropic");
-            config.setApiKey(anthropicKey);
-            config.setModel("claude-sonnet-4-20250514");
-        } else if (openaiKey != null && !openaiKey.isBlank()) {
-            config.setProvider("openai");
-            config.setApiKey(openaiKey);
-            config.setModel("gpt-4o");
-        } else if (geminiKey != null && !geminiKey.isBlank()) {
-            config.setProvider("gemini");
-            config.setApiKey(geminiKey);
-            config.setModel("gemini-2.5-flash");
+        for (ChatProvider provider : ChatProviderRegistry.directProviders()) {
+            String envVar = provider.environmentVariable();
+            if (envVar == null || envVar.isBlank()) {
+                continue;
+            }
+            String key = System.getenv(envVar);
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            List<LiveModelDiscovery.Model> models = ModelDiscoveryHttp
+                    .discoverResult(provider.id(), key, null).models();
+            if (models.isEmpty()) {
+                continue;
+            }
+            ChatConfig config = new ChatConfig(provider.id(), key, models.get(0).id(), null);
+            return config.isValid() ? config : null;
         }
-
-        return config.isValid() ? config : null;
+        return null;
     }
 
-    // Available provider names for the setup wizard
-    public static final Map<String, String> PROVIDERS = Map.ofEntries(
-            Map.entry("kompile", "Kompile (connect to a running kompile-app instance)"),
-            Map.entry("kompile-local", "Kompile Local (first-party serving subprocess)"),
-            Map.entry("opencode", "OpenCode (native providers, models, and variants)"),
-            Map.entry("openai", "OpenAI (GPT-4o, o4-mini)"),
-            Map.entry("anthropic", "Anthropic (Claude Sonnet/Opus)"),
-            Map.entry("gemini", "Google Gemini (2.5 Pro/Flash)"),
-            Map.entry("ollama", "Ollama (local models, no API key needed)"),
-            Map.entry("custom", "OpenAI-compatible endpoint"),
-            Map.entry("openrouter", "OpenRouter (multi-provider gateway)"),
-            Map.entry("xai", "xAI (Grok)"),
-            Map.entry("github-copilot", "GitHub Copilot"),
-            Map.entry("openai-codex", "OpenAI Codex (ChatGPT Plus/Pro)"),
-            Map.entry("radius", "Radius (dynamic Pi gateway)"),
-            Map.entry("deepseek", "DeepSeek (DeepSeek-V3/Coder)"),
-            Map.entry("groq", "Groq (fast inference)")
-    );
+    /** Compatibility view backed by the runtime provider registries. */
+    public static final Map<String, String> PROVIDERS = loadProviderDescriptions();
 
-    // Ordered list for display — kompile first
-    public static final String[] PROVIDER_ORDER = {
-            "kompile", "anthropic", "openai", "gemini", "opencode", "ollama", "openrouter", "xai",
-            "github-copilot", "openai-codex", "radius", "deepseek", "groq"
-    };
+    /** Compatibility ordering backed by the same runtime provider registry. */
+    public static final String[] PROVIDER_ORDER = PROVIDERS.keySet().toArray(String[]::new);
+
+    private static Map<String, String> loadProviderDescriptions() {
+        Map<String, String> descriptions = new LinkedHashMap<>();
+        descriptions.put("kompile", "Kompile instance");
+        descriptions.put("kompile-local", "Kompile local model");
+        descriptions.put("custom", "OpenAI-compatible endpoint");
+        descriptions.putAll(ChatProviderRegistry.descriptions());
+        new ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry().flows().forEach(flow -> {
+            descriptions.putIfAbsent(flow.providerId(), flow.displayName());
+            descriptions.putIfAbsent(flow.userFacingProviderId(), flow.displayName());
+        });
+        return java.util.Collections.unmodifiableMap(descriptions);
+    }
 
     // Available passthrough agents — derived from CliAgentRegistry (single source of truth).
     // Computed lazily to avoid baking empty results into native image heap at build time.

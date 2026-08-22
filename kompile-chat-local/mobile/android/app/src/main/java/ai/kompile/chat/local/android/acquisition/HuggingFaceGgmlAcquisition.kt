@@ -664,6 +664,24 @@ object HuggingFaceGgmlAcquisition {
         }
     }
 
+    /**
+     * Recover the canonical tokenizer for a retained GGUF/GGML. Hugging Face acquisition stores
+     * identity-prefixed sidecars so several model files can safely share one directory; manually
+     * retained models may instead provide the conventional plain sibling name.
+     */
+    internal fun existingTokenizerJsonPath(modelPath: Path): Path? {
+        val model = modelPath.toAbsolutePath().normalize()
+        val candidates = listOf(
+            tokenizerAssetPath(model, "tokenizer.json"),
+            model.resolveSibling("tokenizer.json").normalize(),
+        ).distinct()
+        return candidates.firstOrNull { candidate ->
+            candidate.parent == model.parent &&
+                Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS) &&
+                Files.size(candidate) in 1..MAX_TOKENIZER_ASSET_BYTES
+        }
+    }
+
     private fun isReusableTokenizerAsset(
         asset: HuggingFaceGgmlResolver.TokenizerAsset,
         destination: Path

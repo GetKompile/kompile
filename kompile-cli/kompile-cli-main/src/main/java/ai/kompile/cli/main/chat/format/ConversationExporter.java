@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.format;
 
+import ai.kompile.cli.common.chat.sources.adapters.CodexAdapter;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatHistory;
 import ai.kompile.utils.HashUtils;
@@ -689,8 +690,7 @@ public class ConversationExporter {
     private static ExportResult exportToCodex(List<ChatHistory.Turn> turns,
                                               String sessionId,
                                               Path workingDirectory) throws IOException {
-        String homeDir = System.getProperty("user.home");
-        Path codexDir = Paths.get(homeDir, ".codex", "sessions");
+        Path codexDir = CodexAdapter.configuredCodexHome().resolve("sessions");
         Files.createDirectories(codexDir);
 
         // Create date-based directory structure
@@ -772,8 +772,7 @@ public class ConversationExporter {
      * Appends entries to Codex's global history.jsonl
      */
     private static void writeCodexHistory(String sessionId, List<ChatHistory.Turn> turns) throws IOException {
-        String homeDir = System.getProperty("user.home");
-        Path historyFile = Paths.get(homeDir, ".codex", "history.jsonl");
+        Path historyFile = CodexAdapter.configuredCodexHome().resolve("history.jsonl");
 
         StringBuilder jsonl = new StringBuilder();
         long timestamp = Instant.now().getEpochSecond();
@@ -1462,7 +1461,7 @@ public class ConversationExporter {
      * Resolves a Gemini session UUID to its 1-based index number
      * by parsing the output of `gemini --list-sessions`.
      */
-    static Integer resolveGeminiSessionIndex(Path workingDirectory, String sessionId) {
+    public static Integer resolveGeminiSessionIndex(Path workingDirectory, String sessionId) {
         try {
             ProcessBuilder pb = new ProcessBuilder("gemini", "--list-sessions");
             pb.directory(workingDirectory.toFile());

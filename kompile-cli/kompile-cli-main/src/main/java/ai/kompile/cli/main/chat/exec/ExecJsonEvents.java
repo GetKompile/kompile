@@ -85,6 +85,66 @@ public final class ExecJsonEvents {
         return write(mapper, n);
     }
 
+    /** Serialize a rich headless event while retaining the existing JSONL vocabulary. */
+    public static String event(ObjectMapper mapper, HeadlessRunEvent event) {
+        ObjectNode n = mapper.createObjectNode();
+        if (event == null) {
+            return error(mapper, "null-event");
+        }
+        n.put("seq", event.sequence());
+        switch (event.type()) {
+            case RUN_STARTED -> {
+                n.put("type", "session");
+                n.put("session_id", event.sessionId());
+                if (!event.toolName().isBlank()) n.put("model", event.toolName());
+                if (!event.rawInput().isBlank()) n.put("cwd", event.rawInput());
+            }
+            case ASSISTANT_DELTA -> {
+                n.put("type", "text");
+                n.put("text", event.text());
+            }
+            case TOOL_STARTED -> {
+                n.put("type", "tool_start");
+                n.put("call_id", event.callId());
+                n.put("name", event.toolName());
+                if (!event.rawInput().isBlank()) n.put("input", event.rawInput());
+            }
+            case TOOL_COMPLETED -> {
+                n.put("type", "tool");
+                n.put("call_id", event.callId());
+                n.put("name", event.toolName());
+                n.put("ok", event.ok());
+                n.put("ms", event.durationMs());
+            }
+            case RUN_COMPLETED -> {
+                n.put("type", "result");
+                n.put("text", event.text());
+                n.put("session_id", event.sessionId());
+                n.put("tools", parseInt(event.message()));
+                n.put("exit", event.exitCode());
+            }
+            case RUN_FAILED -> {
+                n.put("type", "error");
+                n.put("message", event.message());
+                n.put("exit", event.exitCode());
+            }
+            case RUN_DETACHED -> {
+                n.put("type", "detached");
+                n.put("session_id", event.sessionId());
+                n.put("message", event.message());
+            }
+        }
+        return write(mapper, n);
+    }
+
+    private static int parseInt(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
     private static String write(ObjectMapper mapper, ObjectNode node) {
         try {
             return mapper.writeValueAsString(node);

@@ -39,7 +39,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -71,6 +70,7 @@ public final class LocalProjectCrawlBackend {
     private final KompileProjectStore store;
     private final LocalProjectGraphBackend graphBackend;
     private final ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor;
+    private final LocalProjectRagSearch ragSearch;
 
     public LocalProjectCrawlBackend(ObjectMapper mapper) {
         this(mapper, new LocalProjectGraphBackend(mapper), LocalModelPipelineRunner::extract);
@@ -100,6 +100,7 @@ public final class LocalProjectCrawlBackend {
         this.store = new KompileProjectStore();
         this.graphBackend = graphBackend;
         this.modelPipelineExecutor = modelPipelineExecutor;
+        this.ragSearch = new LocalProjectRagSearch(mapper);
     }
 
     private boolean asyncRequested(JsonNode params) {
@@ -116,8 +117,11 @@ public final class LocalProjectCrawlBackend {
     private ToolResult submitAsync(JsonNode params, ToolContext context) {
         String jobId = LocalCrawlJobRegistry.newJobId();
         String knowledgeBase = knowledgeBaseHint(params);
+        Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
+                .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
         ObjectNode workerParams = params.deepCopy();
         workerParams.put("_asyncWorker", true);
+        workerParams.put("_asyncJobId", jobId);
         workerParams.remove("async");
         workerParams.remove("waitForCompletion");
 
@@ -131,13 +135,16 @@ public final class LocalProjectCrawlBackend {
                 context.getToolRegistry());
         workerContext.setAutoApproveAll(context.isAutoApproveAll());
         workerContext.setOutputConsumer(context.getOutputConsumer());
-        LocalCrawlJobRegistry.submit(jobId, knowledgeBase, workerContext::abort,
+        LocalCrawlJobRegistry.submit(jobId, knowledgeBase, localStateRoot, params,
+                workerContext::abort,
                 () -> crawlDocuments(workerParams, workerContext));
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("backend", "project-local");
         metadata.put("jobId", jobId);
         metadata.put("status", "QUEUED");
+        metadata.put("stage", "QUEUED");
+        metadata.put("progressPercent", 0);
         metadata.put("terminal", false);
         metadata.put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
         ObjectNode payload = mapper.createObjectNode()
@@ -145,6 +152,9 @@ public final class LocalProjectCrawlBackend {
                 .put("backend", "project-local")
                 .put("jobId", jobId)
                 .put("status", "QUEUED")
+                .put("stage", "QUEUED")
+                .put("stageDetail", "Waiting for a project-local crawl worker")
+                .put("progressPercent", 0)
                 .put("terminal", false)
                 .put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
         if (knowledgeBase != null) {
@@ -183,6 +193,7 @@ public final class LocalProjectCrawlBackend {
         }
         List<Path> temporarySources = new ArrayList<>();
         try {
+            reportStage(params, "VALIDATING", "Validating project, sources, and pipeline bindings", 10);
             ProjectState project = dryRun(params)
                     ? project(context.getWorkingDirectory())
                     : ensureDirectoryProject(context.getWorkingDirectory());
@@ -307,6 +318,8 @@ public final class LocalProjectCrawlBackend {
                         ignored -> mapper.createObjectNode().put("path", source));
             }
             ObjectNode executionRequest = params.deepCopy();
+            executionRequest.remove("_asyncWorker");
+            executionRequest.remove("_asyncJobId");
             ArrayNode normalizedDocuments = executionRequest.putArray("documents");
             sourceConfigs.values().forEach(normalizedDocuments::add);
             String projectPipelineError = registerProjectPipelines(executionRequest, project);
@@ -323,6 +336,9 @@ public final class LocalProjectCrawlBackend {
                 return ToolResult.error(pipelineValidationError);
             }
             addUnsupportedWarnings(executionRequest, warnings);
+            List<String> configurationWarnings =
+                    CrawlDocumentsTool.pipelineConfigurationWarnings(executionRequest);
+            warnings.addAll(configurationWarnings);
 
             KompileProjectCrawlProfile profile = new KompileProjectCrawlProfile();
             profile.setId(knowledgeBase.id());
@@ -358,11 +374,31 @@ public final class LocalProjectCrawlBackend {
                 LocalCrawlRunner.GraphContext graphContext =
                         new LocalCrawlRunner.GraphContext(
                                 knowledgeBase.id(), knowledgeBase.name(), knowledgeBase.factSheetId(),
-                                project.id(), graphCodeProjects);
+                                project.id(), graphCodeProjects, text(params, "_asyncJobId"));
+                reportStage(params, "DOCUMENT_PROCESSING",
+                        "Loading and extracting project documents", 30);
+                ProjectCrawlCommand.ModelPipelineExecutor effectiveModelExecutor =
+                        modelPipelineExecutor == null
+                                ? LocalModelPipelineRunner::extract : modelPipelineExecutor;
+                ProjectCrawlCommand.ModelPipelineExecutor reportingModelExecutor =
+                        (root, file, pipeline, loadedText) -> {
+                            reportStage(params, "MODEL_INITIALIZATION",
+                                    "Initializing or running the selected model-backed document pipeline",
+                                    30);
+                            try {
+                                return effectiveModelExecutor.extract(
+                                        root, file, pipeline, loadedText);
+                            } finally {
+                                reportStage(params, "DOCUMENT_PROCESSING",
+                                        "Processing extracted documents", 60);
+                            }
+                        };
                 LocalCrawlRunner.ExecutionResult lifecycle =
                         LocalCrawlRunner.execute(
                                 profile, project.root(), dryRun, executionRequest,
-                                graphContext, mapper, modelPipelineExecutor);
+                                graphContext, mapper, reportingModelExecutor);
+                reportStage(params, "PERSISTENCE",
+                        "Persisting crawl metadata, graph updates, and searchable artifacts", 85);
                 ProjectCrawlCommand.LocalCrawlExecution execution = lifecycle.crawlExecution();
                 LocalProjectGraphBackend.GraphUpdate graphUpdate = lifecycle.graphUpdate();
                 if (!dryRun) {
@@ -381,6 +417,7 @@ public final class LocalProjectCrawlBackend {
                         && !"FAILED".equals(effectiveStatus)) {
                     effectiveStatus = "COMPLETED_WITH_ERRORS";
                 }
+                reportStage(params, "FINALIZING", "Finalizing the crawl result and next actions", 95);
                 summary.put("backend", "project-local");
                 summary.put("distributed", false);
                 summary.put("projectRoot", project.root().toString());
@@ -444,6 +481,9 @@ public final class LocalProjectCrawlBackend {
                     metadata.put("mebnFragmentCount", graphUpdate.mebnFragmentCount());
                 }
                 metadata.put("warnings", warnings);
+                metadata.put("configurationWarnings", configurationWarnings);
+                metadata.put("requestedConfiguration", params.deepCopy());
+                metadata.put("effectiveConfiguration", executionRequest.deepCopy());
                 if (dryRun) {
                     metadata.put("preview", mapper.convertValue(summary,
                             new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { }));
@@ -734,9 +774,12 @@ public final class LocalProjectCrawlBackend {
         }
         try {
             String jobId = text(params, "jobId");
-            boolean registryJob = jobId != null && LocalCrawlJobRegistry.get(jobId) != null;
-            ProjectState project = (registryJob
-                    && ("status".equals(operation) || "cancel".equals(operation)))
+            boolean localAsyncJob = LocalCrawlJobRegistry.isJobId(jobId);
+            Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
+                    .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
+            ProjectState project = (localAsyncJob
+                    && ("status".equals(operation) || "cancel".equals(operation)
+                    || "transcript".equals(operation)))
                     ? null : project(context.getWorkingDirectory());
             switch (operation) {
                 case "preflight":
@@ -757,7 +800,10 @@ public final class LocalProjectCrawlBackend {
                     }
                     LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
                     if (asyncJob != null) {
-                        return LocalCrawlJobRegistry.status(jobId, mapper);
+                        return LocalCrawlJobRegistry.status(jobId, mapper, localStateRoot);
+                    }
+                    if (localAsyncJob) {
+                        return LocalCrawlJobRegistry.status(jobId, mapper, localStateRoot);
                     }
                     return localJobResult("status", project.root(), jobId);
                 case "list": {
@@ -767,11 +813,16 @@ public final class LocalProjectCrawlBackend {
                     result.put("pollable", true);
                     result.put("pollAfterMs", LocalCrawlJobRegistry.DEFAULT_POLL_AFTER_MS);
                     result.set("jobs", listKnowledgeBases(project.root()));
+                    result.set("crawlJobs", LocalCrawlJobRegistry.retainedJobs(
+                            project.root(), mapper));
                     return ToolResult.success("crawl_list", result.toPrettyString());
                 }
                 case "transcript":
                     if (jobId == null) {
                         return ToolResult.error("transcript requires jobId");
+                    }
+                    if (localAsyncJob) {
+                        return LocalCrawlJobRegistry.transcript(jobId, mapper, localStateRoot);
                     }
                     return localTranscript(project.root(), jobId);
                 case "source_types":
@@ -822,8 +873,13 @@ public final class LocalProjectCrawlBackend {
             return ToolResult.error("crawl_result requires jobId");
         }
         LocalCrawlJobRegistry.AsyncJob asyncJob = LocalCrawlJobRegistry.get(jobId);
+        Path localStateRoot = store.findProjectRoot(context.getWorkingDirectory())
+                .orElse(context.getWorkingDirectory()).toAbsolutePath().normalize();
         if (asyncJob != null) {
-            return LocalCrawlJobRegistry.result(jobId, mapper);
+            return LocalCrawlJobRegistry.result(jobId, mapper, localStateRoot);
+        }
+        if (LocalCrawlJobRegistry.isJobId(jobId)) {
+            return LocalCrawlJobRegistry.result(jobId, mapper, localStateRoot);
         }
         try {
             ProjectState project = project(context.getWorkingDirectory());
@@ -834,6 +890,10 @@ public final class LocalProjectCrawlBackend {
     }
 
     public ToolResult search(String query, String knowledgeBase, int limit, ToolContext context) {
+        return search(query, null, knowledgeBase, limit, context);
+    }
+
+    public ToolResult search(String query, String topic, String knowledgeBase, int limit, ToolContext context) {
         String selected = knowledgeBase;
         if (selected == null || selected.isBlank()) {
             selected = defaultKnowledgeBaseId(context.getWorkingDirectory());
@@ -842,10 +902,15 @@ public final class LocalProjectCrawlBackend {
                 return bootstrap;
             }
         }
-        return search(query, selected, limit, context.getWorkingDirectory());
+        return search(query, topic, selected, limit, context.getWorkingDirectory());
     }
 
     public ToolResult search(String query, String knowledgeBase, int limit, Path workingDirectory) {
+        return search(query, null, knowledgeBase, limit, workingDirectory);
+    }
+
+    public ToolResult search(String query, String topic, String knowledgeBase, int limit,
+                             Path workingDirectory) {
         try {
             ProjectState project = project(workingDirectory);
             ArrayNode bases = listKnowledgeBases(project.root());
@@ -860,74 +925,7 @@ public final class LocalProjectCrawlBackend {
                 return ToolResult.error("No project-local knowledge base matches '" + knowledgeBase
                         + "'. Call crawl_discover section=knowledge_bases.");
             }
-
-            List<String> terms = queryTerms(query);
-            List<SearchHit> hits = new ArrayList<>();
-            for (Path directory : selected) {
-                ObjectNode summary = readJson(directory.resolve("crawl-result.json"));
-                Map<String, String> sources = documentSources(directory.resolve("documents.jsonl"));
-                Path chunks = directory.resolve("chunks.jsonl");
-                if (!Files.isRegularFile(chunks)) {
-                    continue;
-                }
-                try (Stream<String> lines = Files.lines(chunks, StandardCharsets.UTF_8)) {
-                    lines.filter(line -> !line.isBlank()).forEach(line -> {
-                        try {
-                            JsonNode chunk = mapper.readTree(line);
-                            String content = chunk.path("text").asText("");
-                            int score = lexicalScore(content, query, terms);
-                            if (score > 0) {
-                                String documentId = chunk.path("documentId").asText("");
-                                hits.add(new SearchHit(
-                                        summary.path("profileId").asText(directory.getFileName().toString()),
-                                        sources.getOrDefault(documentId, documentId),
-                                        documentId,
-                                        chunk.path("chunkId").asText(""),
-                                        content,
-                                        score));
-                            }
-                        } catch (Exception ignored) {
-                            // A malformed line does not make the rest of the KB unusable.
-                        }
-                    });
-                }
-            }
-
-            hits.sort(Comparator.comparingInt(SearchHit::score).reversed()
-                    .thenComparing(SearchHit::source)
-                    .thenComparing(SearchHit::chunkId));
-            int boundedLimit = Math.min(50, Math.max(1, limit));
-            List<SearchHit> limitedHits = hits.size() > boundedLimit
-                    ? new ArrayList<>(hits.subList(0, boundedLimit))
-                    : hits;
-            if (limitedHits.isEmpty()) {
-                return ToolResult.success("knowledge_search: " + query,
-                        "No project-local chunks matched. Knowledge bases searched: "
-                                + selected.size() + ".",
-                        Map.of("query", query, "resultCount", 0,
-                                "backend", "project-local"));
-            }
-
-            int maxScore = Math.max(1, limitedHits.get(0).score());
-            StringBuilder output = new StringBuilder("Project-local knowledge results\n\n");
-            int index = 0;
-            for (SearchHit hit : limitedHits) {
-                index++;
-                output.append("### ").append(index).append(". ").append(hit.source())
-                        .append(" [").append(hit.knowledgeBase()).append("] (")
-                        .append(String.format(Locale.ROOT, "%.2f",
-                                (double) hit.score() / maxScore))
-                        .append(")\n")
-                        .append(hit.content().strip()).append("\n\n");
-            }
-            Map<String, Object> metadata = new LinkedHashMap<>();
-            metadata.put("query", query);
-            metadata.put("resultCount", limitedHits.size());
-            metadata.put("backend", "project-local");
-            metadata.put("knowledgeBases", selected.stream()
-                    .map(path -> path.getFileName().toString()).toList());
-            return ToolResult.success("knowledge_search: " + query,
-                    output.toString().strip(), metadata);
+            return ragSearch.search(project.root(), selected, query, topic, limit);
         } catch (Exception e) {
             return ToolResult.error("Project-local knowledge search failed: " + message(e));
         }
@@ -936,7 +934,20 @@ public final class LocalProjectCrawlBackend {
     public ToolResult status(String knowledgeBase, ToolContext context) {
         String selected = knowledgeBase;
         if (selected == null || selected.isBlank()) {
-            selected = defaultKnowledgeBaseId(context.getWorkingDirectory());
+            Path workingDirectory = context.getWorkingDirectory();
+            try {
+                ProjectState project = project(workingDirectory);
+                // Status is an inventory operation. If this project already has persisted crawl
+                // summaries, report them without implicitly re-running a possibly expensive or
+                // incomplete default crawl. Fresh directories still get the historical bootstrap
+                // behavior so status remains useful before the first explicit crawl.
+                if (!listKnowledgeBases(project.root()).isEmpty()) {
+                    return status(null, project.root());
+                }
+            } catch (Exception e) {
+                return ToolResult.error("Project-local knowledge status failed: " + message(e));
+            }
+            selected = defaultKnowledgeBaseId(workingDirectory);
             ToolResult bootstrap = ensureFolderKnowledgeBase(context);
             if (bootstrap.isError()) {
                 return bootstrap;
@@ -1043,6 +1054,9 @@ public final class LocalProjectCrawlBackend {
     }
 
     private ToolResult localJobResult(String operation, Path root, String jobId) throws IOException {
+        if (LocalCrawlJobRegistry.isJobId(jobId)) {
+            return ToolResult.error("Unknown project-local crawl job: " + jobId);
+        }
         ObjectNode summary = readSummary(root, slug(stripLocalPrefix(jobId)));
         if (summary.isEmpty()) {
             return ToolResult.error("Unknown project-local crawl/knowledge base: " + jobId);
@@ -1333,6 +1347,11 @@ public final class LocalProjectCrawlBackend {
             }
         }
         return result;
+    }
+
+    ArrayNode knowledgeBaseInventory(Path workingDirectory) throws IOException {
+        ProjectState project = project(workingDirectory);
+        return listKnowledgeBases(project.root());
     }
 
     private ProjectState project(Path workingDirectory) {
@@ -1656,52 +1675,6 @@ public final class LocalProjectCrawlBackend {
         if (value != null && !value.isNull()) target.set(field, value.deepCopy());
     }
 
-    private Map<String, String> documentSources(Path path) throws IOException {
-        Map<String, String> result = new HashMap<>();
-        if (!Files.isRegularFile(path)) {
-            return result;
-        }
-        try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
-            lines.filter(line -> !line.isBlank()).forEach(line -> {
-                try {
-                    JsonNode document = mapper.readTree(line);
-                    result.put(document.path("documentId").asText(""),
-                            firstNonBlank(text(document, "relativePath"),
-                                    text(document, "source"), "Unknown"));
-                } catch (Exception ignored) {
-                }
-            });
-        }
-        return result;
-    }
-
-    private int lexicalScore(String content, String query, List<String> terms) {
-        String normalized = content.toLowerCase(Locale.ROOT);
-        int score = 0;
-        String phrase = query.toLowerCase(Locale.ROOT).strip();
-        if (phrase.length() > 2 && normalized.contains(phrase)) {
-            score += 8;
-        }
-        for (String term : terms) {
-            int from = 0;
-            while ((from = normalized.indexOf(term, from)) >= 0) {
-                score++;
-                from += term.length();
-            }
-        }
-        return score;
-    }
-
-    private List<String> queryTerms(String query) {
-        LinkedHashSet<String> terms = new LinkedHashSet<>();
-        for (String term : query.toLowerCase(Locale.ROOT).split("[^a-z0-9_]+")) {
-            if (term.length() > 1) {
-                terms.add(term);
-            }
-        }
-        return new ArrayList<>(terms);
-    }
-
     private boolean matchesKnowledgeBase(JsonNode candidate, String selector) {
         String normalized = selector.trim().toLowerCase(Locale.ROOT);
         for (String field : List.of("id", "name", "collection")) {
@@ -1741,13 +1714,8 @@ public final class LocalProjectCrawlBackend {
             String id = text(definition, "pipelineId");
             if (id != null) ids.add(id);
         }
-        JsonNode requestPipelines = request.get("pipelines");
-        if (requestPipelines != null && requestPipelines.isArray()) {
-            for (JsonNode definition : requestPipelines) {
-                String id = text(definition, "pipelineId");
-                if (id != null) ids.add(id);
-            }
-        }
+        // Keep the project default even when a request pipeline uses the same id. The request
+        // entry may then inherit that project-owned definition via registeredPipelineId.
         for (JsonNode definition : projectDefaults) {
             String id = text(definition, "pipelineId");
             if (id != null && ids.add(id)) defaults.add(definition.deepCopy());
@@ -1785,7 +1753,17 @@ public final class LocalProjectCrawlBackend {
             boolean modelDocumentPipeline = "VLM".equalsIgnoreCase(pipelineType)
                     || "OCR".equalsIgnoreCase(pipelineType);
             registered.put("executionModel", "unified-pipeline-runtime");
-            if (modelDocumentPipeline) registered.put("supportedInputTypes", "application/pdf");
+            registered.put("configurationSource", "kompile.project.json");
+            registered.put("inheritanceContract",
+                    "Use pipelines[].registeredPipelineId to inherit this definition; override model and "
+                            + "model-backed options under pipelines[].modelId/modelBindings/options.");
+            if (modelDocumentPipeline) {
+                registered.put("supportedInputTypes", "application/pdf");
+                registered.put("configurationHint",
+                        "VLM/OCR callers should explicitly set modelId/modelBindings and options.outputFormat, "
+                                + "maxNewTokens, pdfRenderDpi, pageBatchSize, temperature, and doSample; dryRun=true "
+                                + "shows the effective per-document resolution.");
+            }
             ObjectNode options = registered.putObject("options");
             options.put("projectRegistered", true);
             if (pipeline.getRole() != null) options.put("role", pipeline.getRole());
@@ -1905,6 +1883,7 @@ public final class LocalProjectCrawlBackend {
         shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");
         shape.put("knowledgeBase", "knowledgeBase={name:<string>} or {id:<number>}; repeated calls add sources");
         shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
+        shape.put("progress", "crawl_control status reports stage, stageDetail, progressPercent, and stageUpdatedAt; any resolved model-backed pipeline reports MODEL_INITIALIZATION while its executor is active and PERSISTENCE afterwards");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
         shape.put("embeddingTraining", "embeddingTraining={enabled?,algorithm:TRANSE|ROTATE,embeddingDim?,epochs?}");
         shape.put("reasoningLearning", "reasoningLearning={enabled?,pslSteps?,mebnEpochs?,consensusRounds?,consensusWeight?,maxRelationTypes?}; FOL/PSL/MEBN artifacts are stored in graph.kgraph");
@@ -1913,6 +1892,13 @@ public final class LocalProjectCrawlBackend {
         shape.put("portability", "graph_export and graph_import read/write .kgraph locally");
         shape.put("memory", "memory and semantic_memory remain available in the same stdio MCP session");
         return shape;
+    }
+
+    private void reportStage(JsonNode params, String stage, String detail, int progressPercent) {
+        String jobId = text(params, "_asyncJobId");
+        if (jobId != null) {
+            LocalCrawlJobRegistry.updateStage(jobId, stage, detail, progressPercent);
+        }
     }
 
     private void sourceType(ArrayNode target, String type, boolean available, String useWhen) {
@@ -2114,11 +2100,4 @@ public final class LocalProjectCrawlBackend {
     private record CodeProjectSelection(List<SelectedCodeProject> projects, String error) {
     }
 
-    private record SearchHit(String knowledgeBase,
-                             String source,
-                             String documentId,
-                             String chunkId,
-                             String content,
-                             int score) {
-    }
 }

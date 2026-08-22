@@ -127,16 +127,16 @@ public class IndexDatabase implements AutoCloseable {
                 pageCount = rs.next() ? rs.getLong(1) : 0;
             }
             if (pageCount > 0 && freelist > 2500 && freelist * 100 / pageCount >= 15) {
-                System.err.println("[code-index] vacuuming index db ("
+                CodeIndexDiagnostics.alert("[code-index] vacuuming index db ("
                         + (freelist * 4096 / 1024 / 1024) + "MB reclaimable)...");
                 long start = System.currentTimeMillis();
                 stmt.execute("VACUUM");
-                System.err.println("[code-index] vacuum done in "
+                CodeIndexDiagnostics.alert("[code-index] vacuum done in "
                         + (System.currentTimeMillis() - start) + "ms");
             }
         } catch (SQLException e) {
             // Space reclamation is best-effort; the DB stays fully usable.
-            System.err.println("[code-index] vacuum skipped: " + e.getMessage());
+            CodeIndexDiagnostics.alert("[code-index] vacuum skipped: " + e.getMessage());
         }
     }
 

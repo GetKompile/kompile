@@ -56,10 +56,10 @@ public class RagSearchTool implements CliTool {
     @Override
     public String description() {
         return "Search the Kompile knowledge base using RAG (Retrieval-Augmented Generation). " +
-                "Local stdio initializes and searches the current folder automatically. " +
-                "Fans out to all active document retrievers (vector store, keyword index) and " +
-                "the knowledge graph simultaneously. Returns relevant document chunks with " +
-                "source attribution, relevance scores, and optional graph context. " +
+                "Local stdio initializes and searches only the current folder, using its local " +
+                "encoder subprocess plus lexical retrieval. An explicitly configured remote service " +
+                "fans out to its document retrievers and knowledge graph. Returns relevant chunks with " +
+                "source attribution and relevance scores. " +
                 "Use this to find information from ingested documents, PDFs, and other sources. " +
                 "Optionally supply a topic to narrow results to a specific subject area.";
     }
@@ -78,6 +78,17 @@ public class RagSearchTool implements CliTool {
         ObjectNode topic = props.putObject("topic");
         topic.put("type", "string");
         topic.put("description", "Optional topic / subject area to narrow results (e.g. 'finance', 'security')");
+
+        ObjectNode knowledgeBase = props.putObject("knowledgeBase");
+        knowledgeBase.put("type", "string");
+        knowledgeBase.put("description", "Local mode only: optional knowledge base inside the current folder");
+
+        ObjectNode limit = props.putObject("limit");
+        limit.put("type", "integer");
+        limit.put("minimum", 1);
+        limit.put("maximum", 50);
+        limit.put("default", 20);
+        limit.put("description", "Local mode only: maximum number of results (default 20)");
 
         schema.putArray("required").add("query");
         return schema;

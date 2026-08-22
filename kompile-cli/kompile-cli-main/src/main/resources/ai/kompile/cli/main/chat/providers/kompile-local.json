@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "provider": "kompile-local",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "Kompile provider discovery architecture",
+    "url": "repo:docs/architecture/provider-model-discovery.md",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": []
+}

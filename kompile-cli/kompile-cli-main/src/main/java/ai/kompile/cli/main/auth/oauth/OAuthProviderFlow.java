@@ -20,6 +20,21 @@ import java.util.Map;
 public interface OAuthProviderFlow {
     String providerId();
 
+    /** User-facing vendor id when the credential wire id is an alias. */
+    default String userFacingProviderId() {
+        return providerId();
+    }
+
+    /** Provider-owned request base URL, when the OAuth wire id has one. */
+    default String defaultBaseUrl() {
+        return null;
+    }
+
+    /** Whether this OAuth flow's vendor also accepts API-key credentials. */
+    default boolean supportsApiKey() {
+        return true;
+    }
+
     String displayName();
 
     List<LoginMethod> loginMethods();

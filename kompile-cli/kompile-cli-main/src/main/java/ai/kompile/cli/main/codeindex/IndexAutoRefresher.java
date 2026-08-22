@@ -95,8 +95,8 @@ public final class IndexAutoRefresher {
             }
             return note.append(']').toString();
         } catch (Exception e) {
-            System.err.println("[code-index] auto-refresh skipped for '" + projectId + "': "
-                    + e.getMessage());
+            CodeIndexDiagnostics.alert("[code-index] auto-refresh skipped for '" + projectId
+                    + "': " + e.getMessage());
             return null;
         }
     }

@@ -60,6 +60,16 @@ class SameDiffLanguageModelImplTest {
         assertInstanceOf(ai.kompile.core.llm.LanguageModel.class, impl);
     }
 
+    @Test
+    void modelAdmissionIncludesTheOptimizerClonePeak() {
+        assertEquals(15_054_600_704L,
+                SameDiffLanguageModelImpl.modelLoadPeakBytes(7_527_300_352L, true));
+        assertEquals(7_527_300_352L,
+                SameDiffLanguageModelImpl.modelLoadPeakBytes(7_527_300_352L, false));
+        assertThrows(ArithmeticException.class,
+                () -> SameDiffLanguageModelImpl.modelLoadPeakBytes(Long.MAX_VALUE, true));
+    }
+
     // -- LanguageModel contract --
 
     @Test
@@ -599,7 +609,7 @@ class SameDiffLanguageModelImplTest {
         }
 
         @Override
-        public int selectDeviceForModel() {
+        public int selectDeviceForModel(long requiredBytes) {
             return currentDevice.get();
         }
 

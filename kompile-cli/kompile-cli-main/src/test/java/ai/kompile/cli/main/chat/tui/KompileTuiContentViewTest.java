@@ -11,6 +11,31 @@ import static org.junit.jupiter.api.Assertions.*;
 class KompileTuiContentViewTest {
 
     @Test
+    void queuePaneUsesStableBoundedRowsForTerminalHeight() {
+        assertEquals(1, KompileTui.queueRowsForTerminal(12));
+        assertEquals(2, KompileTui.queueRowsForTerminal(16));
+        assertEquals(3, KompileTui.queueRowsForTerminal(24));
+        assertEquals(4, KompileTui.queueRowsForTerminal(40));
+        assertEquals(5, KompileTui.queueRowsForTerminal(80));
+    }
+
+    @Test
+    void emptyQueuePaneRendersNoPlaceholder() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-empty-queue-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-empty-queue"),
+                    new TerminalRenderer(false));
+
+            assertTrue(tui.visibleQueueLines().isEmpty());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
     void scrollsRetainedTranscriptAndReturnsToLiveTail() {
         BackgroundProcessManager processes =
                 new BackgroundProcessManager("tui-content-scroll-test");
@@ -36,6 +61,70 @@ class KompileTuiContentViewTest {
             assertTrue(tui.scrollToBottom());
             assertEquals(0, tui.getContentScrollOffset());
             assertEquals(java.util.List.of("line 7", "line 8"), tui.getVisibleContentLines());
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void scrollToBottomControlOnlyHandlesClicksInsideItsVisibleHitBox() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-scroll-bottom-control-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-scroll-bottom-control-queue"),
+                    new TerminalRenderer(false));
+            for (int i = 1; i <= 8; i++) {
+                tui.printInScrollRegion("line " + i);
+            }
+
+            assertFalse(tui.isScrollToBottomControlVisible());
+            assertFalse(tui.handleScrollToBottomClick(2, 2));
+
+            assertTrue(tui.pageContent(1));
+            int scrolledOffset = tui.getContentScrollOffset();
+            assertTrue(tui.isScrollToBottomControlVisible());
+            assertFalse(tui.handleScrollToBottomClick(2, 1),
+                    "same column on another row must not activate the control");
+            assertFalse(tui.handleScrollToBottomClick(20, 2),
+                    "separator clicks outside the label must remain inert");
+            assertEquals(scrolledOffset, tui.getContentScrollOffset());
+
+            assertTrue(tui.handleScrollToBottomClick(2, 2));
+            assertEquals(0, tui.getContentScrollOffset());
+            assertFalse(tui.isScrollToBottomControlVisible());
+            assertFalse(tui.handleScrollToBottomClick(2, 2),
+                    "the hidden control must not retain an active hit box");
+        } finally {
+            processes.close();
+        }
+    }
+
+    @Test
+    void liveToolBlockIsReplacedInPlaceWithoutDuplicateRows() {
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("tui-live-tool-block-test");
+        try {
+            KompileTui tui = new KompileTui(
+                    new BackgroundTaskManager(), processes,
+                    new MessageQueue("tui-live-tool-block-queue"),
+                    new TerminalRenderer(false));
+            tui.printInScrollRegion("before");
+
+            assertFalse(tui.upsertMainTranscriptBlock(
+                    "tool:call-1", "Run build\n  │ compiling"));
+            tui.printInScrollRegion("after");
+            assertFalse(tui.upsertMainTranscriptBlock(
+                    "tool:call-1", "Ran build ✓\n  │ compiling\n  │ tests passed"));
+
+            assertEquals(java.util.List.of(
+                    "before",
+                    "Ran build ✓",
+                    "  │ compiling",
+                    "  │ tests passed",
+                    "after"), tui.getContentViewLines());
+            assertFalse(tui.getContentViewLines().contains("Run build"));
         } finally {
             processes.close();
         }

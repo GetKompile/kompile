@@ -18,8 +18,8 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
-
-import ai.kompile.cli.main.chat.config.ChatConfig;
+import ai.kompile.cli.main.chat.config.LiveModelDiscovery;
+import ai.kompile.cli.main.chat.config.ModelDiscoveryHttp;
 
 import java.util.*;
 
@@ -489,58 +489,22 @@ public class AgentRegistry {
             """;
 
     // ========================================================================
-    // Model allowlists by tier
+    // Model capability lookup
     // ========================================================================
 
-    /**
-     * All models across all providers — used for primary agents (coder, planner)
-     * that should have access to every model the provider offers.
-     */
+    /** Return every model currently advertised by the selected provider. */
     public static List<String> getAllModelsForProvider(String provider) {
-        String[] models = ChatConfig.getDefaultModels(provider);
-        return models.length > 0 ? List.of(models) : List.of();
+        return ModelDiscoveryHttp.discoverResult(provider, null, null).models().stream()
+                .map(LiveModelDiscovery.Model::id)
+                .toList();
     }
 
     /**
-     * "Fast" tier models — cheaper/faster models suited for quick lookups.
-     * Maps modelHint "fast" to the fastest model per provider.
-     */
-    public static final Map<String, List<String>> FAST_MODELS = Map.ofEntries(
-            Map.entry("anthropic", List.of("claude-haiku-4-20250514", "claude-sonnet-4-20250514")),
-            Map.entry("openai", List.of("gpt-4o-mini", "gpt-4o")),
-            Map.entry("gemini", List.of("gemini-2.0-flash", "gemini-2.5-flash")),
-            Map.entry("openrouter", List.of("openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro")),
-            Map.entry("deepseek", List.of("deepseek-chat", "deepseek-coder")),
-            Map.entry("groq", List.of("llama-3.3-70b-versatile", "mixtral-8x7b-32768")),
-            Map.entry("ollama", List.of()) // all local models allowed
-    );
-
-    /**
-     * "Default" tier models — standard models for most tasks.
-     */
-    public static final Map<String, List<String>> DEFAULT_MODELS = Map.ofEntries(
-            Map.entry("anthropic", List.of("claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514")),
-            Map.entry("openai", List.of("gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini")),
-            Map.entry("gemini", List.of("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash")),
-            Map.entry("openrouter", List.of("anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro")),
-            Map.entry("deepseek", List.of("deepseek-chat", "deepseek-coder", "deepseek-reasoner")),
-            Map.entry("groq", List.of("llama-3.3-70b-versatile", "mixtral-8x7b-32768")),
-            Map.entry("ollama", List.of()) // all local models allowed
-    );
-
-    /**
-     * Resolve model allowlist for a given modelHint and provider.
-     * Returns empty list if all models should be allowed.
+     * Agent tiers no longer impose an application-owned model allowlist. The
+     * provider's live capability response is the only model source.
      */
     public static List<String> resolveAllowedModels(String modelHint, String provider) {
-        if (provider == null || "kompile".equals(provider) || "ollama".equals(provider)) {
-            return List.of(); // no restrictions
-        }
-        if ("fast".equals(modelHint)) {
-            return FAST_MODELS.getOrDefault(provider, List.of());
-        }
-        // "default" and "powerful" get full access
-        return DEFAULT_MODELS.getOrDefault(provider, List.of());
+        return getAllModelsForProvider(provider);
     }
 
     // -- Researcher: web search and documentation --

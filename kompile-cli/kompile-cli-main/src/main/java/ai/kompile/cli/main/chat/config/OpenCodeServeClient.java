@@ -49,6 +49,7 @@ final class OpenCodeServeClient implements AutoCloseable {
     private final StringBuilder serverOutput = new StringBuilder();
 
     private Process serverProcess;
+    private volatile Process activeTurnProcess;
     private String baseUrl;
     private String sessionId;
     private boolean closed;
@@ -59,6 +60,15 @@ final class OpenCodeServeClient implements AutoCloseable {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(CONNECT_TIMEOUT)
                 .build();
+    }
+
+    OpenCodeServeClient(ObjectMapper objectMapper, Path workingDirectory,
+                        HttpClient httpClient, String baseUrl, String sessionId) {
+        this.objectMapper = objectMapper;
+        this.workingDirectory = workingDirectory.toAbsolutePath().normalize();
+        this.httpClient = httpClient;
+        this.baseUrl = baseUrl;
+        this.sessionId = sessionId;
     }
 
     /** Send one turn through the native OpenCode session. */
@@ -95,30 +105,33 @@ final class OpenCodeServeClient implements AutoCloseable {
             builder.environment().putAll(definition.safeEnvironment());
         }
         Process turn = builder.start();
+        activeTurnProcess = turn;
         StringBuilder rawOutput = new StringBuilder();
         StringBuilder errorOutput = new StringBuilder();
         Thread stderrReader = readLines(turn.getErrorStream(), errorOutput, null);
+        Thread stdoutReader = readLines(
+                turn.getInputStream(), rawOutput, line -> {
+                    String text = extractTextFromJsonLine(line);
+                    if (!text.isBlank() && output != null) output.accept(text);
+                }, Integer.MAX_VALUE);
 
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(turn.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                rawOutput.append(line).append('\n');
-                String text = extractTextFromJsonLine(line);
-                if (!text.isBlank() && output != null) {
-                    output.accept(text);
-                }
+        try {
+            if (!turn.waitFor(TURN_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+                turn.destroyForcibly();
+                throw new IllegalStateException("OpenCode turn timed out");
             }
-        }
-
-        if (!turn.waitFor(TURN_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+            stdoutReader.join(TimeUnit.SECONDS.toMillis(2));
+            stderrReader.join(TimeUnit.SECONDS.toMillis(2));
+            if (turn.exitValue() != 0) {
+                throw new IllegalStateException("OpenCode turn failed (exit " + turn.exitValue()
+                        + "): " + trimForError(errorOutput.toString()));
+            }
+        } catch (InterruptedException e) {
             turn.destroyForcibly();
-            throw new IllegalStateException("OpenCode turn timed out");
-        }
-        stderrReader.join(TimeUnit.SECONDS.toMillis(2));
-        if (turn.exitValue() != 0) {
-            throw new IllegalStateException("OpenCode turn failed (exit " + turn.exitValue()
-                    + "): " + trimForError(errorOutput.toString()));
+            Thread.currentThread().interrupt();
+            throw e;
+        } finally {
+            activeTurnProcess = null;
         }
 
         String text = extractText(objectMapper, rawOutput.toString());
@@ -129,12 +142,50 @@ final class OpenCodeServeClient implements AutoCloseable {
         return text;
     }
 
-    @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    /** Ask the provider-owned OpenCode session to compact itself. */
+    synchronized NativeSummary summarize(String model) throws Exception {
+        if (closed) throw new IllegalStateException("OpenCode chat transport is closed");
+        ensureSession();
+        ModelReference reference = parseModelReference(model);
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("providerID", reference.providerId());
+        body.put("modelID", reference.modelId());
+        HttpResponse<String> response = httpClient.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/session/" + sessionId + "/summarize"))
+                        .timeout(Duration.ofMinutes(2))
+                        .header("content-type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(
+                                objectMapper.writeValueAsString(body)))
+                        .build(), HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() / 100 != 2) {
+            return new NativeSummary(false, null,
+                    "OpenCode summarize returned HTTP " + response.statusCode());
         }
-        closed = true;
+        JsonNode applied = objectMapper.readTree(response.body());
+        if (applied.isBoolean() && !applied.asBoolean()) {
+            return new NativeSummary(false, null, "OpenCode declined session compaction");
+        }
+
+        HttpResponse<String> messages = httpClient.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/session/" + sessionId + "/message"))
+                        .timeout(Duration.ofSeconds(30))
+                        .GET()
+                        .build(), HttpResponse.BodyHandlers.ofString());
+        if (messages.statusCode() / 100 != 2) {
+            return new NativeSummary(true, null,
+                    "OpenCode compacted the session but its summary could not be read");
+        }
+        return new NativeSummary(true,
+                extractCompactionSummary(objectMapper, messages.body()), null);
+    }
+
+    @Override
+    public void close() {
+        Process active = activeTurnProcess;
+        if (active != null && active.isAlive()) active.destroyForcibly();
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
         if (baseUrl != null && sessionId != null) {
             try {
                 httpClient.send(HttpRequest.newBuilder(
@@ -146,7 +197,7 @@ final class OpenCodeServeClient implements AutoCloseable {
                 // The server is short-lived and cleanup is best effort.
             }
         }
-        if (serverProcess != null && serverProcess.isAlive()) {
+            if (serverProcess != null && serverProcess.isAlive()) {
             serverProcess.destroy();
             try {
                 if (!serverProcess.waitFor(2, TimeUnit.SECONDS)) {
@@ -155,6 +206,7 @@ final class OpenCodeServeClient implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 serverProcess.destroyForcibly();
+            }
             }
         }
     }
@@ -189,6 +241,33 @@ final class OpenCodeServeClient implements AutoCloseable {
             }
         }
         return text.toString().trim();
+    }
+
+    static String extractCompactionSummary(ObjectMapper objectMapper, String responseBody)
+            throws IOException {
+        if (responseBody == null || responseBody.isBlank()) return "";
+        StringBuilder summary = new StringBuilder();
+        collectCompactionSummary(objectMapper.readTree(responseBody), summary);
+        return summary.toString().trim();
+    }
+
+    private static void collectCompactionSummary(JsonNode node, StringBuilder summary) {
+        if (node == null) return;
+        if (node.isObject()) {
+            String type = node.path("type").asText("");
+            if ("compaction".equalsIgnoreCase(type)) {
+                for (String field : List.of("summary", "content", "text", "recent")) {
+                    JsonNode value = node.get(field);
+                    if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                        if (summary.length() > 0) summary.append('\n');
+                        summary.append(value.asText());
+                    }
+                }
+            }
+            node.forEach(child -> collectCompactionSummary(child, summary));
+        } else if (node.isArray()) {
+            node.forEach(child -> collectCompactionSummary(child, summary));
+        }
     }
 
     private String extractTextFromJsonLine(String line) {
@@ -289,13 +368,18 @@ final class OpenCodeServeClient implements AutoCloseable {
 
     private static Thread readLines(java.io.InputStream stream, StringBuilder sink,
                                     Consumer<String> eachLine) {
+        return readLines(stream, sink, eachLine, 8000);
+    }
+
+    private static Thread readLines(java.io.InputStream stream, StringBuilder sink,
+                                    Consumer<String> eachLine, int maxChars) {
         Thread thread = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     synchronized (sink) {
-                        if (sink.length() < 8000) {
+                        if (sink.length() < maxChars) {
                             sink.append(line).append('\n');
                         }
                     }
@@ -348,5 +432,8 @@ final class OpenCodeServeClient implements AutoCloseable {
         String asWireValue() {
             return providerId + "/" + modelId;
         }
+    }
+
+    record NativeSummary(boolean applied, String summary, String diagnostic) {
     }
 }

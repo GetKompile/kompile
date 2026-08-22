@@ -26,6 +26,38 @@ class HuggingFaceGgmlAcquisitionTest {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     @Test
+    fun retainedModelRecoversIdentityPrefixedOrPlainTokenizer() {
+        val directory = Files.createTempDirectory("hf-tokenizer-sidecar-test")
+        try {
+            val model = directory.resolve("model.gguf")
+            Files.write(model, byteArrayOf(1))
+            val prefixed = HuggingFaceGgmlAcquisition.tokenizerAssetPath(
+                model,
+                "tokenizer.json"
+            )
+            val plain = directory.resolve("tokenizer.json")
+            Files.write(prefixed, "{\"version\":\"1.0\"}".toByteArray())
+            Files.write(plain, "{\"version\":\"fallback\"}".toByteArray())
+
+            assertEquals(
+                prefixed,
+                HuggingFaceGgmlAcquisition.existingTokenizerJsonPath(model)
+            )
+
+            Files.delete(prefixed)
+            assertEquals(
+                plain,
+                HuggingFaceGgmlAcquisition.existingTokenizerJsonPath(model)
+            )
+
+            Files.write(plain, byteArrayOf())
+            assertNull(HuggingFaceGgmlAcquisition.existingTokenizerJsonPath(model))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun exactBlobPageUsesRepositoryMetadataAndCanonicalAssets() {
         val loaderCalled = AtomicBoolean(false)
         val discovery = HuggingFaceGgmlAcquisition.discover(

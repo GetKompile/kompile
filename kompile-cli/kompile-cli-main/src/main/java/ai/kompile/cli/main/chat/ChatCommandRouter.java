@@ -296,6 +296,10 @@ public class ChatCommandRouter {
                 showTranscript();
                 return true;
 
+            case "/copy":
+                copyLatestResponse(rest);
+                return true;
+
             case "/memory":
                 handleMemory(rest);
                 return true;
@@ -341,12 +345,24 @@ public class ChatCommandRouter {
                 queueManager.removeQueuedMessage(rest.trim());
                 return true;
 
+            case "/queue-edit":
+                queueManager.editQueuedMessage(rest);
+                return true;
+
+            case "/queue-move":
+                queueManager.moveQueuedMessage(rest);
+                return true;
+
             case "/queue-clear":
                 queueManager.clearQueuedMessages();
                 return true;
 
             case "/queue-status":
                 queueManager.showQueueStatus();
+                return true;
+
+            case "/loop":
+                handleLoop(rest);
                 return true;
 
             // Background task management commands
@@ -514,6 +530,109 @@ public class ChatCommandRouter {
         if (store != null) store.checkpoint(controller, "operator_" + op);
     }
 
+    private void handleLoop(String arguments) {
+        String input = arguments == null ? "" : arguments.strip();
+        if (input.isEmpty() || input.equalsIgnoreCase("list")
+                || input.equalsIgnoreCase("status")) {
+            listLoops();
+            return;
+        }
+
+        String[] operation = input.split("\\s+", 2);
+        String command = operation[0].toLowerCase(Locale.ROOT);
+        String rest = operation.length > 1 ? operation[1].strip() : "";
+        switch (command) {
+            case "add" -> addLoop(rest);
+            case "pause" -> updateLoop("pause", rest);
+            case "resume" -> updateLoop("resume", rest);
+            case "remove", "delete", "stop" -> updateLoop("remove", rest);
+            case "run", "now" -> updateLoop("run", rest);
+            default -> addLoop(input); // Claude-style shorthand: /loop 5m prompt
+        }
+    }
+
+    private void addLoop(String arguments) {
+        String schedule;
+        String prompt;
+        if (arguments.startsWith("cron ")) {
+            String cronAndPrompt = arguments.substring(5).strip();
+            int separator = cronAndPrompt.indexOf(" -- ");
+            if (separator < 0) {
+                printLoopUsage();
+                return;
+            }
+            schedule = cronAndPrompt.substring(0, separator).strip();
+            prompt = cronAndPrompt.substring(separator + 4).strip();
+        } else {
+            String[] parts = arguments.split("\\s+", 2);
+            if (parts.length < 2) {
+                printLoopUsage();
+                return;
+            }
+            schedule = parts[0];
+            prompt = parts[1].strip();
+        }
+
+        ScheduledLoopManager.ScheduledLoop loop =
+                repl.getScheduledLoopManager().create(schedule, prompt);
+        if (loop == null) {
+            System.out.println(renderer.red("Invalid loop schedule or empty prompt."));
+            printLoopUsage();
+            return;
+        }
+        System.out.println(renderer.green("✓ Scheduled loop [") + loop.getId()
+                + renderer.green("] ") + loop.getFormattedInterval());
+        System.out.println(renderer.dim("  " + prompt));
+    }
+
+    private void updateLoop(String operation, String id) {
+        if (id == null || id.isBlank()) {
+            printLoopUsage();
+            return;
+        }
+        ScheduledLoopManager loops = repl.getScheduledLoopManager();
+        boolean changed = switch (operation) {
+            case "pause" -> loops.pause(id);
+            case "resume" -> loops.resume(id);
+            case "remove" -> loops.remove(id);
+            case "run" -> loops.runNow(id);
+            default -> false;
+        };
+        if (changed) {
+            String label = switch (operation) {
+                case "pause" -> "paused";
+                case "resume" -> "resumed";
+                case "remove" -> "removed";
+                case "run" -> "started";
+                default -> operation;
+            };
+            System.out.println(renderer.green("✓ Loop " + label + ": ") + id);
+        } else {
+            System.out.println(renderer.red("Loop not found or invalid state: ") + id);
+        }
+    }
+
+    private void listLoops() {
+        List<ScheduledLoopManager.ScheduledLoop> loops =
+                repl.getScheduledLoopManager().list();
+        if (loops.isEmpty()) {
+            System.out.println(renderer.dim("No scheduled loops."));
+            printLoopUsage();
+            return;
+        }
+        System.out.println(ascii.sectionHeader("Scheduled Loops"));
+        for (ScheduledLoopManager.ScheduledLoop loop : loops) {
+            System.out.println("  " + ScheduledLoopManager.formatLoop(loop));
+        }
+        System.out.println(renderer.dim("  Local only; schedules run while Kompile Chat is open."));
+    }
+
+    private void printLoopUsage() {
+        System.out.println(renderer.dim("  /loop add <5m|2h30m> <prompt>"));
+        System.out.println(renderer.dim("  /loop add cron <min hour dom mon dow> -- <prompt>"));
+        System.out.println(renderer.dim("  /loop list | pause <id> | resume <id> | run <id> | remove <id>"));
+    }
+
     // ========================================================================
     // Help
     // ========================================================================
@@ -553,8 +672,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/queue-send <id>")).append("      Send a specific queued message\n");
             body.append("  ").append(renderer.cyan("/queue-send-all")).append("       Send all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-remove <id>")).append("    Remove a message from the queue\n");
+            body.append("  ").append(renderer.cyan("/queue-edit <id> <text>")).append("Edit a queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-move <id> <n>")).append("   Reorder a queued message\n");
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
+            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a recurring local task\n");
+            body.append("  ").append(renderer.cyan("/loop list")).append("           List/pause/resume/remove schedules\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
             body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
@@ -593,6 +716,7 @@ public class ChatCommandRouter {
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/stats")).append("              Session statistics (tokens, timing, tools)\n");
+            body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
         } else {
@@ -618,6 +742,7 @@ public class ChatCommandRouter {
             body.append(renderer.bold(renderer.cyan("Session & History"))).append("\n");
             body.append("  ").append(renderer.cyan("/history")).append("            Server-side conversation history\n");
             body.append("  ").append(renderer.cyan("/transcript")).append("         Local transcript file\n");
+            body.append("  ").append(renderer.cyan("/copy")).append("              Copy latest assistant response\n");
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Clear server history\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation (local mode only)\n");
@@ -659,8 +784,12 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/queue-send <id>")).append("      Send a specific queued message\n");
             body.append("  ").append(renderer.cyan("/queue-send-all")).append("       Send all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-remove <id>")).append("    Remove a message from the queue\n");
+            body.append("  ").append(renderer.cyan("/queue-edit <id> <text>")).append("Edit a queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-move <id> <n>")).append("   Reorder a queued message\n");
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
+            body.append("  ").append(renderer.cyan("/loop add <time> <text>")).append("Schedule a recurring local task\n");
+            body.append("  ").append(renderer.cyan("/loop list")).append("           List/pause/resume/remove schedules\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
             body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
@@ -1099,17 +1228,6 @@ public class ChatCommandRouter {
             System.out.println("No LLM configuration. Run /setup to configure.");
             return;
         }
-
-        String provider = chatConfig.getProvider();
-        String currentModel = chatConfig.getModel();
-
-        // Get all models for the provider
-        String[] providerModels = ChatConfig.getDefaultModels(provider);
-
-        // Get the active agent's allowed models
-        AgentConfig activeAgent = agentRegistry.get(repl.getLocalAgentName());
-        if (activeAgent == null) activeAgent = agentRegistry.getDefault();
-        List<String> allowedModels = activeAgent.getAllowedModels();
 
         if (rest.isEmpty()) {
             repl.openModelProviderPicker();
@@ -1648,6 +1766,22 @@ public class ChatCommandRouter {
         }
     }
 
+    private void copyLatestResponse(String rest) {
+        if (rest != null && !rest.isBlank()) {
+            ChatCompleter.printAbove("Usage: /copy");
+            return;
+        }
+        Optional<String> latest = chatHistory.latestAssistantMessage();
+        if (latest.isEmpty()) {
+            ChatCompleter.printAbove("No assistant response is available to copy.");
+            return;
+        }
+        boolean copied = ClipboardUtil.copyToClipboard(latest.get(), repl.getActiveTerminal());
+        ChatCompleter.printAbove(copied
+                ? "Copied the latest assistant response to the clipboard."
+                : "Could not access a clipboard provider.");
+    }
+
     private void listConversations() {
         List<ChatHistory.ConversationSummary> conversations = ChatHistory.listConversations();
         if (conversations.isEmpty()) {
@@ -1815,6 +1949,8 @@ public class ChatCommandRouter {
     private void printAutoCompactStatus(ChatConfig config) {
         String state = agenticLoop.autoCompactEnabled() ? "enabled" : "disabled";
         System.out.println(renderer.cyan("  Auto-compaction: ") + state);
+        System.out.println(renderer.dim("  strategy: "
+                + agenticLoop.compactionStrategyDescription()));
         System.out.println(renderer.dim(String.format(Locale.ROOT,
                 "  active model limits: %,d context / %,d output tokens",
                 agenticLoop.contextWindowTokens(), agenticLoop.maxOutputTokens())));
@@ -2244,8 +2380,8 @@ public class ChatCommandRouter {
 
         // Queue section
         MessageQueue messageQueue = queueManager.getMessageQueue();
-        body.append("\n");
         if (!messageQueue.isEmpty()) {
+            body.append("\n");
             body.append(renderer.bold(renderer.cyan("Queue"))).append(renderer.dim(" (" + messageQueue.size() + " pending)")).append("\n");
             List<MessageQueue.QueuedMessage> messages = messageQueue.getAll();
             for (int i = 0; i < Math.min(messages.size(), 5); i++) {
@@ -2262,8 +2398,6 @@ public class ChatCommandRouter {
             } else {
                 body.append(renderer.yellow("  ○ Auto-dequeue OFF")).append(renderer.dim(" — use /queue-send to send manually")).append("\n");
             }
-        } else {
-            body.append(renderer.dim("  Queue empty")).append("\n");
         }
 
         // Queue chain progress

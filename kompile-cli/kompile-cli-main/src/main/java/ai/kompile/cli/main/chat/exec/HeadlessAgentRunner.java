@@ -28,6 +28,7 @@ import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.BackgroundProcessManager;
+import ai.kompile.cli.main.chat.tools.ToolResult;
 import ai.kompile.cli.main.chat.tools.ToolRegistry;
 import ai.kompile.cli.main.chat.tools.ToolRegistryFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,12 +39,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -93,14 +97,25 @@ public final class HeadlessAgentRunner {
             long timeoutMs,
             Path outputLastMessage,
             String crawlBaseUrl,
-            AgentRunController runController) {
+            AgentRunController runController,
+            HeadlessRunEventSink eventSink) {
 
         /** Backward-compatible options used by the general {@code kompile exec} command. */
         public Options(String prompt, String sessionId, boolean resume, String agentName,
                        String modelOverride, OutputMode outputMode, Path workingDirectory,
                        long timeoutMs, Path outputLastMessage) {
             this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
-                    workingDirectory, timeoutMs, outputLastMessage, null, null);
+                    workingDirectory, timeoutMs, outputLastMessage, null, null, null);
+        }
+
+        /** Backward-compatible options used by crawl workers. */
+        public Options(String prompt, String sessionId, boolean resume, String agentName,
+                       String modelOverride, OutputMode outputMode, Path workingDirectory,
+                       long timeoutMs, Path outputLastMessage, String crawlBaseUrl,
+                       AgentRunController runController) {
+            this(prompt, sessionId, resume, agentName, modelOverride, outputMode,
+                    workingDirectory, timeoutMs, outputLastMessage, crawlBaseUrl,
+                    runController, null);
         }
     }
 
@@ -111,14 +126,18 @@ public final class HeadlessAgentRunner {
         final ObjectMapper mapper = JsonUtils.standardMapper();
         final PrintStream realOut = System.out;
         final PrintStream realErr = System.err;
+        HeadlessRunEventSink configuredEventSink = opts.eventSink();
+        if (configuredEventSink == null && opts.outputMode() == OutputMode.JSON) {
+            configuredEventSink = event -> realOut.println(ExecJsonEvents.event(mapper, event));
+        }
+        EventPublisher events = new EventPublisher(configuredEventSink);
 
         // ── Resolve local LLM config (direct mode) ──────────────────────────
         ChatConfig config = ChatConfig.loadOrFromEnv();
         if (config == null) {
             String msg = "No LLM configuration found. Run `kompile chat --setup` to configure a provider and model.";
-            if (opts.outputMode() == OutputMode.JSON) {
-                realOut.println(ExecJsonEvents.error(mapper, msg));
-            } else {
+            events.publish(HeadlessRunEvent.failed(opts.sessionId(), msg, 1));
+            if (opts.outputMode() != OutputMode.JSON) {
                 realErr.println(msg);
             }
             return new Result(1, "", opts.sessionId());
@@ -126,12 +145,17 @@ public final class HeadlessAgentRunner {
         if (opts.modelOverride() != null) {
             config.setModel(opts.modelOverride());
         }
+        events.publish(HeadlessRunEvent.started(opts.sessionId(), config.getModel(),
+                opts.workingDirectory().toString()));
 
         // ── Mode-specific raw-text sink (writes to the REAL stdout) ─────────
         final Consumer<String> textSink = switch (opts.outputMode()) {
-            case TEXT -> realOut::print;
-            case JSON -> chunk -> realOut.println(ExecJsonEvents.text(mapper, chunk));
-            case QUIET -> null; // accumulate only; the final text is printed at the end
+            case TEXT -> chunk -> {
+                events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
+                realOut.print(chunk);
+            };
+            case JSON -> chunk -> events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
+            case QUIET -> chunk -> events.publish(HeadlessRunEvent.assistantDelta(opts.sessionId(), chunk));
         };
 
         final CapturingLlmClient directClient = new CapturingLlmClient(config, mapper, textSink);
@@ -154,15 +178,32 @@ public final class HeadlessAgentRunner {
         AgenticChatLoop loop = new AgenticChatLoop(
                 null, mapper, toolRegistry, permissionService, agentRegistry,
                 opts.workingDirectory(), directClient, processManager);
+        loop.configureConversationSession(opts.sessionId());
         if (opts.runController() != null) {
             loop.setRunController(opts.runController());
         }
 
-        // ── Metrics (JSON mode also emits a tool event per call) ────────────
+        // ── Ordered tool lifecycle events ───────────────────────────────────
         final ToolEventCounter toolCounter = new ToolEventCounter();
-        ChatSessionMetrics metrics = (opts.outputMode() == OutputMode.JSON)
-                ? new JsonEmittingMetrics(opts.sessionId(), realOut, mapper, toolCounter)
-                : new ChatSessionMetrics(opts.sessionId());
+        Map<String, Long> toolStarts = new ConcurrentHashMap<>();
+        loop.setToolActivityListener(new AgenticChatLoop.ToolActivityListener() {
+            @Override
+            public void onToolStart(String callId, String toolName, String rawInput) {
+                toolStarts.put(callId == null ? "" : callId, System.currentTimeMillis());
+                events.publish(HeadlessRunEvent.toolStarted(opts.sessionId(), callId, toolName, rawInput));
+            }
+
+            @Override
+            public void onToolComplete(String callId, String toolName, String rawInput, ToolResult result) {
+                String key = callId == null ? "" : callId;
+                long started = toolStarts.getOrDefault(key, System.currentTimeMillis());
+                long duration = Math.max(0, System.currentTimeMillis() - started);
+                toolCounter.inc();
+                events.publish(HeadlessRunEvent.toolCompleted(opts.sessionId(), callId, toolName,
+                        rawInput, result != null && !result.isError(), duration));
+            }
+        });
+        ChatSessionMetrics metrics = new ChatSessionMetrics(opts.sessionId());
         metrics.setProvider(config.getProvider());
         metrics.setModel(config.getModel());
         metrics.setAgentName(opts.agentName());
@@ -192,11 +233,6 @@ public final class HeadlessAgentRunner {
         }
         history.logUserMessage(opts.prompt());
 
-        if (opts.outputMode() == OutputMode.JSON) {
-            realOut.println(ExecJsonEvents.session(
-                    mapper, opts.sessionId(), config.getModel(), opts.workingDirectory().toString()));
-        }
-
         // ── Run, with all loop chrome redirected off of stdout ──────────────
         final PrintStream chromeTarget = (opts.outputMode() == OutputMode.QUIET)
                 ? new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8)
@@ -218,9 +254,8 @@ public final class HeadlessAgentRunner {
             response = directClient.captured();
             exitCode = 1;
             System.setOut(realOut);
-            if (opts.outputMode() == OutputMode.JSON) {
-                realOut.println(ExecJsonEvents.error(mapper, String.valueOf(e.getMessage())));
-            } else {
+            events.publish(HeadlessRunEvent.failed(opts.sessionId(), String.valueOf(e.getMessage()), 1));
+            if (opts.outputMode() != OutputMode.JSON) {
                 realErr.println("Error: " + e.getMessage());
             }
         } finally {
@@ -246,8 +281,14 @@ public final class HeadlessAgentRunner {
                 if (exitCode != 1) realOut.println(); // newline after the streamed text
             }
             case QUIET -> realOut.println(response.stripTrailing());
-            case JSON -> realOut.println(ExecJsonEvents.result(
-                    mapper, response, opts.sessionId(), toolCounter.count(), exitCode));
+            case JSON -> {
+                if (exitCode == 1) {
+                    // The failure event was emitted by the catch block.
+                } else {
+                    events.publish(HeadlessRunEvent.completed(
+                            opts.sessionId(), response, exitCode, toolCounter.count()));
+                }
+            }
         }
 
         if (opts.outputLastMessage() != null) {
@@ -297,6 +338,25 @@ public final class HeadlessAgentRunner {
     // ========================================================================
     // Collaborators
     // ========================================================================
+
+    /** Assigns a monotonic sequence and serializes delivery to each consumer. */
+    private static final class EventPublisher {
+        private final HeadlessRunEventSink sink;
+        private final AtomicLong sequence = new AtomicLong();
+
+        private EventPublisher(HeadlessRunEventSink sink) {
+            this.sink = sink;
+        }
+
+        synchronized void publish(HeadlessRunEvent event) {
+            if (sink == null || event == null) return;
+            try {
+                sink.accept(event.withSequence(sequence.incrementAndGet()));
+            } catch (RuntimeException ignored) {
+                // Event sinks are observational; a broken sink must not fail the run.
+            }
+        }
+    }
 
     /**
      * A {@link DirectLlmClient} that captures raw streamed text and forwards it to a

@@ -268,6 +268,7 @@ class ToolDrivenExtractionExecutorTest {
     void malformedNativeResponseParseErrorsRetryWithProtocolFeedback() {
         CrawlExtractionToolBackend backend = retryBackend("invalid-structured-response");
         List<ToolDrivenExtractionExecutor.StructuredRequest> requests = new ArrayList<>();
+        List<ToolDrivenExtractionExecutor.TraceEvent> trace = new ArrayList<>();
 
         ToolDrivenExtractionExecutor.Result result = new ToolDrivenExtractionExecutor().extractStructured(
                 "Mira reviewed Project Orchid.",
@@ -281,7 +282,9 @@ class ToolDrivenExtractionExecutorTest {
                             List.of(),
                             List.of("incomplete model output block: think"));
                 },
-                testProfile());
+                testProfile(),
+                null,
+                trace::add);
 
         assertFalse(result.usable());
         assertTrue(result.notes().stream().anyMatch(
@@ -298,6 +301,13 @@ class ToolDrivenExtractionExecutorTest {
                 "NEXT: end thinking and invoke submit_graph_delta({entities: [...], relations: [...]})"));
         assertFalse(retry.contains("Protocol diagnostic"));
         assertFalse(retry.contains("REPEATED PHASE ANALYSIS THAT MUST NOT BE REINJECTED"));
+        assertEquals(2, trace.stream().filter(event ->
+                "LLM_REQUEST".equals(event.eventType())).count());
+        assertEquals(2, trace.stream().filter(event ->
+                "LLM_RESPONSE".equals(event.eventType())).count());
+        assertTrue(trace.stream().filter(event -> "LLM_RESPONSE".equals(event.eventType()))
+                .allMatch(event -> event.payload().toString()
+                        .contains("incomplete model output block: think")));
     }
 
     @Test

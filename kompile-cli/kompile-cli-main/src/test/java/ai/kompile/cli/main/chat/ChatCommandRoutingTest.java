@@ -7,6 +7,9 @@ import org.jline.reader.Reference;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
 
+import java.nio.file.Path;
+import java.util.UUID;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -15,6 +18,46 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ChatCommandRoutingTest {
+
+    @Test
+    void generatedTranscriptIdentifierIsCanonicalUuid() {
+        String transcriptUuid = ChatCommand.newTranscriptUuid();
+
+        assertEquals(transcriptUuid, UUID.fromString(transcriptUuid).toString());
+        assertFalse(transcriptUuid.startsWith("cli-"));
+    }
+
+    @Test
+    void resumeWithoutWorkingDirectoryInfersRecordedProject(@org.junit.jupiter.api.io.TempDir Path tempDir)
+            throws Exception {
+        String previousHome = System.getProperty("user.home");
+        Path home = tempDir.resolve("home");
+        Path project = tempDir.resolve("recorded-project").toAbsolutePath().normalize();
+        java.nio.file.Files.createDirectories(project);
+        System.setProperty("user.home", home.toString());
+        try {
+            ChatHistory history = new ChatHistory("recorded-project-session");
+            history.open("(local)", "coder", false, project);
+            history.logUserMessage("resume in the recorded project");
+            history.close();
+
+            ChatCommand command = parse(
+                    "--resume", "recorded-project-session", "--mode", "standard");
+            command.inferResumeWorkingDirectory();
+
+            assertEquals(project, command.effectiveWorkingDirectory());
+        } finally {
+            System.setProperty("user.home", previousHome);
+        }
+    }
+
+    @Test
+    void explicitWorkingDirectoryIsNormalizedForResumedProjectContext() {
+        Path project = Path.of("target", "resume-project").toAbsolutePath().normalize();
+        ChatCommand command = parse("--working-dir", project.toString());
+
+        assertEquals(project, command.effectiveWorkingDirectory());
+    }
 
     @Test
     void directPassthroughDoesNotConsiderImplicitProjectEnforcement() {

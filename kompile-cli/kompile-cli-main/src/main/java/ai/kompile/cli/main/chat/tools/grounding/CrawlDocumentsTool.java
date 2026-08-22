@@ -119,7 +119,7 @@ public final class CrawlDocumentsTool implements CliTool {
         props.putObject("dryRun")
                 .put("type", "boolean")
                 .put("default", false)
-                .put("description", "Validate and preview the complete composed crawl, including pipeline and worker resolution, without persisting a knowledge base, graph, or crawl artifacts.");
+                .put("description", "Validate and preview the complete composed crawl, including pipeline and worker resolution, without persisting a knowledge base, graph, or crawl artifacts. The result includes effectiveRequest, pipelineResolution, and per-document resolvedPipeline/modelResolution so inherited defaults are visible.");
         props.putObject("async")
                 .put("type", "boolean")
                 .put("default", true)
@@ -229,9 +229,10 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelines.put("type", "array");
         pipelines.put("description",
                 "Named ingest pipeline definitions. Start with pipelineId and pipelineType; use "
-                        + "registeredPipelineId to inherit a built-in/project default, then configure model "
-                        + "bindings and processor execution. VLM/OCR select the PDF compatibility adapter; "
-                        + "generic pipelines select UNIFIED_PIPELINE with a concrete pipelineDefinition.");
+                        + "registeredPipelineId to inherit a built-in/project default, then explicitly override "
+                        + "model selection and VLM generation under modelId/modelBindings and options. VLM/OCR "
+                        + "select the PDF compatibility adapter; generic pipelines select UNIFIED_PIPELINE with "
+                        + "a concrete pipelineDefinition.");
         ObjectNode pipeline = pipelines.putObject("items");
         pipeline.put("type", "object");
         ObjectNode pipelineProperties = pipeline.putObject("properties");
@@ -241,7 +242,7 @@ public final class CrawlDocumentsTool implements CliTool {
                 .put("description", "Portable category. Built-ins include STANDARD_TEXT, CODE, TABLE_AWARE, "
                         + "KEYWORD_ONLY, VLM, and OCR; arbitrary categories are allowed when a processor is registered.");
         pipelineProperties.putObject("registeredPipelineId").put("type", "string")
-                .put("description", "Optional built-in, project, or pipelineRegistry.defaults id to inherit.");
+                .put("description", "Optional built-in, project, or pipelineRegistry.defaults id to inherit. Inherited options are effective defaults (including VLM outputFormat and generation settings); use pipelines[].modelId/modelBindings and pipelines[].options to make model/output/generation choices explicit, then use dryRun=true to inspect the composed result.");
         pipelineProperties.putObject("executorId").put("type", "string")
                 .put("description", "Optional pipelineRegistry.executors id; its processor contract is merged before execution.");
         pipelineProperties.putObject("loaderName").put("type", "string");
@@ -250,7 +251,7 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineProperties.putObject("chunkOverlap").put("type", "integer").put("minimum", 0);
         pipelineProperties.putObject("modelId").put("type", "string")
                 .put("description", "Explicit default model shorthand. Used only when modelBindings is empty; "
-                        + "must agree with vlmModel when both are supplied.");
+                        + "must agree with vlmModel when both are supplied. For VLM/OCR, set this explicitly when inheriting a registered pipeline.");
         pipelineProperties.putObject("vlmModel").put("type", "string")
                 .put("description", "Deprecated VLM-specific alias for modelId. Conflicting aliases are rejected.");
         pipelineProperties.putObject("modelSetId").put("type", "string")
@@ -281,7 +282,7 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineProperties.putObject("pipelineDefinitionPath").put("type", "string");
         pipelineProperties.putObject("pipelineDefinitionId").put("type", "string");
         pipelineProperties.putObject("options").put("type", "object")
-                .put("description", "Pipeline-specific options such as maxPages, pdfRenderDpi, outputFormat, or model bindings.");
+                .put("description", "Pipeline-specific options. For VLM/OCR, put outputFormat, maxNewTokens, pdfRenderDpi, pageBatchSize, pageRange, temperature, topP, beamSize, doSample, and maxPages here; these override inherited registered-pipeline defaults.");
         pipelineProperties.putObject("chunkerOptions").put("type", "object");
         ObjectNode processor = pipelineProperties.putObject("processor");
         processor.put("type", "object");
@@ -663,6 +664,7 @@ public final class CrawlDocumentsTool implements CliTool {
             List<String> bindingWarnings = body.hasNonNull("factSheetId")
                     ? bindCodeProjectsToFactSheet(sources, factSheetId)
                     : List.of();
+            List<String> configurationWarnings = pipelineConfigurationWarnings(request);
 
             StringBuilder output = new StringBuilder("Selected-document crawl ")
                     .append(status.toLowerCase(Locale.ROOT)).append(".");
@@ -681,6 +683,10 @@ public final class CrawlDocumentsTool implements CliTool {
             if (body.hasNonNull("message")) {
                 output.append(" ").append(body.path("message").asText());
             }
+            if (!configurationWarnings.isEmpty()) {
+                output.append(" Configuration warnings: ")
+                        .append(String.join(" ", configurationWarnings));
+            }
 
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("jobId", jobId);
@@ -691,6 +697,12 @@ public final class CrawlDocumentsTool implements CliTool {
             metadata.put("codeProjectFactSheetBindings", bindingWarnings.isEmpty() ? "updated" : "partial");
             if (!bindingWarnings.isEmpty()) {
                 metadata.put("bindingWarnings", bindingWarnings);
+            }
+            metadata.put("configurationWarnings", configurationWarnings);
+            metadata.put("requestedConfiguration", request.deepCopy());
+            JsonNode effectiveConfiguration = firstConfigurationNode(body);
+            if (effectiveConfiguration != null) {
+                metadata.put("effectiveConfiguration", effectiveConfiguration.deepCopy());
             }
             metadata.put("scheduled", body.path("scheduled").asBoolean(false));
             metadata.put("nextTools", List.of(
@@ -1091,6 +1103,79 @@ public final class CrawlDocumentsTool implements CliTool {
             }
         }
         return false;
+    }
+
+    /**
+     * Explain the two easy-to-miss configuration hazards for inherited model pipelines.
+     * This is intentionally a warning rather than a validation error: a registered pipeline may
+     * legitimately provide these values, but the caller should be able to see that they were not
+     * selected explicitly in this request.
+     */
+    static List<String> pipelineConfigurationWarnings(JsonNode request) {
+        JsonNode pipelines = request == null ? null : request.get("pipelines");
+        if (pipelines == null || !pipelines.isArray()) {
+            return List.of();
+        }
+        List<String> warnings = new ArrayList<>();
+        for (JsonNode pipeline : pipelines) {
+            if (!pipeline.isObject()) {
+                continue;
+            }
+            String registeredId = text(pipeline, "registeredPipelineId");
+            if (registeredId == null) {
+                continue;
+            }
+            String pipelineId = text(pipeline, "pipelineId");
+            String type = text(pipeline, "pipelineType");
+            String normalizedType = type == null ? "" : type.toUpperCase(Locale.ROOT);
+            boolean modelPipeline = normalizedType.contains("VLM")
+                    || normalizedType.contains("OCR")
+                    || (pipelineId != null && (pipelineId.toLowerCase(Locale.ROOT).contains("vlm")
+                    || pipelineId.toLowerCase(Locale.ROOT).contains("ocr")));
+            if (!modelPipeline) {
+                continue;
+            }
+
+            JsonNode options = pipeline.path("options");
+            boolean explicitModel = List.of(
+                    "modelId", "vlmModel", "modelSetId", "modelBindings", "modelRefs")
+                    .stream().anyMatch(field -> pipeline.hasNonNull(field) || options.hasNonNull(field));
+            boolean explicitOutputFormat = options.hasNonNull("outputFormat")
+                    || pipeline.hasNonNull("outputFormat");
+            if (!explicitModel || !explicitOutputFormat) {
+                StringBuilder warning = new StringBuilder("Pipeline '")
+                        .append(firstNonBlank(pipelineId, registeredId))
+                        .append("' inherits registeredPipelineId '").append(registeredId)
+                        .append("'. Effective model/output/generation values come from the inherited definition");
+                if (!explicitModel) {
+                    warning.append("; bind modelId/modelBindings explicitly");
+                }
+                if (!explicitOutputFormat) {
+                    warning.append("; set options.outputFormat explicitly");
+                }
+                warning.append("; use dryRun=true to inspect the resolved configuration.");
+                warnings.add(warning.toString());
+            }
+        }
+        return warnings;
+    }
+
+    private static JsonNode firstConfigurationNode(JsonNode body) {
+        if (body == null || !body.isObject()) {
+            return null;
+        }
+        for (String field : List.of(
+                "effectiveConfiguration", "effectiveRequest", "resolvedConfiguration", "pipelineResolution")) {
+            JsonNode value = body.get(field);
+            if (value != null && !value.isNull()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
     }
 
     private String copyArrayOverride(JsonNode source, ObjectNode target, String sourceName, String targetName) {

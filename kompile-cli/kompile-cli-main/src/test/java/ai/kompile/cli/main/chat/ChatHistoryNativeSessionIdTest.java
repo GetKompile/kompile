@@ -151,6 +151,22 @@ class ChatHistoryNativeSessionIdTest {
                 ChatHistory.resolveNativeSessionIdFrom(transcript, "claude"));
     }
 
+    @Test
+    void latestAssistantMessageUsesTheNewestStructuredTurn() throws Exception {
+        System.setProperty("user.home", tempDir.toString());
+
+        ChatHistory history = new ChatHistory("copy-latest01");
+        history.open("", "claude", false);
+        history.logUserMessage("first");
+        history.logAssistantMessage("older response", 0, 0);
+        history.logUserMessage("second");
+        history.logAssistantMessage("newest response\nwith two lines", 0, 0);
+
+        assertEquals("newest response\nwith two lines",
+                history.latestAssistantMessage().orElseThrow());
+        history.close();
+    }
+
     private static int countOccurrences(String haystack, String needle) {
         int count = 0;
         int idx = 0;

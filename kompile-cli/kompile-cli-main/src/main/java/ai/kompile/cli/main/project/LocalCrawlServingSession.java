@@ -23,9 +23,11 @@ import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Request-scoped bridge from a local crawl to Kompile's pooled serving subprocess.
@@ -41,11 +43,18 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
     private final LocalServingRuntimePool.Lease runtime;
     private final HttpClient client;
     private final Duration requestTimeout;
+    private final String crawlJobId;
+    private final String knowledgeBaseId;
+    private final ThreadLocal<String> lastTransportRequestId = new ThreadLocal<>();
 
     private LocalCrawlServingSession(
             LocalServingRuntimePool.Lease runtime,
-            int requestTimeoutSeconds) {
+            int requestTimeoutSeconds,
+            String crawlJobId,
+            String knowledgeBaseId) {
         this.runtime = runtime;
+        this.crawlJobId = crawlJobId;
+        this.knowledgeBaseId = knowledgeBaseId;
         this.requestTimeout = Duration.ofSeconds(Math.max(30, requestTimeoutSeconds));
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
@@ -57,7 +66,7 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         ChatConfig config = new ChatConfig("kompile-local", null, modelId, null);
         LocalServingRuntimePool.Lease runtime =
                 LocalServingRuntimePool.acquire(config, timeoutSeconds);
-        return new LocalCrawlServingSession(runtime, timeoutSeconds);
+        return new LocalCrawlServingSession(runtime, timeoutSeconds, null, null);
     }
 
     public static LocalCrawlServingSession start(
@@ -74,7 +83,11 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
                         model.tokenizerPath(),
                         runtimeOptions,
                         timeoutSeconds);
-        return new LocalCrawlServingSession(runtime, timeoutSeconds);
+        return new LocalCrawlServingSession(
+                runtime,
+                timeoutSeconds,
+                stringOption(runtimeOptions, "crawlJobId"),
+                stringOption(runtimeOptions, "knowledgeBaseId"));
     }
 
     public String modelId() {
@@ -83,6 +96,21 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
 
     public String runtimePath() {
         return runtime.launcher().path().toString();
+    }
+
+    @Override
+    public String subprocessRunId() {
+        return runtime.subprocessRunId();
+    }
+
+    @Override
+    public String subprocessLogPath() {
+        return runtime.logFile() == null ? null : runtime.logFile().toString();
+    }
+
+    @Override
+    public String lastTransportRequestId() {
+        return lastTransportRequestId.get();
     }
 
     @Override
@@ -150,10 +178,25 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
         }
         synchronized (runtime.coordinationLock()) {
             URI endpoint = runtime.baseUrl().resolve(path);
+            String transportRequestId = UUID.randomUUID().toString();
+            lastTransportRequestId.set(transportRequestId);
+            Map<String, Object> payload = body instanceof Map<?, ?> values
+                    ? new LinkedHashMap<>((Map<String, Object>) values)
+                    : new LinkedHashMap<>(Map.of("payload", body));
+            Map<String, Object> correlation = new LinkedHashMap<>();
+            correlation.put("transportRequestId", transportRequestId);
+            correlation.put("subprocessRunId", runtime.subprocessRunId());
+            if (crawlJobId != null) correlation.put("crawlJobId", crawlJobId);
+            if (knowledgeBaseId != null) correlation.put("knowledgeBaseId", knowledgeBaseId);
+            correlation.put("modelId", runtime.modelId());
+            payload.put("correlation", correlation);
             HttpRequest request = HttpRequest.newBuilder(endpoint)
                     .timeout(requestTimeout)
                     .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(body)))
+                    .header("X-Kompile-Transport-Request-Id", transportRequestId)
+                    .header("X-Kompile-Subprocess-Run-Id",
+                            runtime.subprocessRunId() == null ? "" : runtime.subprocessRunId())
+                    .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(payload)))
                     .build();
             HttpResponse<String> response = client.send(
                     request, HttpResponse.BodyHandlers.ofString());
@@ -163,6 +206,12 @@ public final class LocalCrawlServingSession implements LocalServingBackend, Auto
             }
             return MAPPER.readTree(response.body());
         }
+    }
+
+    private static String stringOption(Map<String, Object> options, String key) {
+        if (options == null || options.get(key) == null) return null;
+        String value = String.valueOf(options.get(key)).trim();
+        return value.isEmpty() ? null : value;
     }
 
     private String generatedText(JsonNode response) throws IOException {

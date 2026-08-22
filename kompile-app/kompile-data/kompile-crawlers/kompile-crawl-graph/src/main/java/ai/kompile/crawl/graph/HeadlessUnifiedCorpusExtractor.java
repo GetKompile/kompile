@@ -16,11 +16,14 @@ import org.springframework.ai.document.Document;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * UI-independent entry point for the production unified-corpus graph extractor.
@@ -37,6 +40,8 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
     private final GraphExtractionOrchestrator orchestrator;
     private final PipelineStepTracker pipelineStepTracker;
     private final ExecutorService extractionPool;
+    private final List<UnifiedCrawlJob.LlmCallRecord> llmCalls = new CopyOnWriteArrayList<>();
+    private final List<Map<String, Object>> traceEvents = new CopyOnWriteArrayList<>();
 
     public HeadlessUnifiedCorpusExtractor(CliAgentRunner cliAgentRunner) {
         this(cliAgentRunner, null, Math.max(1, Math.min(4,
@@ -46,6 +51,15 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
     public HeadlessUnifiedCorpusExtractor(CliAgentRunner cliAgentRunner,
                                           LocalServingBackend localServingBackend,
                                           int parallelism) {
+        this(cliAgentRunner, localServingBackend, parallelism, null, null);
+    }
+
+    public HeadlessUnifiedCorpusExtractor(
+            CliAgentRunner cliAgentRunner,
+            LocalServingBackend localServingBackend,
+            int parallelism,
+            Consumer<UnifiedCrawlJob.LlmCallRecord> llmCallSink,
+            Consumer<Map<String, Object>> extractionTraceSink) {
         if (cliAgentRunner == null && localServingBackend == null) {
             throw new IllegalArgumentException(
                     "A CLI-agent runner or local serving backend is required for headless extraction");
@@ -56,11 +70,31 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
         persistenceHelper.documentTracker = documentTracker;
 
         this.llmDispatcher = new CrawlLlmDispatcher(cliAgentRunner, localServingBackend);
+        this.llmDispatcher.setLlmCallObserver(record -> {
+            llmCalls.add(record);
+            if (llmCallSink != null) {
+                try {
+                    llmCallSink.accept(record);
+                } catch (RuntimeException ignored) {
+                    // Audit persistence must not alter extraction behavior.
+                }
+            }
+        });
         this.pipelineStepTracker = new PipelineStepTracker();
         this.orchestrator = new GraphExtractionOrchestrator();
         this.orchestrator.graphPersistenceHelper = persistenceHelper;
         this.orchestrator.documentTracker = documentTracker;
         this.orchestrator.llmDispatcher = llmDispatcher;
+        this.orchestrator.extractionTraceSink = event -> {
+            traceEvents.add(event);
+            if (extractionTraceSink != null) {
+                try {
+                    extractionTraceSink.accept(event);
+                } catch (RuntimeException ignored) {
+                    // Audit persistence must not alter extraction behavior.
+                }
+            }
+        };
         this.orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
         this.orchestrator.memoryMonitor = new CrawlMemoryMonitor();
         this.orchestrator.pipelineStepTracker = pipelineStepTracker;
@@ -92,6 +126,8 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                           String jobId,
                           Long factSheetId) {
         List<Document> corpus = List.copyOf(Objects.requireNonNull(documents, "documents"));
+        llmCalls.clear();
+        traceEvents.clear();
         GraphExtractionConfig extractionConfig = graphExtraction != null
                 ? graphExtraction : GraphExtractionConfig.builder().build();
         String effectiveJobId = jobId == null || jobId.isBlank()
@@ -134,7 +170,9 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                 List.copyOf(job.getErrors()),
                 job.getGraphChunksProcessed().get(),
                 job.getGraphExtractionParseFailures().get(),
-                failed);
+                failed,
+                List.copyOf(llmCalls),
+                List.copyOf(traceEvents));
     }
 
     private void applyRuntimeConfig(UnifiedCrawlRequest.RuntimeConfig config) {
@@ -185,6 +223,8 @@ public final class HeadlessUnifiedCorpusExtractor implements AutoCloseable {
                          List<String> errors,
                          int chunksProcessed,
                          int parseFailures,
-                         boolean failed) {
+                         boolean failed,
+                         List<UnifiedCrawlJob.LlmCallRecord> llmCalls,
+                         List<Map<String, Object>> traceEvents) {
     }
 }

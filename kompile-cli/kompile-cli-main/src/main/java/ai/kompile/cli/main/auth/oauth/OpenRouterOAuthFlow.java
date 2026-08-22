@@ -18,7 +18,7 @@ import java.util.Map;
  * OpenRouter PKCE flow. OpenRouter exchanges the code for a permanent API key,
  * represented as a non-expiring OAuth credential.
  */
-final class OpenRouterOAuthFlow implements OAuthProviderFlow {
+public final class OpenRouterOAuthFlow implements OAuthProviderFlow {
     static final String PROVIDER_ID = "openrouter";
 
     private static final String AUTHORIZE_URL = "https://openrouter.ai/auth";
@@ -26,7 +26,7 @@ final class OpenRouterOAuthFlow implements OAuthProviderFlow {
 
     private final OAuthSupport.HttpTransport http;
 
-    OpenRouterOAuthFlow() {
+    public OpenRouterOAuthFlow() {
         this(OAuthSupport.defaultTransport());
     }
 

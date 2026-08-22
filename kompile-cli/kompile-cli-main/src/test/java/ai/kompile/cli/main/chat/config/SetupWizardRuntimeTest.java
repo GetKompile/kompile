@@ -8,9 +8,11 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SetupWizardRuntimeTest {
@@ -63,8 +65,6 @@ class SetupWizardRuntimeTest {
     @Test
     void pickerReusesSetupVendorAuthenticationAndModelSources() {
         List<String> pickerProviders = SetupWizard.providerPickerOrder();
-        assertEquals("ollama", pickerProviders.get(0));
-        assertEquals("custom", pickerProviders.get(1));
         assertTrue(pickerProviders.containsAll(SetupWizard.directVendorOrder()));
         assertFalse(pickerProviders.contains("openai-codex"));
 
@@ -76,22 +76,17 @@ class SetupWizardRuntimeTest {
         assertTrue(pickerProviders.contains("opencode"));
         assertEquals(List.of(SetupWizard.AuthMethod.NATIVE),
                 SetupWizard.authMethodsForPicker("opencode"));
-        assertEquals(List.of("OpenCode native auth (OAuth/API)"),
+        assertEquals(List.of("Native provider authentication"),
                 SetupWizard.authOptions("opencode"));
         assertEquals(SetupWizard.AuthMethod.NATIVE,
                 SetupWizard.authMethodForProvider("opencode"));
-        assertEquals(List.of(ChatConfig.getDefaultModels("openai")),
-                SetupWizard.modelOptions("openai"));
-        assertEquals(List.of(ChatConfig.getDefaultModels("xai")),
-                SetupWizard.modelOptions("xai"));
-        assertEquals(List.of(ChatConfig.getDefaultModels("github-copilot")),
-                SetupWizard.modelOptions("github-copilot"));
-        assertTrue(SetupWizard.modelOptions("openai-codex").contains("gpt-5.6-terra"));
-        assertTrue(SetupWizard.modelOptions("openai-codex").contains("gpt-5.6-sol"));
+        assertEquals(0, ChatConfig.getDefaultModels("openai").length);
+        assertTrue(ChatProviderRegistry.directProviders().stream()
+                .anyMatch(provider -> "opencode".equals(provider.id())));
 
         ChatConfig config = new ChatConfig("openai", null, "gpt-4o", null);
-        config.addModelToCatalog("openai", "new-model-id");
-        assertTrue(SetupWizard.modelOptions("openai", config).contains("new-model-id"));
+        assertFalse(config.addModelToCatalog("openai", "new-model-id"));
+        assertTrue(config.getModelCatalog().isEmpty());
     }
 
     @Test
@@ -124,37 +119,60 @@ class SetupWizardRuntimeTest {
     }
 
     @Test
-    void reasoningModelsUseExactVendorAndModelTerminology() {
-        assertTrue(SetupWizard.supportsThinkingSelection("openai-codex", "gpt-5.6-terra"));
-        assertTrue(SetupWizard.supportsThinkingSelection("github-copilot", "gpt-5.4"));
-        assertTrue(SetupWizard.supportsThinkingSelection("openai", "o4-mini"));
-        assertFalse(SetupWizard.supportsThinkingSelection("openai", "gpt-4o"));
-        assertFalse(SetupWizard.supportsThinkingSelection("anthropic", "claude-sonnet-4-20250514"));
-
-        List<SetupWizard.ThinkingOption> terra =
-                SetupWizard.thinkingOptions("openai-codex", "gpt-5.6-terra");
+    void thinkingControlsPreferLiveMetadataAndUseDocumentedProviderFallbacks() {
         assertEquals(List.of("", "low", "medium", "high", "xhigh", "max", "ultra"),
-                terra.stream().map(SetupWizard.ThinkingOption::value).toList());
-        assertTrue(terra.get(0).label().contains("medium"));
-        assertEquals("xhigh", terra.get(4).label());
-        assertEquals("ultra", terra.get(terra.size() - 1).label());
-
-        List<SetupWizard.ThinkingOption> sol =
-                SetupWizard.thinkingOptions("openai-codex", "gpt-5.6-sol");
-        assertTrue(sol.get(0).label().contains("low"));
-
-        assertEquals(List.of("", "low", "medium", "high"),
-                SetupWizard.thinkingOptions("xai", "grok-4")
+                SetupWizard.thinkingOptions("openai-codex", "gpt-5.6-terra")
                         .stream().map(SetupWizard.ThinkingOption::value).toList());
         assertEquals(List.of("", "low", "medium", "high"),
-                SetupWizard.thinkingOptions("openai", "o4-mini")
+                SetupWizard.thinkingOptions("openai", "o3")
                         .stream().map(SetupWizard.ThinkingOption::value).toList());
+        assertTrue(SetupWizard.thinkingOptions("unknown-provider", "unknown-model").isEmpty());
 
-        List<SetupWizard.ThinkingOption> opencode =
-                SetupWizard.thinkingOptions("opencode", "opencode-go/deepseek-v4-pro");
-        assertEquals("", opencode.get(0).value());
-        assertTrue(opencode.size() > 1);
-        assertTrue(SetupWizard.isCustomThinkingSelection("opencode", opencode.get(1).value()));
+        ModelDiscovery.Result liveVariants = ModelDiscovery.Result.success(
+                List.of(new LiveModelDiscovery.Model(
+                        "dynamic-model",
+                        List.of("wire-low", "wire-medium"),
+                        Map.of("wire-low", "Low", "wire-medium", "Medium"),
+                        "wire-medium")),
+                List.of("https://example.test/v1/models"));
+        List<SetupWizard.ThinkingOption> options = SetupWizard.thinkingOptions(
+                "openai", "dynamic-model", null, null, liveVariants);
+
+        assertEquals(List.of("", "wire-low", "wire-medium"),
+                options.stream().map(SetupWizard.ThinkingOption::value).toList());
+        assertEquals(List.of(
+                        "provider/model default (wire-medium, recommended)",
+                        "Low",
+                        "Medium"),
+                options.stream().map(SetupWizard.ThinkingOption::label).toList());
+        assertEquals("wire-medium", SetupWizard.compatibleThinking(
+                "openai", "dynamic-model", "wire-medium", liveVariants));
+        assertNull(SetupWizard.compatibleThinking(
+                "openai", "dynamic-model", "invented", liveVariants));
+
+        ModelDiscovery.Result noThinking = ModelDiscovery.Result.success(
+                List.of(new LiveModelDiscovery.Model("gpt-5.6-terra", List.of())),
+                List.of("https://example.test/v1/models"));
+        assertEquals(List.of("", "low", "medium", "high", "xhigh", "max", "ultra"),
+                SetupWizard.thinkingOptions(
+                                "openai-codex", "gpt-5.6-terra", null, null, noThinking)
+                        .stream().map(SetupWizard.ThinkingOption::value).toList());
+        assertTrue(SetupWizard.thinkingOptions(
+                "openai", "gpt-4o", null, null, noThinking).isEmpty());
+    }
+
+    @Test
+    void modelOptionsPreserveTheConfiguredModelAcrossLiveOmissionsAndOutages() {
+        ModelDiscovery.Result live = ModelDiscovery.Result.success(
+                List.of(new LiveModelDiscovery.Model("live-model", List.of())),
+                List.of("https://example.test/v1/models"));
+        assertEquals(List.of("live-model", "configured-model"),
+                SetupWizard.modelOptions(live, "configured-model"));
+
+        ModelDiscovery.Result outage = ModelDiscovery.Result.failure(
+                ModelDiscovery.Status.UNAVAILABLE, "offline", List.of());
+        assertEquals(List.of("configured-model"),
+                SetupWizard.modelOptions(outage, "configured-model"));
     }
 
     @Test

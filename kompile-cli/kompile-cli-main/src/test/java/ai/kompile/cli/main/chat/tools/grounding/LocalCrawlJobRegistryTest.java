@@ -7,7 +7,9 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -20,12 +22,16 @@ class LocalCrawlJobRegistryTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @TempDir
+    Path projectRoot;
+
     @Test
     void startReturnsPollableNonTerminalHandleThenResult() throws Exception {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         String jobId = LocalCrawlJobRegistry.newJobId();
-        LocalCrawlJobRegistry.submit(jobId, "notes", null, () -> {
+        LocalCrawlJobRegistry.submit(jobId, "notes", projectRoot,
+                mapper.createObjectNode().put("name", "durable-test"), null, () -> {
             started.countDown();
             release.await(5, TimeUnit.SECONDS);
             return ToolResult.success("crawl_documents", "done",
@@ -48,6 +54,26 @@ class LocalCrawlJobRegistryTest {
         ToolResult result = LocalCrawlJobRegistry.result(jobId, mapper);
         assertEquals("done", result.getOutput());
         assertEquals(jobId, ((Map<?, ?>) result.getMetadata().get("crawlResult")).get("jobId"));
+        ToolResult transcript = LocalCrawlJobRegistry.transcript(jobId, mapper, projectRoot);
+        assertFalse(transcript.isError(), transcript.getOutput());
+        assertTrue(transcript.getOutput().contains("durable-test"));
+        assertTrue(transcript.getOutput().contains("JOB_TERMINAL"));
+    }
+
+    @Test
+    void runtimeErrorsRemainRetrievableAsTerminalResults() throws Exception {
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        LocalCrawlJobRegistry.submit(jobId, "notes", null, () -> {
+            throw new AssertionError("linkage-style failure");
+        });
+
+        JsonNode terminal = awaitTerminal(jobId);
+        assertEquals("FAILED", terminal.path("status").asText());
+        assertTrue(terminal.path("resultAvailable").asBoolean());
+
+        ToolResult result = LocalCrawlJobRegistry.result(jobId, mapper);
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("java.lang.AssertionError: linkage-style failure"));
     }
 
     @Test

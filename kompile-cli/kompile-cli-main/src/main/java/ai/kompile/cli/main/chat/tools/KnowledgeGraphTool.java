@@ -143,7 +143,7 @@ public class KnowledgeGraphTool implements CliTool {
                 // NEW: Unified reasoning overlays
                 "'reasoning_layers' (typed overlays for ontology, PSL, MEBN, provenance, opinions, and neural scores), " +
                 // Explicit remote/legacy fact-sheet management
-                "'list_fact_sheets' (remote/legacy fact-sheet registry; local stdio instead lists folder graph artifacts), " +
+                "'list_fact_sheets' (remote fact-sheet registry or resilient local crawl-summary inventory), " +
                 "'get_fact_sheet' (get details of one fact sheet by fact_sheet_id), " +
                 "'get_active_fact_sheet' (get the currently active fact sheet), " +
                 "'create_fact_sheet' (create a new fact sheet; requires title), " +
@@ -162,7 +162,7 @@ public class KnowledgeGraphTool implements CliTool {
     public String compactHint() {
         return "knowledge_graph: full KG operations. Local stdio defaults to and auto-initializes the current folder; " +
                 "start with action=overview or list_predicates and omit fact_sheet_id. " +
-                "Fact-sheet management and snapshot actions are remote/legacy workflows with explicit IDs. " +
+                "list_fact_sheets inventories local crawl summaries; fact-sheet mutation and snapshot actions are remote/legacy workflows with explicit IDs. " +
                 "Required param: action=<action_name>.";
     }
 

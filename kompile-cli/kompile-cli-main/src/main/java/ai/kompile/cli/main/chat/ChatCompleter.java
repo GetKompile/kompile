@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.utils.FormatUtils;
 import org.jline.reader.Candidate;
+import org.jline.reader.Buffer;
 import org.jline.reader.Completer;
 import org.jline.reader.LineReader;
 import org.jline.reader.ParsedLine;
@@ -76,6 +77,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/memory", "Show memory entries");
         COMMANDS.put("/recall", "Recall from memory");
         COMMANDS.put("/transcript", "Show transcript");
+        COMMANDS.put("/copy", "Copy the latest assistant response");
         COMMANDS.put("/conversations", "List conversations");
         COMMANDS.put("/sessions", "List sessions");
 
@@ -96,6 +98,8 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/queue-send", "Send message to queue");
         COMMANDS.put("/queue-send-all", "Send to all queues");
         COMMANDS.put("/queue-remove", "Remove from queue");
+        COMMANDS.put("/queue-edit", "Edit a queued message");
+        COMMANDS.put("/queue-move", "Reorder a queued message");
         COMMANDS.put("/queue-clear", "Clear queue");
         COMMANDS.put("/queue-status", "Show queue status");
         COMMANDS.put("/jobs", "List background jobs");
@@ -108,6 +112,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/process-status", "Show process or watcher status");
         COMMANDS.put("/statusbar", "Toggle status bar");
         COMMANDS.put("/auto-dequeue", "Toggle auto-dequeue");
+        COMMANDS.put("/loop", "Schedule recurring local tasks");
         COMMANDS.put("/stats", "Show session statistics");
 
         // Roles & skills
@@ -168,6 +173,14 @@ public class ChatCompleter implements Completer {
         SUB_ARGS.put("/plan", List.of(
                 new String[]{"on", "Enable plan mode"},
                 new String[]{"off", "Disable plan mode"}
+        ));
+        SUB_ARGS.put("/loop", List.of(
+                new String[]{"add", "Add a recurring prompt"},
+                new String[]{"list", "List scheduled loops"},
+                new String[]{"pause", "Pause a loop by id"},
+                new String[]{"resume", "Resume a loop by id"},
+                new String[]{"run", "Run a loop immediately"},
+                new String[]{"remove", "Remove a loop by id"}
         ));
         SUB_ARGS.put("/auto-compact", List.of(
                 new String[]{"status", "Show active model limits and trigger"},
@@ -500,8 +513,24 @@ public class ChatCompleter implements Completer {
      */
     private static volatile Consumer<String> contentOutput;
 
+    /** Managed TUI hook for one replaceable in-flight transcript block. */
+    @FunctionalInterface
+    public interface TranscriptBlockOutput {
+        boolean upsert(String key, String content);
+    }
+
+    private static volatile TranscriptBlockOutput transcriptBlockOutput;
+
     /** Retained compatibility hook; queue state is rendered by the status bar, not JLine post rows. */
     private static volatile Supplier<List<String>> queueSupplier;
+
+    /** Large pasted blocks stay compact in the editor and expand on submit. */
+    static final int LARGE_PASTE_THRESHOLD = 1_000;
+    private record LargePaste(String token, String content) {}
+    private static final Map<LineReader, List<LargePaste>> LARGE_PASTES =
+            Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Set<LineReader> PASTE_SUPPORT_READERS =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     /** True while a temporary picker owns the transcript area. */
     private static volatile boolean temporaryWindowActive;
@@ -510,6 +539,8 @@ public class ChatCompleter implements Completer {
     private static volatile String activityLabel;
     /** Terminal activity must remain visible without being rendered as a live spinner. */
     private static volatile boolean activityTerminal;
+    /** Listener used to mirror activity changes into the terminal tab title. */
+    private static volatile Consumer<String> activityListener;
 
     /** Activity shown after Escape interrupts a turn until the next edit begins. */
     private static final String INTERRUPTED_ACTIVITY = "Interrupted by user";
@@ -544,6 +575,30 @@ public class ChatCompleter implements Completer {
         contentOutput = output;
     }
 
+    /** Register the active TUI sink for replaceable tool/process blocks. */
+    public static void setTranscriptBlockOutput(TranscriptBlockOutput output) {
+        transcriptBlockOutput = output;
+    }
+
+    /**
+     * Insert or replace one in-flight transcript block. Returns false outside the
+     * managed TUI so callers can retain append-only stdout/headless behavior.
+     */
+    public static boolean upsertTranscriptBlock(String key, String content) {
+        TranscriptBlockOutput output = transcriptBlockOutput;
+        if (output == null || key == null || key.isBlank()) return false;
+        try {
+            return output.upsert(key, content == null ? "" : content);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    /** Register a listener for activity changes (for example, a terminal tab title). */
+    public static void setActivityListener(Consumer<String> listener) {
+        activityListener = listener;
+    }
+
     private static void redrawContentView() {
         Runnable redraw = contentRedraw;
         if (redraw == null) return;
@@ -567,10 +622,14 @@ public class ChatCompleter implements Completer {
             terminalRef = null;
             contentRedraw = null;
             contentOutput = null;
+            transcriptBlockOutput = null;
             cachedImpl = null;
             activityLabel = null;
             activityTerminal = false;
+            activityListener = null;
             temporaryWindowActive = false;
+            LARGE_PASTES.remove(reader);
+            PASTE_SUPPORT_READERS.remove(reader);
         }
     }
 
@@ -585,6 +644,17 @@ public class ChatCompleter implements Completer {
     public static void setActivity(String activity) {
         activityLabel = activity == null || activity.isBlank() ? null : activity;
         activityTerminal = false;
+        notifyActivityListener(activityLabel);
+    }
+
+    private static void notifyActivityListener(String activity) {
+        Consumer<String> listener = activityListener;
+        if (listener == null) return;
+        try {
+            listener.accept(activity);
+        } catch (RuntimeException ignored) {
+            // Terminal teardown must not interrupt the active chat turn.
+        }
     }
 
     public static String getActivity() {
@@ -595,6 +665,7 @@ public class ChatCompleter implements Completer {
     public static void markInterrupted() {
         activityLabel = INTERRUPTED_ACTIVITY;
         activityTerminal = true;
+        notifyActivityListener(activityLabel);
     }
 
     public static boolean isActivityTerminal() {
@@ -606,6 +677,7 @@ public class ChatCompleter implements Completer {
         if (INTERRUPTED_ACTIVITY.equals(activityLabel)) {
             activityLabel = null;
             activityTerminal = false;
+            notifyActivityListener(null);
             return true;
         }
         return false;
@@ -631,8 +703,14 @@ public class ChatCompleter implements Completer {
             }
             if (output != null) {
                 // The modal owns the terminal surface. Keep recording output above,
-                // but defer JLine printAbove until the picker restores the main view.
+                // but defer display until the picker restores the main view.
                 if (temporaryWindowActive) {
+                    return;
+                }
+                // A managed TUI sink schedules one complete frame through the
+                // LineReader widget. Do not also call printAbove with raw tool
+                // text: terminal auto-wrap can cross the reserved input row.
+                if (contentRedraw != null) {
                     return;
                 }
                 LineReader reader = lineReaderRef;
@@ -690,6 +768,8 @@ public class ChatCompleter implements Completer {
      */
     public static void enableAutoTrigger(LineReader reader) {
         if (!(reader instanceof LineReaderImpl impl)) return;
+
+        installPasteSupport(impl);
 
         // Cache the reflective handle once
         if (postField == null) {
@@ -758,6 +838,106 @@ public class ChatCompleter implements Completer {
         setBottomBorderOnly(impl);
     }
 
+    /**
+     * Insert clipboard text through JLine. Large blocks are represented by a
+     * compact token while editing and restored byte-for-byte before ACCEPT_LINE.
+     */
+    static boolean insertPastedText(LineReader reader, String text) {
+        if (!(reader instanceof LineReaderImpl impl) || text == null || text.isEmpty()) {
+            return false;
+        }
+        boolean previous = IN_INPUT_WIDGET.get();
+        IN_INPUT_WIDGET.set(true);
+        try {
+            clearInterruptedOnInput();
+            if (text.codePointCount(0, text.length()) >= LARGE_PASTE_THRESHOLD) {
+                writeCompactPaste(impl, text);
+            } else {
+                impl.getBuffer().write(text);
+            }
+            updatePostDisplay(impl);
+            return true;
+        } finally {
+            IN_INPUT_WIDGET.set(previous);
+        }
+    }
+
+    private static void installPasteSupport(LineReaderImpl impl) {
+        if (!PASTE_SUPPORT_READERS.add(impl)) return;
+        impl.setOpt(LineReader.Option.BRACKETED_PASTE);
+
+        Widget beginPaste = impl.getWidgets().get(LineReader.BEGIN_PASTE);
+        if (beginPaste == null) beginPaste = impl.getBuiltinWidgets().get(LineReader.BEGIN_PASTE);
+        if (beginPaste != null) {
+            Widget originalBeginPaste = beginPaste;
+            impl.getWidgets().put(LineReader.BEGIN_PASTE, () -> {
+                boolean previous = IN_INPUT_WIDGET.get();
+                IN_INPUT_WIDGET.set(true);
+                try {
+                    int beforeLength = impl.getBuffer().length();
+                    boolean result = originalBeginPaste.apply();
+                    compactInsertedPaste(impl, beforeLength);
+                    clearInterruptedOnInput();
+                    updatePostDisplay(impl);
+                    return result;
+                } finally {
+                    IN_INPUT_WIDGET.set(previous);
+                }
+            });
+        }
+
+        Widget acceptLine = impl.getWidgets().get(LineReader.ACCEPT_LINE);
+        if (acceptLine == null) acceptLine = impl.getBuiltinWidgets().get(LineReader.ACCEPT_LINE);
+        if (acceptLine != null) {
+            Widget originalAcceptLine = acceptLine;
+            impl.getWidgets().put(LineReader.ACCEPT_LINE, () -> {
+                expandLargePastes(impl);
+                try {
+                    return originalAcceptLine.apply();
+                } finally {
+                    LARGE_PASTES.remove(impl);
+                }
+            });
+        }
+    }
+
+    private static void compactInsertedPaste(LineReaderImpl impl, int beforeLength) {
+        Buffer buffer = impl.getBuffer();
+        int added = buffer.length() - beforeLength;
+        if (added < LARGE_PASTE_THRESHOLD) return;
+        int end = buffer.cursor();
+        int start = end - added;
+        if (start < 0 || end > buffer.length()) return;
+        String pasted = buffer.substring(start, end);
+        buffer.cursor(end);
+        if (buffer.backspace(added) != added) return;
+        writeCompactPaste(impl, pasted);
+    }
+
+    private static void writeCompactPaste(LineReaderImpl impl, String text) {
+        int characterCount = text.codePointCount(0, text.length());
+        String token = String.format(Locale.ROOT,
+                "[Pasted %,d characters]", characterCount);
+        LARGE_PASTES.computeIfAbsent(impl, ignored -> new ArrayList<>())
+                .add(new LargePaste(token, text));
+        impl.getBuffer().write(token);
+    }
+
+    private static void expandLargePastes(LineReaderImpl impl) {
+        List<LargePaste> pastes = LARGE_PASTES.get(impl);
+        if (pastes == null || pastes.isEmpty()) return;
+        StringBuilder expanded = new StringBuilder(impl.getBuffer().toString());
+        int searchFrom = 0;
+        for (LargePaste paste : List.copyOf(pastes)) {
+            int index = expanded.indexOf(paste.token(), searchFrom);
+            if (index < 0) continue; // token was intentionally edited or deleted
+            expanded.replace(index, index + paste.token().length(), paste.content());
+            searchFrom = index + paste.content().length();
+        }
+        impl.getBuffer().clear();
+        impl.getBuffer().write(expanded);
+    }
+
     /** Cached impl reference for post-restore scheduling. */
     private static volatile LineReaderImpl cachedImpl;
 
@@ -809,6 +989,10 @@ public class ChatCompleter implements Completer {
         if (IN_INPUT_WIDGET.get()) {
             return;
         }
+        // Cursor-addressed content rendering moves the physical cursor outside
+        // JLine's cached display model. Clear first so REDISPLAY must repaint the
+        // prompt and restore the actual editing cursor instead of becoming a no-op.
+        impl.callWidget(LineReader.CLEAR);
         redrawContentView();
         impl.callWidget(LineReader.REDISPLAY);
     }

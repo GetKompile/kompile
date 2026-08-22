@@ -29,8 +29,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -437,6 +440,70 @@ class BackgroundProcessManagerTest {
     }
 
     // ===================================================================
+    // One-shot process monitors
+    // ===================================================================
+
+    @Nested
+    class ProcessMonitors {
+
+        @Test
+        void monitoredLaunchWakesOnlyForConfiguredProcessAndConsumesMonitor() throws Exception {
+            CountDownLatch monitoredExit = new CountDownLatch(1);
+            AtomicReference<ProcessEntry> exitedEntry = new AtomicReference<>();
+            AtomicReference<ProcessMonitor> firedMonitor = new AtomicReference<>();
+            manager.addMonitorListener((entry, monitor) -> {
+                exitedEntry.set(entry);
+                firedMonitor.set(monitor);
+                monitoredExit.countDown();
+            });
+
+            ProcessEntry unmonitored = manager.launch(
+                    "printf 'ordinary\\n'", "ordinary", Path.of(System.getProperty("user.dir")));
+            while (unmonitored.isRunning()) Thread.sleep(10);
+            assertFalse(monitoredExit.await(100, TimeUnit.MILLISECONDS),
+                    "ordinary process exits must not fire monitor callbacks");
+
+            ProcessEntry monitored = manager.launchMonitored(
+                    "printf 'monitored\\n'", "monitored",
+                    Path.of(System.getProperty("user.dir")), "inspect the build output");
+
+            assertTrue(monitoredExit.await(5, TimeUnit.SECONDS));
+            assertEquals(monitored.getId(), exitedEntry.get().getId());
+            assertEquals("inspect the build output", firedMonitor.get().message());
+            assertNull(manager.getMonitor(monitored.getId()),
+                    "completion monitors must be consumed after one terminal event");
+        }
+
+        @Test
+        void processToolCanConfigureListAndCancelMonitor() throws Exception {
+            ProcessEntry entry = manager.launch(
+                    "sleep 10", "monitor tool", Path.of(System.getProperty("user.dir")));
+            ProcessManagementTool tool = new ProcessManagementTool(manager);
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode monitor = mapper.createObjectNode();
+            monitor.put("action", "monitor");
+            monitor.put("process_id", entry.getId());
+            monitor.put("monitor_message", "resume verification");
+
+            ToolResult created = tool.execute(monitor, null);
+            assertFalse(created.isError());
+            assertEquals("resume verification", manager.getMonitor(entry.getId()).message());
+
+            ObjectNode list = mapper.createObjectNode().put("action", "monitors");
+            ToolResult listed = tool.execute(list, null);
+            assertTrue(listed.getOutput().contains(entry.getId()));
+            assertTrue(listed.getOutput().contains("resume verification"));
+
+            ObjectNode cancel = mapper.createObjectNode();
+            cancel.put("action", "unmonitor");
+            cancel.put("process_id", entry.getId());
+            assertFalse(tool.execute(cancel, null).isError());
+            assertNull(manager.getMonitor(entry.getId()));
+            assertTrue(manager.kill(entry.getId()));
+        }
+    }
+
+    // ===================================================================
     // Real process launch
     // ===================================================================
 
@@ -553,13 +620,69 @@ class BackgroundProcessManagerTest {
             params.put("process_id", entry.getId());
             params.put("tail_lines", 10);
             params.put("follow_seconds", 1);
+            CountDownLatch firstLine = new CountDownLatch(1);
+            List<String> streamed = new CopyOnWriteArrayList<>();
+            ToolContext context = new ToolContext(
+                    "process-stream-test", null, null,
+                    Path.of(System.getProperty("user.dir")), null);
+            context.setOutputConsumer(line -> {
+                streamed.add(line);
+                firstLine.countDown();
+            });
 
-            ToolResult result = tool.execute(params, null);
+            CompletableFuture<ToolResult> execution = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return tool.execute(params, context);
+                } catch (ToolExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            assertTrue(firstLine.await(3, TimeUnit.SECONDS));
+            assertFalse(execution.isDone(),
+                    "process stream must publish its initial tail while still following");
+            ToolResult result = execution.get(5, TimeUnit.SECONDS);
 
             assertFalse(result.isError());
+            assertTrue(result.isOutputStreamed());
             assertTrue(result.getOutput().contains("tool-stream-ready"),
                     "process stream should include output from a still-running process");
             assertTrue(result.getOutput().contains("stream status:"));
+            assertTrue(streamed.stream().anyMatch(line -> line.contains("tool-stream-ready")));
+            assertTrue(streamed.stream().anyMatch(line -> line.contains("stream status:")));
+            assertTrue(manager.kill(entry.getId()));
+        }
+
+        @Test
+        void processToolStreamObservesToolContextCancellation() throws Exception {
+            ProcessEntry entry = manager.launch(
+                    "printf 'cancel-ready\\n'; sleep 10",
+                    "Cancelled tool stream", Path.of(System.getProperty("user.dir")));
+            String output = "";
+            for (int attempt = 0; attempt < 50 && !output.contains("cancel-ready"); attempt++) {
+                output = manager.readOutput(entry.getId(), 10);
+                Thread.sleep(50);
+            }
+
+            ProcessManagementTool tool = new ProcessManagementTool(manager);
+            ObjectNode params = new ObjectMapper().createObjectNode();
+            params.put("action", "stream");
+            params.put("process_id", entry.getId());
+            params.put("tail_lines", 10);
+            params.put("follow_seconds", 30);
+            ToolContext context = new ToolContext(
+                    "cancelled-process-stream-test", null, null,
+                    Path.of(System.getProperty("user.dir")), null);
+            context.abort();
+
+            long started = System.nanoTime();
+            ToolResult result = tool.execute(params, context);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertFalse(result.isError());
+            assertTrue(result.getOutput().contains("stream status: cancelled"));
+            assertTrue(elapsedMs < 2_000,
+                    "cancelled process stream should not wait for the follow deadline");
             assertTrue(manager.kill(entry.getId()));
         }
 
@@ -579,7 +702,40 @@ class BackgroundProcessManagerTest {
         }
 
         @Test
-        void killRealProcess_shouldSetKilledOrFailed() throws Exception {
+        void naturalExitNotifiesRegisteredListenerExactlyOnceAfterOutputFlush() throws Exception {
+            CountDownLatch exited = new CountDownLatch(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            BackgroundProcessManager.ExitCallback listener = entry -> {
+                callbacks.incrementAndGet();
+                assertTrue(Files.exists(entry.getOutputFile()));
+                try {
+                    assertTrue(Files.readString(entry.getOutputFile()).contains("wake-agent"));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+                exited.countDown();
+            };
+            manager.addExitListener(listener);
+
+            manager.launch("printf 'wake-agent\\n'", "Wake test",
+                    Path.of(System.getProperty("user.dir")));
+
+            assertTrue(exited.await(5, TimeUnit.SECONDS));
+            Thread.sleep(100);
+            assertEquals(1, callbacks.get());
+            manager.removeExitListener(listener);
+        }
+
+        @Test
+        void killRealProcess_shouldRemainKilledAndNotifyExactlyOnce() throws Exception {
+            AtomicInteger exits = new AtomicInteger();
+            AtomicReference<ProcessState> notifiedState = new AtomicReference<>();
+            CountDownLatch exitNotified = new CountDownLatch(1);
+            manager.addExitListener(entry -> {
+                notifiedState.set(entry.getState());
+                exits.incrementAndGet();
+                exitNotified.countDown();
+            });
             ProcessEntry entry = manager.launch(
                     "sleep 60", "Long sleep", Path.of(System.getProperty("user.dir")));
 
@@ -596,9 +752,13 @@ class BackgroundProcessManagerTest {
             }
 
             assertFalse(entry.isRunning(), "Process should no longer be running");
-            // Race: captureOutputAndWait may set FAILED before kill sets KILLED
-            assertTrue(entry.getState() == ProcessState.KILLED || entry.getState() == ProcessState.FAILED,
-                    "State should be KILLED or FAILED, got: " + entry.getState());
+            assertEquals(ProcessState.KILLED, entry.getState(),
+                    "the waiter must preserve an explicit user kill");
+            assertTrue(exitNotified.await(5, TimeUnit.SECONDS),
+                    "the process waiter must publish its terminal event");
+            assertEquals(1, exits.get(), "kill/watcher races must emit one terminal event");
+            assertEquals(ProcessState.KILLED, notifiedState.get(),
+                    "exit listeners must be able to filter user-killed processes");
         }
     }
 

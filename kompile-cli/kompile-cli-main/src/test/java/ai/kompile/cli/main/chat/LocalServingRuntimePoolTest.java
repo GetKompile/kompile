@@ -63,6 +63,28 @@ class LocalServingRuntimePoolTest {
     }
 
     @Test
+    void perJobCorrelationDoesNotChangeTheResidentRuntimeCompatibilityKey() throws Exception {
+        Process process;
+        try (var first = LocalServingRuntimePool.acquire(
+                "model", model, tokenizer, Map.of(
+                        "dspEnabled", true,
+                        "crawlJobId", "local-11111111-1111-4111-8111-111111111111",
+                        "knowledgeBaseId", "one",
+                        "projectRoot", tempDir.resolve("one").toString()), 5)) {
+            process = first.process();
+        }
+        try (var second = LocalServingRuntimePool.acquire(
+                "model", model, tokenizer, Map.of(
+                        "dspEnabled", true,
+                        "crawlJobId", "local-22222222-2222-4222-8222-222222222222",
+                        "knowledgeBaseId", "two",
+                        "projectRoot", tempDir.resolve("two").toString()), 5)) {
+            assertSame(process, second.process());
+        }
+        assertEquals(1, starts.get());
+    }
+
+    @Test
     void compatibilityKeyIncludesRuntimeOptionsAndArtifacts() throws Exception {
         try (var first = LocalServingRuntimePool.acquire(
                 "model", model, tokenizer, Map.of("dspEnabled", true), 5);

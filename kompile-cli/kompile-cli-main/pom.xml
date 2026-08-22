@@ -232,6 +232,26 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-embedding-anserini</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-excel</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-web</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-pdf-extended</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-crawl-graph</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -406,6 +426,7 @@
                                 <buildArg>-H:IncludeResources=kompile-cli-versions\.properties</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=ai/kompile/.*\.schema\.json</buildArg>
+                                <buildArg>-H:IncludeResources=ai/kompile/cli/main/chat/providers/.*\.json</buildArg>
                                 <buildArg>-H:IncludeResources=${native.nd4j.config.pattern}</buildArg>
                                 <buildArg>-H:IncludeResources=${native.bytedeco.metadata.pattern}</buildArg>
                                 <!-- JNI/backend binaries are loaded from the distribution lib/ tree. -->
@@ -512,8 +533,10 @@
                  silently ships an agent-locked CLI even when the source tree is correct
                  (this happened 2026-07-11: a codex-only registry was installed to ~/.m2).
                  Extract the resolved registry and fail unless the full roster is present.
-                 Bound to validate so it fires in both jar and native lanes, -DskipTests
-                 included. Roster changes must also update kompile-app-core's gate and
+                 Bound to package so the reactor's kompile-app-core jar has been packaged
+                 before dependency:unpack runs; this keeps compile/test reactor builds valid
+                 while still gating every packaged jar/native distribution, including -DskipTests.
+                 Roster changes must also update kompile-app-core's gate and
                  CliAgentRegistryTest. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -522,7 +545,7 @@
                 <executions>
                     <execution>
                         <id>extract-resolved-cli-agent-registry</id>
-                        <phase>validate</phase>
+                        <phase>package</phase>
                         <goals>
                             <goal>unpack</goal>
                         </goals>
@@ -549,7 +572,7 @@
                 <executions>
                     <execution>
                         <id>verify-resolved-cli-agent-roster</id>
-                        <phase>validate</phase>
+                        <phase>package</phase>
                         <goals>
                             <goal>run</goal>
                         </goals>

@@ -138,15 +138,8 @@ public class StdioTaskTool {
             AgentLaunchDefaults.Selection selection = AgentLaunchDefaults.resolve(
                     requestedAgent, java.nio.file.Path.of("."), model, thinking,
                     effectiveRole != null ? effectiveRole.getAgentDefaultsFor(requestedAgent) : null);
-            boolean architect = "architect".equalsIgnoreCase(effectiveRoleName);
             String effectiveModel = selection.model();
             String effectiveThinking = selection.thinking();
-            if (architect && effectiveModel == null) {
-                effectiveModel = "gpt-5.6-sol";
-            }
-            if (architect && effectiveThinking == null) {
-                effectiveThinking = "xhigh";
-            }
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("agent", requestedAgent);
             metadata.put("description", desc);

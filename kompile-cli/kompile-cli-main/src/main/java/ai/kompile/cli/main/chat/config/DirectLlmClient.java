@@ -51,11 +51,18 @@ public class DirectLlmClient implements AutoCloseable {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final List<ObjectNode> conversationHistory;
+    private final Object historyLock = new Object();
     private volatile AtomicBoolean cancelSignal;
+    private volatile java.util.function.BooleanSupplier cancellationCheck;
     private volatile java.util.function.Consumer<String> outputConsumer;
     private volatile RadiusGatewayConfig radiusGatewayConfig;
     private volatile String radiusGatewayConfigSource;
     private volatile OpenCodeServeClient openCodeServeClient;
+    private volatile int nativeCompactionTriggerTokens;
+    private final Set<ProviderCompactionCapabilities.TokenCounting> unavailableTokenCounters =
+            new LinkedHashSet<>();
+    private final Set<String> unavailableNativeCompactionRoutes = new LinkedHashSet<>();
+    private volatile boolean openCodeNeedsSeed = true;
 
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
         this.config = config;
@@ -71,11 +78,21 @@ public class DirectLlmClient implements AutoCloseable {
      */
     public void setCancelSignal(AtomicBoolean cancelSignal) {
         this.cancelSignal = cancelSignal;
+        this.cancellationCheck = cancelSignal == null ? null : cancelSignal::get;
+    }
+
+    public void setCancellationCheck(java.util.function.BooleanSupplier cancellationCheck) {
+        this.cancellationCheck = cancellationCheck;
     }
 
     protected boolean isCancelled() {
-        AtomicBoolean signal = this.cancelSignal;
-        return signal != null && signal.get();
+        java.util.function.BooleanSupplier check = cancellationCheck;
+        try {
+            return check != null && check.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            AtomicBoolean signal = this.cancelSignal;
+            return signal != null && signal.get();
+        }
     }
 
     /**
@@ -136,26 +153,374 @@ public class DirectLlmClient implements AutoCloseable {
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
                                     String modelOverride) {
-        String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
-                ? modelOverride : config.getModel();
+        synchronized (historyLock) {
+            String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
+                    ? modelOverride : config.getModel();
+            ResolvedRoute route = resolveRoute(effectiveModel);
+            return switch (route.protocol()) {
+                case KOMPILE_LOCAL -> streamKompileServing(
+                        userMessage, systemPrompt, toolDefs, toolResults);
+                case OPENCODE -> streamOpenCode(
+                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                case OPENAI_RESPONSES -> streamOpenAiResponses(
+                        userMessage, systemPrompt, toolDefs, toolResults,
+                        effectiveModel, route.codexBackend());
+                case PI_MESSAGES -> streamPiMessages(
+                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                case ANTHROPIC_MESSAGES -> streamAnthropic(
+                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                case OPENAI_CHAT -> streamOpenAi(
+                        userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+            };
+        }
+    }
+
+    public ResolvedRoute resolveRoute(String modelOverride) {
+        String effectiveModel = modelOverride == null || modelOverride.isBlank()
+                ? config.getModel() : modelOverride.strip();
         if (config.isKompileLocalServing()) {
-            return streamKompileServing(userMessage, systemPrompt, toolDefs, toolResults);
-        } else if (config.isOpenCodeNative()) {
-            return streamOpenCode(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-        } else if (config.isOpenAiCodexFormat()) {
-            return streamOpenAiResponses(
-                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, true);
-        } else if (config.isPiMessagesFormat()) {
-            return streamPiMessages(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-        } else if (config.isAnthropicFormat()) {
-            return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-        } else if (usesGitHubAnthropicMessages(effectiveModel)) {
-            return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
-        } else if (usesGitHubOpenAiResponses(effectiveModel)) {
-            return streamOpenAiResponses(
-                    userMessage, systemPrompt, toolDefs, toolResults, effectiveModel, false);
-        } else {
-            return streamOpenAi(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+            return new ResolvedRoute(WireProtocol.KOMPILE_LOCAL, false,
+                    ProviderCompactionCapabilities.generic());
+        }
+        if (config.isOpenCodeNative()) {
+            return new ResolvedRoute(WireProtocol.OPENCODE, false,
+                    ProviderCompactionCapabilities.forProvider("opencode"));
+        }
+        if (config.isOpenAiCodexFormat()) {
+            return new ResolvedRoute(WireProtocol.OPENAI_RESPONSES, true,
+                    ProviderCompactionCapabilities.forProvider("openai-codex"));
+        }
+        if (config.isPiMessagesFormat()) {
+            return new ResolvedRoute(WireProtocol.PI_MESSAGES, false,
+                    ProviderCompactionCapabilities.generic());
+        }
+        if (config.isAnthropicFormat()) {
+            return new ResolvedRoute(WireProtocol.ANTHROPIC_MESSAGES, false,
+                    ProviderCompactionCapabilities.forProvider("anthropic"));
+        }
+        // GitHub is a protocol-translating proxy. Its model family selects the
+        // payload shape, but beta count/compaction endpoints are not assumed.
+        if (usesGitHubAnthropicMessages(effectiveModel)) {
+            return new ResolvedRoute(WireProtocol.ANTHROPIC_MESSAGES, false,
+                    ProviderCompactionCapabilities.generic());
+        }
+        if (usesGitHubOpenAiResponses(effectiveModel)) {
+            return new ResolvedRoute(WireProtocol.OPENAI_RESPONSES, false,
+                    ProviderCompactionCapabilities.generic());
+        }
+        ProviderCompactionCapabilities capabilities =
+                ProviderCompactionCapabilities.forProvider(config.getProvider());
+        return new ResolvedRoute(WireProtocol.OPENAI_CHAT, false, capabilities);
+    }
+
+    public ProviderCompactionCapabilities compactionCapabilities(String modelOverride) {
+        return resolveRoute(modelOverride).capabilities();
+    }
+
+    public void setNativeCompactionTriggerTokens(int tokens) {
+        nativeCompactionTriggerTokens = Math.max(0, tokens);
+    }
+
+    /** Attempt an explicit provider-native compaction without generic fallback. */
+    public NativeCompactionResult tryNativeCompact(String modelOverride) {
+        String effectiveModel = modelOverride == null || modelOverride.isBlank()
+                ? config.getModel() : modelOverride.strip();
+        ResolvedRoute route = resolveRoute(effectiveModel);
+        synchronized (historyLock) {
+            try {
+                return switch (route.capabilities().nativeCompaction()) {
+                    case OPENCODE_SESSION -> {
+                        OpenCodeServeClient.NativeSummary result =
+                                openCodeClient().summarize(effectiveModel);
+                        yield new NativeCompactionResult(
+                                true, result.applied(), result.summary(),
+                                null, result.diagnostic());
+                    }
+                    case OPENAI_RESPONSES -> compactResponses(effectiveModel, route.codexBackend());
+                    case ANTHROPIC_MESSAGES, NONE -> NativeCompactionResult.unsupported();
+                };
+            } catch (Exception e) {
+                return new NativeCompactionResult(
+                        true, false, null, null, formatExceptionMessage(e));
+            }
+        }
+    }
+
+    private NativeCompactionResult compactResponses(String model, boolean codex) throws Exception {
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        String baseUrl = config.resolveBaseUrl(auth);
+        String url = codex
+                ? trimTrailingSlashes(baseUrl) + "/codex/responses/compact"
+                : trimTrailingSlashes(baseUrl) + "/responses/compact";
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("model", model);
+        ArrayNode input = request.putArray("input");
+        conversationHistory.forEach(item -> input.add(item.deepCopy()));
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofMinutes(2))
+                .header("content-type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+        }
+        applyHeaders(builder, auth);
+        HttpResponse<String> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() == 404 || response.statusCode() == 405
+                || response.statusCode() == 501) {
+            return NativeCompactionResult.unsupported();
+        }
+        if (response.statusCode() / 100 != 2) {
+            return new NativeCompactionResult(
+                    true, false, null, null, "HTTP " + response.statusCode());
+        }
+        JsonNode output = objectMapper.readTree(response.body()).path("output");
+        if (!output.isArray() || output.isEmpty()) {
+            return new NativeCompactionResult(
+                    true, false, null, null, "Responses compact returned no output");
+        }
+        // Do not mutate retained history yet. The ConversationLedger commits the
+        // matching portable/native checkpoint first, then reprojects this payload.
+        return new NativeCompactionResult(true, true, null, output.deepCopy(), null);
+    }
+
+    /** Count the complete pending request when the resolved provider supports it. */
+    public TokenCountResult countInputTokens(
+            String userMessage,
+            String systemPrompt,
+            ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults,
+            String modelOverride) {
+        String effectiveModel = modelOverride == null || modelOverride.isBlank()
+                ? config.getModel() : modelOverride.strip();
+        ResolvedRoute route = resolveRoute(effectiveModel);
+        synchronized (historyLock) {
+            ProviderCompactionCapabilities.TokenCounting counter =
+                    route.capabilities().tokenCounting();
+            if (unavailableTokenCounters.contains(counter)) {
+                return TokenCountResult.unsupported();
+            }
+            List<ObjectNode> saved = deepCopyHistory();
+            try {
+                TokenCountResult result = switch (counter) {
+                    case ANTHROPIC_MESSAGES -> countAnthropicTokens(
+                            userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                    case OPENAI_RESPONSES -> countResponsesTokens(
+                            userMessage, systemPrompt, toolDefs, toolResults,
+                            effectiveModel, route.codexBackend());
+                    case GEMINI -> countGeminiTokens(
+                            userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                    case NONE -> TokenCountResult.unsupported();
+                };
+                if (!result.supported()
+                        && ("HTTP 404".equals(result.diagnostic())
+                        || "HTTP 405".equals(result.diagnostic())
+                        || "HTTP 501".equals(result.diagnostic()))) {
+                    unavailableTokenCounters.add(counter);
+                }
+                return result;
+            } catch (Exception e) {
+                return new TokenCountResult(false, false, 0L,
+                        counter.name(), formatExceptionMessage(e));
+            } finally {
+                conversationHistory.clear();
+                conversationHistory.addAll(saved);
+            }
+        }
+    }
+
+    private TokenCountResult countAnthropicTokens(
+            String userMessage, String systemPrompt, ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults, String model) throws Exception {
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        String baseUrl = trimTrailingSlashes(config.resolveBaseUrl(auth));
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("model", model);
+        String effectiveSystem = effectiveAnthropicSystemPrompt(auth, systemPrompt);
+        if (!effectiveSystem.isBlank()) request.put("system", effectiveSystem);
+        request.set("messages", buildAnthropicMessages(userMessage, toolResults));
+        if (toolDefs != null && !toolDefs.isEmpty()) {
+            request.set("tools", convertToolDefsToAnthropic(toolDefs));
+        }
+        boolean nativeCompaction = nativeCompactionTriggerTokens >= 50_000
+                && !unavailableNativeCompactionRoutes.contains("anthropic:" + model);
+        if (nativeCompaction) {
+            request.putObject("context_management").putArray("edits").addObject()
+                    .put("type", "compact_20260112")
+                    .putObject("trigger")
+                    .put("type", "input_tokens")
+                    .put("value", nativeCompactionTriggerTokens);
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder(
+                        URI.create(baseUrl + "/v1/messages/count_tokens"))
+                .timeout(Duration.ofSeconds(30))
+                .header("content-type", "application/json")
+                .header("anthropic-version", "2023-06-01")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        if (auth == null || (!hasHeader(auth.headers(), "Authorization")
+                && !hasHeader(auth.headers(), "x-api-key"))) {
+            builder.header("x-api-key", auth == null ? "" : auth.token());
+        }
+        applyHeaders(builder, auth);
+        if (nativeCompaction) {
+            builder.setHeader("anthropic-beta",
+                    mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
+        }
+        HttpResponse<String> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            return TokenCountResult.unavailable("anthropic", response.statusCode());
+        }
+        return TokenCountResult.exact(
+                objectMapper.readTree(response.body()).path("input_tokens").asLong(0L),
+                "anthropic");
+    }
+
+    private TokenCountResult countResponsesTokens(
+            String userMessage, String systemPrompt, ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults, String model, boolean codex) throws Exception {
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        String baseUrl = config.resolveBaseUrl(auth);
+        ResponsesHistoryLinks historyLinks = sanitizeResponsesHistory(toolResults);
+        List<ObjectNode> staged = prepareResponsesToolResultItems(toolResults, historyLinks);
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("model", model);
+        request.set("input", buildResponsesInput(userMessage, systemPrompt, staged, codex));
+        if (codex && systemPrompt != null && !systemPrompt.isBlank()) {
+            request.put("instructions", systemPrompt);
+        }
+        if (toolDefs != null && !toolDefs.isEmpty()) {
+            request.set("tools", convertToolDefsToResponses(toolDefs, codex));
+        }
+        String createUrl = resolveResponsesUrl(baseUrl, codex);
+        String countUrl = createUrl.substring(0, createUrl.length() - "/responses".length())
+                + "/responses/input_tokens";
+        if (codex) {
+            countUrl = trimTrailingSlashes(baseUrl) + "/codex/responses/input_tokens";
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(countUrl))
+                .timeout(Duration.ofSeconds(30))
+                .header("content-type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        if (auth == null || !hasHeader(auth.headers(), "Authorization")) {
+            builder.header("Authorization", "Bearer " + (auth == null ? "" : auth.token()));
+        }
+        applyHeaders(builder, auth);
+        HttpResponse<String> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            return TokenCountResult.unavailable("openai-responses", response.statusCode());
+        }
+        return TokenCountResult.exact(
+                objectMapper.readTree(response.body()).path("input_tokens").asLong(0L),
+                "openai-responses");
+    }
+
+    private TokenCountResult countGeminiTokens(
+            String userMessage, String systemPrompt, ArrayNode toolDefs,
+            List<ToolCallResultInput> toolResults, String model) throws Exception {
+        OAuthProviderFlow.RequestAuth auth = config.resolveRequestAuth();
+        URI configured = URI.create(config.resolveBaseUrl(auth));
+        String origin = configured.getScheme() + "://" + configured.getAuthority();
+        String encodedModel = java.net.URLEncoder.encode(model, StandardCharsets.UTF_8);
+        String url = origin + "/v1beta/models/" + encodedModel + ":countTokens";
+
+        ArrayNode openAiMessages = buildOpenAiMessages(userMessage, systemPrompt, toolResults);
+        ObjectNode request = objectMapper.createObjectNode();
+        ArrayNode contents = request.putArray("contents");
+        for (JsonNode message : openAiMessages) {
+            String role = message.path("role").asText("user");
+            if ("system".equals(role)) continue;
+            ObjectNode content = contents.addObject();
+            content.put("role", "assistant".equals(role) ? "model" : "user");
+            content.putArray("parts").addObject().put("text",
+                    message.path("content").asText(""));
+        }
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            request.putObject("systemInstruction").putArray("parts")
+                    .addObject().put("text", systemPrompt);
+        }
+        if (toolDefs != null && !toolDefs.isEmpty()) {
+            ObjectNode tools = request.putArray("tools").addObject();
+            ArrayNode declarations = tools.putArray("functionDeclarations");
+            for (JsonNode tool : toolDefs) {
+                ObjectNode declaration = declarations.addObject();
+                declaration.put("name", tool.path("name").asText());
+                declaration.put("description", tool.path("description").asText(""));
+                JsonNode parameters = tool.path("inputSchema");
+                if (parameters.isMissingNode()) parameters = tool.path("parameters");
+                if (!parameters.isMissingNode()) declaration.set("parameters", parameters.deepCopy());
+            }
+        }
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(30))
+                .header("content-type", "application/json")
+                .header("x-goog-api-key", auth == null ? "" : auth.token())
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        objectMapper.writeValueAsString(request), StandardCharsets.UTF_8));
+        applyHeaders(builder, auth);
+        HttpResponse<String> response = httpClient.send(
+                builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() / 100 != 2) {
+            return TokenCountResult.unavailable("gemini", response.statusCode());
+        }
+        return TokenCountResult.exact(
+                objectMapper.readTree(response.body()).path("totalTokens").asLong(0L),
+                "gemini");
+    }
+
+    private List<ObjectNode> deepCopyHistory() {
+        return conversationHistory.stream().map(ObjectNode::deepCopy).toList();
+    }
+
+    public enum WireProtocol {
+        KOMPILE_LOCAL,
+        OPENCODE,
+        OPENAI_RESPONSES,
+        PI_MESSAGES,
+        ANTHROPIC_MESSAGES,
+        OPENAI_CHAT
+    }
+
+    public record ResolvedRoute(
+            WireProtocol protocol,
+            boolean codexBackend,
+            ProviderCompactionCapabilities capabilities) {
+    }
+
+    public record NativeCompactionResult(
+            boolean supported,
+            boolean applied,
+            String portableSummary,
+            JsonNode nativePayload,
+            String diagnostic) {
+
+        public static NativeCompactionResult unsupported() {
+            return new NativeCompactionResult(false, false, null, null, null);
+        }
+    }
+
+    public record TokenCountResult(
+            boolean supported,
+            boolean exact,
+            long inputTokens,
+            String source,
+            String diagnostic) {
+
+        public static TokenCountResult unsupported() {
+            return new TokenCountResult(false, false, 0L, "none", null);
+        }
+
+        static TokenCountResult unavailable(String source, int status) {
+            return new TokenCountResult(false, false, 0L, source,
+                    "HTTP " + status);
+        }
+
+        static TokenCountResult exact(long inputTokens, String source) {
+            return new TokenCountResult(true, true, Math.max(0L, inputTokens), source, null);
         }
     }
 
@@ -166,7 +531,14 @@ public class DirectLlmClient implements AutoCloseable {
         StringBuilder streamed = new StringBuilder();
         try {
             OpenCodeServeClient client = openCodeClient();
-            String text = client.send(effectiveModel, config.getThinking(), systemPrompt, userMessage,
+            String effectiveSystemPrompt = systemPrompt;
+            if (openCodeNeedsSeed && !conversationHistory.isEmpty()) {
+                effectiveSystemPrompt = (systemPrompt == null ? "" : systemPrompt + "\n\n")
+                        + "[Portable conversation context restored by Kompile]\n"
+                        + portableHistoryText();
+            }
+            String text = client.send(effectiveModel, config.getThinking(),
+                    effectiveSystemPrompt, userMessage,
                     chunk -> {
                         streamed.append(chunk);
                         printStreamingChunk(chunk);
@@ -176,6 +548,7 @@ public class DirectLlmClient implements AutoCloseable {
                 printStreamingChunk(text);
             }
             appendOpenCodeHistory(userMessage, text);
+            openCodeNeedsSeed = false;
         } catch (Exception e) {
             if (!markCancelled(result, e)) {
                 result.text = "[Error: " + formatExceptionMessage(e) + "]";
@@ -227,17 +600,27 @@ public class DirectLlmClient implements AutoCloseable {
      * Clear conversation history (for new sessions).
      */
     public void clearHistory() {
-        conversationHistory.clear();
+        synchronized (historyLock) {
+            conversationHistory.clear();
+            OpenCodeServeClient nativeClient = openCodeServeClient;
+            if (nativeClient != null) {
+                nativeClient.close();
+                openCodeServeClient = null;
+            }
+            openCodeNeedsSeed = true;
+        }
     }
 
     /**
      * Add a message to history (for replay/resume support).
      */
     public void addToHistory(String role, String content) {
-        ObjectNode msg = objectMapper.createObjectNode();
-        msg.put("role", role);
-        msg.put("content", content);
-        conversationHistory.add(msg);
+        synchronized (historyLock) {
+            ObjectNode msg = objectMapper.createObjectNode();
+            msg.put("role", role);
+            msg.put("content", content);
+            conversationHistory.add(msg);
+        }
     }
 
     /**
@@ -249,13 +632,30 @@ public class DirectLlmClient implements AutoCloseable {
      * the request turn), then restore the snapshot — yielding a clean call.
      */
     public StreamResult streamOneShot(String prompt, String systemPrompt, String modelOverride) {
-        List<ObjectNode> saved = new ArrayList<>(conversationHistory);
-        conversationHistory.clear();
-        try {
-            return streamChat(prompt, systemPrompt, null, null, modelOverride);
-        } finally {
+        if (getClass() == DirectLlmClient.class) {
+            // Utility calls must not clear or lock the live chat history while a
+            // judge/summary network request is in flight. A fresh client also gives
+            // provider-owned OpenCode a genuinely isolated native session.
+            try (DirectLlmClient isolated = new DirectLlmClient(config, objectMapper)) {
+                isolated.setCancelSignal(cancelSignal);
+                if (cancellationCheck != null) {
+                    isolated.setCancellationCheck(cancellationCheck);
+                }
+                isolated.setOutputConsumer(outputConsumer);
+                return isolated.streamChat(prompt, systemPrompt, null, null, modelOverride);
+            }
+        }
+        // Preserve the interception seam used by specialized/subprocess clients
+        // and test doubles. Their override executes under a re-entrant lock.
+        synchronized (historyLock) {
+            List<ObjectNode> saved = new ArrayList<>(conversationHistory);
             conversationHistory.clear();
-            conversationHistory.addAll(saved);
+            try {
+                return streamChat(prompt, systemPrompt, null, null, modelOverride);
+            } finally {
+                conversationHistory.clear();
+                conversationHistory.addAll(saved);
+            }
         }
     }
 
@@ -265,26 +665,55 @@ public class DirectLlmClient implements AutoCloseable {
      * user turn continues normally. Used by the /compact command.
      */
     public void replaceHistoryWithSummary(String summary) {
-        conversationHistory.clear();
         if (summary == null || summary.isBlank()) return;
+        synchronized (historyLock) {
+            conversationHistory.clear();
+            ObjectNode userMsg = objectMapper.createObjectNode();
+            userMsg.put("role", "user");
+            userMsg.put("content",
+                    "This session was compacted. Below is a structured summary of our "
+                            + "prior conversation. Treat it as authoritative context for "
+                            + "continuing the work:\n\n" + summary);
+            conversationHistory.add(userMsg);
 
-        ObjectNode userMsg = objectMapper.createObjectNode();
-        userMsg.put("role", "user");
-        userMsg.put("content",
-                "This session was compacted. Below is a structured summary of our "
-                        + "prior conversation. Treat it as authoritative context for "
-                        + "continuing the work:\n\n" + summary);
-        conversationHistory.add(userMsg);
+            ObjectNode assistantMsg = objectMapper.createObjectNode();
+            assistantMsg.put("role", "assistant");
+            assistantMsg.put("content",
+                    "Understood. I have the compacted summary and will continue from here.");
+            conversationHistory.add(assistantMsg);
+        }
+    }
 
-        ObjectNode assistantMsg = objectMapper.createObjectNode();
-        assistantMsg.put("role", "assistant");
-        assistantMsg.put("content",
-                "Understood. I have the compacted summary and will continue from here.");
-        conversationHistory.add(assistantMsg);
+    public void replaceHistoryWithNativeCheckpoint(JsonNode nativePayload) {
+        if (nativePayload == null || nativePayload.isNull()) return;
+        synchronized (historyLock) {
+            conversationHistory.clear();
+            if (nativePayload.isArray()) {
+                for (JsonNode item : nativePayload) {
+                    if (item.isObject()) conversationHistory.add(((ObjectNode) item).deepCopy());
+                }
+            } else if (nativePayload.isObject()) {
+                conversationHistory.add(((ObjectNode) nativePayload).deepCopy());
+            }
+        }
+    }
+
+    private String portableHistoryText() {
+        StringBuilder text = new StringBuilder();
+        for (ObjectNode message : conversationHistory) {
+            String role = message.path("role").asText("context");
+            JsonNode content = message.get("content");
+            text.append('[').append(role).append("]\n");
+            text.append(content != null && content.isTextual()
+                    ? content.asText() : String.valueOf(content)).append("\n\n");
+        }
+        return text.toString().strip();
     }
 
     public int getHistorySize() {
-        return conversationHistory.size();
+        synchronized (historyLock) {
+            return conversationHistory.size();
+        }
     }
 
     /** Live chat configuration shared with the standard-chat REPL. */
@@ -320,22 +749,25 @@ public class DirectLlmClient implements AutoCloseable {
      */
     public int compactToolHistory(int preserveRecentMessages,
                                   java.util.function.BinaryOperator<String> toolResultSummarizer) {
-        int lastPrunable = conversationHistory.size() - Math.max(0, preserveRecentMessages);
-        int shrunk = 0;
-        for (int i = 0; i < lastPrunable; i++) {
-            ObjectNode msg = conversationHistory.get(i);
-            String role = msg.path("role").asText("");
-            String content = msg.path("content").asText("");
-            if ("tool".equals(role) && content.length() > 600) {
-                String toolName = msg.path("name").asText(null);
-                msg.put("content", toolResultSummarizer.apply(toolName, content));
-                shrunk++;
-            } else if ("assistant".equals(role) && content.length() > 2_000) {
-                msg.put("content", content.substring(0, 2_000) + "\n... (truncated during compaction)");
-                shrunk++;
+        synchronized (historyLock) {
+            int lastPrunable = conversationHistory.size() - Math.max(0, preserveRecentMessages);
+            int shrunk = 0;
+            for (int i = 0; i < lastPrunable; i++) {
+                ObjectNode msg = conversationHistory.get(i);
+                String role = msg.path("role").asText("");
+                String content = msg.path("content").asText("");
+                if ("tool".equals(role) && content.length() > 600) {
+                    String toolName = msg.path("name").asText(null);
+                    msg.put("content", toolResultSummarizer.apply(toolName, content));
+                    shrunk++;
+                } else if ("assistant".equals(role) && content.length() > 2_000) {
+                    msg.put("content", content.substring(0, 2_000)
+                            + "\n... (truncated during compaction)");
+                    shrunk++;
+                }
             }
+            return shrunk;
         }
-        return shrunk;
     }
 
     private boolean usesGitHubAnthropicMessages(String model) {
@@ -394,6 +826,16 @@ public class DirectLlmClient implements AutoCloseable {
             request.put("stream", true);
             request.put("store", false);
             applyReasoningEffort(request, true);
+            String nativeRouteKey = "responses:" + effectiveModel;
+            boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
+                    == ProviderCompactionCapabilities.NativeCompaction.OPENAI_RESPONSES
+                    && nativeCompactionTriggerTokens > 0
+                    && !unavailableNativeCompactionRoutes.contains(nativeRouteKey);
+            if (nativeCompaction) {
+                request.putArray("context_management").addObject()
+                        .put("type", "compaction")
+                        .put("compact_threshold", nativeCompactionTriggerTokens);
+            }
 
             if (codex) {
                 request.put("instructions",
@@ -436,9 +878,17 @@ public class DirectLlmClient implements AutoCloseable {
                     requestBuilder.build(), HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                if (nativeCompaction && (response.statusCode() == 400
+                        || response.statusCode() == 404 || response.statusCode() == 422)) {
+                    unavailableNativeCompactionRoutes.add(nativeRouteKey);
+                    return streamOpenAiResponses(
+                            userMessage, systemPrompt, toolDefs, toolResults,
+                            effectiveModel, codex);
+                }
                 String label = codex ? "OpenAI Codex" : "OpenAI Responses";
                 result.text = "[" + label + " API error " + response.statusCode()
                         + ": " + extractErrorMessage(body) + "]";
+                result.failed = true;
                 printStreamingChunk(result.text);
                 return result;
             }
@@ -651,6 +1101,7 @@ public class DirectLlmClient implements AutoCloseable {
                 switch (type) {
                     case "response.output_item.added" -> {
                         JsonNode item = event.path("item");
+                        captureResponsesCompaction(result, item);
                         updateResponsesReasoningItem(state, outputIndex, item);
                         updateResponsesToolAccumulator(state, outputIndex, item, false);
                     }
@@ -679,6 +1130,7 @@ public class DirectLlmClient implements AutoCloseable {
                     }
                     case "response.output_item.done" -> {
                         JsonNode item = event.path("item");
+                        captureResponsesCompaction(result, item);
                         updateResponsesReasoningItem(state, outputIndex, item);
                         updateResponsesToolAccumulator(state, outputIndex, item, true);
                         if ("message".equals(item.path("type").asText()) && result.text.isEmpty()) {
@@ -692,6 +1144,7 @@ public class DirectLlmClient implements AutoCloseable {
                     case "response.completed", "response.incomplete" -> {
                         state.terminal = true;
                         JsonNode response = event.path("response");
+                        captureResponsesCompactionFromOutput(result, response.path("output"));
                         backfillResponsesReasoning(state, response.path("output"));
                         readResponsesUsage(response.path("usage"), result);
                     }
@@ -733,6 +1186,19 @@ public class DirectLlmClient implements AutoCloseable {
             state.failed = true;
             appendProtocolError(result, "Responses stream ended without a terminal event");
         }
+    }
+
+    private void captureResponsesCompaction(StreamResult result, JsonNode item) {
+        if (item != null && "compaction".equals(item.path("type").asText())
+                && item.isObject()) {
+            result.nativeCompactionPayload = item.deepCopy();
+            result.nativeCompactionStrategy = "openai-responses";
+        }
+    }
+
+    private void captureResponsesCompactionFromOutput(StreamResult result, JsonNode output) {
+        if (output == null || !output.isArray()) return;
+        for (JsonNode item : output) captureResponsesCompaction(result, item);
     }
 
     private void updateResponsesReasoningItem(
@@ -809,8 +1275,14 @@ public class DirectLlmClient implements AutoCloseable {
             String userMessage,
             StreamResult result,
             ResponsesStreamState state) {
-        if (userMessage != null) {
+        if (result.nativeCompactionPayload != null) {
+            // The native item replaces every request item that preceded it.
+            conversationHistory.clear();
+        } else if (userMessage != null) {
             conversationHistory.add(createResponsesUserMessage(userMessage));
+        }
+        if (result.nativeCompactionPayload != null && result.nativeCompactionPayload.isObject()) {
+            conversationHistory.add(((ObjectNode) result.nativeCompactionPayload).deepCopy());
         }
         state.reasoningItems.values().forEach(conversationHistory::add);
         if (!result.text.isEmpty()) {
@@ -912,6 +1384,7 @@ public class DirectLlmClient implements AutoCloseable {
                 String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
                 result.text = "[Radius API error " + response.statusCode()
                         + ": " + extractErrorMessage(body) + "]";
+                result.failed = true;
                 printStreamingChunk(result.text);
                 return result;
             }
@@ -1250,6 +1723,7 @@ public class DirectLlmClient implements AutoCloseable {
     }
 
     private void appendProtocolError(StreamResult result, String message) {
+        result.failed = true;
         String formatted = "[Error: " + message + "]";
         if (!result.text.isEmpty()) {
             result.text += "\n";
@@ -1510,21 +1984,24 @@ public class DirectLlmClient implements AutoCloseable {
             if (response.statusCode() != 200) {
                 String body = new String(response.body().readAllBytes());
                 result.text = "[LLM API error " + response.statusCode() + ": " + extractErrorMessage(body) + "]";
+                result.failed = true;
                 printStreamingChunk(result.text);
                 return result;
             }
 
             parseOpenAiStream(response.body(), result);
 
-            // Track in conversation history
-            if (userMessage != null) {
-                ObjectNode userMsg = objectMapper.createObjectNode();
-                userMsg.put("role", "user");
-                userMsg.put("content", userMessage);
-                conversationHistory.add(userMsg);
+            if (!result.cancelled) {
+                appendOpenAiToolResultHistory(toolResults);
+                if (userMessage != null) {
+                    ObjectNode userMsg = objectMapper.createObjectNode();
+                    userMsg.put("role", "user");
+                    userMsg.put("content", userMessage);
+                    conversationHistory.add(userMsg);
+                }
             }
 
-            if (!result.text.isEmpty()) {
+            if (!result.cancelled && (!result.text.isEmpty() || !result.toolCalls.isEmpty())) {
                 ObjectNode assistantMsg = objectMapper.createObjectNode();
                 assistantMsg.put("role", "assistant");
                 assistantMsg.put("content", result.text);
@@ -1579,7 +2056,6 @@ public class DirectLlmClient implements AutoCloseable {
                 toolMsg.put("tool_call_id", tr.callId);
                 toolMsg.put("content", tr.output);
                 messages.add(toolMsg);
-                conversationHistory.add(toolMsg);
             }
         }
 
@@ -1592,6 +2068,18 @@ public class DirectLlmClient implements AutoCloseable {
         }
 
         return messages;
+    }
+
+    private void appendOpenAiToolResultHistory(List<ToolCallResultInput> toolResults) {
+        if (toolResults == null) return;
+        for (ToolCallResultInput toolResult : toolResults) {
+            ObjectNode history = objectMapper.createObjectNode();
+            history.put("role", "tool");
+            history.put("content", toolResult.output);
+            if (toolResult.callId != null) history.put("tool_call_id", toolResult.callId);
+            if (toolResult.name != null) history.put("name", toolResult.name);
+            conversationHistory.add(history);
+        }
     }
 
     private ArrayNode convertToolDefsToOpenAi(ArrayNode toolDefs) {
@@ -1732,16 +2220,26 @@ public class DirectLlmClient implements AutoCloseable {
             request.put("max_tokens", 8192);
             request.put("stream", true);
 
-            boolean anthropicOAuth = auth != null && auth.oauth()
-                    && "anthropic".equalsIgnoreCase(config.getProvider());
-            if (anthropicOAuth) {
-                String identity = "You are Claude Code, Anthropic's official CLI for Claude.";
-                request.put("system", systemPrompt == null || systemPrompt.isEmpty()
-                        ? identity
-                        : identity + "\\n\\n" + systemPrompt);
-            } else if (systemPrompt != null && !systemPrompt.isEmpty()) {
-                request.put("system", systemPrompt);
+            String nativeRouteKey = "anthropic:" + effectiveModel;
+            boolean nativeCompaction = compactionCapabilities(effectiveModel).nativeCompaction()
+                    == ProviderCompactionCapabilities.NativeCompaction.ANTHROPIC_MESSAGES
+                    && nativeCompactionTriggerTokens >= 50_000
+                    && !unavailableNativeCompactionRoutes.contains(nativeRouteKey);
+            if (nativeCompaction) {
+                ObjectNode edit = objectMapper.createObjectNode();
+                edit.put("type", "compact_20260112");
+                edit.putObject("trigger")
+                        .put("type", "input_tokens")
+                        .put("value", nativeCompactionTriggerTokens);
+                edit.put("instructions",
+                        "Summarize the conversation for continuing the task. Preserve code, "
+                                + "file paths, decisions, pending work, and tool outcomes. "
+                                + "Do not call tools while compacting; return summary text only.");
+                request.putObject("context_management").putArray("edits").add(edit);
             }
+
+            String effectiveSystem = effectiveAnthropicSystemPrompt(auth, systemPrompt);
+            if (!effectiveSystem.isBlank()) request.put("system", effectiveSystem);
 
             ArrayNode messages = buildAnthropicMessages(userMessage, toolResults);
             request.set("messages", messages);
@@ -1771,6 +2269,10 @@ public class DirectLlmClient implements AutoCloseable {
                 }
             }
             applyHeaders(requestBuilder, auth);
+            if (nativeCompaction) {
+                requestBuilder.setHeader("anthropic-beta",
+                        mergeHeaderValue(auth, "anthropic-beta", "compact-2026-01-12"));
+            }
             applyProviderRequestHeaders(requestBuilder, userMessage);
             HttpRequest httpRequest = requestBuilder.build();
 
@@ -1779,14 +2281,32 @@ public class DirectLlmClient implements AutoCloseable {
 
             if (response.statusCode() != 200) {
                 String body = new String(response.body().readAllBytes());
+                if (nativeCompaction && (response.statusCode() == 400
+                        || response.statusCode() == 404 || response.statusCode() == 422)) {
+                    unavailableNativeCompactionRoutes.add(nativeRouteKey);
+                    return streamAnthropic(
+                            userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
+                }
                 result.text = "[Anthropic API error " + response.statusCode() + ": " + extractErrorMessage(body) + "]";
+                result.failed = true;
                 return result;
             }
 
             parseAnthropicStream(response.body(), result);
 
-            // Track in conversation history
-            if (userMessage != null) {
+            if (!result.cancelled && result.nativeCompactionSummary != null
+                    && !result.nativeCompactionSummary.isBlank()) {
+                // Anthropic ignores all messages before the latest compaction
+                // block; remove them locally so the next HTTP request is small too.
+                conversationHistory.clear();
+            } else if (!result.cancelled) {
+                ObjectNode toolResultMessage = createAnthropicToolResultMessage(toolResults);
+                if (toolResultMessage != null) conversationHistory.add(toolResultMessage);
+            }
+
+            // Track in conversation history only after a completed stream.
+            if (!result.cancelled && result.nativeCompactionSummary == null
+                    && userMessage != null) {
                 ObjectNode userMsg = objectMapper.createObjectNode();
                 userMsg.put("role", "user");
                 ArrayNode content = objectMapper.createArrayNode();
@@ -1798,10 +2318,19 @@ public class DirectLlmClient implements AutoCloseable {
                 conversationHistory.add(userMsg);
             }
 
-            if (!result.text.isEmpty() || !result.toolCalls.isEmpty()) {
+            if (!result.cancelled && (!result.text.isEmpty() || !result.toolCalls.isEmpty()
+                    || (result.nativeCompactionSummary != null
+                    && !result.nativeCompactionSummary.isBlank()))) {
                 ObjectNode assistantMsg = objectMapper.createObjectNode();
                 assistantMsg.put("role", "assistant");
                 ArrayNode content = objectMapper.createArrayNode();
+                if (result.nativeCompactionSummary != null
+                        && !result.nativeCompactionSummary.isBlank()) {
+                    ObjectNode compactionBlock = objectMapper.createObjectNode();
+                    compactionBlock.put("type", "compaction");
+                    compactionBlock.put("content", result.nativeCompactionSummary);
+                    content.add(compactionBlock);
+                }
                 if (!result.text.isEmpty()) {
                     ObjectNode textBlock = objectMapper.createObjectNode();
                     textBlock.put("type", "text");
@@ -1829,12 +2358,35 @@ public class DirectLlmClient implements AutoCloseable {
         return result;
     }
 
+    private String effectiveAnthropicSystemPrompt(
+            OAuthProviderFlow.RequestAuth auth, String systemPrompt) {
+        boolean anthropicOAuth = auth != null && auth.oauth()
+                && "anthropic".equalsIgnoreCase(config.getProvider());
+        if (!anthropicOAuth) return systemPrompt == null ? "" : systemPrompt;
+        String identity = "You are Claude Code, Anthropic's official CLI for Claude.";
+        return systemPrompt == null || systemPrompt.isBlank()
+                ? identity : identity + "\n\n" + systemPrompt;
+    }
+
     private static void applyHeaders(
             HttpRequest.Builder builder,
             OAuthProviderFlow.RequestAuth auth) {
         if (auth != null) {
             auth.headers().forEach(builder::setHeader);
         }
+    }
+
+    private static String mergeHeaderValue(
+            OAuthProviderFlow.RequestAuth auth, String headerName, String value) {
+        String existing = auth == null ? null : auth.headers().entrySet().stream()
+                .filter(entry -> entry.getKey().equalsIgnoreCase(headerName))
+                .map(Map.Entry::getValue)
+                .findFirst().orElse(null);
+        if (existing == null || existing.isBlank()) return value;
+        return java.util.Arrays.stream(existing.split(","))
+                .map(String::trim)
+                .anyMatch(value::equalsIgnoreCase)
+                ? existing : existing + "," + value;
     }
 
     private static boolean hasHeader(Map<String, String> headers, String expectedName) {
@@ -1863,24 +2415,8 @@ public class DirectLlmClient implements AutoCloseable {
         }
 
         // Tool results
-        if (toolResults != null && !toolResults.isEmpty()) {
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            ArrayNode content = objectMapper.createArrayNode();
-            for (ToolCallResultInput tr : toolResults) {
-                ObjectNode toolResultBlock = objectMapper.createObjectNode();
-                toolResultBlock.put("type", "tool_result");
-                toolResultBlock.put("tool_use_id", tr.callId);
-                toolResultBlock.put("content", tr.output);
-                if (tr.isError) {
-                    toolResultBlock.put("is_error", true);
-                }
-                content.add(toolResultBlock);
-            }
-            userMsg.set("content", content);
-            messages.add(userMsg);
-            conversationHistory.add(userMsg);
-        }
+        ObjectNode toolResultMessage = createAnthropicToolResultMessage(toolResults);
+        if (toolResultMessage != null) messages.add(toolResultMessage);
 
         // Current user message
         if (userMessage != null) {
@@ -1896,6 +2432,24 @@ public class DirectLlmClient implements AutoCloseable {
         }
 
         return messages;
+    }
+
+    private ObjectNode createAnthropicToolResultMessage(
+            List<ToolCallResultInput> toolResults) {
+        if (toolResults == null || toolResults.isEmpty()) return null;
+        ObjectNode userMsg = objectMapper.createObjectNode();
+        userMsg.put("role", "user");
+        ArrayNode content = objectMapper.createArrayNode();
+        for (ToolCallResultInput toolResult : toolResults) {
+            ObjectNode block = objectMapper.createObjectNode();
+            block.put("type", "tool_result");
+            block.put("tool_use_id", toolResult.callId);
+            block.put("content", toolResult.output);
+            if (toolResult.isError) block.put("is_error", true);
+            content.add(block);
+        }
+        userMsg.set("content", content);
+        return userMsg;
     }
 
     private ArrayNode convertToolDefsToAnthropic(ArrayNode toolDefs) {
@@ -1924,6 +2478,8 @@ public class DirectLlmClient implements AutoCloseable {
         String currentToolId = null;
         String currentToolName = null;
         StringBuilder currentToolArgs = new StringBuilder();
+        boolean currentCompaction = false;
+        StringBuilder compactionSummary = new StringBuilder();
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
@@ -1958,6 +2514,11 @@ public class DirectLlmClient implements AutoCloseable {
                                 currentToolId = contentBlock.path("id").asText("call_" + result.toolCalls.size());
                                 currentToolName = contentBlock.path("name").asText("");
                                 currentToolArgs.setLength(0);
+                            } else if ("compaction".equals(blockType)) {
+                                currentCompaction = true;
+                                compactionSummary.setLength(0);
+                                String initial = contentBlock.path("content").asText("");
+                                if (!initial.isBlank()) compactionSummary.append(initial);
                             }
                             break;
                         }
@@ -1973,6 +2534,8 @@ public class DirectLlmClient implements AutoCloseable {
                             } else if ("input_json_delta".equals(deltaType)) {
                                 String partial = delta.path("partial_json").asText("");
                                 currentToolArgs.append(partial);
+                            } else if ("compaction_delta".equals(deltaType)) {
+                                compactionSummary.append(delta.path("content").asText(""));
                             }
                             break;
                         }
@@ -1992,6 +2555,12 @@ public class DirectLlmClient implements AutoCloseable {
                                 currentToolName = null;
                                 currentToolArgs.setLength(0);
                             }
+                            if (currentCompaction) {
+                                result.nativeCompactionSummary = compactionSummary.toString();
+                                result.nativeCompactionStrategy = "anthropic-messages";
+                                currentCompaction = false;
+                                compactionSummary.setLength(0);
+                            }
                             break;
                         }
 
@@ -2003,6 +2572,17 @@ public class DirectLlmClient implements AutoCloseable {
                             JsonNode deltaUsage = event.path("usage");
                             if (!deltaUsage.isMissingNode()) {
                                 result.outputTokens = deltaUsage.path("output_tokens").asLong(0);
+                                JsonNode iterations = deltaUsage.path("iterations");
+                                if (iterations.isArray()) {
+                                    for (JsonNode iteration : iterations) {
+                                        if ("compaction".equals(iteration.path("type").asText())) {
+                                            result.compactionInputTokens +=
+                                                    iteration.path("input_tokens").asLong(0L);
+                                            result.compactionOutputTokens +=
+                                                    iteration.path("output_tokens").asLong(0L);
+                                        }
+                                    }
+                                }
                             }
                             break;
                         }
@@ -2093,6 +2673,7 @@ public class DirectLlmClient implements AutoCloseable {
             result.cancelled = true;
             return true;
         }
+        result.failed = true;
         return false;
     }
 
@@ -2128,6 +2709,12 @@ public class DirectLlmClient implements AutoCloseable {
         public String text = "";
         public List<ToolCallOutput> toolCalls = new ArrayList<>();
         public boolean cancelled = false;
+        public boolean failed = false;
+        public String nativeCompactionSummary;
+        public String nativeCompactionStrategy;
+        public JsonNode nativeCompactionPayload;
+        public long compactionInputTokens;
+        public long compactionOutputTokens;
         // Token usage from API response (when available)
         public long inputTokens = 0;
         public long outputTokens = 0;

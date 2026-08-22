@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "provider": "deepseek",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "DeepSeek model API documentation",
+    "url": "https://api-docs.deepseek.com/api/list-models",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": []
+}

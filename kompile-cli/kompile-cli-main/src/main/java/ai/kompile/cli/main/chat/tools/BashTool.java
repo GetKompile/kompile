@@ -24,6 +24,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
@@ -187,9 +189,17 @@ public class BashTool implements CliTool {
 
         Path workDir = context.getWorkingDirectory();
 
-        // Execute via ProcessManager
-        ProcessManager.ProcessResult result = ProcessManager.execute(
-                command, workDir, timeout * 1000, context.getAbortSignal());
+        Consumer<String> liveOutput = context.getOutputConsumer();
+        AtomicBoolean outputStreamed = new AtomicBoolean(false);
+
+        // Execute via ProcessManager. Interactive chat installs a live output
+        // consumer; MCP/headless callers still receive the same canonical result.
+        ProcessManager.ProcessResult result = ProcessManager.executeInterruptibly(
+                command, workDir, timeout * 1000, context::isAborted,
+                liveOutput == null ? null : line -> {
+                    outputStreamed.set(true);
+                    liveOutput.accept(line);
+                });
 
         String outputStr = result.getOutput();
 
@@ -200,6 +210,7 @@ public class BashTool implements CliTool {
         meta.put("timedOut", result.isTimedOut());
         meta.put("aborted", result.isAborted());
         meta.put("riskLevel", risk.name());
+        meta.put(ToolResult.OUTPUT_STREAMED_METADATA, outputStreamed.get());
 
         if (result.isTimedOut()) {
             return new ToolResult("timed out after " + timeout + "s", outputStr, meta, true);

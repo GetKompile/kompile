@@ -7,6 +7,8 @@ package ai.kompile.cli.main.auth;
 
 import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import ai.kompile.cli.main.auth.oauth.OAuthProviderRegistry;
+import ai.kompile.cli.main.chat.config.ChatProvider;
+import ai.kompile.cli.main.chat.config.ChatProviderRegistry;
 import ai.kompile.core.agent.AgentProvider;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -23,16 +25,6 @@ import java.util.Map;
 
 /** Chat-style numbered wizards for managed provider credentials. */
 final class AuthWizard implements AutoCloseable {
-    private static final List<String> API_KEY_PROVIDERS = List.of(
-            "openai",
-            "anthropic",
-            "gemini",
-            "openrouter",
-            "xai",
-            "deepseek",
-            "groq",
-            "radius");
-
     private final Prompter prompter;
 
     private AuthWizard(Prompter prompter) {
@@ -58,22 +50,12 @@ final class AuthWizard implements AutoCloseable {
         LinkedHashMap<String, String> providers = loginProviders(registry);
         List<String> providerIds = new ArrayList<>(providers.keySet());
         List<String> providerLabels = new ArrayList<>(providers.values());
-        providerIds.add("__other__");
-        providerLabels.add("Other provider — API key");
 
         int providerIndex = prompter.select("Select Provider:", providerLabels);
         if (providerIndex < 0) {
             return null;
         }
         String providerId = providerIds.get(providerIndex);
-        if ("__other__".equals(providerId)) {
-            providerId = prompter.text("Provider id:", null);
-            if (providerId == null || providerId.isBlank()) {
-                return null;
-            }
-            providerId = providerId.trim().toLowerCase(Locale.ROOT);
-        }
-
         String oauthProviderId = registry.oauthProviderForVendor(providerId).orElse(null);
         List<LoginKind> kinds = loginKinds(registry, providerId, oauthProviderId);
         if (kinds.isEmpty()) {
@@ -125,12 +107,9 @@ final class AuthWizard implements AutoCloseable {
                 return null;
             }
         } else if (kind == LoginKind.ENVIRONMENT) {
-            String environmentName = prompter.text(
-                    "Environment variable:",
-                    defaultEnvironmentName(providerId));
-            if (environmentName == null
-                    || !environmentName.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-                prompter.message("Environment variable names must use letters, numbers, and underscores.");
+            String environmentName = defaultEnvironmentName(providerId);
+            if (environmentName == null || environmentName.isBlank()) {
+                prompter.message("No environment credential is registered for " + providerId + ".");
                 return null;
             }
             storedValue = "$" + environmentName;
@@ -175,7 +154,9 @@ final class AuthWizard implements AutoCloseable {
         }
         if (registry.supportsApiKey(providerId)) {
             kinds.add(LoginKind.API_KEY);
-            kinds.add(LoginKind.ENVIRONMENT);
+            if (ChatProviderRegistry.environmentVariable(providerId) != null) {
+                kinds.add(LoginKind.ENVIRONMENT);
+            }
         }
         return List.copyOf(kinds);
     }
@@ -303,15 +284,15 @@ final class AuthWizard implements AutoCloseable {
 
     private static LinkedHashMap<String, String> loginProviders(OAuthProviderRegistry registry) {
         LinkedHashMap<String, String> providers = new LinkedHashMap<>();
-        for (String providerId : API_KEY_PROVIDERS) {
-            providers.put(providerId, providerLabel(providerId));
+        for (ChatProvider provider : ChatProviderRegistry.directProviders()) {
+            providers.putIfAbsent(provider.id(), provider.displayName());
         }
         registry.flows().stream()
-                .sorted(java.util.Comparator.comparing(OAuthProviderFlow::providerId))
-                .filter(flow -> !providers.containsKey(vendorForOAuthProvider(flow.providerId())))
+                .sorted(java.util.Comparator.comparing(OAuthProviderFlow::userFacingProviderId))
                 .forEach(flow -> providers.putIfAbsent(
-                        flow.providerId(),
-                        flow.displayName() + " — OAuth"));
+                        flow.userFacingProviderId(),
+                        ChatProviderRegistry.find(flow.userFacingProviderId()) == null
+                                ? flow.displayName() : ChatProviderRegistry.label(flow.userFacingProviderId())));
         for (AgentProvider agent : NativeCliAuth.providers()) {
             providers.putIfAbsent(agent.getCommand(),
                     agent.getDisplayName() + " — native auth (OAuth/API)");
@@ -320,21 +301,21 @@ final class AuthWizard implements AutoCloseable {
     }
 
     private static String providerLabel(String providerId) {
-        return switch (providerId) {
-            case "openai" -> "OpenAI";
-            case "anthropic" -> "Anthropic";
-            case "gemini" -> "Google Gemini";
-            case "openrouter" -> "OpenRouter";
-            case "xai" -> "xAI";
-            case "deepseek" -> "DeepSeek";
-            case "groq" -> "Groq";
-            case "radius" -> "Radius";
-            default -> providerId;
-        };
+        ChatProvider provider = ChatProviderRegistry.find(providerId);
+        if (provider != null) {
+            return provider.displayName();
+        }
+        return registryLabel(providerId);
+    }
+
+    private static String registryLabel(String providerId) {
+        return ChatProviderRegistry.label(providerId);
     }
 
     private static String vendorForOAuthProvider(String providerId) {
-        return "openai-codex".equalsIgnoreCase(providerId) ? "openai" : providerId;
+        return new OAuthProviderRegistry().find(providerId)
+                .map(OAuthProviderFlow::userFacingProviderId)
+                .orElse(providerId);
     }
 
     private static String credentialLabel(CredentialStore.CredentialInfo info) {
@@ -342,18 +323,7 @@ final class AuthWizard implements AutoCloseable {
     }
 
     private static String defaultEnvironmentName(String providerId) {
-        return switch (providerId) {
-            case "openai" -> "OPENAI_API_KEY";
-            case "anthropic" -> "ANTHROPIC_API_KEY";
-            case "gemini" -> "GOOGLE_API_KEY";
-            case "openrouter" -> "OPENROUTER_API_KEY";
-            case "xai" -> "XAI_API_KEY";
-            case "github-copilot" -> "COPILOT_GITHUB_TOKEN";
-            case "radius" -> "RADIUS_API_KEY";
-            case "deepseek" -> "DEEPSEEK_API_KEY";
-            case "groq" -> "GROQ_API_KEY";
-            default -> null;
-        };
+        return ChatProviderRegistry.environmentVariable(providerId);
     }
 
     @Override

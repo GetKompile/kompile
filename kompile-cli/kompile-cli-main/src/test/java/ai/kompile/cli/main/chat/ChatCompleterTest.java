@@ -64,6 +64,8 @@ class ChatCompleterTest {
         assertTrue(values.contains("/render"), "missing /render");
         assertTrue(values.contains("/image"), "missing /image");
         assertTrue(values.contains("/queue-send-all"), "missing /queue-send-all");
+        assertTrue(values.contains("/queue-edit"), "missing /queue-edit");
+        assertTrue(values.contains("/queue-move"), "missing /queue-move");
         // Skills too
         assertTrue(values.contains("/commit"), "missing /commit skill");
         assertTrue(values.contains("/review"), "missing /review skill");
@@ -137,7 +139,8 @@ class ChatCompleterTest {
                 "/agent-chat", "/conversations", "/transcript", "/memory",
                 "/recall", "/permissions", "/todos", "/plan", "/queue",
                 "/queues", "/queue-send", "/queue-send-all", "/queue-remove",
-                "/queue-clear", "/queue-status", "/jobs", "/jobs-remove",
+                "/queue-edit", "/queue-move", "/queue-clear", "/queue-status",
+                "/jobs", "/jobs-remove",
                 "/jobs-clear", "/activity", "/processes", "/process-kill", "/process-output",
                 "/process-status", "/statusbar", "/auto-dequeue", "/enforce", "/enforcer", "/stats",
                 "/passthrough", "/keys", "/render", "/resume", "/mode", "/menu", "/skills",

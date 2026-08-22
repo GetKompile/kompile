@@ -197,13 +197,10 @@ public class ModelRouter {
             return configured;
         }
 
-        // 2. Default models for current provider
+        // 2. Current models advertised by the provider
         String provider = chatConfig.getProvider();
-        if (provider != null) {
-            String[] defaults = ChatConfig.getDefaultModels(provider);
-            if (defaults.length > 0) {
-                return List.of(defaults);
-            }
+        if (provider != null && !provider.isBlank()) {
+            return chatConfig.getConfiguredModels(provider);
         }
 
         return List.of();

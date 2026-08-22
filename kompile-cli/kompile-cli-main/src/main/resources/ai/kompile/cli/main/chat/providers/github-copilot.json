@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "provider": "github-copilot",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "GitHub Copilot model inventory",
+    "url": "https://docs.github.com/en/copilot/reference/ai-models/model-comparison",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": [
+    {
+      "modelPatterns": [
+        "^gpt-5\\.6-sol$"
+      ],
+      "defaultValue": "low",
+      "mandatory": false,
+      "source": {
+        "label": "Codex app-server model effort contract",
+        "url": "https://developers.openai.com/codex/app-server#list-models-model-list",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        },
+        {
+          "value": "max",
+          "label": "Max"
+        },
+        {
+          "value": "ultra",
+          "label": "Ultra"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^gpt-5\\.6-terra$"
+      ],
+      "defaultValue": "medium",
+      "mandatory": false,
+      "source": {
+        "label": "Codex app-server model effort contract",
+        "url": "https://developers.openai.com/codex/app-server#list-models-model-list",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        },
+        {
+          "value": "max",
+          "label": "Max"
+        },
+        {
+          "value": "ultra",
+          "label": "Ultra"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^gpt-5\\.6-luna$"
+      ],
+      "defaultValue": "medium",
+      "mandatory": false,
+      "source": {
+        "label": "Codex app-server model effort contract",
+        "url": "https://developers.openai.com/codex/app-server#list-models-model-list",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        },
+        {
+          "value": "max",
+          "label": "Max"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^gpt-5(?:$|[-.].*)"
+      ],
+      "defaultValue": "medium",
+      "mandatory": false,
+      "source": {
+        "label": "OpenAI reasoning effort guide",
+        "url": "https://platform.openai.com/docs/guides/reasoning",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^grok-4\\.6(?:$|[-.].*)"
+      ],
+      "defaultValue": "high",
+      "mandatory": true,
+      "source": {
+        "label": "xAI reasoning effort guide",
+        "url": "https://docs.x.ai/docs/guides/reasoning",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra high"
+        }
+      ]
+    },
+    {
+      "modelPatterns": [
+        "^grok-4\\.5(?:$|[-.].*)"
+      ],
+      "defaultValue": "high",
+      "mandatory": true,
+      "source": {
+        "label": "xAI reasoning effort guide",
+        "url": "https://docs.x.ai/docs/guides/reasoning",
+        "verifiedAt": "2026-08-20",
+        "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+      },
+      "options": [
+        {
+          "value": "low",
+          "label": "Low"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "high",
+          "label": "High"
+        }
+      ]
+    }
+  ]
+}

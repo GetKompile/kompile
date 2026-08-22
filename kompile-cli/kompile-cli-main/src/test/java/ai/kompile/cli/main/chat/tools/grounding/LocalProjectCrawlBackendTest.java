@@ -15,6 +15,12 @@ import ai.kompile.cli.main.chat.tools.ToolResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +35,8 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -141,6 +149,29 @@ class LocalProjectCrawlBackendTest {
                 .resolve(knowledgeBase).resolve("documents.jsonl"));
         assertTrue(documents.contains("folder-note.md"), documents);
         assertFalse(documents.contains("cached-model.bin"), documents);
+    }
+
+    @Test
+    void knowledgeStatusInventoriesPersistedBasesWithoutRebootstrappingAnIncompleteDefault() throws Exception {
+        Path crawl = projectRoot.resolve("data/crawls/kompile-knowledge");
+        Files.createDirectories(crawl);
+        Files.writeString(crawl.resolve("crawl-result.json"), """
+                {
+                  "profileId": "kompile-knowledge",
+                  "name": "kompile knowledge",
+                  "status": "COMPLETED",
+                  "sources": ["stale-source.md"],
+                  "documentCount": 1,
+                  "chunkCount": 1
+                }
+                """, StandardCharsets.UTF_8);
+
+        ToolResult status = new KnowledgeStatusCliTool((String) null, mapper)
+                .execute(mapper.createObjectNode(), context);
+
+        assertFalse(status.isError(), status.getOutput());
+        assertEquals(1, ((Number) status.getMetadata().get("knowledgeBaseCount")).intValue());
+        assertTrue(status.getOutput().contains("kompile-knowledge"), status.getOutput());
     }
 
     @Test
@@ -427,7 +458,153 @@ class LocalProjectCrawlBackendTest {
         assertTrue(documents.contains("\"loader\":\"markdown\""), documents);
         assertTrue(documents.contains("\"chunker\":\"no-op\""), documents);
         assertTrue(chunks.contains("\"pipelineId\":\"whole-note\""), chunks);
+        assertTrue(chunks.contains("\"pipelineType\":\"STANDARD_TEXT\""), chunks);
+        assertTrue(chunks.contains("\"loader\":\"markdown\""), chunks);
         assertTrue(chunks.contains("\"chunker\":\"no-op\""), chunks);
+        JsonNode summary = mapper.readTree(knowledgeBase.resolve("crawl-result.json").toFile());
+        assertEquals("markdown", summary.path("loader").asText());
+        assertEquals("no-op", summary.path("chunker").asText());
+        assertEquals("effective-single-pipeline", summary.path("pipelineMetadataScope").asText());
+    }
+
+    @Test
+    void projectRegisteredVlmOcrPipelineSupportsTheDogfoodPdfRequestAndConsistentMetadata()
+            throws Exception {
+        writeOcrProjectManifest();
+        Files.writeString(projectRoot.resolve("wailingcaverns.pdf"),
+                "The model executor owns PDF page rendering in this test.", StandardCharsets.UTF_8);
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper,
+                (root, file, pipeline, loadedText) -> """
+                        # D&D WAILING CAVERNS
+
+                        [Image]
+
+                        Fight against the nightmare in this dungeon.
+                        """);
+
+        ToolResult result = backend.crawlDocuments(ocrDogfoodRequest(false), context);
+
+        assertFalse(result.isError(), result.getOutput());
+        Path crawl = projectRoot.resolve("data/crawls/dogfood-ocr-pdf");
+        JsonNode summary = mapper.readTree(crawl.resolve("crawl-result.json").toFile());
+        JsonNode document = mapper.readTree(
+                Files.readAllLines(crawl.resolve("documents.jsonl"), StandardCharsets.UTF_8).get(0));
+        JsonNode chunk = mapper.readTree(
+                Files.readAllLines(crawl.resolve("chunks.jsonl"), StandardCharsets.UTF_8).get(0));
+        assertEquals("pdf", summary.path("loader").asText());
+        assertEquals("sentence", summary.path("chunker").asText());
+        assertEquals("effective-single-pipeline", summary.path("pipelineMetadataScope").asText());
+        for (String field : List.of("pipelineId", "pipelineType", "loader", "chunker")) {
+            assertEquals(document.path(field).asText(), chunk.path(field).asText(), field);
+        }
+        assertEquals("vlm-ocr-pdf", document.path("pipelineId").asText());
+        assertEquals("VLM", document.path("pipelineType").asText());
+        assertTrue(chunk.path("text").asText().contains("WAILING CAVERNS"));
+    }
+
+    @Test
+    void asynchronousVlmOcrStatusReportsModelAndPersistenceStages() throws Exception {
+        writeOcrProjectManifest();
+        Files.writeString(projectRoot.resolve("wailingcaverns.pdf"),
+                "The model executor owns PDF page rendering in this test.", StandardCharsets.UTF_8);
+        CountDownLatch modelStarted = new CountDownLatch(1);
+        CountDownLatch releaseModel = new CountDownLatch(1);
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper,
+                (root, file, pipeline, loadedText) -> {
+                    modelStarted.countDown();
+                    if (!releaseModel.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Timed out waiting to release the model stub");
+                    }
+                    return "# staged OCR result";
+                });
+
+        ToolResult started = backend.crawlDocuments(ocrDogfoodRequest(true), context);
+        String jobId = String.valueOf(started.getMetadata().get("jobId"));
+        try {
+            assertFalse(started.isError(), started.getOutput());
+            assertTrue(modelStarted.await(5, TimeUnit.SECONDS), "model-backed worker did not start");
+            ToolResult running = backend.control(
+                    mapper.createObjectNode().put("operation", "status").put("jobId", jobId), context);
+            assertFalse(running.isError(), running.getOutput());
+            assertEquals("MODEL_INITIALIZATION", running.getMetadata().get("stage"));
+            assertEquals(30, ((Number) running.getMetadata().get("progressPercent")).intValue());
+            assertTrue(running.getOutput().contains("selected model-backed document pipeline"),
+                    running.getOutput());
+        } finally {
+            releaseModel.countDown();
+        }
+
+        ToolResult terminal = null;
+        for (int i = 0; i < 200; i++) {
+            terminal = backend.control(
+                    mapper.createObjectNode().put("operation", "status").put("jobId", jobId), context);
+            if (Boolean.TRUE.equals(terminal.getMetadata().get("terminal"))) break;
+            Thread.sleep(10);
+        }
+        assertFalse(terminal.isError(), terminal.getOutput());
+        assertEquals(true, terminal.getMetadata().get("terminal"));
+        assertEquals("COMPLETED", terminal.getMetadata().get("stage"));
+        assertEquals(100, ((Number) terminal.getMetadata().get("progressPercent")).intValue());
+    }
+
+    @Test
+    void asynchronousCustomModelPipelineReportsModelStageWithoutKnownTypeNames() throws Exception {
+        Files.writeString(projectRoot.resolve("custom-model.txt"),
+                "The custom executor owns model-backed extraction.", StandardCharsets.UTF_8);
+        CountDownLatch modelStarted = new CountDownLatch(1);
+        CountDownLatch releaseModel = new CountDownLatch(1);
+        LocalProjectCrawlBackend backend = new LocalProjectCrawlBackend(mapper,
+                (root, file, pipeline, loadedText) -> {
+                    modelStarted.countDown();
+                    if (!releaseModel.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Timed out waiting to release the custom model");
+                    }
+                    return "# Custom model result";
+                });
+        ObjectNode request = documentRequest("custom-model.txt", "custom-model-stage");
+        request.put("async", true);
+        ((ObjectNode) request.withArray("documents").get(0))
+                .put("pipelineId", "vendor.document-understanding");
+        ObjectNode pipeline = request.putArray("pipelines").addObject()
+                .put("pipelineId", "vendor.document-understanding")
+                .put("pipelineType", "vendor.document-understanding")
+                .put("loaderName", "text")
+                .put("chunkerName", "no-op");
+        ObjectNode definition = pipeline.putObject("processor")
+                .put("type", "UNIFIED_PIPELINE")
+                .putObject("pipelineDefinition")
+                .put("pipelineId", "vendor.document-understanding")
+                .put("kind", "GENERIC")
+                .put("topology", "SEQUENCE");
+        definition.putObject("pipelineSpec")
+                .put("@class", "ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline")
+                .put("id", "vendor.document-understanding")
+                .putArray("steps");
+
+        ToolResult started = backend.crawlDocuments(request, context);
+        String jobId = String.valueOf(started.getMetadata().get("jobId"));
+        try {
+            assertFalse(started.isError(), started.getOutput());
+            assertTrue(modelStarted.await(5, TimeUnit.SECONDS), "custom model worker did not start");
+            ToolResult running = backend.control(
+                    mapper.createObjectNode().put("operation", "status").put("jobId", jobId), context);
+            assertFalse(running.isError(), running.getOutput());
+            assertEquals("MODEL_INITIALIZATION", running.getMetadata().get("stage"));
+            assertTrue(running.getOutput().contains("selected model-backed document pipeline"),
+                    running.getOutput());
+        } finally {
+            releaseModel.countDown();
+        }
+
+        ToolResult terminal = null;
+        for (int i = 0; i < 200; i++) {
+            terminal = backend.control(
+                    mapper.createObjectNode().put("operation", "status").put("jobId", jobId), context);
+            if (Boolean.TRUE.equals(terminal.getMetadata().get("terminal"))) break;
+            Thread.sleep(10);
+        }
+        assertFalse(terminal.isError(), terminal.getOutput());
+        assertEquals("COMPLETED", terminal.getMetadata().get("stage"));
     }
 
     @Test
@@ -479,6 +656,14 @@ class LocalProjectCrawlBackendTest {
         assertEquals(1, documents.size());
         assertEquals(projectRoot.resolve("new.md").toString(), documents.get(0).get("path"));
         assertTrue(plan.containsKey("pipelineResolution"));
+        assertTrue(plan.containsKey("effectiveRequest"));
+        JsonNode requestedConfiguration =
+                (JsonNode) preview.getMetadata().get("requestedConfiguration");
+        JsonNode effectiveConfiguration =
+                (JsonNode) preview.getMetadata().get("effectiveConfiguration");
+        assertTrue(requestedConfiguration.path("dryRun").asBoolean());
+        assertEquals(projectRoot.resolve("new.md").toString(),
+                effectiveConfiguration.path("documents").path(0).path("path").asText());
         List<Map<String, Object>> resolved =
                 (List<Map<String, Object>>) plan.get("resolvedDocuments");
         assertEquals(1, resolved.size());
@@ -534,11 +719,98 @@ class LocalProjectCrawlBackendTest {
                 projectRoot.resolve("data/crawls/non-executable-pipeline/crawl-result.json")));
     }
 
+    @Test
+    void routesSelectablePdfThroughTheApplicationPdfLoader() throws Exception {
+        Path pdf = projectRoot.resolve("text-source.pdf");
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                stream.beginText();
+                stream.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                stream.newLineAtOffset(50, 720);
+                stream.showText("Selectable text PDF for local crawl parsing and indexing.");
+                stream.endText();
+            }
+            document.save(pdf.toFile());
+        }
+
+        ToolResult result = new CrawlDocumentsTool((String) null, mapper)
+                .execute(documentRequest("text-source.pdf", "pdf-kb"), context);
+
+        assertFalse(result.isError(), result.getOutput());
+        Path crawl = projectRoot.resolve("data/crawls/pdf-kb");
+        JsonNode persistedDocument = mapper.readTree(
+                Files.readString(crawl.resolve("documents.jsonl")).lines().findFirst().orElseThrow());
+        String chunks = Files.readString(crawl.resolve("chunks.jsonl"));
+        assertEquals("pdf", persistedDocument.path("loader").asText());
+        assertTrue(persistedDocument.path("loaderOutputs").isArray(), persistedDocument.toString());
+        assertTrue(chunks.contains("Selectable text PDF"), chunks);
+    }
+
     private ObjectNode documentRequest(String path, String knowledgeBase) {
         ObjectNode request = mapper.createObjectNode();
         request.putArray("documents").addObject().put("path", path);
         request.putObject("knowledgeBase").put("name", knowledgeBase);
         request.put("async", false);
+        return request;
+    }
+
+    private void writeOcrProjectManifest() throws Exception {
+        Files.writeString(projectRoot.resolve("kompile.project.json"), """
+                {
+                  "schemaVersion": 1,
+                  "projectId": "ocr-dogfood",
+                  "name": "OCR Dogfood",
+                  "pipelines": [{
+                    "id": "vlm-ocr-pdf",
+                    "pipelineId": "vlm-ocr-pdf",
+                    "name": "VLM OCR scanned PDF extraction",
+                    "role": "VLM_OCR",
+                    "active": true,
+                    "required": true,
+                    "metadata": {
+                      "pipelineType": "VLM",
+                      "loaderName": "pdf",
+                      "chunkerName": "sentence"
+                    }
+                  }]
+                }
+                """, StandardCharsets.UTF_8);
+    }
+
+    private ObjectNode ocrDogfoodRequest(boolean async) {
+        ObjectNode request = mapper.createObjectNode();
+        request.put("name", "MCP OCR dogfood");
+        request.put("async", async);
+        request.putArray("documents").addObject()
+                .put("path", "wailingcaverns.pdf")
+                .put("sourceType", "FILE")
+                .put("pipelineId", "vlm-ocr-pdf");
+        ObjectNode pipeline = request.putArray("pipelines").addObject()
+                .put("pipelineId", "vlm-ocr-pdf")
+                .put("registeredPipelineId", "vlm-ocr-pdf")
+                .put("modelId", "smoldocling-256m");
+        pipeline.putObject("options")
+                .put("outputFormat", "MARKDOWN")
+                .put("maxPages", 1)
+                .put("pageRange", "1")
+                .put("pdfRenderDpi", 144)
+                .put("pageBatchSize", 1)
+                .put("temperature", 0.0)
+                .put("doSample", false);
+        request.put("defaultPipelineId", "vlm-ocr-pdf");
+        request.putObject("knowledgeBase").put("name", "dogfood-ocr-pdf");
+        request.putObject("modelRuntime")
+                .put("autoBootstrap", false)
+                .put("type", "vlm_pipeline")
+                .put("timeoutMinutes", 30);
+        request.putArray("steps")
+                .add("LOADING").add("MARKDOWN_EXTRACTION").add("CHUNKING");
+        request.put("strictSteps", true);
+        request.put("deriveOntology", false);
+        request.putObject("embeddingTraining").put("enabled", false);
+        request.putObject("reasoningLearning").put("enabled", false);
         return request;
     }
 }

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "provider": "anthropic",
+  "metadataSource": "DOCUMENTED_FALLBACK",
+  "source": {
+    "label": "Anthropic Models API capability schema",
+    "url": "https://docs.anthropic.com/en/api/models/list.md",
+    "verifiedAt": "2026-08-20",
+    "notice": "DOCUMENTED_FALLBACK — live provider capability metadata always takes precedence; this resource is used only when the selected model has no live thinking metadata."
+  },
+  "profiles": []
+}

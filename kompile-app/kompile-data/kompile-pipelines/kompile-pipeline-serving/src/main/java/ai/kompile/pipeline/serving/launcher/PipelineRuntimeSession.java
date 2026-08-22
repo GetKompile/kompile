@@ -357,7 +357,11 @@ public final class PipelineRuntimeSession implements AutoCloseable {
         SubprocessLogWriter writer = null;
         try {
             String runId = UUID.randomUUID().toString();
-            writer = new SubprocessLogWriter("serving", runId);
+            writer = new SubprocessLogWriter("pipeline-serving", runId);
+            writer.putMetadata("processType", "pipeline-serving");
+            writer.putMetadata("pipelineId", definition.getPipelineId());
+            writer.putMetadata("pipelineKind", String.valueOf(definition.getKind()));
+            writer.putMetadata("modelSetId", definition.getModelSetId());
             writer.writeStart(new SubprocessLogWriter.SubprocessRunContext(
                     definition.getPipelineId(),
                     command == null ? List.of() : List.copyOf(command),
