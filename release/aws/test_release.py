@@ -1395,6 +1395,7 @@ class GithubWorkflowParityTest(unittest.TestCase):
         self.assertIn("- both", source)
         self.assertIn("--jars-only", source)
         self.assertIn("--skip-maven-install", source)
+        self.assertIn("git config --global core.longpaths true", source)
         self.assertIn('-jar "${DIST_ROOT}/lib/kompile-cli.jar" --version', source)
         self.assertIn("actions/upload-artifact@v4", source)
         self.assertIn("contents: read", source)

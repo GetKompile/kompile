@@ -133,6 +133,11 @@ jobs:
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
 
     steps:
+      - name: Enable Windows long paths
+        if: startsWith(matrix.platform, 'windows-')
+        shell: powershell
+        run: git config --global core.longpaths true
+
       - name: Checkout selected branch commit
         uses: actions/checkout@v4
 
