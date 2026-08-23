@@ -224,7 +224,7 @@ the Java build, shaded/exec JAR closure, JBang wrapper, jlink runtime, layout, m
 checksums. The independent AOT matrix runs only the `cli-only` native images and disables
 GraalVM quick-build optimization. Linux x64 is validated on its standard public runner
 (15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS), and macOS ARM64 is
-validated on its standard 7 GiB M1 runner (3.28 GB optimized CLI peak RSS). Windows x64
+validated on its standard 7 GiB M1 runner (3.32 GB optimized CLI peak RSS). Windows x64
 retains a 32 GiB floor until measured independently. A separate optimized `kompile-app-main`
 probe exhausted the same Linux runner during native-image and was canceled without a Graal/Maven
 footer, so full application AOT remains a serial 64 GiB-runner workload. The canonical release

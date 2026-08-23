@@ -17,7 +17,7 @@
 #   Java and AOT builds intentionally use separate runner variables. The JVM build
 #   is suitable for a standard runner. Optimized CLI AOT completed without OOM on
 #   both free public runners: Linux x64 peaked at 9.82 GB on 15.61 GB physical RAM;
-#   macOS ARM64 peaked at 3.28 GB on the 7 GB M1 runner. Windows x64 retains a
+#   macOS ARM64 peaked at 3.32 GB on the 7 GB M1 runner. Windows x64 retains a
 #   32 GB floor until measured independently.
 #   Configure these repository variables (Settings -> Secrets and variables ->
 #   Actions -> Variables):

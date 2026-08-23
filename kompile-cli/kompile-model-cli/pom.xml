@@ -132,6 +132,7 @@
                         <configuration>
                             <mainClass>ai.kompile.cli.model.ModelCliMain</mainClass>
                             <imageName>kompile-model</imageName>
+                            <quickBuild>${native.quickBuild}</quickBuild>
                             <buildArgs>
                                 <buildArg>-J-Xmx4g</buildArg>
                                 <buildArg>--no-fallback</buildArg>
