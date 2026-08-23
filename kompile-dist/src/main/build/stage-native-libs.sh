@@ -239,13 +239,15 @@ validate_backend_manifest() {
             exec 3<&-
             exit 1
         fi
-        for existing_name in "${MANIFEST_RUNTIME_NAMES[@]}"; do
-            if [ "${existing_name}" = "${runtime_name}" ]; then
-                echo "ERROR: duplicate runtime entry '${runtime_name}' in ${BACKEND_MANIFEST}." >&2
-                exec 3<&-
-                exit 1
-            fi
-        done
+        if [ "${#MANIFEST_RUNTIME_NAMES[@]}" -gt 0 ]; then
+            for existing_name in "${MANIFEST_RUNTIME_NAMES[@]}"; do
+                if [ "${existing_name}" = "${runtime_name}" ]; then
+                    echo "ERROR: duplicate runtime entry '${runtime_name}' in ${BACKEND_MANIFEST}." >&2
+                    exec 3<&-
+                    exit 1
+                fi
+            done
+        fi
         if [ ! -f "${BACKEND_DIR}/${runtime_name}" ]; then
             echo "ERROR: manifest-declared runtime is missing: ${BACKEND_DIR}/${runtime_name}" >&2
             exec 3<&-
@@ -452,26 +454,28 @@ done < <(native_source_files | LC_ALL=C sort)
 # bindings-only files (for example the JNI bridge). This removes the
 # traversal-order dependency that previously made tokenizers distributions
 # fail even though the two artifacts intentionally represented one runtime.
-for native_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
-    if is_bindings_native "${native_source}"; then
-        loader_name="$(basename "${native_source}")"
-        duplicate_runtime=false
-        for base_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
-            if [ "${base_source}" = "${native_source}" ] || is_bindings_native "${base_source}"; then
+if [ "${#PLATFORM_NATIVE_SOURCES_RAW[@]}" -gt 0 ]; then
+    for native_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
+        if is_bindings_native "${native_source}"; then
+            loader_name="$(basename "${native_source}")"
+            duplicate_runtime=false
+            for base_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
+                if [ "${base_source}" = "${native_source}" ] || is_bindings_native "${base_source}"; then
+                    continue
+                fi
+                if [ "$(basename "${base_source}")" = "${loader_name}" ]; then
+                    duplicate_runtime=true
+                    break
+                fi
+            done
+            if [ "${duplicate_runtime}" = true ]; then
+                echo "  bindings duplicate: keeping base producer for ${loader_name}"
                 continue
             fi
-            if [ "$(basename "${base_source}")" = "${loader_name}" ]; then
-                duplicate_runtime=true
-                break
-            fi
-        done
-        if [ "${duplicate_runtime}" = true ]; then
-            echo "  bindings duplicate: keeping base producer for ${loader_name}"
-            continue
         fi
-    fi
-    PLATFORM_NATIVE_SOURCES+=("${native_source}")
-done
+        PLATFORM_NATIVE_SOURCES+=("${native_source}")
+    done
+fi
 
 # Bash 3.2 (the system shell on macOS runners) treats an empty-array
 # "${array[@]}" expansion as an unbound variable under `set -u`. Avoid the
@@ -587,11 +591,15 @@ generate_jni_entrypoint_manifest() {
     local native_file
     local native_name
     local symbols
-    local -a entrypoints=("${PRIOR_JNI_ENTRYPOINTS[@]}")
+    local -a entrypoints=()
+    if [ "${#PRIOR_JNI_ENTRYPOINTS[@]}" -gt 0 ]; then
+        entrypoints=("${PRIOR_JNI_ENTRYPOINTS[@]}")
+    fi
 
     while IFS= read -r native_file; do
         native_name="$(basename "${native_file}")"
-        if contains_name "${native_name}" "${PREEXISTING_NATIVE_NAMES[@]}"; then
+        if [ "${#PREEXISTING_NATIVE_NAMES[@]}" -gt 0 ] \
+                && contains_name "${native_name}" "${PREEXISTING_NATIVE_NAMES[@]}"; then
             continue
         fi
         if ! symbols="$(dump_exported_symbols "${native_file}")"; then
@@ -608,7 +616,8 @@ generate_jni_entrypoint_manifest() {
             continue
         fi
         if printf '%s\n' "${symbols}" | grep -Eq '(^|[[:space:]])(JNI_OnLoad|Java_[^[:space:]]+)($|[[:space:]])'; then
-            if ! contains_name "${native_name}" "${entrypoints[@]}"; then
+            if [ "${#entrypoints[@]}" -eq 0 ] \
+                    || ! contains_name "${native_name}" "${entrypoints[@]}"; then
                 entrypoints+=("${native_name}")
             fi
         fi
