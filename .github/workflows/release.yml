@@ -86,6 +86,14 @@ on:
         required: true
         type: boolean
         default: false
+      aot_probe_target:
+        description: 'AOT target for a manual memory probe'
+        required: true
+        type: choice
+        options:
+          - cli
+          - app
+        default: cli
 
 permissions:
   contents: write          # needed to create the GitHub Release
@@ -225,7 +233,7 @@ jobs:
             -DgenerateBackupPoms=false
 
       - name: Build CLI native image
-        if: steps.platform.outputs.selected == 'true'
+        if: steps.platform.outputs.selected == 'true' && (github.event_name == 'push' || inputs.aot_probe_target == 'cli')
         shell: bash
         # Install the upstream Java reactor first. Applying -Dkompile.dist to -am
         # would activate every upstream native profile and AOT-build unrelated
@@ -246,14 +254,32 @@ jobs:
             -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
             package
 
+      - name: Build app native image memory probe
+        if: steps.platform.outputs.selected == 'true' && github.event_name == 'workflow_dispatch' && inputs.aot_probe_target == 'app'
+        shell: bash
+        run: |
+          mvn -B -ntp -DskipTests \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
+            -pl kompile-app/kompile-app-parent/kompile-app-main -am \
+            clean install
+
+          mvn -B -ntp -f kompile-app/kompile-app-parent/kompile-app-main/pom.xml \
+            -Dkompile.dist=true -Dkompile.uber -Dnative.quickBuild=false -DskipTests \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
+            package
+
       - name: Install Linux packaging tools
-        if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'linux'
+        if: steps.platform.outputs.selected == 'true' && (github.event_name == 'push' || inputs.aot_probe_target == 'cli') && matrix.os_id == 'linux'
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y patchelf
 
       - name: Assemble canonical distribution archives
         id: pkg
-        if: steps.platform.outputs.selected == 'true'
+        if: steps.platform.outputs.selected == 'true' && (github.event_name == 'push' || inputs.aot_probe_target == 'cli')
         shell: bash
         run: |
           set -euo pipefail
@@ -291,7 +317,7 @@ jobs:
           ls -lh "${RELEASE_FILES[@]}"
 
       - name: Upload build artifacts
-        if: steps.platform.outputs.selected == 'true'
+        if: steps.platform.outputs.selected == 'true' && (github.event_name == 'push' || inputs.aot_probe_target == 'cli')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.archive }}
