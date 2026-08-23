@@ -78,6 +78,8 @@ internal fun ModelOptimizationOptionsPane(
                     "No persistent runtime, smoke-decode, or native DSP diagnostics. Operation status and failures remain visible."
                 ModelDiagnosticMode.STANDARD ->
                     "Bounded preparation, activation, IPC, and smoke-decode logging."
+                ModelDiagnosticMode.BACKEND_AUDIT ->
+                    "Captures accelerator device selection, segment placement, and replay lifecycle without per-op value or memory dumps."
                 ModelDiagnosticMode.VERBOSE ->
                     "Adds DSP compile, execute, timing, and memory diagnostics."
                 ModelDiagnosticMode.OP_SANITY ->

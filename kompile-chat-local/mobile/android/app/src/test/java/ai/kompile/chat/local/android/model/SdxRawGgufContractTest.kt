@@ -26,6 +26,13 @@ class SdxRawGgufContractTest {
         assertFalse(ModelDiagnosticMode.OFF.capturesDspTrace)
         assertFalse(ModelDiagnosticMode.OFF.capturesSmokeTrace)
         assertTrue(ModelDiagnosticMode.STANDARD.capturesSmokeTrace)
+        assertEquals(
+            "BACKEND,COMPILE,EXECUTE,SEGMENT,EMULATED_REPLAY,GRAPH_REPLAY",
+            ModelDiagnosticMode.BACKEND_AUDIT.dspCategories,
+        )
+        assertEquals("detailed", ModelDiagnosticMode.BACKEND_AUDIT.dspLevel)
+        assertTrue(ModelDiagnosticMode.BACKEND_AUDIT.capturesDspTrace)
+        assertFalse(ModelDiagnosticMode.BACKEND_AUDIT.nativeOpSanity)
         assertEquals("VERIFY", ModelDiagnosticMode.OP_SANITY.dspCategories)
         assertEquals("full", ModelDiagnosticMode.OP_SANITY.dspLevel)
         assertTrue(ModelDiagnosticMode.OP_SANITY.nativeOpSanity)

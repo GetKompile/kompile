@@ -102,6 +102,15 @@ enum class ModelDiagnosticMode(
 ) {
     OFF("Off", "off", null, null, false, false, false),
     STANDARD("Standard", "standard", null, null, false, false, true),
+    BACKEND_AUDIT(
+        "Backend audit",
+        "backend_audit",
+        "BACKEND,COMPILE,EXECUTE,SEGMENT,EMULATED_REPLAY,GRAPH_REPLAY",
+        "detailed",
+        false,
+        true,
+        true,
+    ),
     VERBOSE("Verbose", "verbose", "COMPILE,EXECUTE,TIMING,MEMORY", "detailed", false, false, true),
     OP_SANITY("Op sanity", "op_sanity", "VERIFY", "full", true, true, true),
     DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full", false, true, true),
