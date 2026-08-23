@@ -222,15 +222,19 @@ now resolve Java with this precedence:
 release version, and calls `./build-dist.sh full --jars-only`. The variant orchestrator owns
 the Java build, shaded/exec JAR closure, JBang wrapper, jlink runtime, layout, manifest, and
 checksums. The independent AOT matrix runs only the `cli-only` native images and disables
-GraalVM quick-build optimization. Linux x64 is validated on the standard public runner
-(15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS); Windows x64 and macOS
-ARM64 retain a 32 GiB floor until measured independently. The canonical release job uploads
-both forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual
+GraalVM quick-build optimization. Linux x64 is validated on its standard public runner
+(15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS), and macOS ARM64 is
+validated on its standard 7 GiB M1 runner (3.28 GB optimized CLI peak RSS). Windows x64
+retains a 32 GiB floor until measured independently. A separate optimized `kompile-app-main`
+probe exhausted the same Linux runner during native-image and was canceled without a Graal/Maven
+footer, so full application AOT remains a serial 64 GiB-runner workload. The canonical release
+job uploads both forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual
 dispatch with `publish=true` creates `v<version>` at the selected branch commit; tag pushes
 remain the normal final-release path. `KOMPILE_AOT_LINUX_X64_RUNNER` is optional because the
-standard Linux runner is sufficient. Configure `KOMPILE_AOT_{MACOS_ARM64,WINDOWS_X64}_RUNNER`
-for larger hosted or self-hosted machines; the JVM and publisher jobs use standard runners
-through `KOMPILE_JAVA_RUNNER` and `KOMPILE_RELEASE_RUNNER`. Publication is attached to the
+standard Linux runner is sufficient; `KOMPILE_AOT_MACOS_ARM64_RUNNER` is likewise optional.
+Configure `KOMPILE_AOT_WINDOWS_X64_RUNNER` for a larger hosted or self-hosted machine;
+the JVM and publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
+`KOMPILE_RELEASE_RUNNER`. Publication is attached to the
 protected `release` environment.
 
 **`install.sh`** — default variant is now `auto` (tries `full` first via HEAD request, falls
