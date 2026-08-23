@@ -473,9 +473,18 @@ for native_source in "${PLATFORM_NATIVE_SOURCES_RAW[@]}"; do
     PLATFORM_NATIVE_SOURCES+=("${native_source}")
 done
 
-validate_source_collisions backend "${SELECTED_BACKEND_SOURCES[@]}"
-validate_source_collisions baseline "${PLATFORM_NATIVE_SOURCES[@]}"
-validate_source_collisions flavor "${FLAVOR_NATIVE_SOURCES[@]}"
+# Bash 3.2 (the system shell on macOS runners) treats an empty-array
+# "${array[@]}" expansion as an unbound variable under `set -u`. Avoid the
+# expansion entirely when a source class is empty.
+if [ "${#SELECTED_BACKEND_SOURCES[@]}" -gt 0 ]; then
+    validate_source_collisions backend "${SELECTED_BACKEND_SOURCES[@]}"
+fi
+if [ "${#PLATFORM_NATIVE_SOURCES[@]}" -gt 0 ]; then
+    validate_source_collisions baseline "${PLATFORM_NATIVE_SOURCES[@]}"
+fi
+if [ "${#FLAVOR_NATIVE_SOURCES[@]}" -gt 0 ]; then
+    validate_source_collisions flavor "${FLAVOR_NATIVE_SOURCES[@]}"
+fi
 
 MANIFEST_DESTINATION="${DEST_DIR}/${SHARED_RUNTIME_MANIFEST}"
 if [ "${BACKEND_ARTIFACT}" != "none" ]; then
