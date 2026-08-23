@@ -15,8 +15,9 @@
 #
 # ⚠️  RUNNER SIZING — READ THIS FIRST
 #   Java and AOT builds intentionally use separate runner variables. The JVM build
-#   is suitable for a standard runner. The CLI native-image build passes `-J-Xmx18g`
-#   (kompile-cli/kompile-cli-main/pom.xml), so each AOT runner needs ≥ 32 GB RAM.
+#   is suitable for a standard runner. Optimized Linux x64 CLI AOT was measured at
+#   9.82 GB peak RSS and completed on the free 15.61 GB public runner without swap.
+#   Windows x64 and macOS ARM64 retain a 32 GB floor until measured independently.
 #   Configure these repository variables (Settings -> Secrets and variables ->
 #   Actions -> Variables):
 #       KOMPILE_JAVA_RUNNER             (default: ubuntu-22.04; JVM build + smoke)
@@ -27,8 +28,8 @@
 #       DL4J_MAVEN_REPOSITORY_URL    (optional repository containing the matching DL4J build)
 #       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
-#   AOT defaults retain the old hosted labels for compatibility, but production
-#   publication must point them at larger GitHub-hosted or self-hosted runners.
+#   Linux x64 can use its standard hosted default. Configure larger GitHub-hosted
+#   or self-hosted labels for Windows/macOS AOT until their constrained trials pass.
 #
 # Variants:
 #   This workflow publishes cross-platform AOT `cli-only` archives and the
@@ -82,7 +83,7 @@ on:
         type: boolean
         default: true
       allow_constrained_aot:
-        description: 'Allow a manual AOT trial below the production 32 GiB memory floor'
+        description: 'Allow a manual AOT trial below the platform memory floor'
         required: true
         type: boolean
         default: false
@@ -171,13 +172,19 @@ jobs:
         shell: bash
         run: |
           TOTAL_GIB="$(node -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 / 1024))")"
-          echo "AOT runner memory: ${TOTAL_GIB} GiB"
-          if [ "${TOTAL_GIB}" -lt 30 ]; then
+          MIN_GIB=30
+          EXPECTED_GIB=32
+          if [ "${{ matrix.os_id }}-${{ matrix.arch }}" = "linux-x86_64" ]; then
+            MIN_GIB=15
+            EXPECTED_GIB=16
+          fi
+          echo "AOT runner memory: ${TOTAL_GIB} GiB (expected ${EXPECTED_GIB} GiB)"
+          if [ "${TOTAL_GIB}" -lt "${MIN_GIB}" ]; then
             if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
                 && [ "${{ inputs.allow_constrained_aot }}" = "true" ]; then
-              echo "::warning::Running an explicitly requested constrained AOT trial below 32 GiB; the job may OOM."
+              echo "::warning::Running an explicitly requested constrained AOT trial below ${EXPECTED_GIB} GiB; the job may OOM."
             else
-              echo "ERROR: AOT release builds require a runner with at least 32 GiB RAM." >&2
+              echo "ERROR: ${{ matrix.os_id }}-${{ matrix.arch }} AOT builds require at least ${EXPECTED_GIB} GiB RAM." >&2
               echo "Configure the matching KOMPILE_AOT_*_RUNNER repository variable or explicitly allow a constrained manual trial." >&2
               exit 1
             fi
@@ -292,7 +299,7 @@ jobs:
           # Reuse the installed CLI native image and build the sibling model CLI
           # at release optimization. The canonical builder owns layout, metadata,
           # manifests, archives, and platform-specific executable naming.
-          export MAVEN_OPTS="${MAVEN_OPTS:-} -Dnative.quickBuild=false"
+          export EXTRA_MVN_FLAGS="-Dnative.quickBuild=false"
           DIST_ARGS=(
             "${VARIANT}"
             --skip-java-build
