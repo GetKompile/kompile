@@ -227,17 +227,24 @@ jobs:
       - name: Build CLI native image
         if: steps.platform.outputs.selected == 'true'
         shell: bash
-        # -Dkompile.dist=true activates the `native` profile (see cli-main pom).
-        # -am builds the CLI's upstream reactor dependencies from a clean checkout
-        #     (the local "no -am" rule assumes deps are already installed).
-        # -DskipTests skips the slow native test execution.
+        # Install the upstream Java reactor first. Applying -Dkompile.dist to -am
+        # would activate every upstream native profile and AOT-build unrelated
+        # pipeline/service images before the CLI.
+        # Then activate the native profile only in cli-main, matching build-dist.sh.
         run: |
-          mvn -B -ntp -Dkompile.dist=true -Dnative.quickBuild=false -DskipTests \
+          mvn -B -ntp -DskipTests \
             -Dnd4j.version="${ND4J_VERSION}" \
             -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
             -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
             -pl kompile-cli/kompile-cli-main -am \
             clean install
+
+          mvn -B -ntp -f kompile-cli/kompile-cli-main/pom.xml \
+            -Dkompile.dist=true -Dnative.quickBuild=false -DskipTests \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
+            package
 
       - name: Install Linux packaging tools
         if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'linux'
