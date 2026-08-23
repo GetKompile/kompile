@@ -221,14 +221,17 @@ now resolve Java with this precedence:
 **`release.yml`** — `full-dist-linux` runs only on the standard JVM runner, sets the reactor
 release version, and calls `./build-dist.sh full --jars-only`. The variant orchestrator owns
 the Java build, shaded/exec JAR closure, JBang wrapper, jlink runtime, layout, manifest, and
-checksums. The independent AOT matrix runs only the `cli-only` native images on ≥32 GiB runner
-labels, enforces that memory floor before building, and disables GraalVM quick-build optimization. The canonical release job uploads both
-forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual dispatch
-with `publish=true` creates `v<version>` at the selected branch commit; tag pushes remain the
-normal final-release path. Repository configuration must provide three ≥32 GiB AOT runner
-labels through `KOMPILE_AOT_{LINUX_X64,MACOS_ARM64,WINDOWS_X64}_RUNNER`; the JVM and
-publisher jobs use standard runners through `KOMPILE_JAVA_RUNNER` and
-`KOMPILE_RELEASE_RUNNER`. Publication is attached to the protected `release` environment.
+checksums. The independent AOT matrix runs only the `cli-only` native images and disables
+GraalVM quick-build optimization. Linux x64 is validated on the standard public runner
+(15.61 GiB physical RAM, no swap, 9.82 GB optimized CLI peak RSS); Windows x64 and macOS
+ARM64 retain a 32 GiB floor until measured independently. The canonical release job uploads
+both forms plus stable jar names directly from the packaged JVM `lib/` directory. A manual
+dispatch with `publish=true` creates `v<version>` at the selected branch commit; tag pushes
+remain the normal final-release path. `KOMPILE_AOT_LINUX_X64_RUNNER` is optional because the
+standard Linux runner is sufficient. Configure `KOMPILE_AOT_{MACOS_ARM64,WINDOWS_X64}_RUNNER`
+for larger hosted or self-hosted machines; the JVM and publisher jobs use standard runners
+through `KOMPILE_JAVA_RUNNER` and `KOMPILE_RELEASE_RUNNER`. Publication is attached to the
+protected `release` environment.
 
 **`install.sh`** — default variant is now `auto` (tries `full` first via HEAD request, falls
 back to `cli-only` with a printed notice). After extraction, marks the bundled runtime
