@@ -25,7 +25,7 @@ internal object SdxAndroidLlmLibrary {
 
     fun configure(
         context: Context,
-        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
     ): File {
         val nativeDirectory = File(context.applicationInfo.nativeLibraryDir)
         val library = File(nativeDirectory, SDX_LLM_LIBRARY_FILE_NAME)

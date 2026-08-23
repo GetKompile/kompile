@@ -82,14 +82,17 @@ internal object SdxPlatformRuntimeOwner {
         context: Context,
         modelPath: String,
         diagnosticModelPath: String = modelPath,
-        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
         routeName: String,
         modelIdPrefix: String,
         loadTransaction: NativeOperationTransaction
     ): SdxOwnedPlatformChatSession {
         val applicationContext = context.applicationContext
         val effectiveDiagnosticMode = effectiveDiagnosticModeForRuntime(diagnosticMode)
-        val trace = SmokeDecodeTraceLog(applicationContext)
+        val trace = SmokeDecodeTraceLog(
+            applicationContext,
+            enabled = effectiveDiagnosticMode.capturesSmokeTrace,
+        )
         trace.record(
             "runtime_diagnostics_configured",
             loadTransaction.snapshot().attemptId,
@@ -223,7 +226,7 @@ internal object SdxPlatformRuntimeOwner {
                 model = modelHandle,
                 routeName = routeName,
                 modelId = "$modelIdPrefix:${source.name}",
-                trace = SmokeDecodeTraceLog(applicationContext)
+                trace = trace,
             )
             loadTransaction.complete()
             return session

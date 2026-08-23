@@ -12,7 +12,7 @@ internal object PlatformLocalChatModelFactory {
         temperature: Float,
         maxTokens: Int,
         diagnosticModelPath: String = modelPath,
-        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
     ): PlatformLocalChatSession = SdxPlatformChatSession.open(
         context = context,
         modelPath = modelPath,

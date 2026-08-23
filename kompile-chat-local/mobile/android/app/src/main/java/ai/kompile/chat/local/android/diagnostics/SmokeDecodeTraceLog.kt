@@ -23,7 +23,10 @@ import java.util.concurrent.TimeUnit
  * diagnostic journal: a native hang or a killed worker must still leave the last
  * durable phase and heartbeat behind.
  */
-internal class SmokeDecodeTraceLog(context: Context) {
+internal class SmokeDecodeTraceLog(
+    context: Context,
+    private val enabled: Boolean = true,
+) {
     private val directory = File(context.applicationContext.filesDir, DIRECTORY)
     private val activeFile = File(directory, ACTIVE_FILE)
     private val lockFile = File(directory, LOCK_FILE)
@@ -33,6 +36,7 @@ internal class SmokeDecodeTraceLog(context: Context) {
         attemptId: String? = null,
         fields: Map<String, Any?> = emptyMap()
     ) {
+        if (!enabled) return
         runCatching {
             val line = formatLine(event, attemptId, fields)
             directory.mkdirs()
@@ -63,6 +67,7 @@ internal class SmokeDecodeTraceLog(context: Context) {
         failure: Throwable,
         fields: Map<String, Any?> = emptyMap()
     ) {
+        if (!enabled) return
         val details = ImportDiagnosticPolicy.failureDetails(failure)
         val chunks = SmokeDecodeTracePolicy.detailChunks(details)
         val merged = LinkedHashMap<String, Any?>(fields.size + 5)
@@ -91,6 +96,7 @@ internal class SmokeDecodeTraceLog(context: Context) {
         phase: String,
         intervalMillis: Long = DEFAULT_HEARTBEAT_INTERVAL_MILLIS
     ): AutoCloseable {
+        if (!enabled) return AutoCloseable {}
         val startedAt = SystemClock.elapsedRealtime()
         val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "smoke-decode-trace").apply { isDaemon = true }

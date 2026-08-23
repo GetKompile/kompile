@@ -1,8 +1,11 @@
 package ai.kompile.chat.local.android.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SdxRawGgufContractTest {
@@ -12,11 +15,22 @@ class SdxRawGgufContractTest {
         ModelDiagnosticMode.entries.forEach { selected ->
             assertEquals(selected, effectiveDiagnosticModeForRuntime(selected))
         }
+        assertEquals(ModelDiagnosticMode.OFF, ModelPreparationOptions().diagnosticMode)
+        assertEquals(
+            ModelDiagnosticMode.OFF,
+            ModelPreparationOptions.fromWire(null, null, 4, true, null).diagnosticMode,
+        )
+        assertNull(ModelDiagnosticMode.OFF.dspCategories)
+        assertNull(ModelDiagnosticMode.OFF.dspLevel)
+        assertFalse(ModelDiagnosticMode.OFF.nativeOpSanity)
+        assertFalse(ModelDiagnosticMode.OFF.capturesDspTrace)
+        assertFalse(ModelDiagnosticMode.OFF.capturesSmokeTrace)
+        assertTrue(ModelDiagnosticMode.STANDARD.capturesSmokeTrace)
         assertEquals("VERIFY", ModelDiagnosticMode.OP_SANITY.dspCategories)
         assertEquals("full", ModelDiagnosticMode.OP_SANITY.dspLevel)
-        assertEquals(true, ModelDiagnosticMode.OP_SANITY.nativeOpSanity)
-        assertEquals(true, ModelDiagnosticMode.OP_SANITY.capturesDspTrace)
-        assertEquals(false, ModelDiagnosticMode.DSP_DIAGNOSTICS.nativeOpSanity)
+        assertTrue(ModelDiagnosticMode.OP_SANITY.nativeOpSanity)
+        assertTrue(ModelDiagnosticMode.OP_SANITY.capturesDspTrace)
+        assertFalse(ModelDiagnosticMode.DSP_DIAGNOSTICS.nativeOpSanity)
         val restored = ModelPreparationOptions.fromWire(null, null, 4, true, "OP_SANITY")
         assertEquals(ModelDiagnosticMode.OP_SANITY, restored.diagnosticMode)
         assertEquals(true, restored.optionsJson(null, null).contains("\"diagnosticMode\":\"op_sanity\""))

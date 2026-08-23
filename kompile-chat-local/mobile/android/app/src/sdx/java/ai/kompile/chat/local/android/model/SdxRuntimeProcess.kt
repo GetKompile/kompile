@@ -125,7 +125,7 @@ internal object SdxPlatformChatSession {
         diagnosticModelPath: String = modelPath,
         routeName: String,
         modelIdPrefix: String,
-        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF
     ): PlatformLocalChatSession {
         val applicationContext = context.applicationContext
         check(Application.getProcessName() != sdxRuntimeProcessName(applicationContext.packageName)) {
@@ -163,6 +163,7 @@ internal object SdxPlatformChatSession {
                 MSG_OPEN,
                 request,
                 SERVICE_OPEN_TIMEOUT_MILLIS,
+                effectiveDiagnosticModeForRuntime(diagnosticMode).capturesSmokeTrace,
                 null
             )
             val sessionId = response.requireString(KEY_SESSION_ID)
@@ -172,6 +173,7 @@ internal object SdxPlatformChatSession {
                 processName = processName,
                 processId = pid,
                 diagnosticModelPath = diagnosticModelPath,
+                traceEnabled = effectiveDiagnosticModeForRuntime(diagnosticMode).capturesSmokeTrace,
                 sessionId = sessionId,
                 routeName = response.requireString(KEY_ROUTE_NAME),
                 modelId = response.requireString(KEY_MODEL_ID)
@@ -188,6 +190,7 @@ internal object SdxPlatformChatSession {
         private val processName: String,
         private val processId: Int,
         private val diagnosticModelPath: String,
+        private val traceEnabled: Boolean,
         private val sessionId: String,
         override val routeName: String,
         override val modelId: String
@@ -228,6 +231,7 @@ internal object SdxPlatformChatSession {
                     MSG_GENERATE,
                     wireRequest,
                     timeout,
+                    traceEnabled,
                     onChunk
                 ).requireString(KEY_STRUCTURED_RESPONSE_JSON)
                 coldCompilationPending.set(false)
@@ -283,6 +287,7 @@ internal object SdxPlatformChatSession {
                     putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
                 },
                 SERVICE_CONTROL_TIMEOUT_MILLIS,
+                traceEnabled,
                 null
             )
         }
@@ -310,6 +315,7 @@ internal object SdxPlatformChatSession {
                         putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
                     },
                     SERVICE_CONTROL_TIMEOUT_MILLIS,
+                    traceEnabled,
                     null
                 )
             } finally {
@@ -337,10 +343,11 @@ private fun executeJournaledRequest(
     method: Int,
     request: Bundle,
     timeoutMillis: Long,
+    traceEnabled: Boolean,
     onChunk: Consumer<String>?
 ): Bundle {
     val reply = try {
-        connection.request(method, request, timeoutMillis, processId, onChunk)
+        connection.request(method, request, timeoutMillis, processId, traceEnabled, onChunk)
     } catch (failure: Exception) {
         throw recoverRuntimeFailure(
             context,
@@ -354,7 +361,7 @@ private fun executeJournaledRequest(
     val remoteFailure = decodeRemoteFailure(reply.bundle, processName, processId)
     if (remoteFailure != null) {
         val attempt = operation.snapshot()
-        SmokeDecodeTraceLog(context).recordFailure(
+        SmokeDecodeTraceLog(context, enabled = traceEnabled).recordFailure(
             "ipc_remote_failure",
             attempt.attemptId,
             remoteFailure,
@@ -592,6 +599,7 @@ private class SdxRuntimeConnection private constructor(
             Bundle(),
             SERVICE_BIND_TIMEOUT_MILLIS,
             -1,
+            false,
             null
         ).bundle
         val pid = reply.getInt(KEY_PID, -1)
@@ -609,12 +617,13 @@ private class SdxRuntimeConnection private constructor(
         data: Bundle,
         timeoutMillis: Long,
         processId: Int,
+        traceEnabled: Boolean,
         onChunk: Consumer<String>?
     ): RuntimeReply {
         awaitConnected()
         val requestId = UUID.randomUUID().toString()
         val attemptId = data.getString(KEY_OPERATION_ATTEMPT_ID)
-        val trace = SmokeDecodeTraceLog(context)
+        val trace = SmokeDecodeTraceLog(context, enabled = traceEnabled)
         val request = requireFrameworkOnlyRuntimeWireBundle(
             Bundle(data).apply { putString(KEY_REQUEST_ID, requestId) },
             "SDX runtime request"
@@ -888,6 +897,9 @@ class SdxRuntimeService : Service() {
     @Volatile
     private var activeSessionId: String? = null
 
+    @Volatile
+    private var activeDiagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF
+
     private val inboundMessenger by lazy {
         Messenger(Handler(Looper.getMainLooper()) { request ->
             handleRequest(request)
@@ -996,7 +1008,11 @@ class SdxRuntimeService : Service() {
 
     private fun openSession(extras: Bundle): Bundle {
         val attemptId = extras.requireString(KEY_OPERATION_ATTEMPT_ID)
-        val trace = SmokeDecodeTraceLog(applicationContext)
+        val diagnosticMode = ModelDiagnosticMode.valueOf(extras.requireString(KEY_DIAGNOSTIC_MODE))
+        val trace = SmokeDecodeTraceLog(
+            applicationContext,
+            enabled = effectiveDiagnosticModeForRuntime(diagnosticMode).capturesSmokeTrace,
+        )
         trace.record(
             "runtime_open_request",
             attemptId,
@@ -1034,11 +1050,12 @@ class SdxRuntimeService : Service() {
                 routeName = extras.requireString(KEY_ROUTE_NAME),
                 modelIdPrefix = extras.requireString(KEY_MODEL_ID_PREFIX),
                 loadTransaction = operation,
-                diagnosticMode = ModelDiagnosticMode.valueOf(extras.requireString(KEY_DIAGNOSTIC_MODE))
+                diagnosticMode = diagnosticMode,
             )
             val id = UUID.randomUUID().toString()
             activeSession = created
             activeSessionId = id
+            activeDiagnosticMode = diagnosticMode
             trace.record(
                 "runtime_open_return",
                 attemptId,
@@ -1072,7 +1089,10 @@ class SdxRuntimeService : Service() {
 
     private fun generate(extras: Bundle, replyTo: Messenger, requestId: String): Bundle {
         val attemptId = extras.requireString(KEY_OPERATION_ATTEMPT_ID)
-        val trace = SmokeDecodeTraceLog(applicationContext)
+        val trace = SmokeDecodeTraceLog(
+            applicationContext,
+            enabled = effectiveDiagnosticModeForRuntime(activeDiagnosticMode).capturesSmokeTrace,
+        )
         trace.record(
             "runtime_generate_request",
             attemptId,
@@ -1135,6 +1155,7 @@ class SdxRuntimeService : Service() {
         } finally {
             activeSession = null
             activeSessionId = null
+            activeDiagnosticMode = ModelDiagnosticMode.OFF
         }
         return Bundle().apply {
             putBoolean(KEY_SUCCESS, true)

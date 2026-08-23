@@ -74,6 +74,8 @@ internal fun ModelOptimizationOptionsPane(
         )
         Text(
             when (options.diagnosticMode) {
+                ModelDiagnosticMode.OFF ->
+                    "No persistent runtime, smoke-decode, or native DSP diagnostics. Operation status and failures remain visible."
                 ModelDiagnosticMode.STANDARD ->
                     "Bounded preparation, activation, IPC, and smoke-decode logging."
                 ModelDiagnosticMode.VERBOSE ->

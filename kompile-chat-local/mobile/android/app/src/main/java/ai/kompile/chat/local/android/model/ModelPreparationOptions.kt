@@ -98,11 +98,13 @@ enum class ModelDiagnosticMode(
     val dspLevel: String?,
     val nativeOpSanity: Boolean,
     val capturesDspTrace: Boolean,
+    val capturesSmokeTrace: Boolean,
 ) {
-    STANDARD("Standard", "standard", null, null, false, false),
-    VERBOSE("Verbose", "verbose", "COMPILE,EXECUTE,TIMING,MEMORY", "detailed", false, false),
-    OP_SANITY("Op sanity", "op_sanity", "VERIFY", "full", true, true),
-    DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full", false, true),
+    OFF("Off", "off", null, null, false, false, false),
+    STANDARD("Standard", "standard", null, null, false, false, true),
+    VERBOSE("Verbose", "verbose", "COMPILE,EXECUTE,TIMING,MEMORY", "detailed", false, false, true),
+    OP_SANITY("Op sanity", "op_sanity", "VERIFY", "full", true, true, true),
+    DSP_DIAGNOSTICS("DSP diagnostics", "dsp", "ALL", "full", false, true, true),
 }
 
 /** The persisted Settings selection is authoritative for every build and accelerator flavor. */
@@ -118,7 +120,7 @@ data class ModelPreparationOptions(
     val kvCacheOptimization: KvCacheOptimization = KvCacheOptimization.INT8,
     val tensorBatchSize: Int = 4,
     val useMemoryMapping: Boolean = true,
-    val diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+    val diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
 ) {
     init {
         require(tensorBatchSize in 1..256) { "tensorBatchSize must be between 1 and 256" }
@@ -189,7 +191,7 @@ data class ModelPreparationOptions(
             kvCacheOptimization = enumValueOrDefault(kvCacheOptimization, KvCacheOptimization.INT8),
             tensorBatchSize = tensorBatchSize.coerceIn(1, 256),
             useMemoryMapping = useMemoryMapping,
-            diagnosticMode = enumValueOrDefault(diagnosticMode, ModelDiagnosticMode.STANDARD),
+            diagnosticMode = enumValueOrDefault(diagnosticMode, ModelDiagnosticMode.OFF),
         )
 
         private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, fallback: T): T =

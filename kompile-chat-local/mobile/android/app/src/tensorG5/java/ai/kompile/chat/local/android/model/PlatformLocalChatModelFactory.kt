@@ -24,7 +24,7 @@ internal object PlatformLocalChatModelFactory {
         temperature: Float,
         maxTokens: Int,
         diagnosticModelPath: String = modelPath,
-        @Suppress("UNUSED_PARAMETER") diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.STANDARD,
+        @Suppress("UNUSED_PARAMETER") diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
     ): PlatformLocalChatSession {
         val applicationContext = context.applicationContext
         val operation = NativeOperationJournal(applicationContext).begin(
