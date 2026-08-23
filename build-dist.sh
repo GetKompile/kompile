@@ -663,13 +663,16 @@ if [ "${SKIP_NATIVE}" = false ]; then
     fi
 
     # Wait for whatever is still in flight (empty in serial mode because every launch was reaped).
+    # Do not expand an empty array under `set -u`: macOS Bash 3.2 treats it as unbound.
     echo ""
     echo "  Waiting for ${#PIDS[@]} native build(s)..."
-    for pid in "${PIDS[@]}"; do
-        if ! wait "${pid}"; then
-            FAILED=$((FAILED + 1))
-        fi
-    done
+    if [ "${#PIDS[@]}" -gt 0 ]; then
+        for pid in "${PIDS[@]}"; do
+            if ! wait "${pid}"; then
+                FAILED=$((FAILED + 1))
+            fi
+        done
+    fi
 
     if [ "${FAILED}" -gt 0 ]; then
         echo "  ✗ ${FAILED} native build(s) failed. Check /tmp/kompile-*-native.log"

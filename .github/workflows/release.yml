@@ -15,9 +15,10 @@
 #
 # ⚠️  RUNNER SIZING — READ THIS FIRST
 #   Java and AOT builds intentionally use separate runner variables. The JVM build
-#   is suitable for a standard runner. Optimized Linux x64 CLI AOT was measured at
-#   9.82 GB peak RSS and completed on the free 15.61 GB public runner without swap.
-#   Windows x64 and macOS ARM64 retain a 32 GB floor until measured independently.
+#   is suitable for a standard runner. Optimized CLI AOT completed without OOM on
+#   both free public runners: Linux x64 peaked at 9.82 GB on 15.61 GB physical RAM;
+#   macOS ARM64 peaked at 3.28 GB on the 7 GB M1 runner. Windows x64 retains a
+#   32 GB floor until measured independently.
 #   Configure these repository variables (Settings -> Secrets and variables ->
 #   Actions -> Variables):
 #       KOMPILE_JAVA_RUNNER             (default: ubuntu-22.04; JVM build + smoke)
@@ -28,8 +29,8 @@
 #       DL4J_MAVEN_REPOSITORY_URL    (optional repository containing the matching DL4J build)
 #       DL4J_MAVEN_REPOSITORY_ID     (default: dl4j-release)
 #       DL4J_VERSION                 (optional published DL4J version; defaults to the POM)
-#   Linux x64 can use its standard hosted default. Configure larger GitHub-hosted
-#   or self-hosted labels for Windows/macOS AOT until their constrained trials pass.
+#   Linux x64 and macOS ARM64 can use their standard hosted defaults. Configure a
+#   larger GitHub-hosted or self-hosted label for Windows AOT until its trial passes.
 #
 # Variants:
 #   This workflow publishes cross-platform AOT `cli-only` archives and the
@@ -166,10 +167,16 @@ jobs:
           TOTAL_GIB="$(node -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 / 1024))")"
           MIN_GIB=30
           EXPECTED_GIB=32
-          if [ "${{ matrix.os_id }}-${{ matrix.arch }}" = "linux-x86_64" ]; then
-            MIN_GIB=15
-            EXPECTED_GIB=16
-          fi
+          case "${{ matrix.os_id }}-${{ matrix.arch }}" in
+            linux-x86_64)
+              MIN_GIB=15
+              EXPECTED_GIB=16
+              ;;
+            macosx-arm64)
+              MIN_GIB=7
+              EXPECTED_GIB=7
+              ;;
+          esac
           echo "AOT runner memory: ${TOTAL_GIB} GiB (expected ${EXPECTED_GIB} GiB)"
           if [ "${TOTAL_GIB}" -lt "${MIN_GIB}" ]; then
             if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
