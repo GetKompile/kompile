@@ -17,44 +17,40 @@
 package ai.kompile.ocr;
 
 /**
- * Output format for VLM (Vision-Language Model) document processing.
- * Shared across OCR pipeline and PDF processing configuration.
+ * Requested rendering for VLM document processing. The model-native grammar, prompt, parser,
+ * and termination rules are selected independently by the output-protocol registry.
  */
 public enum VlmOutputFormat {
+    /** Preserve the selected protocol's model-native output without rendering. */
+    RAW,
+
     /**
-     * DocTags format (Docling native) - structured XML-like format.
-     * Used by SmolDocling, Granite-Docling.
+     * Preserve a DocTags native representation when the selected protocol supports it.
      */
     DOCTAGS,
 
     /**
-     * Markdown format - human-readable.
-     * Used by Nougat, GOT-OCR, Kosmos-2.5, Qwen-VL.
+     * Render as Markdown, either natively or through the selected protocol renderer.
      */
     MARKDOWN,
 
-    /**
-     * Florence-2 task-specific format with quantized location tokens.
-     */
+    /** Backward-compatible hint preserving a Florence task-tag protocol's native output. */
     FLORENCE2,
 
-    /**
-     * Donut JSON-mapped tag format.
-     * Used by Donut, OCRonos.
-     */
+    /** Backward-compatible hint preserving a Donut task/field-tag protocol's native output. */
     DONUT,
 
     /**
-     * Plain text - no structure.
-     * Used by GOT-OCR (plain), Tesseract-style output.
+     * Render as plain text.
      */
     PLAIN_TEXT,
 
+    /** Render through the selected protocol's HTML renderer. */
+    HTML,
+
     /**
-     * JSON format - machine-parseable.
-     * @deprecated Use model-specific formats (DONUT, FLORENCE2) instead.
+     * Render as JSON when the selected protocol supports it.
      */
-    @Deprecated
     JSON,
 
     /**

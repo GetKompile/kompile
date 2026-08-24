@@ -21,6 +21,8 @@ import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -90,12 +92,24 @@ public class PdfProcessingConfig {
     // VLM configuration
     private boolean useVlm = false;
     private String vlmModelId;
-    private VlmOutputFormat vlmOutputFormat = VlmOutputFormat.MARKDOWN;
-    private int maxNewTokens = 4096;
+    private VlmOutputFormat vlmOutputFormat = VlmOutputFormat.RAW;
+    private String vlmOutputProtocol;
+    private String vlmTask;
+    private String vlmPromptOverride;
+    private int maxNewTokens = 0;
+    private long maxResponseBytes = 16L * 1024L * 1024L;
+    private boolean adaptiveRegionFallbackEnabled = false;
+    private int adaptiveFullPageMaxNewTokens = 3584;
+    private int adaptiveRegionMaxNewTokens = 1024;
+    private double adaptiveRegionRepetitionPenalty = 1.1;
     private double temperature = 0.0;
     private double topP = 1.0;
+    private int topK = 0;
+    private String samplingPreset;
+    private double repetitionPenalty = 1.0;
     private int beamSize = 1;
     private boolean doSample = false;
+    private int maxKvLen = 0;
 
     // VLM component path overrides (optional - null means auto-detect from model directory)
     private String vlmDecoderPath;
@@ -216,11 +230,60 @@ public class PdfProcessingConfig {
                 log.warn("Failed to parse config value for vlmOutputFormat: {}", e.getMessage());
             }
         }
+        if (map.containsKey("vlmOutputProtocol")) {
+            builder.vlmOutputProtocol(String.valueOf(map.get("vlmOutputProtocol")));
+        }
+        if (map.containsKey("vlmTask")) {
+            builder.vlmTask(String.valueOf(map.get("vlmTask")));
+        }
+        if (map.containsKey("vlmPromptOverride")) {
+            builder.vlmPromptOverride(String.valueOf(map.get("vlmPromptOverride")));
+        }
         if (map.containsKey("maxNewTokens")) {
             builder.maxNewTokens(Integer.parseInt(String.valueOf(map.get("maxNewTokens"))));
         }
+        if (map.containsKey("maxResponseBytes")) {
+            builder.maxResponseBytes(Long.parseLong(String.valueOf(map.get("maxResponseBytes"))));
+        }
+        if (map.containsKey("adaptiveRegionFallbackEnabled")) {
+            builder.adaptiveRegionFallbackEnabled(Boolean.parseBoolean(
+                    String.valueOf(map.get("adaptiveRegionFallbackEnabled"))));
+        }
+        if (map.containsKey("adaptiveFullPageMaxNewTokens")) {
+            builder.adaptiveFullPageMaxNewTokens(Integer.parseInt(
+                    String.valueOf(map.get("adaptiveFullPageMaxNewTokens"))));
+        }
+        if (map.containsKey("adaptiveRegionMaxNewTokens")) {
+            builder.adaptiveRegionMaxNewTokens(Integer.parseInt(
+                    String.valueOf(map.get("adaptiveRegionMaxNewTokens"))));
+        }
+        if (map.containsKey("adaptiveRegionRepetitionPenalty")) {
+            builder.adaptiveRegionRepetitionPenalty(Double.parseDouble(
+                    String.valueOf(map.get("adaptiveRegionRepetitionPenalty"))));
+        }
         if (map.containsKey("temperature")) {
             builder.temperature(Double.parseDouble(String.valueOf(map.get("temperature"))));
+        }
+        if (map.containsKey("topP")) {
+            builder.topP(Double.parseDouble(String.valueOf(map.get("topP"))));
+        }
+        if (map.containsKey("topK")) {
+            builder.topK(Integer.parseInt(String.valueOf(map.get("topK"))));
+        }
+        if (map.containsKey("samplingPreset")) {
+            builder.samplingPreset(String.valueOf(map.get("samplingPreset")));
+        }
+        if (map.containsKey("repetitionPenalty")) {
+            builder.repetitionPenalty(Double.parseDouble(String.valueOf(map.get("repetitionPenalty"))));
+        }
+        if (map.containsKey("beamSize")) {
+            builder.beamSize(Integer.parseInt(String.valueOf(map.get("beamSize"))));
+        }
+        if (map.containsKey("doSample")) {
+            builder.doSample(Boolean.parseBoolean(String.valueOf(map.get("doSample"))));
+        }
+        if (map.containsKey("maxKvLen")) {
+            builder.maxKvLen(Integer.parseInt(String.valueOf(map.get("maxKvLen"))));
         }
         if (map.containsKey("pdfRenderDpi")) {
             builder.pdfRenderDpi(Integer.parseInt(String.valueOf(map.get("pdfRenderDpi"))));
@@ -271,26 +334,38 @@ public class PdfProcessingConfig {
      * Converts this configuration to a map (for REST API responses).
      */
     public Map<String, Object> toMap() {
-        return Map.ofEntries(
-                Map.entry("processingMode", processingMode.name()),
-                Map.entry("useVlm", useVlm),
-                Map.entry("vlmModelId", vlmModelId),
-                Map.entry("vlmOutputFormat", vlmOutputFormat.name()),
-                Map.entry("maxNewTokens", maxNewTokens),
-                Map.entry("temperature", temperature),
-                Map.entry("topP", topP),
-                Map.entry("beamSize", beamSize),
-                Map.entry("doSample", doSample),
-                Map.entry("pdfRenderDpi", pdfRenderDpi),
-                Map.entry("extractTables", extractTables),
-                Map.entry("tableStorageMode", tableStorageMode.name()),
-                Map.entry("tableExtractionMethod", tableExtractionMethod.name()),
-                Map.entry("tableFormat", tableFormat),
-                Map.entry("useCompositeLoader", useCompositeLoader),
-                Map.entry("autoModeMinCharacters", autoModeMinCharacters),
-                Map.entry("extractByPage", extractByPage),
-                Map.entry("extractMetadata", extractMetadata)
-        );
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("processingMode", processingMode.name());
+        values.put("useVlm", useVlm);
+        values.put("vlmModelId", vlmModelId);
+        values.put("vlmOutputFormat", vlmOutputFormat.name());
+        values.put("vlmOutputProtocol", vlmOutputProtocol);
+        values.put("vlmTask", vlmTask);
+        values.put("vlmPromptOverride", vlmPromptOverride);
+        values.put("maxNewTokens", maxNewTokens);
+        values.put("maxResponseBytes", maxResponseBytes);
+        values.put("adaptiveRegionFallbackEnabled", adaptiveRegionFallbackEnabled);
+        values.put("adaptiveFullPageMaxNewTokens", adaptiveFullPageMaxNewTokens);
+        values.put("adaptiveRegionMaxNewTokens", adaptiveRegionMaxNewTokens);
+        values.put("adaptiveRegionRepetitionPenalty", adaptiveRegionRepetitionPenalty);
+        values.put("temperature", temperature);
+        values.put("topP", topP);
+        values.put("topK", topK);
+        values.put("samplingPreset", samplingPreset);
+        values.put("repetitionPenalty", repetitionPenalty);
+        values.put("beamSize", beamSize);
+        values.put("doSample", doSample);
+        values.put("maxKvLen", maxKvLen);
+        values.put("pdfRenderDpi", pdfRenderDpi);
+        values.put("extractTables", extractTables);
+        values.put("tableStorageMode", tableStorageMode.name());
+        values.put("tableExtractionMethod", tableExtractionMethod.name());
+        values.put("tableFormat", tableFormat);
+        values.put("useCompositeLoader", useCompositeLoader);
+        values.put("autoModeMinCharacters", autoModeMinCharacters);
+        values.put("extractByPage", extractByPage);
+        values.put("extractMetadata", extractMetadata);
+        return Collections.unmodifiableMap(values);
     }
 
     public static class Builder {
@@ -321,8 +396,48 @@ public class PdfProcessingConfig {
             return this;
         }
 
+        public Builder vlmOutputProtocol(String protocol) {
+            config.vlmOutputProtocol = protocol;
+            return this;
+        }
+
+        public Builder vlmTask(String task) {
+            config.vlmTask = task;
+            return this;
+        }
+
+        public Builder vlmPromptOverride(String prompt) {
+            config.vlmPromptOverride = prompt;
+            return this;
+        }
+
         public Builder maxNewTokens(int maxNewTokens) {
             config.maxNewTokens = maxNewTokens;
+            return this;
+        }
+
+        public Builder maxResponseBytes(long maxResponseBytes) {
+            config.maxResponseBytes = maxResponseBytes;
+            return this;
+        }
+
+        public Builder adaptiveRegionFallbackEnabled(boolean enabled) {
+            config.adaptiveRegionFallbackEnabled = enabled;
+            return this;
+        }
+
+        public Builder adaptiveFullPageMaxNewTokens(int maxNewTokens) {
+            config.adaptiveFullPageMaxNewTokens = maxNewTokens;
+            return this;
+        }
+
+        public Builder adaptiveRegionMaxNewTokens(int maxNewTokens) {
+            config.adaptiveRegionMaxNewTokens = maxNewTokens;
+            return this;
+        }
+
+        public Builder adaptiveRegionRepetitionPenalty(double repetitionPenalty) {
+            config.adaptiveRegionRepetitionPenalty = repetitionPenalty;
             return this;
         }
 
@@ -336,6 +451,21 @@ public class PdfProcessingConfig {
             return this;
         }
 
+        public Builder topK(int topK) {
+            config.topK = topK;
+            return this;
+        }
+
+        public Builder samplingPreset(String samplingPreset) {
+            config.samplingPreset = samplingPreset;
+            return this;
+        }
+
+        public Builder repetitionPenalty(double repetitionPenalty) {
+            config.repetitionPenalty = repetitionPenalty;
+            return this;
+        }
+
         public Builder beamSize(int beamSize) {
             config.beamSize = beamSize;
             return this;
@@ -343,6 +473,11 @@ public class PdfProcessingConfig {
 
         public Builder doSample(boolean doSample) {
             config.doSample = doSample;
+            return this;
+        }
+
+        public Builder maxKvLen(int maxKvLen) {
+            config.maxKvLen = maxKvLen;
             return this;
         }
 

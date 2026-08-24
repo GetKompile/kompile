@@ -38,7 +38,14 @@ public final class VlmDocumentStepRunnerFactory implements PipelineStepRunnerFac
                 .description("Reusable end-to-end extraction for application/pdf documents. "
                         + "Direct raster-image paths are not supported.")
                 .parameter(parameter("outputFormat", ValueType.STRING,
-                        "DOCTAGS, MARKDOWN, JSON, or TEXT", "DOCTAGS"))
+                        "Requested rendering: RAW/DOCTAGS, PLAIN_TEXT, MARKDOWN, HTML, or JSON",
+                        "RAW"))
+                .parameter(parameter("outputProtocol", ValueType.STRING,
+                        "Optional model-package protocol ID; omitted uses vlm-output-protocol.json", null))
+                .parameter(parameter("task", ValueType.STRING,
+                        "Protocol task name or alias, such as ocr, document, formatted_ocr, or vqa", null))
+                .parameter(parameter("prompt", ValueType.STRING,
+                        "Optional prompt override layered over the selected protocol task", null))
                 .parameter(parameter("pdfRenderDpi", ValueType.INT64, "PDF render DPI", 300L))
                 .parameter(parameter("pageBatchSize", ValueType.INT64,
                         "Pages per inference batch", 1L))
@@ -47,11 +54,32 @@ public final class VlmDocumentStepRunnerFactory implements PipelineStepRunnerFac
                 .parameter(parameter("failFastOnPageError", ValueType.BOOLEAN,
                         "Stop at the first page/inference error", true))
                 .parameter(parameter("maxNewTokens", ValueType.INT64,
-                        "Generation token limit", 4096L))
+                        "Optional diagnostic token limit; 0 generates to EOS/context", 0L))
+                .parameter(parameter("maxResponseBytes", ValueType.INT64,
+                        "Maximum UTF-8 generated document bytes", 16L * 1024L * 1024L))
+                .parameter(parameter("adaptiveRegionFallbackEnabled", ValueType.BOOLEAN,
+                        "Split pathological full-page output into bounded independent regions", false))
+                .parameter(parameter("adaptiveFullPageMaxNewTokens", ValueType.INT64,
+                        "Safety cap for the initial full-page attempt when adaptive fallback is enabled", 3584L))
+                .parameter(parameter("adaptiveRegionMaxNewTokens", ValueType.INT64,
+                        "Per-region token cap before recursively splitting an adaptive crop", 1024L))
+                .parameter(parameter("adaptiveRegionRepetitionPenalty", ValueType.DOUBLE,
+                        "Minimum repetition penalty for adaptive crops", 1.1))
+                .parameter(parameter("adaptiveNativeRepetitionMaxPeriod", ValueType.INT64,
+                        "Maximum periodic token-tail length checked by native adaptive termination", 64L))
+                .parameter(parameter("adaptiveNativeRepetitionMaxRepeats", ValueType.INT64,
+                        "Exact repeats required by native adaptive termination", 4L))
                 .parameter(parameter("temperature", ValueType.DOUBLE,
                         "Generation temperature", 0.0))
                 .parameter(parameter("topP", ValueType.DOUBLE, "Nucleus sampling threshold", 1.0))
+                .parameter(parameter("topK", ValueType.INT64, "Top-k sampling cutoff; 0 disables", 0L))
+                .parameter(parameter("samplingPreset", ValueType.STRING,
+                        "Optional creative/precise sampling preset", null))
+                .parameter(parameter("repetitionPenalty", ValueType.DOUBLE,
+                        "Generation repetition penalty", 1.0))
                 .parameter(parameter("beamSize", ValueType.INT64, "Beam search width", 1L))
+                .parameter(parameter("maxKvLen", ValueType.INT64,
+                        "Optional context/KV cap; 0 uses the model context", 0L))
                 .parameter(parameter("doSample", ValueType.BOOLEAN,
                         "Enable sampling", false))
                 .parameter(parameter("pageRange", ValueType.STRING,

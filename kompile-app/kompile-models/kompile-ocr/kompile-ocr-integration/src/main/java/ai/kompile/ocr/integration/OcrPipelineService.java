@@ -177,12 +177,25 @@ public class OcrPipelineService {
         if (shouldUseVlm && vlmPipeline != null) {
             builder.useVlm(true)
                     .vlmModelId(uiConfig.getVlmModelId())
-                    .vlmOutputFormat(uiConfig.getVlmOutputFormat() != null ? uiConfig.getVlmOutputFormat() : VlmOutputFormat.DOCTAGS)
+                    .vlmOutputFormat(uiConfig.getVlmOutputFormat() != null
+                            ? uiConfig.getVlmOutputFormat() : VlmOutputFormat.RAW)
+                    .vlmOutputProtocol(uiConfig.getVlmOutputProtocol())
+                    .vlmTask(uiConfig.getVlmTask())
+                    .vlmPromptOverride(uiConfig.getVlmPromptOverride())
                     .maxNewTokens(uiConfig.getMaxNewTokens())
+                    .maxResponseBytes(uiConfig.getMaxResponseBytes())
+                    .adaptiveRegionFallbackEnabled(uiConfig.isAdaptiveRegionFallbackEnabled())
+                    .adaptiveFullPageMaxNewTokens(uiConfig.getAdaptiveFullPageMaxNewTokens())
+                    .adaptiveRegionMaxNewTokens(uiConfig.getAdaptiveRegionMaxNewTokens())
+                    .adaptiveRegionRepetitionPenalty(uiConfig.getAdaptiveRegionRepetitionPenalty())
                     .temperature(uiConfig.getTemperature())
                     .topP(uiConfig.getTopP())
+                    .topK(uiConfig.getTopK())
+                    .samplingPreset(uiConfig.getSamplingPreset())
+                    .repetitionPenalty(uiConfig.getRepetitionPenalty())
                     .beamSize(uiConfig.getBeamSize())
                     .doSample(uiConfig.isDoSample())
+                    .maxKvLen(uiConfig.getMaxKvLen())
                     .vlmDecoderPath(uiConfig.getVlmDecoderPath())
                     .vlmEncoderPath(uiConfig.getVlmEncoderPath())
                     .vlmEmbedTokensPath(uiConfig.getVlmEmbedTokensPath())
@@ -214,7 +227,7 @@ public class OcrPipelineService {
     }
 
     public List<ParsedDocument> processPdfWithVlm(File pdfFile, String vlmModelId) {
-        return processPdfWithVlm(pdfFile, vlmModelId, VlmOutputFormat.DOCTAGS, null);
+        return processPdfWithVlm(pdfFile, vlmModelId, VlmOutputFormat.RAW, null);
     }
 
     public List<ParsedDocument> processPdfWithVlm(File pdfFile, String vlmModelId,
@@ -323,7 +336,7 @@ public class OcrPipelineService {
         if (useVlmByDefault && vlmPipeline != null) {
             builder.useVlm(true)
                     .vlmModelId(defaultVlmModel)
-                    .vlmOutputFormat(VlmOutputFormat.DOCTAGS);
+                    .vlmOutputFormat(VlmOutputFormat.RAW);
         } else {
             builder.useVlm(false)
                     .detectionModelId(defaultDetectionModel)

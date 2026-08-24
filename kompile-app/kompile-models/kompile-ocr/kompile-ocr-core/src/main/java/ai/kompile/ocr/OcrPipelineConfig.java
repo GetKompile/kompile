@@ -53,7 +53,16 @@ public class OcrPipelineConfig {
      * VLM output format.
      */
     @Builder.Default
-    private VlmOutputFormat vlmOutputFormat = VlmOutputFormat.DOCTAGS;
+    private VlmOutputFormat vlmOutputFormat = VlmOutputFormat.RAW;
+
+    /** Model-package protocol ID override; null uses vlm-output-protocol.json default. */
+    private String vlmOutputProtocol;
+
+    /** Protocol task name/alias, for example ocr, formatted_ocr, document, or vqa. */
+    private String vlmTask;
+
+    /** Optional prompt override layered over the selected protocol task. */
+    private String vlmPromptOverride;
 
     // ==================== VLM Component Paths (optional overrides) ====================
 
@@ -90,10 +99,46 @@ public class OcrPipelineConfig {
     // ==================== VLM Generation Parameters ====================
 
     /**
-     * Maximum tokens to generate (for VLM).
+     * Maximum tokens to generate (for VLM). Zero means generate until the model's
+     * EOS token within its declared context window.
      */
     @Builder.Default
-    private int maxNewTokens = 4096;
+    private int maxNewTokens = 0;
+
+    /** Maximum UTF-8 bytes accepted from one generated document. */
+    @Builder.Default
+    private long maxResponseBytes = 16L * 1024L * 1024L;
+
+    /**
+     * Opt-in legacy recovery that splits a page into independently generated regions
+     * after context exhaustion. Disabled by default to preserve full-page semantics.
+     */
+    @Builder.Default
+    private boolean adaptiveRegionFallbackEnabled = false;
+
+    /**
+     * Maximum tokens allowed for the initial full-page attempt when adaptive fallback is enabled.
+     * This prevents a malformed page from consuming an entire large model context before splitting.
+     * Zero disables this adaptive safety cap.
+     */
+    @Builder.Default
+    private int adaptiveFullPageMaxNewTokens = 3584;
+
+    /** Maximum tokens allowed for one adaptive crop/leaf before it is split again. */
+    @Builder.Default
+    private int adaptiveRegionMaxNewTokens = 1024;
+
+    /** Minimum repetition penalty applied to adaptive crops to discourage degenerate OCR loops. */
+    @Builder.Default
+    private double adaptiveRegionRepetitionPenalty = 1.1;
+
+    /** Maximum periodic token-tail length checked by native adaptive-loop termination. */
+    @Builder.Default
+    private int adaptiveNativeRepetitionMaxPeriod = 64;
+
+    /** Exact repeats required before native adaptive-loop termination. */
+    @Builder.Default
+    private int adaptiveNativeRepetitionMaxRepeats = 4;
 
     /**
      * Temperature for generation (0.0 = deterministic, 1.0 = creative).
@@ -148,8 +193,8 @@ public class OcrPipelineConfig {
     private String kvCacheStrategy = "STATIC";
 
     /**
-     * Hard cap on KV cache sequence length. Prevents GPU OOM by limiting total
-     * KV cache size. When 0 (default), sized automatically as prefillLen + maxNewTokens.
+     * Hard cap on KV cache sequence length. When zero, the model/tokenizer declared
+     * context window is used; hardware heuristics are only a last-resort fallback.
      *
      * <p>Recommended values by GPU memory:</p>
      * <ul>
@@ -381,8 +426,7 @@ public class OcrPipelineConfig {
         return OcrPipelineConfig.builder()
                 .useVlm(true)
                 .vlmModelId(vlmModelId)
-                .vlmOutputFormat(VlmOutputFormat.DOCTAGS)
-                .maxNewTokens(4096)
+                .vlmOutputFormat(VlmOutputFormat.RAW)
                 .temperature(0.0)
                 .build();
     }
@@ -398,7 +442,6 @@ public class OcrPipelineConfig {
                 .useVlm(true)
                 .vlmModelId(vlmModelId)
                 .vlmOutputFormat(VlmOutputFormat.MARKDOWN)
-                .maxNewTokens(4096)
                 .temperature(0.0)
                 .build();
     }

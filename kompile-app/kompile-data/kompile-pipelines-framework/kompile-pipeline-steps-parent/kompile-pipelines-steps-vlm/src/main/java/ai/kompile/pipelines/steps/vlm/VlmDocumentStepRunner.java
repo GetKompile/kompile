@@ -5,21 +5,26 @@
 package ai.kompile.pipelines.steps.vlm;
 
 import ai.kompile.ocr.OcrPipelineConfig;
+import ai.kompile.ocr.OcrPipeline;
 import ai.kompile.ocr.VlmOutputFormat;
 import ai.kompile.ocr.document.ParsedDocument;
 import ai.kompile.ocr.models.pipeline.VlmDocumentPipeline;
 import ai.kompile.pipelines.framework.api.PipelineStepRunner;
 import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.context.Context;
+import ai.kompile.pipelines.framework.api.context.PipelineExecutionProgress;
+import ai.kompile.pipelines.framework.api.context.PipelineProgressListener;
 import ai.kompile.pipelines.framework.api.data.Data;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /** Standard pipeline step for reusable, end-to-end VLM document extraction. */
 public final class VlmDocumentStepRunner implements PipelineStepRunner {
@@ -59,12 +64,32 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
                 .useVlm(true)
                 .vlmModelId(model.modelId())
                 .vlmOutputFormat(outputFormat(input))
+                .vlmOutputProtocol(stringOption(input, "outputProtocol", null))
+                .vlmTask(stringOption(input, "task", null))
+                .vlmPromptOverride(stringOption(input, "prompt", null))
                 .sourceId(document.getAbsolutePath())
-                .maxNewTokens(intOption(input, "maxNewTokens", 4096))
+                .maxNewTokens(intOption(input, "maxNewTokens", 0))
+                .maxResponseBytes(longOption(input, "maxResponseBytes", 16L * 1024L * 1024L))
+                .adaptiveRegionFallbackEnabled(
+                        booleanOption(input, "adaptiveRegionFallbackEnabled", false))
+                .adaptiveFullPageMaxNewTokens(
+                        intOption(input, "adaptiveFullPageMaxNewTokens", 3584))
+                .adaptiveRegionMaxNewTokens(
+                        intOption(input, "adaptiveRegionMaxNewTokens", 1024))
+                .adaptiveRegionRepetitionPenalty(
+                        doubleOption(input, "adaptiveRegionRepetitionPenalty", 1.1))
+                .adaptiveNativeRepetitionMaxPeriod(
+                        intOption(input, "adaptiveNativeRepetitionMaxPeriod", 64))
+                .adaptiveNativeRepetitionMaxRepeats(
+                        intOption(input, "adaptiveNativeRepetitionMaxRepeats", 4))
                 .temperature(doubleOption(input, "temperature", 0.0))
                 .topP(doubleOption(input, "topP", 1.0))
+                .topK(intOption(input, "topK", 0))
+                .samplingPreset(stringOption(input, "samplingPreset", null))
+                .repetitionPenalty(doubleOption(input, "repetitionPenalty", 1.0))
                 .beamSize(intOption(input, "beamSize", 1))
                 .doSample(booleanOption(input, "doSample", false))
+                .maxKvLen(intOption(input, "maxKvLen", 0))
                 .pdfRenderDpi(intOption(input, "pdfRenderDpi", 300))
                 .pageBatchSize(intOption(input, "pageBatchSize", 1))
                 .maxPages(intOption(input, "maxPages", 0))
@@ -73,7 +98,8 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
                 .includeAuditTrail(booleanOption(input, "includeAuditTrail", true))
                 .build();
 
-        List<ParsedDocument> pages = pipeline.processPdf(document, config, null);
+        List<ParsedDocument> pages = pipeline.processPdf(
+                document, config, progressCallback(context));
         String text = pages.stream()
                 .filter(ParsedDocument::isSuccess)
                 .map(ParsedDocument::getText)
@@ -132,7 +158,7 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
     }
 
     private VlmOutputFormat outputFormat(Data input) {
-        String value = stringOption(input, "outputFormat", "DOCTAGS");
+        String value = stringOption(input, "outputFormat", "RAW");
         try {
             return VlmOutputFormat.valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (Exception invalidFormat) {
@@ -183,6 +209,7 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
                 .append(", blankPages=").append(blankPages)
                 .append(", failedPages=").append(failedPages)
                 .append(", generation={maxNewTokens=").append(config.getMaxNewTokens())
+                .append(", maxResponseBytes=").append(config.getMaxResponseBytes())
                 .append(", temperature=").append(config.getTemperature())
                 .append(", topP=").append(config.getTopP())
                 .append(", beamSize=").append(config.getBeamSize())
@@ -197,8 +224,39 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
         }
         diagnostic.append(
                 ". If this request inherited a registeredPipelineId, run crawl_documents with dryRun=true and explicitly set "
-                        + "pipelines[].modelId plus pipelines[].options.outputFormat/maxNewTokens/pdfRenderDpi/pageBatchSize/temperature/doSample.");
+                        + "pipelines[].modelId plus pipelines[].options.outputFormat/maxResponseBytes/pdfRenderDpi/pageBatchSize/temperature/doSample.");
         return diagnostic.toString();
+    }
+
+    private Consumer<OcrPipeline.PipelineProgress> progressCallback(Context context) {
+        PipelineProgressListener listener = PipelineProgressListener.from(context);
+        if (listener == null) return null;
+        return progress -> {
+            Map<String, Object> metrics = new LinkedHashMap<>();
+            if (progress.generatedTokens() != null) metrics.put("generatedTokens", progress.generatedTokens());
+            if (progress.promptTokens() != null) metrics.put("promptTokens", progress.promptTokens());
+            if (progress.tokensPerSecond() != null) metrics.put("tokensPerSecond", progress.tokensPerSecond());
+            if (progress.generateTimeMs() != null) metrics.put("generateTimeMs", progress.generateTimeMs());
+            if (progress.vlmModelId() != null) metrics.put("modelId", progress.vlmModelId());
+            listener.onProgress(new PipelineExecutionProgress(
+                    progressPhase(progress.currentStage()),
+                    (int) Math.round(progress.overallProgress()),
+                    progress.currentStage(),
+                    progress.statusMessage(),
+                    progress.currentPage(),
+                    progress.totalPages(),
+                    metrics));
+        };
+    }
+
+    private String progressPhase(String stage) {
+        String normalized = stage == null ? "" : stage.toLowerCase(Locale.ROOT);
+        if (normalized.contains("starting")) return "MODEL_INITIALIZATION";
+        if (normalized.contains("render")) return "PDF_RENDERING";
+        if (normalized.contains("pars")) return "OUTPUT_PARSING";
+        if (normalized.contains("page completed")) return "PAGE_COMPLETED";
+        if (normalized.contains("completed")) return "PIPELINE_COMPLETED";
+        return "VLM_EXTRACTION";
     }
 
     private int intOption(Data input, String key, int fallback) {
@@ -209,6 +267,16 @@ public final class VlmDocumentStepRunner implements PipelineStepRunner {
     private double doubleOption(Data input, String key, double fallback) {
         Object value = option(input, key);
         return value instanceof Number number ? number.doubleValue() : fallback;
+    }
+
+    private long longOption(Data input, String key, long fallback) {
+        Object value = option(input, key);
+        if (!(value instanceof Number number)) return fallback;
+        long resolved = number.longValue();
+        if (resolved < 0L) {
+            throw new IllegalArgumentException(key + " must be >= 0");
+        }
+        return resolved;
     }
 
     private boolean booleanOption(Data input, String key, boolean fallback) {

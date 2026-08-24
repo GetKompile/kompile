@@ -26,8 +26,29 @@ class VlmDocumentStepRunnerFactoryTest {
                 .orElseThrow().getDefaultValue());
         assertEquals(true, schema.getParameterSchema("failFastOnPageError")
                 .orElseThrow().getDefaultValue());
-        assertEquals("DOCTAGS", schema.getParameterSchema("outputFormat")
+        assertEquals("RAW", schema.getParameterSchema("outputFormat")
                 .orElseThrow().getDefaultValue());
+        assertTrue(schema.getParameterSchema("outputProtocol").isPresent());
+        assertTrue(schema.getParameterSchema("task").isPresent());
+        assertTrue(schema.getParameterSchema("prompt").isPresent());
+        assertEquals(0L, schema.getParameterSchema("maxNewTokens")
+                .orElseThrow().getDefaultValue());
+        assertEquals(16L * 1024L * 1024L, schema.getParameterSchema("maxResponseBytes")
+                .orElseThrow().getDefaultValue());
+        assertEquals(false, schema.getParameterSchema("adaptiveRegionFallbackEnabled")
+                .orElseThrow().getDefaultValue());
+        assertEquals(3584L, schema.getParameterSchema("adaptiveFullPageMaxNewTokens")
+                .orElseThrow().getDefaultValue());
+        assertEquals(1024L, schema.getParameterSchema("adaptiveRegionMaxNewTokens")
+                .orElseThrow().getDefaultValue());
+        assertEquals(1.1, schema.getParameterSchema("adaptiveRegionRepetitionPenalty")
+                .orElseThrow().getDefaultValue());
+        assertEquals(64L, schema.getParameterSchema("adaptiveNativeRepetitionMaxPeriod")
+                .orElseThrow().getDefaultValue());
+        assertEquals(4L, schema.getParameterSchema("adaptiveNativeRepetitionMaxRepeats")
+                .orElseThrow().getDefaultValue());
+        assertEquals(0L, schema.getParameterSchema("topK").orElseThrow().getDefaultValue());
+        assertTrue(schema.getParameterSchema("samplingPreset").isPresent());
         assertTrue(schema.getOutputSchema("markdown").isPresent());
         assertTrue(schema.getOutputSchema("pageCount").isPresent());
     }

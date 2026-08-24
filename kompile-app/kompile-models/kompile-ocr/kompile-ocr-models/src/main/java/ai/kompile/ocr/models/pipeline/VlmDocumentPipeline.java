@@ -50,6 +50,11 @@ import org.eclipse.deeplearning4j.vlm.model.patching.SameDiffGraphPatch;
 import org.eclipse.deeplearning4j.vlm.model.patching.SmolDoclingPositionIdsPatch;
 import org.eclipse.deeplearning4j.vlm.output.DocTagsParser;
 import org.eclipse.deeplearning4j.vlm.output.DocumentStructure;
+import org.eclipse.deeplearning4j.vlm.output.protocol.VlmCompletion;
+import org.eclipse.deeplearning4j.vlm.output.protocol.VlmProtocolOutput;
+import org.eclipse.deeplearning4j.vlm.output.protocol.VlmProtocolPlan;
+import org.eclipse.deeplearning4j.vlm.output.protocol.VlmProtocolRequest;
+import org.eclipse.deeplearning4j.vlm.output.protocol.VlmRenderFormat;
 import org.eclipse.deeplearning4j.llm.config.PreprocessorConfig;
 import org.eclipse.deeplearning4j.vlm.preprocessing.ImageTiler;
 import org.eclipse.deeplearning4j.vlm.preprocessing.VLMImagePreprocessor;
@@ -67,6 +72,7 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -260,8 +266,8 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
             long startTime = System.currentTimeMillis();
 
-            // Build prompt based on output format
-            String prompt = buildPromptForFormat(config.getVlmOutputFormat());
+            VlmProtocolRequest protocolRequest = protocolRequest(config);
+            VlmProtocolPlan protocolPlan = vlm.prepareOutputProtocol(protocolRequest);
 
             // Build SamplingConfig from pipeline config
             SamplingConfig samplingConfig = buildSamplingConfig(config);
@@ -274,12 +280,20 @@ public class VlmDocumentPipeline implements OcrPipeline {
             // Use generateWithMetrics which handles preprocessing internally
             GenerationResult genResult = vlm.generateWithMetrics(
                     image,
-                    prompt,
-                    samplingConfig.getMaxNewTokens(),
-                    samplingConfig.getTemperature(),
-                    samplingConfig.isDoSample()
+                    protocolRequest,
+                    samplingConfig
             );
-            String generatedText = genResult.getText();
+            rejectFailedGeneration(genResult, "Image generation");
+            if (genResult.getFinishReason() == GenerationResult.FinishReason.MAX_TOKENS
+                    || genResult.getFinishReason() == GenerationResult.FinishReason.REPETITION) {
+                throw new IllegalStateException(
+                        "Image generation terminated without EOS (" + genResult.getFinishReason() + ") after "
+                                + genResult.getGeneratedTokenCount()
+                                + " tokens; partial output was not accepted");
+            }
+            VlmProtocolOutput protocolOutput = processProtocolOutput(protocolRequest, genResult);
+            String generatedText = protocolOutput.getRawText();
+            enforceResponseLimit(0L, generatedText, config.getMaxResponseBytes());
             long generateTimeNanos = System.nanoTime() - generateStart;
             long generateTime = generateTimeNanos / 1_000_000;
 
@@ -297,7 +311,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                             generatedTokens = tokenizer.encode(generatedText).getLength();
                         }
                         if (promptTokens == 0) {
-                            promptTokens = tokenizer.encode(prompt).getLength();
+                            promptTokens = tokenizer.encode(protocolPlan.getPrompt()).getLength();
                         }
                         if (generateTimeNanos > 0 && generatedTokens > 0) {
                             tokensPerSecond = (generatedTokens * 1_000_000_000.0) / generateTimeNanos;
@@ -325,54 +339,8 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     1.0
             ));
 
-            // Step 3: Parse output using DocTagsParser
-            logger.debug("Parsing output format: {}", config.getVlmOutputFormat());
-            String plainText;
-            List<StructuredTable> tables = new ArrayList<>();
-
-            switch (config.getVlmOutputFormat()) {
-                case DOCTAGS:
-                    // Use DocTagsParser for DocTags format
-                    DocumentStructure docStructure = docTagsParser.parse(generatedText);
-                    plainText = docStructure.getFullText();
-                    // Extract tables from parsed structure
-                    tables = extractTablesFromDocStructure(docStructure);
-                    break;
-
-                case MARKDOWN:
-                    // Parse and convert to Markdown via the parser
-                    DocumentStructure parsed = docTagsParser.parse(generatedText);
-                    plainText = docTagsParser.toMarkdown(parsed);
-                    tables = extractTablesFromDocStructure(parsed);
-                    break;
-
-                case FLORENCE2:
-                    // Florence-2 task-specific format
-                    DocumentStructure florenceDoc = docTagsParser.parse(generatedText);
-                    plainText = docTagsParser.extractPlainText(generatedText);
-                    tables = extractTablesFromDocStructure(florenceDoc);
-                    break;
-
-                case DONUT:
-                    // Donut JSON-mapped format
-                    DocumentStructure donutDoc = docTagsParser.parse(generatedText);
-                    plainText = docTagsParser.extractPlainText(generatedText);
-                    tables = extractTablesFromDocStructure(donutDoc);
-                    break;
-
-                case PLAIN_TEXT:
-                    plainText = docTagsParser.extractPlainText(generatedText);
-                    break;
-
-                case JSON:
-                    plainText = generatedText; // JSON needs further processing by caller
-                    break;
-
-                case TEXT:
-                default:
-                    plainText = docTagsParser.extractPlainText(generatedText);
-                    break;
-            }
+            String plainText = protocolOutput.getRenderedText();
+            List<StructuredTable> tables = tablesFromProtocolOutput(protocolOutput);
 
             long totalTime = System.currentTimeMillis() - startTime;
 
@@ -391,6 +359,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("vlmModel", modelId);
             metadata.put("outputFormat", config.getVlmOutputFormat().name());
+            metadata.put("outputProtocol", protocolOutput.getProtocolId());
+            metadata.put("nativeOutputFormat", protocolOutput.getNativeFormat());
+            metadata.put("structuralComplete", protocolOutput.getCompletion().isComplete());
             metadata.put("rawOutput", generatedText);
             metadata.put("generatedTokens", generatedTokens);
             metadata.put("promptTokens", promptTokens);
@@ -418,32 +389,50 @@ public class VlmDocumentPipeline implements OcrPipeline {
         } catch (Exception e) {
             logger.error("VLM processing failed: {}", e.getMessage(), e);
             audit.complete();
+            if (e instanceof ResponseLimitExceededException responseLimit) throw responseLimit;
             return ParsedDocument.failed(config.getSourceId(), 1, e.getMessage());
         }
     }
 
-    /**
-     * Builds the prompt based on the desired output format.
-     */
-    private String buildPromptForFormat(VlmOutputFormat format) {
+    private VlmProtocolRequest protocolRequest(OcrPipelineConfig config) {
+        VlmOutputFormat format = config.getVlmOutputFormat() == null
+                ? VlmOutputFormat.RAW : config.getVlmOutputFormat();
+        VlmRenderFormat render;
         switch (format) {
+            case RAW:
             case DOCTAGS:
-                return "Convert this document to DocTags format with structure tags and bounding boxes.";
-            case MARKDOWN:
-                // Markdown is a renderer over parsed DocTags, not a model-native response format.
-                // Request the structured format that the parser consumes, then convert it below.
-                return "Convert this document to DocTags format with structure tags and bounding boxes.";
             case FLORENCE2:
-                return "<OCR>";
-            case DONUT:
-                return "<s>";
-            case JSON:
-                return "Extract the document content as structured JSON with text, tables, and figures.";
-            case PLAIN_TEXT:
-            case TEXT:
-            default:
-                return "Extract all text from this document.";
+            case DONUT: render = VlmRenderFormat.RAW; break;
+            case MARKDOWN: render = VlmRenderFormat.MARKDOWN; break;
+            case HTML: render = VlmRenderFormat.HTML; break;
+            case JSON: render = VlmRenderFormat.JSON; break;
+            default: render = VlmRenderFormat.PLAIN_TEXT;
         }
+        String task = config.getVlmTask();
+        if ((task == null || task.isBlank()) && format == VlmOutputFormat.FLORENCE2) task = "ocr_with_region";
+        return VlmProtocolRequest.builder()
+                .protocolId(config.getVlmOutputProtocol())
+                .task(task)
+                .promptOverride(config.getVlmPromptOverride())
+                .renderFormat(render)
+                .build();
+    }
+
+    private VlmProtocolOutput processProtocolOutput(VlmProtocolRequest request, GenerationResult result) {
+        VlmProtocolOutput output = vlm.processOutputProtocol(request, result);
+        VlmCompletion completion = output.getCompletion();
+        if (completion != null && !completion.isUsable()) {
+            throw new IllegalStateException("VLM output protocol '" + output.getProtocolId()
+                    + "' rejected generation: " + completion.getDiagnostic());
+        }
+        return output;
+    }
+
+    private List<StructuredTable> tablesFromProtocolOutput(VlmProtocolOutput output) {
+        if (output.getStructured() instanceof DocumentStructure) {
+            return extractTablesFromDocStructure((DocumentStructure) output.getStructured());
+        }
+        return new ArrayList<>();
     }
 
     @Override
@@ -487,8 +476,10 @@ public class VlmDocumentPipeline implements OcrPipeline {
             }
 
             int pageBatchSize = Math.max(1, config.getPageBatchSize());
-            String prompt = buildPromptForFormat(config.getVlmOutputFormat());
+            VlmProtocolRequest protocolRequest = protocolRequest(config);
             SamplingConfig samplingConfig = buildSamplingConfig(config);
+            SamplingConfig fullPageSamplingConfig = fullPageSamplingConfig(config, samplingConfig);
+            SamplingConfig adaptiveSamplingConfig = adaptiveSamplingConfig(config, samplingConfig);
 
             // Determine tile size from preprocessor config (model's expected input resolution)
             int tileSize = 384; // reasonable default
@@ -515,6 +506,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
             }
 
             boolean tritonExportDone = false;
+            long responseBytes = 0L;
 
             // Stream pages one at a time: render, encode, generate, parse, free, next page
             int failedPages = 0;
@@ -522,6 +514,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 int pageNum = pagesToProcess.get(i);
 
                 int progressPage = i + 1; // 1-based iteration index for progress display
+                boolean adaptiveGenerationUsed = false;
                 try {
                     if (progressCallback != null) {
                         progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages, "Rendering page"));
@@ -543,20 +536,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     // Process single page through generatePagesTiled
                     GenerationResult[] pageGenResults = vlm.generatePagesTiled(
                             java.util.Collections.singletonList(splitResult),
-                            prompt,
-                            samplingConfig.getMaxNewTokens(),
-                            samplingConfig.isDoSample(),
-                            samplingConfig.getTemperature(),
+                            protocolRequest,
+                            fullPageSamplingConfig,
                             tileSize
                     );
 
                     // Free split result frames immediately after generation
                     splitResult = null;
-
-                    // Reset all inference sessions to free GPU memory before next page.
-                    // For decode (invariant shapes), use resetSessionsForDecode() which preserves
-                    // staging buffers, slot arrays, CUDA graphs, and cuBLAS workspace.
-                    vlm.resetSessionsForDecode();
 
                     // Export Triton cache after first successful decode (JIT compilation happens on first run)
                     if (!tritonExportDone && tritonCacheEnabled && tritonAutoExport && tritonCacheExporter != null) {
@@ -573,22 +559,30 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     long generateTimeMs = System.currentTimeMillis() - pageStartTime;
 
                     GenerationResult genResult = pageGenResults[0];
-                    if (genResult.getFinishReason() == GenerationResult.FinishReason.MAX_TOKENS) {
-                        if (hasUsableStructuredPrefix(genResult, config.getVlmOutputFormat())) {
-                            logger.warn("Page {} exhausted {} tokens after producing a usable structured "
-                                            + "prefix; accepting complete parsed elements and ignoring the "
-                                            + "unfinished tail",
-                                    pageNum, genResult.getGeneratedTokenCount());
-                        } else {
-                            logger.warn("Page {} exhausted {} tokens without usable structure; retrying "
-                                            + "as adaptive regions",
-                                    pageNum, genResult.getGeneratedTokenCount());
-                            genResult = generateDensePageRegions(pageImage, prompt, samplingConfig, tileSize,
+                    rejectFailedGeneration(genResult, "Page " + pageNum + " generation");
+                    if (genResult.getFinishReason() == GenerationResult.FinishReason.MAX_TOKENS
+                            || genResult.getFinishReason() == GenerationResult.FinishReason.REPETITION) {
+                        if (config.isAdaptiveRegionFallbackEnabled()) {
+                            adaptiveGenerationUsed = true;
+                            logger.warn("Page {} terminated with {} after {} tokens without usable structure; "
+                                            + "retrying as adaptive regions",
+                                    pageNum, genResult.getFinishReason(), genResult.getGeneratedTokenCount());
+                            genResult = generateDensePageRegions(pageImage, protocolRequest, adaptiveSamplingConfig, tileSize,
                                     config.getMaxTiles(), pageNum);
+                        } else {
+                            throw new IllegalStateException(
+                                    "Page generation exhausted the model context before EOS after "
+                                            + genResult.getGeneratedTokenCount()
+                                            + " tokens; full-page output was not accepted. Increase an explicit "
+                                            + "maxKvLen only when the model supports it, or opt in to "
+                                            + "adaptiveRegionFallbackEnabled for independent-region OCR.");
                         }
                     }
                     pageImage = null;
-                    String generatedText = genResult.getText();
+                    VlmProtocolOutput protocolOutput = processProtocolOutput(protocolRequest, genResult);
+                    String generatedText = protocolOutput.getRawText();
+                    responseBytes = enforceResponseLimit(
+                            responseBytes, generatedText, config.getMaxResponseBytes());
                     int generatedTokens = genResult.getGeneratedTokenCount();
                     int promptTokens = genResult.getPromptTokenCount();
                     double tokensPerSecond = generatedTokens > 0 ? (generatedTokens * 1000.0) / Math.max(generateTimeMs, 1) : 0;
@@ -601,50 +595,17 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     double effectiveTokensPerSecond = effectiveTokensPerSecond(genResult);
                     String throughputLabel = throughputLabel(genResult);
 
-                    logger.info("Page {}/{}: {} tokens in {}ms (overall={} tok/s, {}={} tok/s), model {}",
+                    logger.info("Page {}/{}: {} tokens in {}ms (finishReason={}, overall={} tok/s, {}={} tok/s), model {}",
                             progressPage, effectiveTotalPages, generatedTokens, generateTimeMs,
-                            String.format("%.1f", tokensPerSecond), throughputLabel,
+                            genResult.getFinishReason(), String.format("%.1f", tokensPerSecond), throughputLabel,
                             String.format("%.1f", effectiveTokensPerSecond), modelId);
 
                     if (progressCallback != null) {
                         progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages, "Parsing output"));
                     }
 
-                    String plainText;
-                    List<StructuredTable> tables = new ArrayList<>();
-
-                    switch (config.getVlmOutputFormat()) {
-                        case DOCTAGS:
-                            DocumentStructure docStructure = docTagsParser.parse(generatedText);
-                            plainText = docStructure.getFullText();
-                            tables = extractTablesFromDocStructure(docStructure);
-                            break;
-                        case MARKDOWN:
-                            DocumentStructure parsed = docTagsParser.parse(generatedText);
-                            plainText = docTagsParser.toMarkdown(parsed);
-                            tables = extractTablesFromDocStructure(parsed);
-                            break;
-                        case FLORENCE2:
-                            DocumentStructure florenceDoc = docTagsParser.parse(generatedText);
-                            plainText = docTagsParser.extractPlainText(generatedText);
-                            tables = extractTablesFromDocStructure(florenceDoc);
-                            break;
-                        case DONUT:
-                            DocumentStructure donutDoc = docTagsParser.parse(generatedText);
-                            plainText = docTagsParser.extractPlainText(generatedText);
-                            tables = extractTablesFromDocStructure(donutDoc);
-                            break;
-                        case PLAIN_TEXT:
-                            plainText = docTagsParser.extractPlainText(generatedText);
-                            break;
-                        case JSON:
-                            plainText = generatedText;
-                            break;
-                        case TEXT:
-                        default:
-                            plainText = docTagsParser.extractPlainText(generatedText);
-                            break;
-                    }
+                    String plainText = protocolOutput.getRenderedText();
+                    List<StructuredTable> tables = tablesFromProtocolOutput(protocolOutput);
 
                     DocumentComplexity complexity = DocumentComplexity.SIMPLE;
                     if (!tables.isEmpty()) {
@@ -665,6 +626,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     Map<String, Object> pageMetadata = new LinkedHashMap<>();
                     pageMetadata.put("vlmModel", modelId);
                     pageMetadata.put("outputFormat", config.getVlmOutputFormat().name());
+                    pageMetadata.put("outputProtocol", protocolOutput.getProtocolId());
+                    pageMetadata.put("nativeOutputFormat", protocolOutput.getNativeFormat());
+                    pageMetadata.put("structuralComplete", protocolOutput.getCompletion().isComplete());
                     pageMetadata.put("rawOutput", generatedText);
                     pageMetadata.put("generatedTokens", generatedTokens);
                     pageMetadata.put("promptTokens", promptTokens);
@@ -701,6 +665,9 @@ public class VlmDocumentPipeline implements OcrPipeline {
                                 tokensPerSecond, generateTimeMs, vlmModelName));
                     }
                 } catch (Exception pageEx) {
+                    if (pageEx instanceof ResponseLimitExceededException responseLimit) {
+                        throw responseLimit;
+                    }
                     failedPages++;
                     boolean failFast = config != null && config.isFailFastOnPageError();
                     String pageFailure = pageEx.getMessage() != null
@@ -708,13 +675,6 @@ public class VlmDocumentPipeline implements OcrPipeline {
                     logger.error("Page {}/{} failed: {}. {}",
                             progressPage, effectiveTotalPages, pageFailure,
                             failFast ? "Stopping pipeline." : "Continuing with remaining pages.", pageEx);
-
-                    // Reset sessions to free GPU memory from the failed page
-                    try {
-                        vlm.resetSessionsForDecode();
-                    } catch (Exception resetEx) {
-                        logger.warn("Failed to reset sessions after page {} error: {}", pageNum, resetEx.getMessage());
-                    }
 
                     if (failFast) {
                         if (releaseEncoderAfterEncoding && vlm != null && vlm.getVisionEncoder() != null) {
@@ -754,6 +714,21 @@ public class VlmDocumentPipeline implements OcrPipeline {
                         progressCallback.accept(PipelineProgress.vlmStep(progressPage, effectiveTotalPages,
                                 "Page failed: " + pageEx.getMessage()));
                     }
+                } finally {
+                    try {
+                        if (adaptiveGenerationUsed) {
+                            // Normalized vision tiles and padded decoder inputs keep fixed physical
+                            // shapes, so preserve every warmed replay plan. The VLM owns a separate
+                            // pressure-triggered retirement path for genuine (> threshold) buildup.
+                            vlm.retireAdaptiveInputPlansPreservingDecoder();
+                        } else {
+                            vlm.resetSessionsForDecode();
+                        }
+                    } catch (Exception resetEx) {
+                        throw new IllegalStateException(
+                                "Failed to complete VLM lifecycle for page " + pageNum,
+                                resetEx);
+                    }
                 }
             }
 
@@ -782,6 +757,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         } catch (Exception e) {
             logger.error("Failed to process PDF with VLM: {}", e.getMessage(), e);
+            if (e instanceof ResponseLimitExceededException responseLimit) throw responseLimit;
             if (config != null && config.isFailFastOnPageError()) {
                 throw new IllegalStateException("VLM PDF processing failed: " + e.getMessage(), e);
             }
@@ -789,6 +765,39 @@ public class VlmDocumentPipeline implements OcrPipeline {
         }
 
         return results;
+    }
+
+    static long enforceResponseLimit(long accumulatedBytes, String text, long maxResponseBytes) {
+        long pageBytes = text == null ? 0L : text.getBytes(StandardCharsets.UTF_8).length;
+        long totalBytes;
+        try {
+            totalBytes = Math.addExact(accumulatedBytes, pageBytes);
+        } catch (ArithmeticException overflow) {
+            throw new ResponseLimitExceededException(maxResponseBytes, Long.MAX_VALUE);
+        }
+        if (maxResponseBytes > 0L && totalBytes > maxResponseBytes) {
+            throw new ResponseLimitExceededException(maxResponseBytes, totalBytes);
+        }
+        return totalBytes;
+    }
+
+    static void rejectFailedGeneration(GenerationResult result, String context) {
+        if (result == null) {
+            throw new IllegalStateException(context + " returned no generation result");
+        }
+        GenerationResult.FinishReason reason = result.getFinishReason();
+        if (reason == GenerationResult.FinishReason.ERROR
+                || reason == GenerationResult.FinishReason.CANCELLED) {
+            throw new IllegalStateException(context + " terminated with " + reason
+                    + " after " + result.getGeneratedTokenCount() + " tokens");
+        }
+    }
+
+    private static final class ResponseLimitExceededException extends IllegalStateException {
+        private ResponseLimitExceededException(long limit, long actual) {
+            super("Generated document response exceeded maxResponseBytes=" + limit
+                    + " (actual=" + actual + ")");
+        }
     }
 
     @Override
@@ -959,9 +968,13 @@ public class VlmDocumentPipeline implements OcrPipeline {
 
         int maxKvLen = config.getMaxKvLen();
 
-        // Auto-detect sensible maxKvLen if not explicitly set
+        // Prefer the model/tokenizer declared context. Hardware heuristics are only
+        // a fallback for legacy bundles that do not carry context metadata.
         if (maxKvLen <= 0) {
-            maxKvLen = autoDetectMaxKvLen();
+            Integer modelContext = vlm.getConfig() == null
+                    ? null : vlm.getConfig().getMaxPositionEmbeddings();
+            maxKvLen = modelContext != null && modelContext > 0
+                    ? modelContext : autoDetectMaxKvLen();
         }
 
         // Skip rebuild if strategy and maxKvLen already match — rebuilding creates a new
@@ -1000,6 +1013,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 .embedTokens(vlm.getEmbedTokens())
                 .tokenizer(vlm.getTokenizer())
                 .config(vlm.getConfig())
+                .outputProtocols(vlm.getOutputProtocols())
                 .visionEncoderIOConfig(vlm.getVisionEncoderIOConfig())
                 .imagePreprocessor(vlm.getImagePreprocessor())
                 .kvCacheStrategy(strategy)
@@ -1640,11 +1654,27 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 case "creative":
                     return SamplingConfig.builder()
                             .temperature(0.9).topK(50).topP(0.95).doSample(true)
+                            .repetitionPenalty(config.getRepetitionPenalty())
+                            .nativeRepetitionLoopMaxPeriod(config.isAdaptiveRegionFallbackEnabled()
+                                    ? config.getAdaptiveNativeRepetitionMaxPeriod() : 0)
+                            .nativeRepetitionLoopMaxRepeats(config.isAdaptiveRegionFallbackEnabled()
+                                    ? config.getAdaptiveNativeRepetitionMaxRepeats() : 0)
+                            .decodeStrategy(config.getBeamSize() > 1
+                                    ? SamplingConfig.DecodeStrategy.BEAM : SamplingConfig.DecodeStrategy.AUTO)
+                            .numBeams(Math.max(1, config.getBeamSize()))
                             .maxNewTokens(config.getMaxNewTokens())
                             .build();
                 case "precise":
                     return SamplingConfig.builder()
                             .temperature(0.3).topP(0.85).doSample(true)
+                            .repetitionPenalty(config.getRepetitionPenalty())
+                            .nativeRepetitionLoopMaxPeriod(config.isAdaptiveRegionFallbackEnabled()
+                                    ? config.getAdaptiveNativeRepetitionMaxPeriod() : 0)
+                            .nativeRepetitionLoopMaxRepeats(config.isAdaptiveRegionFallbackEnabled()
+                                    ? config.getAdaptiveNativeRepetitionMaxRepeats() : 0)
+                            .decodeStrategy(config.getBeamSize() > 1
+                                    ? SamplingConfig.DecodeStrategy.BEAM : SamplingConfig.DecodeStrategy.AUTO)
+                            .numBeams(Math.max(1, config.getBeamSize()))
                             .maxNewTokens(config.getMaxNewTokens())
                             .build();
                 default:
@@ -1659,8 +1689,45 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 .topP(config.getTopP())
                 .topK(config.getTopK())
                 .repetitionPenalty(config.getRepetitionPenalty())
+                .nativeRepetitionLoopMaxPeriod(config.isAdaptiveRegionFallbackEnabled()
+                        ? config.getAdaptiveNativeRepetitionMaxPeriod() : 0)
+                .nativeRepetitionLoopMaxRepeats(config.isAdaptiveRegionFallbackEnabled()
+                        ? config.getAdaptiveNativeRepetitionMaxRepeats() : 0)
+                .decodeStrategy(config.getBeamSize() > 1
+                        ? SamplingConfig.DecodeStrategy.BEAM : SamplingConfig.DecodeStrategy.AUTO)
+                .numBeams(Math.max(1, config.getBeamSize()))
                 .doSample(config.isDoSample())
                 .maxNewTokens(config.getMaxNewTokens())
+                .build();
+    }
+
+    private SamplingConfig fullPageSamplingConfig(OcrPipelineConfig config, SamplingConfig base) {
+        if (!config.isAdaptiveRegionFallbackEnabled()
+                || config.getAdaptiveFullPageMaxNewTokens() <= 0) {
+            return base;
+        }
+        int configured = base.getMaxNewTokens();
+        int bounded = configured > 0
+                ? Math.min(configured, config.getAdaptiveFullPageMaxNewTokens())
+                : config.getAdaptiveFullPageMaxNewTokens();
+        if (bounded != configured) {
+            logger.info("Adaptive full-page generation budget bounded from {} to {} tokens",
+                    configured, bounded);
+        }
+        return base.toBuilder().maxNewTokens(bounded).build();
+    }
+
+    private SamplingConfig adaptiveSamplingConfig(OcrPipelineConfig config, SamplingConfig base) {
+        int configured = base.getMaxNewTokens();
+        int regionCap = config.getAdaptiveRegionMaxNewTokens();
+        int bounded = regionCap > 0
+                ? (configured > 0 ? Math.min(configured, regionCap) : regionCap)
+                : configured;
+        double repetitionPenalty = Math.max(
+                base.getRepetitionPenalty(), config.getAdaptiveRegionRepetitionPenalty());
+        return base.toBuilder()
+                .maxNewTokens(bounded)
+                .repetitionPenalty(repetitionPenalty)
                 .build();
     }
 
@@ -1817,14 +1884,14 @@ public class VlmDocumentPipeline implements OcrPipeline {
     }
 
     private GenerationResult generateDensePageRegions(BufferedImage pageImage,
-                                                       String prompt,
+                                                       VlmProtocolRequest protocolRequest,
                                                        SamplingConfig samplingConfig,
                                                        int tileSize,
                                                        int maxTiles,
                                                        int pageNumber) {
         if (pageImage.getWidth() > tileSize * 2 && pageImage.getHeight() > pageImage.getWidth()) {
             return generateDensePageColumns(
-                    pageImage, prompt, samplingConfig, tileSize, maxTiles, pageNumber);
+                    pageImage, protocolRequest, samplingConfig, tileSize, maxTiles, pageNumber);
         }
 
         int height = pageImage.getHeight();
@@ -1840,31 +1907,14 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 pageImage.getSubimage(0, secondSplit, pageImage.getWidth(), height - secondSplit));
         List<GenerationResult> parts = new ArrayList<>();
         for (int i = 0; i < regions.size(); i++) {
-            parts.addAll(generateDenseRegion(regions.get(i), prompt, samplingConfig, tileSize,
+            parts.addAll(generateDenseRegion(regions.get(i), protocolRequest, samplingConfig, tileSize,
                     maxTiles, pageNumber, "region " + (i + 1) + "/" + regions.size(), 0));
         }
-        return mergeDenseResults(parts, pageNumber);
-    }
-
-    private boolean hasUsableStructuredPrefix(GenerationResult result, VlmOutputFormat format) {
-        if (result == null || result.getText() == null || result.getText().isBlank()) {
-            return false;
-        }
-        if (format != VlmOutputFormat.DOCTAGS && format != VlmOutputFormat.MARKDOWN) {
-            return false;
-        }
-        try {
-            DocumentStructure parsed = docTagsParser.parse(result.getText());
-            String text = parsed.getFullText();
-            return parsed.getElementCount() >= 5 && text != null && text.length() >= 200;
-        } catch (RuntimeException e) {
-            logger.debug("Unable to parse MAX_TOKENS output as a structured prefix: {}", e.getMessage());
-            return false;
-        }
+        return mergeDenseResults(parts, pageNumber, protocolRequest);
     }
 
     private GenerationResult generateDensePageColumns(BufferedImage pageImage,
-                                                       String prompt,
+                                                       VlmProtocolRequest protocolRequest,
                                                        SamplingConfig samplingConfig,
                                                        int tileSize,
                                                        int maxTiles,
@@ -1876,63 +1926,51 @@ public class VlmDocumentPipeline implements OcrPipeline {
             throw new IllegalStateException("Unable to split dense multi-column page " + pageNumber
                     + ": width=" + width + ", splits=" + firstSplit + "," + secondSplit);
         }
-        logger.info("Dense page {} uses column-first OCR at columns {},{} (page={}x{})",
-                pageNumber, firstSplit, secondSplit, width, pageImage.getHeight());
-        List<BufferedImage> columns = List.of(
-                pageImage.getSubimage(0, 0, firstSplit, pageImage.getHeight()),
-                pageImage.getSubimage(firstSplit, 0, secondSplit - firstSplit, pageImage.getHeight()),
-                pageImage.getSubimage(secondSplit, 0, width - secondSplit, pageImage.getHeight()));
+        int firstWidth = firstSplit;
+        int middleWidth = secondSplit - firstSplit;
+        int lastWidth = width - secondSplit;
+        int minimumColumnWidth = Math.max(64, tileSize / 2);
+        List<BufferedImage> columns;
+        if (firstWidth < minimumColumnWidth || middleWidth < minimumColumnWidth
+                || lastWidth < minimumColumnWidth) {
+            int modelSizedSplit = findLowInkColumn(
+                    pageImage, width / 2, Math.max(32, width / 8));
+            if (modelSizedSplit < minimumColumnWidth
+                    || width - modelSizedSplit < minimumColumnWidth) {
+                modelSizedSplit = width / 2;
+            }
+            columns = List.of(
+                    pageImage.getSubimage(0, 0, modelSizedSplit, pageImage.getHeight()),
+                    pageImage.getSubimage(modelSizedSplit, 0,
+                            width - modelSizedSplit, pageImage.getHeight()));
+        } else {
+            columns = List.of(
+                    pageImage.getSubimage(0, 0, firstWidth, pageImage.getHeight()),
+                    pageImage.getSubimage(firstSplit, 0, middleWidth, pageImage.getHeight()),
+                    pageImage.getSubimage(secondSplit, 0, lastWidth, pageImage.getHeight()));
+        }
+        logger.info("Dense page {} uses {} model-sized OCR columns (candidate widths={},{},{}; "
+                        + "minimum={}; page={}x{})",
+                pageNumber, columns.size(), firstWidth, middleWidth, lastWidth,
+                minimumColumnWidth, width, pageImage.getHeight());
         List<GenerationResult> parts = new ArrayList<>();
         for (int i = 0; i < columns.size(); i++) {
-            parts.addAll(generateDenseRegion(columns.get(i), prompt, samplingConfig, tileSize,
+            parts.addAll(generateDenseRegion(columns.get(i), protocolRequest, samplingConfig, tileSize,
                     maxTiles, pageNumber, "column " + (i + 1) + "/" + columns.size(), 0));
         }
-        return mergeDenseResults(parts, pageNumber);
+        return mergeDenseResults(parts, pageNumber, protocolRequest);
     }
 
-    private GenerationResult mergeDenseResults(List<GenerationResult> parts, int pageNumber) {
-        vlm.resetSessionsForDecode();
-
-        List<Integer> tokenIds = new ArrayList<>();
-        StringBuilder body = new StringBuilder();
-        int generatedTokens = 0;
-        int promptTokens = 0;
-        long generationTimeMs = 0;
-        long firstTokenLatencyMs = 0;
-        for (GenerationResult part : parts) {
-            String partBody = docTagsBody(part.getText());
-            if (!partBody.isBlank()) {
-                if (body.length() > 0) body.append('\n');
-                body.append(partBody);
-            }
-            if (part.getTokenIds() != null) {
-                for (int tokenId : part.getTokenIds()) tokenIds.add(tokenId);
-            }
-            generatedTokens += part.getGeneratedTokenCount();
-            promptTokens += part.getPromptTokenCount();
-            generationTimeMs += part.getGenerationTimeMs();
-            firstTokenLatencyMs += part.getFirstTokenLatencyMs();
-        }
-        int[] mergedTokenIds = tokenIds.stream().mapToInt(Integer::intValue).toArray();
-        double tokensPerSecond = generationTimeMs > 0
-                ? generatedTokens * 1000.0 / generationTimeMs : 0.0;
+    private GenerationResult mergeDenseResults(List<GenerationResult> parts, int pageNumber,
+                                               VlmProtocolRequest protocolRequest) {
+        GenerationResult merged = vlm.mergeOutputProtocolRegions(protocolRequest, parts);
         logger.info("Dense page {} completed as {} regions: {} tokens in {}ms",
-                pageNumber, parts.size(), generatedTokens, generationTimeMs);
-        return GenerationResult.builder()
-                .text("<doctag>" + body + "</doctag>")
-                .tokenIds(mergedTokenIds)
-                .generatedTokenCount(generatedTokens)
-                .promptTokenCount(promptTokens)
-                .totalTokenCount(promptTokens + generatedTokens)
-                .finishReason(GenerationResult.FinishReason.EOS)
-                .firstTokenLatencyMs(firstTokenLatencyMs)
-                .generationTimeMs(generationTimeMs)
-                .tokensPerSecond(tokensPerSecond)
-                .build();
+                pageNumber, parts.size(), merged.getGeneratedTokenCount(), merged.getGenerationTimeMs());
+        return merged;
     }
 
     private List<GenerationResult> generateDenseRegion(BufferedImage region,
-                                                       String prompt,
+                                                       VlmProtocolRequest protocolRequest,
                                                        SamplingConfig samplingConfig,
                                                        int tileSize,
                                                        int maxTiles,
@@ -1942,7 +1980,7 @@ public class VlmDocumentPipeline implements OcrPipeline {
         if (!hasVisibleInk(region)) {
             logger.info("Dense page {} {} is blank; skipping model generation", pageNumber, label);
             return Collections.singletonList(GenerationResult.builder()
-                    .text("<doctag></doctag>")
+                    .text("")
                     .tokenIds(new int[0])
                     .generatedTokenCount(0)
                     .promptTokenCount(0)
@@ -1956,13 +1994,34 @@ public class VlmDocumentPipeline implements OcrPipeline {
         ImageTiler.SplitImageResult tiles =
                 ImageTiler.splitImageForVLMPreservingScale(region, tileSize, maxTiles);
         GenerationResult result = vlm.generatePagesTiled(
-                Collections.singletonList(tiles), prompt,
-                samplingConfig.getMaxNewTokens(), samplingConfig.isDoSample(),
-                samplingConfig.getTemperature(), tileSize)[0];
+                Collections.singletonList(tiles), protocolRequest, samplingConfig, tileSize)[0];
+        if (result.getFinishReason() == GenerationResult.FinishReason.REPETITION) {
+            String closedPrefix = trimAdaptivePrefix(result.getText(), 1);
+            logger.warn("Dense page {} {} stopped an explicit native repetition loop after {} tokens; "
+                            + "{} the bounded structurally closed prefix",
+                    pageNumber, label, result.getGeneratedTokenCount(),
+                    closedPrefix == null ? "skipping a crop without closed elements in" : "accepting");
+            return Collections.singletonList(result.toBuilder()
+                    .text(closedPrefix != null ? closedPrefix : "")
+                    .build());
+        }
         if (result.getFinishReason() != GenerationResult.FinishReason.MAX_TOKENS) {
             return Collections.singletonList(result);
         }
         logDenseGenerationDiagnostics(pageNumber, label, region, result);
+        String usablePrefix = trimUsableAdaptivePrefix(result.getText());
+        if (usablePrefix != null) {
+            logger.warn("Dense page {} {} reached its bounded token budget after producing {} useful "
+                            + "characters; accepting the structurally closed prefix instead of re-OCRing smaller crops",
+                    pageNumber, label, usablePrefix.length());
+            return Collections.singletonList(result.toBuilder()
+                    .text(usablePrefix)
+                    .finishReason(GenerationResult.FinishReason.REPETITION)
+                    .build());
+        }
+        // Reclaim only before recursive subdivision introduces additional shapes. Successful
+        // sibling columns share one input shape and must retain its compiled vision/embed plans.
+        vlm.reclaimAdaptiveInputPlansIfNeeded();
         if (region.getWidth() > tileSize) {
             int splitX = findLowInkColumn(region, region.getWidth() / 2,
                     Math.max(16, region.getWidth() / 6));
@@ -1972,11 +2031,12 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 List<GenerationResult> parts = new ArrayList<>();
                 parts.addAll(generateDenseRegion(
                         region.getSubimage(0, 0, splitX, region.getHeight()),
-                        prompt, samplingConfig, tileSize, maxTiles, pageNumber,
+                        protocolRequest, samplingConfig, tileSize, maxTiles, pageNumber,
                         label + ".left", depth + 1));
+                vlm.reclaimAdaptiveInputPlansIfNeeded();
                 parts.addAll(generateDenseRegion(
                         region.getSubimage(splitX, 0, region.getWidth() - splitX, region.getHeight()),
-                        prompt, samplingConfig, tileSize, maxTiles, pageNumber,
+                        protocolRequest, samplingConfig, tileSize, maxTiles, pageNumber,
                         label + ".right", depth + 1));
                 return parts;
             }
@@ -1997,11 +2057,52 @@ public class VlmDocumentPipeline implements OcrPipeline {
                 pageNumber, label, result.getGeneratedTokenCount(), split);
         List<GenerationResult> parts = new ArrayList<>();
         parts.addAll(generateDenseRegion(region.getSubimage(0, 0, region.getWidth(), split),
-                prompt, samplingConfig, tileSize, maxTiles, pageNumber, label + ".1", depth + 1));
+                protocolRequest, samplingConfig, tileSize, maxTiles, pageNumber, label + ".1", depth + 1));
+        vlm.reclaimAdaptiveInputPlansIfNeeded();
         parts.addAll(generateDenseRegion(region.getSubimage(0, split, region.getWidth(),
-                        region.getHeight() - split), prompt, samplingConfig, tileSize, maxTiles,
+                        region.getHeight() - split), protocolRequest, samplingConfig, tileSize, maxTiles,
                 pageNumber, label + ".2", depth + 1));
         return parts;
+    }
+
+    static String trimUsableAdaptivePrefix(String text) {
+        if (text == null || text.length() < 256) return null;
+        return trimAdaptivePrefix(text, 3);
+    }
+
+    private static String trimAdaptivePrefix(String text, int minimumClosingTags) {
+        if (text == null || !text.contains("<doctag>")) return null;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("<(/?)([A-Za-z_][A-Za-z0-9_-]*)([^>]*)>").matcher(text);
+        Deque<String> stack = new ArrayDeque<>();
+        int completedElements = 0;
+        int lastBalancedEnd = -1;
+        while (matcher.find()) {
+            String name = matcher.group(2);
+            if (!isDocTagsContainer(name)) continue;
+            if (matcher.group(1).isEmpty()) {
+                stack.push(name);
+                continue;
+            }
+            if (stack.isEmpty() || !stack.peek().equals(name)) break;
+            stack.pop();
+            if (!"doctag".equals(name)) completedElements++;
+            if (stack.isEmpty() || stack.size() == 1 && "doctag".equals(stack.peek())) {
+                lastBalancedEnd = matcher.end();
+            }
+        }
+        if (completedElements < minimumClosingTags || lastBalancedEnd < 0) return null;
+        return text.substring(0, lastBalancedEnd).trim();
+    }
+
+    private static boolean isDocTagsContainer(String name) {
+        return "doctag".equals(name)
+                || name.matches("section_header_level_[0-9]+")
+                || Set.of("page_header", "page_footer", "paragraph", "text", "caption",
+                "footnote", "formula", "picture", "code", "chart", "otsl",
+                "ordered_list", "unordered_list", "list_item", "reference", "form",
+                "group", "key_value_region", "title", "table", "checkbox_selected",
+                "checkbox_unselected", "smiles").contains(name);
     }
 
     private void logDenseGenerationDiagnostics(int pageNumber, String label,
@@ -2109,17 +2210,6 @@ public class VlmDocumentPipeline implements OcrPipeline {
             }
         }
         return bestRow;
-    }
-
-    private String docTagsBody(String rawOutput) {
-        if (rawOutput == null) return "";
-        String body = rawOutput.replace("<end_of_utterance>", "")
-                .replace("<|im_end|>", "").replace("<|im_start|>", "").trim();
-        int start = body.indexOf("<doctag>");
-        if (start >= 0) body = body.substring(start + "<doctag>".length());
-        int end = body.lastIndexOf("</doctag>");
-        if (end >= 0) body = body.substring(0, end);
-        return body.trim();
     }
 
     /**
