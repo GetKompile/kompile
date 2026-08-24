@@ -32,6 +32,8 @@ public class AgentChatRequest {
     private String agentName;
     private boolean skipPermissions = true;
     private String workingDirectory;
+    /** Supplemental system instructions supplied by the Kompile CLI. */
+    private String systemPromptOverride;
 
     // RAG configuration (vector-based retrieval)
     private boolean enableRag = false;

@@ -10,6 +10,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -84,6 +86,65 @@ class PipelineRuntimeSupervisorTest {
     }
 
     @Test
+    void interruptedSynchronousWaitCancelsAndTaintsRuntime() throws Exception {
+        CountDownLatch awaiting = new CountDownLatch(1);
+        CountDownLatch cancelled = new CountDownLatch(1);
+        FakeRuntime runtime = new FakeRuntime() {
+            @Override
+            public PipelineRuntimeSupervisor.RunningExecution start(Map<String, Object> input) {
+                return new PipelineRuntimeSupervisor.RunningExecution() {
+                    @Override
+                    public Map<String, Object> await(Duration timeout) throws Exception {
+                        awaiting.countDown();
+                        new CountDownLatch(1).await();
+                        return input;
+                    }
+
+                    @Override
+                    public boolean cancel(Duration timeout) {
+                        runtimeClosed();
+                        cancelled.countDown();
+                        return true;
+                    }
+                };
+            }
+        };
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> runtime);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread worker = new Thread(() -> {
+            try (PipelineRuntimeSupervisor.Lease lease = PipelineRuntimeSupervisor.acquire(
+                    definition("interrupt"), Duration.ofSeconds(1))) {
+                lease.execute(Map.of("text", "blocked"), Duration.ofMinutes(1));
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+        worker.start();
+        assertTrue(awaiting.await(5, TimeUnit.SECONDS));
+        worker.interrupt();
+        worker.join(5_000L);
+
+        assertFalse(worker.isAlive());
+        assertTrue(cancelled.await(1, TimeUnit.SECONDS));
+        assertTrue(failure.get() instanceof InterruptedException, String.valueOf(failure.get()));
+        assertFalse(runtime.isAlive());
+    }
+
+    @Test
+    void requestScopedProgressIsForwarded() throws Exception {
+        PipelineRuntimeSupervisor.setStarterForTests(definition -> new FakeRuntime());
+        AtomicReference<Map<String, Object>> progress = new AtomicReference<>();
+
+        try (PipelineRuntimeSupervisor.Lease lease = PipelineRuntimeSupervisor.acquire(
+                definition("progress"), Duration.ofSeconds(1))) {
+            lease.execute(Map.of("text", "done"), Duration.ofSeconds(1),
+                    message -> progress.set(message.payload()));
+        }
+
+        assertEquals(2, progress.get().get("currentPage"));
+    }
+
+    @Test
     void fallbackDiagnosticsRetainInitializerRootCause() {
         Map<String, Object> diagnostic = PipelineRuntimeSupervisor.diagnostic(
                 new ExceptionInInitializerError(
@@ -126,7 +187,7 @@ class PipelineRuntimeSupervisorTest {
                 .build();
     }
 
-    private static final class FakeRuntime implements PipelineRuntimeSupervisor.ManagedRuntime {
+    private static class FakeRuntime implements PipelineRuntimeSupervisor.ManagedRuntime {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean cancelled = new AtomicBoolean();
 
@@ -145,6 +206,22 @@ class PipelineRuntimeSupervisorTest {
                     return true;
                 }
             };
+        }
+
+        @Override
+        public PipelineRuntimeSupervisor.RunningExecution start(
+                Map<String, Object> input,
+                java.util.function.Consumer<ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.Message> progress) {
+            if (progress != null) {
+                progress.accept(ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.message(
+                        ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.PROGRESS,
+                        "progress", "reuse", Map.of("currentPage", 2, "totalPages", 3)));
+            }
+            return start(input);
+        }
+
+        void runtimeClosed() {
+            closed.set(true);
         }
 
         @Override

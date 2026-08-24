@@ -21,6 +21,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
@@ -52,6 +53,7 @@ import java.util.stream.Stream;
 public class CustomSkillLoader {
 
     private static final Logger log = LoggerFactory.getLogger(CustomSkillLoader.class);
+    private static final long MAX_SKILL_BYTES = 1_048_576L;
 
     private final Path workingDirectory;
 
@@ -68,28 +70,67 @@ public class CustomSkillLoader {
     public Map<String, SkillConfig> loadAll() {
         Map<String, SkillConfig> skills = new LinkedHashMap<>();
 
-        // 1. User-scoped: ~/.kompile/skills/
-        Path userDir = KompileHome.homeDirectory().toPath().resolve("skills");
-        loadFromDirectory(userDir, skills);
+        // Provider-shared skills are available to normal Kompile chat too. Explicit
+        // Kompile definitions load later and retain override precedence.
+        Path userHome = Path.of(System.getProperty("user.home"));
+        Map<String, SkillConfig> providerSkills = new LinkedHashMap<>();
+        for (Path providerDir : List.of(
+                userHome.resolve(".claude/skills"),
+                userHome.resolve(".codex/skills"),
+                userHome.resolve(".agents/skills"),
+                userHome.resolve(".gemini/skills"),
+                userHome.resolve(".config/opencode/skills"),
+                userHome.resolve(".qwen/skills"))) {
+            loadFromDirectory(providerDir, providerSkills, false);
+        }
+        skills.putAll(providerSkills);
 
-        // 2. Project-scoped: .kompile/skills/ (relative to working directory)
+        // User-scoped Kompile skills override provider-shared definitions.
+        Path userDir = KompileHome.homeDirectory().toPath().resolve("skills");
+        loadFromDirectory(userDir, skills, true);
+
+        // Project provider skills override user definitions, while collisions between
+        // providers are reported and keep the first deterministic definition.
+        Map<String, SkillConfig> projectProviderSkills = new LinkedHashMap<>();
+        for (String provider : List.of(".claude", ".codex", ".agents", ".gemini", ".opencode", ".qwen")) {
+            loadFromDirectory(workingDirectory.resolve(provider).resolve("skills"),
+                    projectProviderSkills, false);
+        }
+        skills.putAll(projectProviderSkills);
+
+        // Project-scoped Kompile skills have the highest precedence.
         Path projectDir = workingDirectory.resolve(".kompile").resolve("skills");
-        loadFromDirectory(projectDir, skills);
+        loadFromDirectory(projectDir, skills, true);
 
         return skills;
     }
 
-    private void loadFromDirectory(Path dir, Map<String, SkillConfig> skills) {
-        if (!Files.isDirectory(dir)) return;
+    private void loadFromDirectory(Path dir, Map<String, SkillConfig> skills, boolean overwrite) {
+        if (SkillPathPolicy.hasSymlinkComponent(dir)
+                || !Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS)) return;
+        Path normalizedDir = dir.toAbsolutePath().normalize();
 
         try (Stream<Path> stream = Files.list(dir)) {
-            stream.filter(p -> p.toString().endsWith(".md"))
+            stream.map(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+                            ? path.resolve("SKILL.md") : path)
+                    .map(path -> path.toAbsolutePath().normalize())
+                    .filter(path -> path.startsWith(normalizedDir))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(p -> p.toString().endsWith(".md"))
                     .sorted()
                     .forEach(file -> {
                         try {
                             SkillConfig skill = parseSkillFile(file);
-                            if (skill != null) {
-                                skills.put(skill.getName(), skill);
+                            if (skill == null || !SkillRegistry.isInvokableName(skill.getName())) {
+                                log.warn("Skipping skill with invalid name from {}", file);
+                            } else {
+                                String key = skill.getName().toLowerCase(Locale.ROOT);
+                                if (overwrite) {
+                                    skills.put(key, skill);
+                                } else if (skills.putIfAbsent(key, skill) != null) {
+                                    log.warn("Ignoring duplicate provider skill '{}' from {}",
+                                            skill.getName(), file);
+                                }
                             }
                         } catch (Exception e) {
                             log.warn("Failed to load skill from {}: {}", file, e.getMessage(), e);
@@ -104,7 +145,17 @@ public class CustomSkillLoader {
      * Parse a single skill definition file.
      */
     public SkillConfig parseSkillFile(Path file) throws IOException {
-        String content = Files.readString(file);
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Skill must be a regular non-symlink file: " + file);
+        }
+        if (Files.size(file) > MAX_SKILL_BYTES) {
+            throw new IOException("Skill exceeds " + MAX_SKILL_BYTES + " bytes: " + file);
+        }
+        String content;
+        try (var input = Files.newInputStream(file, StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS)) {
+            content = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
 
         // Split frontmatter from body
         if (!content.startsWith("---")) {

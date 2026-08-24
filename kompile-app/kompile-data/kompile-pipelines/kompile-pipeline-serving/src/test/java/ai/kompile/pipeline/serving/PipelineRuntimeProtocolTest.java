@@ -47,6 +47,22 @@ class PipelineRuntimeProtocolTest {
     }
 
     @Test
+    void progressRoundTripsPageAndTokenMetricsWithoutProtocolChanges() throws Exception {
+        PipelineRuntimeProtocol.Message decoded = PipelineRuntimeProtocol.decode(
+                PipelineRuntimeProtocol.encode(PipelineRuntimeProtocol.message(
+                        PipelineRuntimeProtocol.PROGRESS, "request-progress", "vlm-document",
+                        Map.of("phase", "VLM_EXTRACTION", "progressPercent", 50,
+                                "currentPage", 2, "totalPages", 4,
+                                "metrics", Map.of("generatedTokens", 128)))));
+
+        assertEquals(PipelineRuntimeProtocol.VERSION, decoded.version());
+        assertEquals(PipelineRuntimeProtocol.PROGRESS, decoded.type());
+        assertEquals(2, decoded.payload().get("currentPage"));
+        assertEquals(4, decoded.payload().get("totalPages"));
+        assertEquals(128, ((Map<?, ?>) decoded.payload().get("metrics")).get("generatedTokens"));
+    }
+
+    @Test
     void nonProtocolLinesAreRejected() {
         assertThrows(Exception.class, () -> PipelineRuntimeProtocol.decode("ordinary output"));
     }

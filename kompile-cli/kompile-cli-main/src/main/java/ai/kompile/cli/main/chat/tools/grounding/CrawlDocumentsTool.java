@@ -282,7 +282,7 @@ public final class CrawlDocumentsTool implements CliTool {
         pipelineProperties.putObject("pipelineDefinitionPath").put("type", "string");
         pipelineProperties.putObject("pipelineDefinitionId").put("type", "string");
         pipelineProperties.putObject("options").put("type", "object")
-                .put("description", "Pipeline-specific options. For VLM/OCR, put outputFormat, maxNewTokens, pdfRenderDpi, pageBatchSize, pageRange, temperature, topP, beamSize, doSample, and maxPages here; these override inherited registered-pipeline defaults.");
+                .put("description", "Pipeline-specific options. VLM/OCR generation runs to model EOS within the declared context by default; use maxResponseBytes as the output safety limit and maxNewTokens only as an explicit diagnostic override. Other options include outputFormat, pdfRenderDpi, pageBatchSize, pageRange, temperature, topP, beamSize, doSample, and maxPages.");
         pipelineProperties.putObject("chunkerOptions").put("type", "object");
         ObjectNode processor = pipelineProperties.putObject("processor");
         processor.put("type", "object");

@@ -111,6 +111,12 @@ public class DirectSubagentRunner implements SubagentRunner {
                 () -> subagentCancelled.get() || parentContext.isAborted());
         String systemPrompt = agent.getSystemPrompt();
         if (systemPrompt == null) systemPrompt = "";
+        String projectPrompt = ProjectChatContext.load(parentContext.getWorkingDirectory())
+                .renderSystemPrompt();
+        if (!projectPrompt.isBlank()) {
+            systemPrompt = systemPrompt.isBlank()
+                    ? projectPrompt : systemPrompt.strip() + "\n\n" + projectPrompt;
+        }
         DirectSession session = new DirectSession(
                 subagentId, agent, parentContext, subClient,
                 systemPrompt, agent.getModelOverride(), subagentCancelled);

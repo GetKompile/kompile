@@ -97,6 +97,8 @@ class CrawlDiscoveryToolTest {
         assertFalse(result.getOutput().contains("documentModelWorker"), result.getOutput());
         assertFalse(result.getOutput().contains("vlm-test"), result.getOutput());
         assertTrue(result.getOutput().contains("\"supportedInputTypes\""), result.getOutput());
+        assertTrue(result.getOutput().contains("Omit maxNewTokens for normal EOS/context generation"),
+                result.getOutput());
         assertTrue(result.getOutput().contains("STANDARD_TEXT"), result.getOutput());
         assertTrue(result.getOutput().contains("TABLE_AWARE"), result.getOutput());
         assertTrue(result.getOutput().contains("GRAPH_EXTRACTION"), result.getOutput());

@@ -168,9 +168,9 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertReferenceBinding(keyMap.getBound("\033[6~"), "scroll-page-down");
         assertReferenceBinding(keyMap.getBound("\033[1;5H"), "scroll-top");
         assertReferenceBinding(keyMap.getBound("\033[1;5F"), "scroll-bottom");
-        // X10 mouse reports (ESC[M…) route through the wheel widget so the wheel
-        // scrolls the transcript instead of the host terminal's native scrollback.
-        assertReferenceBinding(keyMap.getBound("\033[M"), "scroll-mouse-wheel");
+        // Kompile deliberately leaves X10 mouse reports on JLine's native binding
+        // so terminal selection, paste, and host scrollback keep working.
+        assertReferenceBinding(keyMap.getBound("\033[M"), "mouse");
 
         Binding plainHome = keyMap.getBound("\033[H");
         if (plainHome instanceof Reference ref) {
@@ -183,7 +183,7 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
     }
 
     @Test
-    void wheelCaptureEnablesOnlyWhileADecoderOwnsTheScreen() throws Exception {
+    void wheelCaptureRemainsDisabledWhenDecoderOwnsTheScreen() throws Exception {
         EmulatedPassthroughCommand command = configuredIdleCommand();
 
         // No decoder yet (raw passthrough / pre-launch) → the wheel stays with the
@@ -194,13 +194,13 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
                 "Mouse tracking must stay off until a decoder owns the screen");
         assertFalse((Boolean) getField(command, "transcriptMouseEnabled"));
 
-        // Decoder-owned agent (OpenCode renders into Kompile's transcript) → capture wheel.
+        // Decoder-owned output still must not capture the real terminal's mouse.
         setField(command, "agentDecoder", new ai.kompile.cli.main.chat.tui.OpenCodeDecoder());
         terminalOutput.reset();
         invokeNoArg(command, "enableTranscriptMouse");
-        assertTrue(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000h"),
-                "Decoder-owned screen should enable real-terminal wheel capture");
-        assertTrue((Boolean) getField(command, "transcriptMouseEnabled"));
+        assertFalse(terminalOutput.toString(StandardCharsets.UTF_8).contains("\033[?1000h"),
+                "Decoder-owned screen must preserve terminal-native mouse handling");
+        assertFalse((Boolean) getField(command, "transcriptMouseEnabled"));
 
         // Idempotent: re-enabling while already tracking must not re-emit the sequence.
         terminalOutput.reset();
@@ -974,6 +974,26 @@ class EmulatedPassthroughCommandManagedInputBridgeTest {
         assertTrue(rendered.contains("No enforcer active") || rendered.contains("Enforcer"),
                 "/enforce should route to Kompile enforcer handling, not child-agent forwarding");
         assertFalse(rendered.contains("→ opencode /enforce"));
+    }
+
+    @Test
+    void titleCommandUpdatesManagedPassthroughSessionTitle() throws Exception {
+        EmulatedPassthroughCommand command = configuredIdleCommand();
+        setField(command, "renderer", new TerminalRenderer(false));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+        try (PrintStream capture = new PrintStream(output, true, StandardCharsets.UTF_8)) {
+            System.setOut(capture);
+            invokeSlashCommand(command, "/title Managed release work");
+            invokeSlashCommand(command, "/title");
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        ChatSessionTitle title = (ChatSessionTitle) getField(command, "sessionTitle");
+        assertEquals("Managed release work", title.get());
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("Managed release work"));
     }
 
     @Test

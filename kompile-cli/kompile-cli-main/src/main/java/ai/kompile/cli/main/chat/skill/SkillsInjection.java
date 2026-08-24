@@ -16,12 +16,12 @@
 
 package ai.kompile.cli.main.chat.skill;
 
-import ai.kompile.cli.common.KompileHome;
-
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 
 /**
@@ -31,9 +31,9 @@ import java.util.*;
  * <ul>
  *   <li><b>Claude Code</b>: {@code .claude/commands/<name>.md} — becomes {@code /name}.
  *       Placeholder: {@code $ARGUMENTS}</li>
- *   <li><b>Codex</b>: {@code ~/.agents/skills/<name>/SKILL.md} — becomes {@code $name}</li>
+ *   <li><b>Codex</b>: project {@code .agents/skills/<name>/SKILL.md}</li>
  *   <li><b>Qwen Code</b>: {@code .qwen/commands/<name>.md} — same format as Claude (fork)</li>
- *   <li><b>Gemini CLI</b>: appends to {@code GEMINI_SYSTEM_MD} temp file (no native skill system)</li>
+ *   <li><b>Gemini CLI</b>: managed project {@code GEMINI.md} block</li>
  *   <li><b>OpenCode / Crush</b>: appends to {@code AGENTS.md} (no native skill system)</li>
  * </ul>
  *
@@ -42,14 +42,12 @@ import java.util.*;
  */
 public class SkillsInjection {
 
-    private static final Path KOMPILE_HOME = KompileHome.homeDirectory().toPath();
-
     private final SkillRegistry skillRegistry;
     private final Path workingDirectory;
 
-    // Tracks files we created or backed up for cleanup
-    private final List<InstalledFile> installedFiles = new ArrayList<>();
-    private final List<BackupEntry> backups = new ArrayList<>();
+    // Tracks content owned by this injection so cleanup never overwrites later edits.
+    private final List<OwnedFile> ownedFiles = new ArrayList<>();
+    private final List<ManagedBlock> managedBlocks = new ArrayList<>();
 
     public SkillsInjection(SkillRegistry skillRegistry, Path workingDirectory) {
         this.skillRegistry = skillRegistry;
@@ -97,34 +95,26 @@ public class SkillsInjection {
     }
 
     // ── Codex ──────────────────────────────────────────────────────────────
-    // ~/.agents/skills/<name>/SKILL.md → $name
 
     private int installForCodex(Collection<SkillConfig> skills) {
-        Path skillsDir = Path.of(System.getProperty("user.home"), ".agents", "skills");
+        Path root = workingDirectory.resolve(".agents").resolve("skills");
         int count = 0;
         try {
-            Files.createDirectories(skillsDir);
+            requireSafePath(root);
+            Files.createDirectories(root);
         } catch (IOException e) {
-            System.err.println("[Skills] Warning: Could not create " + skillsDir + ": " + e.getMessage());
             return 0;
         }
-
         for (SkillConfig skill : skills) {
             try {
-                Path skillDir = skillsDir.resolve(skill.getName());
+                Path skillDir = safeChild(root, skill.getName());
+                boolean parentExisted = Files.isDirectory(skillDir, LinkOption.NOFOLLOW_LINKS);
                 Files.createDirectories(skillDir);
-                Path skillFile = skillDir.resolve("SKILL.md");
-
-                // Backup existing SKILL.md if present
-                backupIfExists(skillFile);
-
-                // Write SKILL.md in Codex format
-                String content = convertToCodexFormat(skill);
-                Files.writeString(skillFile, content);
-                installedFiles.add(new InstalledFile(skillFile, skillDir));
-                count++;
-            } catch (IOException e) {
-                System.err.println("[Skills] Warning: Could not install Codex skill '" + skill.getName() + "': " + e.getMessage());
+                Path skillFile = safeChild(skillDir, "SKILL.md");
+                if (installOwnedFile(skillFile, parentExisted ? null : skillDir,
+                        convertToCodexFormat(skill))) count++;
+            } catch (IOException ignored) {
+                // Existing or unsafe provider skills are left untouched.
             }
         }
         return count;
@@ -141,9 +131,7 @@ public class SkillsInjection {
     // No native skill system — write to temp file for GEMINI_SYSTEM_MD
 
     private int installForGemini(Collection<SkillConfig> skills) {
-        // Gemini has no native command system; append full skill content
-        // to a temp file that can be set via GEMINI_SYSTEM_MD env var
-        return installIntoAgentsMd(skills);
+        return installIntoInstructionFile(skills, workingDirectory.resolve("GEMINI.md"));
     }
 
     // ── Shared: command file installation (Claude, Qwen) ───────────────────
@@ -151,6 +139,7 @@ public class SkillsInjection {
     private int installCommandFiles(Path commandsDir, Collection<SkillConfig> skills, String argsPlaceholder) {
         int count = 0;
         try {
+            requireSafePath(commandsDir);
             Files.createDirectories(commandsDir);
         } catch (IOException e) {
             System.err.println("[Skills] Warning: Could not create " + commandsDir + ": " + e.getMessage());
@@ -159,19 +148,15 @@ public class SkillsInjection {
 
         for (SkillConfig skill : skills) {
             try {
-                Path commandFile = commandsDir.resolve(skill.getName() + ".md");
+                Path commandFile = SkillPathPolicy.resolve(commandsDir, skill.getName());
 
-                // Backup existing file if present
-                backupIfExists(commandFile);
-
-                // Convert {{args}} to the agent's native placeholder
                 String content = skill.getPromptTemplate();
                 if (content == null) continue;
                 content = content.replace("{{args}}", argsPlaceholder);
 
-                Files.writeString(commandFile, content);
-                installedFiles.add(new InstalledFile(commandFile, null));
-                count++;
+                if (installOwnedFile(commandFile, null, content)) {
+                    count++;
+                }
             } catch (IOException e) {
                 System.err.println("[Skills] Warning: Could not install command '" + skill.getName() + "': " + e.getMessage());
             }
@@ -179,13 +164,24 @@ public class SkillsInjection {
         return count;
     }
 
-    // ── Shared: AGENTS.md injection (OpenCode, Gemini) ─────────────────────
+    // ── Shared managed instruction-file injection ──────────────────────────
 
     private int installIntoAgentsMd(Collection<SkillConfig> skills) {
-        Path agentsMd = workingDirectory.resolve("AGENTS.md");
+        return installIntoInstructionFile(skills, workingDirectory.resolve("AGENTS.md"));
+    }
+
+    private int installIntoInstructionFile(Collection<SkillConfig> skills, Path instructionFile) {
         try {
+            return ManagedFileLock.withLock(instructionFile, () -> {
+            requireSafePath(workingDirectory);
+            if (Files.isSymbolicLink(instructionFile)) {
+                throw new IOException("Instruction file must not be a symbolic link: "
+                        + instructionFile);
+            }
+            String blockId = UUID.randomUUID().toString();
             StringBuilder skillsContent = new StringBuilder();
-            skillsContent.append("\n\n---\n\n# Kompile Skills\n\n");
+            skillsContent.append("\n\n<!-- BEGIN KOMPILE MANAGED SKILLS ")
+                    .append(blockId).append(" -->\n\n# Kompile Skills\n\n");
             skillsContent.append("The following skills are available. Follow the instructions for the relevant skill when asked.\n\n");
 
             for (SkillConfig skill : skills) {
@@ -198,23 +194,26 @@ public class SkillsInjection {
                 skillsContent.append("\n\n");
                 skillsContent.append(template).append("\n\n");
             }
+            skillsContent.append("<!-- END KOMPILE MANAGED SKILLS ")
+                    .append(blockId).append(" -->\n");
 
-            if (Files.exists(agentsMd)) {
-                String existing = Files.readString(agentsMd);
-                if (existing.contains("# Kompile Skills")) {
-                    return 0; // Already injected
-                }
-                Path backup = workingDirectory.resolve("AGENTS.md.kompile-skills-backup");
-                Files.copy(agentsMd, backup, StandardCopyOption.REPLACE_EXISTING);
-                backups.add(new BackupEntry(agentsMd, backup));
-                Files.writeString(agentsMd, existing + skillsContent);
-            } else {
-                Files.writeString(agentsMd, skillsContent.toString());
-                backups.add(new BackupEntry(agentsMd, null));
+            boolean existed = Files.isRegularFile(instructionFile, LinkOption.NOFOLLOW_LINKS);
+            if (Files.exists(instructionFile, LinkOption.NOFOLLOW_LINKS) && !existed) {
+                throw new IOException("Instruction path is not a regular file: "
+                        + instructionFile);
             }
+            String existing = existed ? readNoFollow(instructionFile) : "";
+            boolean originalExisted = existed && !stripManagedSkillBlocks(existing).isBlank();
+            String block = skillsContent.toString();
+            String installedContent = existing + block;
+            writeNoFollow(instructionFile, installedContent, existed);
+            managedBlocks.add(new ManagedBlock(instructionFile, block, existed,
+                    originalExisted, existing, installedContent));
             return skills.size();
+            });
         } catch (IOException e) {
-            System.err.println("[Skills] Warning: Could not inject skills into AGENTS.md: " + e.getMessage());
+            System.err.println("[Skills] Warning: Could not inject skills into "
+                    + instructionFile + ": " + e.getMessage());
             return 0;
         }
     }
@@ -282,49 +281,120 @@ public class SkillsInjection {
     // ── Cleanup ────────────────────────────────────────────────────────────
 
     /**
-     * Remove all installed skill files and restore backups.
+     * Remove content owned by this injection without overwriting later edits.
      */
     public void cleanup() {
-        // Remove files we created
-        for (InstalledFile installed : installedFiles) {
+        for (ManagedBlock managed : managedBlocks) {
             try {
-                Files.deleteIfExists(installed.file);
-                // Remove empty parent directory (for Codex skill dirs)
-                if (installed.parentDir != null) {
+                cleanupManagedBlock(managed);
+            } catch (IOException e) {
+                System.err.println("[Skills] Warning: Could not clean " + managed.file + ": " + e.getMessage());
+            }
+        }
+        managedBlocks.clear();
+
+        for (OwnedFile owned : ownedFiles) {
+            try {
+                if (!Files.isRegularFile(owned.file, LinkOption.NOFOLLOW_LINKS)) continue;
+                String current = readNoFollow(owned.file);
+                if (!current.equals(owned.installedContent)) continue;
+                Files.deleteIfExists(owned.file);
+                if (owned.parentDir != null) {
                     try {
-                        Files.deleteIfExists(installed.parentDir);
-                    } catch (IOException e) {
-                        // Directory not empty — that's fine, leave it
+                        Files.deleteIfExists(owned.parentDir);
+                    } catch (IOException ignored) {
+                        // Directory is not empty; leave it.
                     }
                 }
             } catch (IOException e) {
-                System.err.println("[Skills] Warning: Could not remove " + installed.file + ": " + e.getMessage());
+                System.err.println("[Skills] Warning: Could not restore " + owned.file + ": " + e.getMessage());
             }
         }
-        installedFiles.clear();
-
-        // Restore backed-up files
-        for (BackupEntry entry : backups) {
-            try {
-                if (entry.backup != null) {
-                    Files.move(entry.backup, entry.original, StandardCopyOption.REPLACE_EXISTING);
-                } else {
-                    Files.deleteIfExists(entry.original);
-                }
-            } catch (IOException e) {
-                System.err.println("[Skills] Warning: Could not restore " + entry.original + ": " + e.getMessage());
-            }
-        }
-        backups.clear();
+        ownedFiles.clear();
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private void backupIfExists(Path file) throws IOException {
-        if (!Files.exists(file)) return;
-        Path backup = file.resolveSibling(file.getFileName() + ".kompile-backup");
-        Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
-        backups.add(new BackupEntry(file, backup));
+    private static void cleanupManagedBlock(ManagedBlock managed) throws IOException {
+        ManagedFileLock.withLock(managed.file, () -> {
+            if (!Files.isRegularFile(managed.file, LinkOption.NOFOLLOW_LINKS)) return null;
+            String current = readNoFollow(managed.file);
+            if (!current.contains(managed.block)) return null;
+            if (current.equals(managed.installedContent)) {
+                if (managed.fileExisted) {
+                    writeNoFollow(managed.file, managed.originalContent, true);
+                } else {
+                    Files.deleteIfExists(managed.file);
+                }
+                return null;
+            }
+            String remaining = current.replace(managed.block, "");
+            if (remaining.isBlank() && !managed.originalExisted) {
+                Files.deleteIfExists(managed.file);
+            } else {
+                writeNoFollow(managed.file, remaining, true);
+            }
+            return null;
+        });
+    }
+
+    private boolean installOwnedFile(Path file, Path parentDir, String content) throws IOException {
+        requireSafePath(file.getParent());
+        if (Files.isSymbolicLink(file)) {
+            throw new IOException("Skill file must not be a symbolic link: " + file);
+        }
+        // Never overwrite a provider/user command. This avoids cross-session restore
+        // stacks and guarantees cleanup cannot discard an existing definition.
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return false;
+        writeNoFollow(file, content, false);
+        ownedFiles.add(new OwnedFile(file, parentDir, content));
+        return true;
+    }
+
+    private static String stripManagedSkillBlocks(String content) {
+        String remaining = content == null ? "" : content;
+        while (true) {
+            int start = remaining.indexOf("<!-- BEGIN KOMPILE MANAGED SKILLS ");
+            if (start < 0) return remaining.strip();
+            int end = remaining.indexOf("<!-- END KOMPILE MANAGED SKILLS ", start);
+            if (end < 0) return remaining.strip();
+            int close = remaining.indexOf("-->", end);
+            if (close < 0) return remaining.strip();
+            remaining = remaining.substring(0, start) + remaining.substring(close + 3);
+        }
+    }
+
+    private static String readNoFollow(Path file) throws IOException {
+        try (var input = Files.newInputStream(file, StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void writeNoFollow(Path file, String content, boolean existed) throws IOException {
+        if (existed) {
+            Files.writeString(file, content, StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        } else {
+            Files.writeString(file, content, StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        }
+    }
+
+    private static Path safeChild(Path root, String child) throws IOException {
+        requireSafePath(root);
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path resolved = normalizedRoot.resolve(child).normalize();
+        if (!resolved.startsWith(normalizedRoot) || Files.isSymbolicLink(resolved)) {
+            throw new IOException("Unsafe skill path: " + resolved);
+        }
+        return resolved;
+    }
+
+    private static void requireSafePath(Path path) throws IOException {
+        if (SkillPathPolicy.hasSymlinkComponent(path)) {
+            throw new IOException("Skill path contains a symbolic link: " + path);
+        }
     }
 
     /** Quote a YAML value if it contains special characters (colons, quotes, etc.) */
@@ -354,6 +424,8 @@ public class SkillsInjection {
         return lower;
     }
 
-    private record InstalledFile(Path file, Path parentDir) {}
-    private record BackupEntry(Path original, Path backup) {}
+    private record OwnedFile(Path file, Path parentDir, String installedContent) {}
+    private record ManagedBlock(Path file, String block, boolean fileExisted,
+                                boolean originalExisted, String originalContent,
+                                String installedContent) {}
 }

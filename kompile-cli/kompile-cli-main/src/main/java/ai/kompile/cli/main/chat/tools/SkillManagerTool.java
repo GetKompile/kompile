@@ -20,6 +20,7 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
 import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillPathPolicy;
 import ai.kompile.cli.main.chat.skill.SkillsMarkdownGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -291,8 +292,9 @@ public class SkillManagerTool implements CliTool {
         if (name.isBlank()) {
             return errorResult("Parameter 'name' is required for create_skill");
         }
-        if (!name.matches("[a-zA-Z][a-zA-Z0-9_-]*")) {
-            return errorResult("Invalid skill name '" + name + "'. Must start with a letter and contain only letters, digits, hyphens, or underscores.");
+        if (!SkillRegistry.isInvokableName(name)) {
+            return errorResult("Invalid or reserved skill name '" + name
+                    + "'. Use a letter-led identifier that does not conflict with a chat command.");
         }
 
         // Check if built-in
@@ -320,8 +322,8 @@ public class SkillManagerTool implements CliTool {
             targetDir = KompileHome.homeDirectory().toPath().resolve("skills");
         }
 
+        Path skillFile = SkillPathPolicy.resolve(targetDir, name);
         Files.createDirectories(targetDir);
-        Path skillFile = targetDir.resolve(name + ".md");
 
         if (Files.exists(skillFile)) {
             return errorResult("Skill file already exists: " + skillFile + ". Use update_skill to modify it, or delete_skill first.");
@@ -344,7 +346,9 @@ public class SkillManagerTool implements CliTool {
         content.append("---\n");
         content.append(promptTemplate);
 
-        Files.writeString(skillFile, content.toString());
+        Files.writeString(skillFile, content.toString(),
+                java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE);
 
         String scope = projectScope ? "project" : "user";
         return ToolResult.success("Skill created successfully:\n" +
@@ -358,8 +362,8 @@ public class SkillManagerTool implements CliTool {
 
     private ToolResult updateSkill(JsonNode params) throws IOException {
         String name = params.path("name").asText("");
-        if (name.isBlank()) {
-            return errorResult("Parameter 'name' is required for update_skill");
+        if (!SkillRegistry.isInvokableName(name)) {
+            return errorResult("Invalid or reserved skill name for update_skill: " + name);
         }
 
         // Check built-in
@@ -369,8 +373,10 @@ public class SkillManagerTool implements CliTool {
         }
 
         // Find existing file
-        Path projectFile = workingDirectory.resolve(".kompile").resolve("skills").resolve(name + ".md");
-        Path userFile = KompileHome.homeDirectory().toPath().resolve("skills").resolve(name + ".md");
+        Path projectFile = SkillPathPolicy.resolve(
+                workingDirectory.resolve(".kompile").resolve("skills"), name);
+        Path userFile = SkillPathPolicy.resolve(
+                KompileHome.homeDirectory().toPath().resolve("skills"), name);
 
         Path existingFile = null;
         if (Files.exists(projectFile)) {
@@ -424,7 +430,10 @@ public class SkillManagerTool implements CliTool {
         content.append("---\n");
         content.append(promptTemplate);
 
-        Files.writeString(existingFile, content.toString());
+        Files.writeString(existingFile, content.toString(),
+                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
 
         return ToolResult.success("Skill updated successfully:\n" +
                 "  Name: /" + name + "\n" +
@@ -435,8 +444,8 @@ public class SkillManagerTool implements CliTool {
 
     private ToolResult deleteSkill(JsonNode params) throws IOException {
         String name = params.path("name").asText("");
-        if (name.isBlank()) {
-            return errorResult("Parameter 'name' is required for delete_skill");
+        if (!SkillRegistry.isInvokableName(name)) {
+            return errorResult("Invalid or reserved skill name for delete_skill: " + name);
         }
 
         // Check built-in
@@ -445,8 +454,10 @@ public class SkillManagerTool implements CliTool {
             return errorResult("Cannot delete built-in skill: " + name);
         }
 
-        Path projectFile = workingDirectory.resolve(".kompile").resolve("skills").resolve(name + ".md");
-        Path userFile = KompileHome.homeDirectory().toPath().resolve("skills").resolve(name + ".md");
+        Path projectFile = SkillPathPolicy.resolve(
+                workingDirectory.resolve(".kompile").resolve("skills"), name);
+        Path userFile = SkillPathPolicy.resolve(
+                KompileHome.homeDirectory().toPath().resolve("skills"), name);
 
         List<String> deleted = new ArrayList<>();
         if (Files.exists(projectFile)) {
@@ -555,15 +566,21 @@ public class SkillManagerTool implements CliTool {
 
     private List<Path> collectProviderSkillFiles(ProviderSkillSpec spec) {
         Set<Path> files = new LinkedHashSet<>();
-        Path normalizedWorkDir = workingDirectory.normalize();
+        Path normalizedWorkDir = workingDirectory.toAbsolutePath().normalize();
         for (String rel : spec.paths) {
-            Path candidate = workingDirectory.resolve(rel).normalize();
-            if (!candidate.startsWith(normalizedWorkDir)) continue;
-            if (Files.isRegularFile(candidate) && isProviderSkillFile(candidate)) {
+            Path candidate = normalizedWorkDir.resolve(rel).normalize();
+            if (!candidate.startsWith(normalizedWorkDir)
+                    || SkillPathPolicy.hasSymlinkComponent(candidate)) continue;
+            if (Files.isRegularFile(candidate, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    && isProviderSkillFile(candidate)) {
                 files.add(candidate);
-            } else if (Files.isDirectory(candidate)) {
+            } else if (Files.isDirectory(candidate, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
                 try (Stream<Path> stream = Files.walk(candidate, 5)) {
-                    stream.filter(Files::isRegularFile)
+                    stream.map(path -> path.toAbsolutePath().normalize())
+                            .filter(path -> path.startsWith(candidate))
+                            .filter(path -> !SkillPathPolicy.hasSymlinkComponent(path))
+                            .filter(path -> Files.isRegularFile(
+                                    path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
                             .filter(this::isProviderSkillFile)
                             .sorted()
                             .forEach(files::add);
@@ -582,8 +599,14 @@ public class SkillManagerTool implements CliTool {
 
     private String readProviderSkillFile(Path file) {
         try {
-            if (Files.size(file) > 200_000L) return null;
-            return Files.readString(file, StandardCharsets.UTF_8);
+            if (SkillPathPolicy.hasSymlinkComponent(file)
+                    || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(file) > 200_000L) return null;
+            try (var input = Files.newInputStream(file,
+                    java.nio.file.StandardOpenOption.READ,
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
         } catch (IOException e) {
             return null;
         }

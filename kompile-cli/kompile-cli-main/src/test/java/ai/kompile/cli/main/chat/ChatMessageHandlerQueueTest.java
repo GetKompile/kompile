@@ -553,6 +553,94 @@ class ChatMessageHandlerQueueTest {
     }
 
     @Test
+    void backgroundRequestImmediatelyDrainsQueueAndProcessesNewInputDirectly() throws Exception {
+        String testSession = "background-input-" + System.nanoTime();
+        CountDownLatch firstRequestStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstRequest = new CountDownLatch(1);
+        CountDownLatch queuedInputProcessed = new CountDownLatch(1);
+        CountDownLatch directInputProcessed = new CountDownLatch(1);
+        AtomicInteger requestCount = new AtomicInteger();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> {
+            requestCount.incrementAndGet();
+            String requestBody = new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            try {
+                if (requestBody.contains("active foreground task")
+                        && firstRequestStarted.getCount() > 0) {
+                    firstRequestStarted.countDown();
+                    releaseFirstRequest.await(5, TimeUnit.SECONDS);
+                }
+                // Later provider payloads include earlier conversation history, so
+                // classify the newest input first rather than relying on ordinals.
+                if (requestBody.contains("entered after ctrl-b")) {
+                    directInputProcessed.countDown();
+                } else if (requestBody.contains("waiting before ctrl-b")) {
+                    queuedInputProcessed.countDown();
+                }
+                byte[] body = (
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"
+                        + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                        + "data: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+
+        ChatRepl repl = new ChatRepl(
+                null, null, testSession, false, "default", false,
+                new ChatConfig("custom", null, "background-input-test",
+                        "http://127.0.0.1:" + server.getAddress().getPort()));
+        ChatMessageHandler handler = field(repl, "messageHandler", ChatMessageHandler.class);
+        MessageQueue queue = field(repl, "messageQueue", MessageQueue.class);
+        MessageQueueManager queueManager = field(repl, "queueManager", MessageQueueManager.class);
+        BackgroundProcessManager processes = field(
+                repl, "processManager", BackgroundProcessManager.class);
+        try {
+            field(repl, "agenticLoop", AgenticChatLoop.class).setPerformanceHarness(null);
+            queue.clear();
+            queueManager.toggleAutoDequeue();
+            assertFalse(repl.isAutoDequeueEnabled());
+
+            handler.handleChatMessage("active foreground task");
+            assertTrue(firstRequestStarted.await(5, TimeUnit.SECONDS));
+
+            handler.handleChatMessage("waiting before ctrl-b");
+            assertEquals(1, queue.size());
+
+            assertTrue(handler.requestBackground());
+            assertTrue(queue.isEmpty(),
+                    "Ctrl+B must remove pending input from the durable queue immediately");
+
+            handler.handleChatMessage("entered after ctrl-b");
+            assertTrue(queue.isEmpty(),
+                    "ordinary input must bypass the durable queue while the task is backgrounded");
+
+            releaseFirstRequest.countDown();
+            assertTrue(queuedInputProcessed.await(10, TimeUnit.SECONDS),
+                    "input released by Ctrl+B was not processed at the next boundary");
+            assertTrue(directInputProcessed.await(10, TimeUnit.SECONDS),
+                    "input entered after Ctrl+B was not processed directly");
+            assertTrue(awaitCondition(() -> !repl.isLlmBusy(), 10, TimeUnit.SECONDS));
+            assertEquals(0, handler.pendingBackgroundInputCount());
+            assertTrue(requestCount.get() >= 3);
+        } finally {
+            releaseFirstRequest.countDown();
+            queue.clear();
+            server.stop(0);
+            processes.close();
+            ChatCompleter.setActivity(null);
+        }
+    }
+
+    @Test
     void escapeDuringUncooperativeSyncToolReleasesOwnerAndSendsQueuedMessage() throws Exception {
         String testSession = "sync-cancel-test-" + java.util.UUID.randomUUID();
         CountDownLatch toolStarted = new CountDownLatch(1);

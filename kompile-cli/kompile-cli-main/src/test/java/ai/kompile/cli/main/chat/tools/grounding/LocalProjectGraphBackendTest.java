@@ -169,12 +169,12 @@ class LocalProjectGraphBackendTest {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
             String extracted = """
-                    {"$schema":"kompile-graph-extraction/v1","entities":[
+                    {"tool":"submit_graph_delta","args":{"entities":[
                       {"id":"acme","name":"Acme","type":"ORGANIZATION","description":"Buyer","confidence":0.95},
                       {"id":"initech","name":"Initech","type":"ORGANIZATION","description":"Target","confidence":0.92}
                     ],"relations":[
                       {"source":"acme","target":"initech","type":"ACQUIRED","description":"Acquisition","confidence":0.9}
-                    ]}
+                    ]}}
                     """;
             ObjectNode response = mapper.createObjectNode();
             response.putArray("choices").addObject().putObject("message").put("content", extracted);
@@ -210,8 +210,10 @@ class LocalProjectGraphBackendTest {
             ToolResult result = new CrawlDocumentsTool((String) null, mapper).execute(request, context);
 
             assertFalse(result.isError(), result.getOutput());
-            assertEquals(2, ((Number) result.getMetadata().get("semanticEntityCount")).intValue());
-            assertEquals(1, ((Number) result.getMetadata().get("semanticRelationCount")).intValue());
+            assertEquals(2, ((Number) result.getMetadata().get("semanticEntityCount")).intValue(),
+                    result.getMetadata().toString());
+            assertEquals(1, ((Number) result.getMetadata().get("semanticRelationCount")).intValue(),
+                    result.getMetadata().toString());
             assertEquals(List.of(), result.getMetadata().get("semanticExtractionErrors"));
             UnifiedGraph graph = UnifiedGraph.load(
                     projectRoot.resolve("data/crawls/kb-118/graph.kgraph"));
@@ -237,13 +239,13 @@ class LocalProjectGraphBackendTest {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v1/chat/completions", exchange -> {
             String extracted = """
-                    {"$schema":"kompile-graph-extraction/v1","entities":[
+                    {"tool":"submit_graph_delta","args":{"entities":[
                       {"id":"alice-1","name":"Alice","type":"PERSON","confidence":0.95,
                        "metadata":{"email":"alice@example.com"}},
                       {"id":"alice-2","name":"Alice Example","type":"PERSON","confidence":0.92,
                        "aliases":["Alice"],"metadata":{"emailAddress":"Alice@Example.com"}},
                       {"id":"email-1","name":"alice@example.com","type":"PERSON","confidence":0.99}
-                    ],"relations":[]}
+                    ],"relations":[]}}
                     """;
             ObjectNode response = mapper.createObjectNode();
             response.putArray("choices").addObject().putObject("message").put("content", extracted);
@@ -282,7 +284,8 @@ class LocalProjectGraphBackendTest {
 
             assertFalse(result.isError(), result.getOutput());
             assertEquals(1,
-                    ((Number) result.getMetadata().get("entityResolutionMergedCount")).intValue());
+                    ((Number) result.getMetadata().get("entityResolutionMergedCount")).intValue(),
+                    result.getMetadata().toString());
             assertEquals(1,
                     ((Number) result.getMetadata()
                             .get("entityResolutionTypeCorrectionCount")).intValue());

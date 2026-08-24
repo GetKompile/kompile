@@ -17,11 +17,15 @@
 package ai.kompile.cli.main.chat.config;
 
 import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.main.chat.skill.ManagedFileLock;
+import ai.kompile.cli.main.chat.skill.SkillPathPolicy;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 
 /**
@@ -52,6 +56,8 @@ public class SystemPromptManager {
     private static final Path KOMPILE_HOME = KompileHome.homeDirectory().toPath();
     private static final Path DEFAULT_PROMPT_FILE = KOMPILE_HOME.resolve("system-prompt.md");
     private static final Path PER_AGENT_DIR = KOMPILE_HOME.resolve("system-prompts");
+    static final String MANAGED_PROMPT_BEGIN = "<!-- BEGIN KOMPILE MANAGED SYSTEM PROMPT -->";
+    static final String MANAGED_PROMPT_END = "<!-- END KOMPILE MANAGED SYSTEM PROMPT -->";
 
     private final String centralPrompt;
     private final Map<String, String> perAgentPrompts;
@@ -208,26 +214,47 @@ public class SystemPromptManager {
 
         Path agentsMd = workingDir.resolve("AGENTS.md");
         try {
-            // Backup existing AGENTS.md if present
-            if (Files.exists(agentsMd)) {
-                Path backup = workingDir.resolve("AGENTS.md.kompile-backup");
-                Files.copy(agentsMd, backup, StandardCopyOption.REPLACE_EXISTING);
-                backups.add(new BackupEntry(agentsMd, backup));
-
-                // Prepend our prompt to existing content
-                String existing = Files.readString(agentsMd);
-                String combined = "# Kompile System Instructions\n\n" + prompt
-                        + "\n\n---\n\n" + existing;
-                Files.writeString(agentsMd, combined);
-            } else {
-                // Create new AGENTS.md with our prompt
-                Files.writeString(agentsMd, "# Kompile System Instructions\n\n" + prompt + "\n");
-                backups.add(new BackupEntry(agentsMd, null)); // null backup = delete on cleanup
+            return ManagedFileLock.withLock(agentsMd, () -> {
+            if (SkillPathPolicy.hasSymlinkComponent(workingDir)
+                    || Files.isSymbolicLink(agentsMd)) {
+                throw new IOException("Instruction path contains a symbolic link");
             }
+            Files.createDirectories(workingDir);
+            boolean existed = Files.isRegularFile(agentsMd, LinkOption.NOFOLLOW_LINKS);
+            if (Files.exists(agentsMd, LinkOption.NOFOLLOW_LINKS) && !existed) {
+                throw new IOException("AGENTS.md is not a regular file: " + agentsMd);
+            }
+            String rawExisting = existed ? readNoFollow(agentsMd) : "";
+            boolean originalExisted = existed && !stripManagedPrompt(rawExisting).isBlank();
+
+            String managed = MANAGED_PROMPT_BEGIN + " " + UUID.randomUUID() + "\n"
+                    + "# Kompile System Instructions\n\n" + prompt.strip() + "\n"
+                    + MANAGED_PROMPT_END;
+            String installedContent = rawExisting.isBlank()
+                    ? managed + "\n"
+                    : rawExisting.stripTrailing() + "\n\n" + managed + "\n";
+            backups.add(new BackupEntry(agentsMd, existed, originalExisted, rawExisting,
+                    managed, installedContent));
+            writeNoFollow(agentsMd, installedContent, existed);
             return agentsMd;
+            });
         } catch (IOException e) {
             System.err.println("Warning: Could not inject system prompt into AGENTS.md: " + e.getMessage());
             return null;
+        }
+    }
+
+    static String stripManagedPrompt(String content) {
+        if (content == null || content.isEmpty()) return "";
+        String remaining = content;
+        while (true) {
+            int start = remaining.indexOf(MANAGED_PROMPT_BEGIN);
+            if (start < 0) return remaining.strip();
+            int end = remaining.indexOf(
+                    MANAGED_PROMPT_END, start + MANAGED_PROMPT_BEGIN.length());
+            if (end < 0) return remaining.strip();
+            remaining = remaining.substring(0, start)
+                    + remaining.substring(end + MANAGED_PROMPT_END.length());
         }
     }
 
@@ -235,14 +262,11 @@ public class SystemPromptManager {
      * Clean up all injected files: restore backups and remove temp files.
      */
     public void cleanup() {
-        // Restore backed-up files
+        // Remove only the block owned by this manager. Preserve any project edits
+        // made while the subprocess was running and do not disturb a newer owner.
         for (BackupEntry entry : backups) {
             try {
-                if (entry.backup != null) {
-                    Files.move(entry.backup, entry.original, StandardCopyOption.REPLACE_EXISTING);
-                } else {
-                    Files.deleteIfExists(entry.original);
-                }
+                cleanupManagedEntry(entry);
             } catch (IOException e) {
                 System.err.println("Warning: Could not restore " + entry.original + ": " + e.getMessage());
             }
@@ -257,6 +281,49 @@ public class SystemPromptManager {
                 // Ignore
             }
             tempPromptFile = null;
+        }
+    }
+
+    private static void cleanupManagedEntry(BackupEntry entry) throws IOException {
+        ManagedFileLock.withLock(entry.original, () -> {
+            if (!Files.isRegularFile(entry.original, LinkOption.NOFOLLOW_LINKS)) return null;
+            String current = readNoFollow(entry.original);
+            if (!current.contains(entry.managedBlock)) return null;
+
+            if (current.equals(entry.installedContent)) {
+                if (entry.fileExisted) {
+                    writeNoFollow(entry.original, entry.originalContent, true);
+                } else {
+                    Files.deleteIfExists(entry.original);
+                }
+                return null;
+            }
+
+            String remaining = current.replace(entry.managedBlock, "").stripLeading();
+            if (remaining.isBlank() && !entry.originalExisted) {
+                Files.deleteIfExists(entry.original);
+            } else {
+                writeNoFollow(entry.original, remaining, true);
+            }
+            return null;
+        });
+    }
+
+    private static String readNoFollow(Path file) throws IOException {
+        try (var input = Files.newInputStream(file, StandardOpenOption.READ,
+                LinkOption.NOFOLLOW_LINKS)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void writeNoFollow(Path file, String content, boolean existed)
+            throws IOException {
+        if (existed) {
+            Files.writeString(file, content, StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+        } else {
+            Files.writeString(file, content, StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
         }
     }
 
@@ -325,5 +392,7 @@ public class SystemPromptManager {
         return lower;
     }
 
-    private record BackupEntry(Path original, Path backup) {}
+    private record BackupEntry(Path original, boolean fileExisted, boolean originalExisted,
+                               String originalContent, String managedBlock,
+                               String installedContent) {}
 }

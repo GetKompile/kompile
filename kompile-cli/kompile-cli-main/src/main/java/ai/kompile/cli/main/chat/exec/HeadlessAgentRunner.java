@@ -22,6 +22,8 @@ import ai.kompile.cli.main.chat.ChatSessionMetrics;
 import ai.kompile.cli.main.chat.agent.AgentRegistry;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
 import ai.kompile.cli.main.chat.agent.AgenticChatLoop;
+import ai.kompile.cli.main.chat.agent.ProjectChatContext;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.mcp.McpBundleToolLoader;
@@ -175,9 +177,11 @@ public final class HeadlessAgentRunner {
         McpBundleToolLoader mcpBundleTools =
                 McpBundleToolLoader.load(opts.workingDirectory(), toolRegistry);
 
+        ProjectChatContext projectContext = ProjectChatContext.load(opts.workingDirectory());
         AgenticChatLoop loop = new AgenticChatLoop(
                 null, mapper, toolRegistry, permissionService, agentRegistry,
-                opts.workingDirectory(), directClient, processManager);
+                opts.workingDirectory(), directClient, processManager,
+                projectContext.skillRegistry());
         loop.configureConversationSession(opts.sessionId());
         if (opts.runController() != null) {
             loop.setRunController(opts.runController());
@@ -231,7 +235,10 @@ public final class HeadlessAgentRunner {
         } catch (Exception ignored) {
             // Transcript persistence is best-effort; never block the run on it.
         }
-        history.logUserMessage(opts.prompt());
+        String effectivePrompt = projectContext.skillRegistry().resolveInvocation(opts.prompt())
+                .map(SkillRegistry.SkillInvocation::prompt)
+                .orElse(opts.prompt());
+        history.logUserMessage(effectivePrompt);
 
         // ── Run, with all loop chrome redirected off of stdout ──────────────
         final PrintStream chromeTarget = (opts.outputMode() == OutputMode.QUIET)
@@ -244,8 +251,8 @@ public final class HeadlessAgentRunner {
         long start = System.currentTimeMillis();
         try {
             response = opts.timeoutMs() > 0
-                    ? runWithTimeout(loop, opts, directClient, cancel)
-                    : loop.chat(opts.prompt(), opts.sessionId(), opts.agentName(), "kompile", false);
+                    ? runWithTimeout(loop, opts, effectivePrompt, directClient, cancel)
+                    : loop.chat(effectivePrompt, opts.sessionId(), opts.agentName(), "kompile", false);
             if (response == null) { // null sentinel from runWithTimeout == timed out
                 response = directClient.captured();
                 exitCode = 124;
@@ -310,7 +317,7 @@ public final class HeadlessAgentRunner {
      * On timeout, signals cancellation and returns {@code null} (the caller
      * substitutes whatever text was streamed so far).
      */
-    private String runWithTimeout(AgenticChatLoop loop, Options opts,
+    private String runWithTimeout(AgenticChatLoop loop, Options opts, String prompt,
                                   CapturingLlmClient directClient, AtomicBoolean cancel) {
         ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "kompile-exec");
@@ -318,7 +325,7 @@ public final class HeadlessAgentRunner {
             return t;
         });
         Future<String> future = exec.submit(() ->
-                loop.chat(opts.prompt(), opts.sessionId(), opts.agentName(), "kompile", false));
+                loop.chat(prompt, opts.sessionId(), opts.agentName(), "kompile", false));
         try {
             return future.get(opts.timeoutMs(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {

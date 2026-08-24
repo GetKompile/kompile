@@ -20,6 +20,7 @@ import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
+import ai.kompile.cli.main.chat.agent.ProjectChatContext;
 import ai.kompile.cli.main.chat.agent.SubprocessAgentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
@@ -1025,6 +1026,14 @@ public class ChatCommand implements Callable<Integer> {
         }
     }
 
+    String serverSystemPrompt() {
+        String projectContext = ProjectChatContext.load(effectiveWorkingDirectory()).renderSystemPrompt();
+        if (projectContext.isBlank()) {
+            return "";
+        }
+        return "You are a helpful AI assistant.\n\n" + projectContext;
+    }
+
     private void createChatSession(McpSseClient client) throws Exception {
         createChatSession(client, List.of());
     }
@@ -1040,7 +1049,7 @@ public class ChatCommand implements Callable<Integer> {
         args.put("keywordK", 5);
         args.put("maxHistoryMessages", 50);
         args.put("similarityThreshold", 0.5);
-        args.put("systemPrompt", "");
+        args.put("systemPrompt", serverSystemPrompt());
         if (turns != null && !turns.isEmpty()) {
             var history = args.putArray("history");
             for (ChatHistory.Turn turn : turns) {

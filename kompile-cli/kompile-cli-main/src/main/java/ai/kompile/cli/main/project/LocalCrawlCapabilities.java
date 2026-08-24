@@ -99,7 +99,9 @@ public final class LocalCrawlCapabilities {
         vlmConfiguration.put("modelDefinitionTool", "vlm_model_definition");
         vlmConfiguration.putArray("pipelineOptionFields")
                 .add("modelId").add("vlmModel").add("modelSetId")
-                .add("outputFormat").add("maxPages").add("pageRange").add("maxNewTokens")
+                .add("outputFormat").add("maxPages").add("pageRange")
+                .add("maxResponseBytes").add("maxNewTokens").add("maxKvLen")
+                .add("adaptiveRegionFallbackEnabled")
                 .add("pdfRenderDpi").add("pageBatchSize")
                 .add("temperature").add("topP").add("beamSize").add("doSample")
                 .add("kvCacheEnabled").add("kvCacheMaxEntries").add("timeoutMinutes");

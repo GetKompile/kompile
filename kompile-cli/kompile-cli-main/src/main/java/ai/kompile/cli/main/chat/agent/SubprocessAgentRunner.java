@@ -341,7 +341,8 @@ public class SubprocessAgentRunner {
     /**
      * Install skills into the agent's native command/skill infrastructure.
      * Claude: .claude/commands/name.md, Codex: ~/.agents/skills/name/SKILL.md,
-     * Qwen: .qwen/commands/name.md, OpenCode/Gemini: AGENTS.md fallback.
+     * Qwen: .qwen/commands/name.md, Codex: .agents/skills/name/SKILL.md,
+     * OpenCode: AGENTS.md, Gemini: GEMINI.md.
      * Call once before first message.
      */
     public void injectSkills() {

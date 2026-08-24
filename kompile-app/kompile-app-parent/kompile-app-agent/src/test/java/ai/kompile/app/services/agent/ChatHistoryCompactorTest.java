@@ -71,6 +71,16 @@ class ChatHistoryCompactorTest {
     }
 
     @Test
+    void upcomingPromptIsIncludedInAutomaticCompactionDecision() {
+        List<ChatHistoryEntry> history = historyOfTokens(7_000);
+        ChatHistoryCompactor.Result result = compactor.compact(
+                history, budget(16_384, 10_000), null, 2_500, false, null);
+
+        assertTrue(result.compacted());
+        assertTrue(result.tokensAfter() < result.tokensBefore());
+    }
+
+    @Test
     void compactionSummarizesHeadAndPreservesTail() throws Exception {
         List<ChatHistoryEntry> history = historyOfTokens(12_000);
         String lastContent = history.get(history.size() - 1).getContent();

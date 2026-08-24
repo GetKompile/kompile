@@ -74,6 +74,7 @@ public class ChatHistory {
                     .withZone(ZoneId.systemDefault());
 
     private static final String SEPARATOR = "──────────────────────────────────";
+    private static final String TITLE_PREFIX = "[title] ";
 
     private final String sessionId;
     private final Path transcriptFile;
@@ -208,6 +209,34 @@ public class ChatHistory {
             writer.println("[system] " + event);
             writer.println();
         }
+    }
+
+    /** Persist an explicit user-selected title as transcript metadata. */
+    public synchronized void logSessionTitle(String title) {
+        String normalized = ChatSessionTitle.fromPrompt(title);
+        if (normalized == null) return;
+        ensureWriter();
+        if (writer != null) {
+            writer.println(TITLE_PREFIX + normalized);
+        }
+    }
+
+    /** Return the latest explicit title recorded for this transcript, if any. */
+    public String readSessionTitle() {
+        if (!Files.exists(transcriptFile)) return null;
+        String latest = null;
+        try (BufferedReader reader = Files.newBufferedReader(transcriptFile, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith(TITLE_PREFIX)) {
+                    String candidate = line.substring(TITLE_PREFIX.length()).strip();
+                    if (!candidate.isEmpty()) latest = candidate;
+                }
+            }
+        } catch (IOException ignored) {
+            return null;
+        }
+        return latest;
     }
 
     /**
@@ -373,6 +402,11 @@ public class ChatHistory {
                 while ((line = reader.readLine()) != null) {
                     if (line.startsWith("[harvested:") && line.endsWith("]")) {
                         harvested.add(line.substring(11, line.length() - 1));
+                    }
+                    if (line.startsWith(TITLE_PREFIX)) {
+                        String explicitTitle = line.substring(TITLE_PREFIX.length()).strip();
+                        if (!explicitTitle.isEmpty()) title = explicitTitle;
+                        continue;
                     }
                     if (line.startsWith("[resumed")) {
                         metadataWindow = true;

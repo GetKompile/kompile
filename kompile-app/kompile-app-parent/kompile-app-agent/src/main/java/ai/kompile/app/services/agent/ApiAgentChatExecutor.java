@@ -288,6 +288,11 @@ public class ApiAgentChatExecutor {
 
         ArrayNode messages = root.putArray("messages");
 
+        String systemPrompt = request.getSystemPromptOverride();
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            messages.addObject().put("role", "system").put("content", systemPrompt);
+        }
+
         // Add chat history if present — always flat strings (no attachments on history)
         if (request.getChatHistory() != null) {
             for (AgentChatRequest.ChatHistoryEntry entry : request.getChatHistory()) {
@@ -346,14 +351,21 @@ public class ApiAgentChatExecutor {
         try {
             ChatContextBudgetService.ContextBudget budget = contextBudgetService.resolve(agent);
             int promptTokens = ChatContextBudgetService.estimateHistoryTokens(request.getChatHistory())
+                    + ChatContextBudgetService.estimateTokens(request.getSystemPromptOverride())
                     + ChatContextBudgetService.estimateTokens(augmentedPrompt);
             int remaining = budget.contextWindow() - promptTokens - 128;
-            int clamped = Math.max(128, Math.min(Math.min(configured, budget.maxOutputTokens()), remaining));
+            if (remaining < 128) {
+                throw new IllegalStateException("Fixed system and input context exceeds model window "
+                        + budget.contextWindow() + " for " + agent.getName());
+            }
+            int clamped = Math.min(Math.min(configured, budget.maxOutputTokens()), remaining);
             if (clamped != configured) {
                 log.debug("Clamped max_tokens {} → {} for {} (window {} from {}, prompt ~{} tokens)",
                         configured, clamped, agent.getName(), budget.contextWindow(), budget.source(), promptTokens);
             }
             return clamped;
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
             log.debug("max_tokens clamp skipped: {}", e.getMessage());
             return configured;

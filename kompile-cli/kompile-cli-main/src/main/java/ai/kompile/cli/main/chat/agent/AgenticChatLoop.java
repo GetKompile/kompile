@@ -31,10 +31,7 @@ import ai.kompile.cli.main.chat.render.ConversationSummarizer;
 import ai.kompile.cli.main.chat.render.OutputTruncator;
 import ai.kompile.cli.main.chat.render.StreamingMarkdownRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
-import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
-import ai.kompile.cli.main.chat.skill.SkillConfig;
 import ai.kompile.cli.main.chat.skill.SkillRegistry;
-import ai.kompile.cli.main.chat.skill.SkillsMarkdownGenerator;
 import ai.kompile.cli.main.chat.tui.SidePanelManager;
 import ai.kompile.cli.main.chat.tools.*;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -114,8 +111,8 @@ public class AgenticChatLoop {
     private final OutputTruncator truncator;
     private final CompactionService compactionService;
     private final DirectLlmClient directLlmClient; // null for server mode
+    private final ProjectChatContext projectChatContext;
     private final String agentsMdContent; // loaded AGENTS.md content
-    private final String skillsContent; // compact catalog; full template is expanded on /skill invocation
     private final ai.kompile.cli.main.chat.tools.BackgroundProcessManager processManager; // background process tracking
     private ToolResultStore toolResultStore; // persists tool outputs to disk
     private ai.kompile.cli.main.chat.ChatSessionMetrics sessionMetrics; // session metrics
@@ -256,22 +253,10 @@ public class AgenticChatLoop {
         // Initialize current agent config with default
         this.currentAgentConfig = agentRegistry.getDefault();
 
-        // Load AGENTS.md files from project hierarchy
-        AgentsMdLoader loader = new AgentsMdLoader(workingDirectory);
-        this.agentsMdContent = loader.load();
-
         SkillRegistry effectiveSkills = skillRegistry != null
-                ? skillRegistry : loadSkillRegistry(workingDirectory);
-        this.skillsContent = SkillsMarkdownGenerator.generateCompact(effectiveSkills.all());
-    }
-
-    private static SkillRegistry loadSkillRegistry(Path workingDirectory) {
-        SkillRegistry registry = new SkillRegistry();
-        CustomSkillLoader loader = new CustomSkillLoader(workingDirectory);
-        for (SkillConfig custom : loader.loadAll().values()) {
-            registry.register(custom);
-        }
-        return registry;
+                ? skillRegistry : ProjectChatContext.load(workingDirectory).skillRegistry();
+        this.projectChatContext = ProjectChatContext.load(workingDirectory, effectiveSkills);
+        this.agentsMdContent = projectChatContext.agentsMdContent();
     }
 
     private SidePanelManager findSidePanelManager(ToolRegistry registry) {
@@ -536,19 +521,9 @@ public class AgenticChatLoop {
             }
         }
 
-        // AGENTS.md content
-        if (agentsMdContent != null && !agentsMdContent.isEmpty()) {
-            sb.append("\n\n# Project Instructions (from AGENTS.md)\n\n");
-            sb.append(agentsMdContent);
-        }
-
-        // Keep the catalog compact. ChatCommandRouter expands the complete skill
-        // template into the user turn when /skillname is invoked.
-        if (skillsContent != null && !skillsContent.isBlank()) {
-            sb.append("\n\n# Kompile Skills\n\n");
-            sb.append("The normal Kompile chat has loaded these skills. When a user invokes one, ")
-                    .append("follow the expanded <skill> instructions in that user turn.\n\n");
-            sb.append(skillsContent.strip());
+        String projectPrompt = projectChatContext.renderSystemPrompt();
+        if (!projectPrompt.isBlank()) {
+            sb.append("\n\n").append(projectPrompt);
         }
 
         return sb.toString();
@@ -584,6 +559,15 @@ public class AgenticChatLoop {
      */
     public String getAgentsMdContent() {
         return agentsMdContent;
+    }
+
+    /** Supplemental AGENTS.md and skill catalog shared with non-agentic chat routes. */
+    public String getProjectContextPrompt() {
+        return projectChatContext.renderSystemPrompt();
+    }
+
+    public List<Path> getAgentsMdFiles() {
+        return projectChatContext.agentsMdFiles();
     }
 
     /** Bind durable context state before restoring or accepting the first turn. */
@@ -878,6 +862,10 @@ public class AgenticChatLoop {
         if (directLlmClient == null) return;
         if (!compactionService.isAutoCompactEnabled()) return;
         long projectedInputTokens = projectedInputTokens(pendingMessage);
+        if (lastReportedInputTokens <= 0L && toolDefs != null) {
+            projectedInputTokens = saturatingAdd(projectedInputTokens,
+                    compactionService.estimateTextTokens(toolDefs.toString()));
+        }
         DirectLlmClient.TokenCountResult exact = directLlmClient.countInputTokens(
                 pendingMessage, systemPrompt, toolDefs, null, modelOverride);
         if (exact.exact() && exact.inputTokens() > 0L) {
@@ -944,7 +932,9 @@ public class AgenticChatLoop {
                 conversationLedger.snapshot().activeEntries());
         long pendingTokens = compactionService.estimateTextTokens(pendingMessage);
         if (lastReportedInputTokens <= 0L) {
-            return saturatingAdd(estimatedHistory, pendingTokens);
+            long systemTokens = compactionService.estimateTextTokens(
+                    buildSystemPrompt(currentAgentConfig));
+            return saturatingAdd(saturatingAdd(estimatedHistory, pendingTokens), systemTokens);
         }
         long historyGrowth = Math.max(0L, estimatedHistory - lastReportedHistoryTokens);
         return saturatingAdd(saturatingAdd(lastReportedInputTokens, historyGrowth), pendingTokens);
@@ -1878,6 +1868,18 @@ public class AgenticChatLoop {
     // Server mode (kompile-app)
     // ========================================================================
 
+    private String systemPromptForServerAgent(String systemPrompt, String serverAgent) {
+        if (systemPrompt == null || systemPrompt.isEmpty()) return "";
+        String normalized = serverAgent == null ? "" : serverAgent.toLowerCase(Locale.ROOT);
+        if (!normalized.contains("codex") && !normalized.contains("opencode")) {
+            return systemPrompt;
+        }
+        String projectPrompt = projectChatContext.renderSystemPrompt();
+        return projectPrompt.isBlank()
+                ? systemPrompt
+                : systemPrompt.replace(projectPrompt, projectChatContext.renderSkillsPrompt());
+    }
+
     private StreamResult streamServerTurn(String message, String sessionId, String serverAgent,
                                            boolean ragEnabled, String systemPrompt,
                                            ArrayNode toolDefs, List<ToolCallResult> toolResults) {
@@ -1924,8 +1926,9 @@ public class AgenticChatLoop {
                 request.set("toolResults", resultsArray);
             }
 
-            if (systemPrompt != null && !systemPrompt.isEmpty()) {
-                request.put("systemPromptOverride", systemPrompt);
+            String effectiveSystemPrompt = systemPromptForServerAgent(systemPrompt, serverAgent);
+            if (!effectiveSystemPrompt.isEmpty()) {
+                request.put("systemPromptOverride", effectiveSystemPrompt);
             }
 
             String body = objectMapper.writeValueAsString(request);

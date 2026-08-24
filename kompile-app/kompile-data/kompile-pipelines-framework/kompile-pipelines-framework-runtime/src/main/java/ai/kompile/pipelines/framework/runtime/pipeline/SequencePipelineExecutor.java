@@ -22,6 +22,7 @@ import ai.kompile.pipelines.framework.api.PipelineExecutor;
 import ai.kompile.pipelines.framework.api.PipelineStepRunner;
 import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.context.Context;
+import ai.kompile.pipelines.framework.api.context.PipelineProgressListener;
 import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.api.data.PipelineDataConstants;
@@ -223,6 +224,8 @@ public class SequencePipelineExecutor extends BasePipelineExecutor {
             String stepName = currentStepConfig.runnerClassName() != null ? currentStepConfig.runnerClassName() :
                     (runner.getClass().getSimpleName() + "[" + i + "]");
             Context stepContext = currentPipelineContext.child(stepName + "-exec-" + System.nanoTime());
+            currentPipelineContext.get(PipelineProgressListener.CONTEXT_KEY, PipelineProgressListener.class)
+                    .ifPresent(listener -> stepContext.put(PipelineProgressListener.CONTEXT_KEY, listener));
 
             Data stepOutput;
             try {
@@ -338,6 +341,8 @@ public class SequencePipelineExecutor extends BasePipelineExecutor {
                 String stepName = currentStepConfig.runnerClassName() != null ? currentStepConfig.runnerClassName() :
                         (runner.getClass().getSimpleName() + "[" + currentStepIndex + "]");
                 Context stepContext = streamContext.child(stepName + "-streamTurn-" + System.nanoTime());
+                streamContext.get(PipelineProgressListener.CONTEXT_KEY, PipelineProgressListener.class)
+                        .ifPresent(listener -> stepContext.put(PipelineProgressListener.CONTEXT_KEY, listener));
 
                 try {
                     Data stepOutput;

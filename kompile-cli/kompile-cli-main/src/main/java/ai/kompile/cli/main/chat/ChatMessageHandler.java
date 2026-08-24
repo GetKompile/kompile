@@ -81,6 +81,15 @@ public class ChatMessageHandler {
     private final AtomicBoolean externalWorkClaimed = new AtomicBoolean(false);
     private final ConcurrentLinkedQueue<String> mandatoryExternalMessages =
             new ConcurrentLinkedQueue<>();
+    /**
+     * Input handed directly to a detached turn. These messages are no longer
+     * durable queue entries: Ctrl+B explicitly released them for processing by
+     * the active owner at its first safe model/tool boundary.
+     */
+    private final ConcurrentLinkedQueue<BackgroundInput> backgroundInputs =
+            new ConcurrentLinkedQueue<>();
+
+    private record BackgroundInput(String content, String formerQueueId) { }
 
     // Mutable llmBusy flag — read/written by ChatRepl main loop as well
     // We access it via ChatRepl accessors to keep a single source of truth.
@@ -121,7 +130,7 @@ public class ChatMessageHandler {
         ChatCompleter.setQueueSupplier(() -> this.messageQueue.getAll().stream()
                 .map(MessageQueue.QueuedMessage::getContent)
                 .collect(Collectors.toList()));
-        this.agenticLoop.setQueuedMessageSupplier(this::claimQueuedMessageAtBoundary);
+        this.agenticLoop.setQueuedMessageSupplier(this::claimPendingInputAtBoundary);
     }
 
     // ========================================================================
@@ -129,11 +138,13 @@ public class ChatMessageHandler {
     // ========================================================================
 
     /**
-     * Handles a user chat message entered at the REPL prompt.
-     * Auto-queues the message if the LLM is already busy.
+     * Handles a user chat message entered at the REPL prompt. A foreground
+     * owner queues concurrent input; a backgrounded owner receives it through
+     * the direct input lane instead.
      */
     public void handleChatMessage(String message) {
         if (!acceptingDispatches.get()) return;
+        repl.initializeSessionTitleFromPrompt(message);
         // Crawl/headless runs deliberately stay synchronous so callers do not
         // tear down the transcript before the one requested turn completes.
         if (repl.isForceAgentic()) {
@@ -147,7 +158,14 @@ public class ChatMessageHandler {
             return;
         }
 
-        dispatchTurn(message, () -> handleAcceptedChatMessage(message), "standard-chat-dispatch");
+        synchronized (turnDispatchLock) {
+            if (!acceptingDispatches.get()) return;
+            if (hasBackgroundedActiveTurn()) {
+                acceptBackgroundInput(message, null);
+                return;
+            }
+            dispatchTurn(message, () -> handleAcceptedChatMessage(message), "standard-chat-dispatch");
+        }
     }
 
     /** Deliver a system event even when ordinary queue auto-dequeue is disabled. */
@@ -159,7 +177,9 @@ public class ChatMessageHandler {
             if (!acceptingExternalMessages.get()) return;
             if (repl.isLlmBusy()) {
                 mandatoryExternalMessages.add(normalized);
-                ChatCompleter.printAbove(renderer.cyan("  ↻ Process completion queued for agent"));
+                ChatCompleter.printAbove(renderer.cyan(hasBackgroundedActiveTurn()
+                        ? "  ↻ Process completion handed to background task"
+                        : "  ↻ Process completion queued for agent"));
                 repl.requestStatusRedraw();
                 return;
             }
@@ -199,6 +219,7 @@ public class ChatMessageHandler {
     void shutdown() {
         synchronized (turnDispatchLock) {
             acceptingDispatches.set(false);
+            restoreUnclaimedBackgroundInputs();
         }
         stopAcceptingExternalMessages();
         Thread owner = activeDispatchThread.get();
@@ -271,7 +292,10 @@ public class ChatMessageHandler {
                             // only after this owner can no longer be overwritten.
                             boolean externalDispatched = acceptingExternalMessages.get()
                                     && dispatchPendingExternalAfterTurnRelease();
-                            if (acceptingDispatches.get() && !externalDispatched) {
+                            boolean backgroundInputDispatched = !externalDispatched
+                                    && dispatchPendingBackgroundInputAfterTurnRelease();
+                            if (acceptingDispatches.get() && !externalDispatched
+                                    && !backgroundInputDispatched) {
                                 repl.dispatchQueuedMessageAfterTurnRelease();
                             }
                         }
@@ -328,24 +352,35 @@ public class ChatMessageHandler {
 
     /**
      * Detach the active foreground turn without cancelling its model/tool owner.
-     * Subsequent output is retained on the task and queued input is steered into
-     * that owner at the next safe model/tool boundary.
+     * Existing queued input is removed from the durable queue immediately, and
+     * both it and subsequent input are handed directly to the detached owner at
+     * its first safe model/tool boundary.
      */
     public boolean requestBackground() {
-        if (!turnActive.get()) {
-            return false;
+        synchronized (turnDispatchLock) {
+            if (!turnActive.get()) {
+                return false;
+            }
+            BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.requestBackground();
+            if (task == null) {
+                return false;
+            }
+
+            int released = releaseQueuedInputToBackgroundTurn();
+            task.appendOutput("\n[Backgrounded; input is processed directly at the next safe boundary]"
+                    + (released > 0 ? " [released " + released + " queued message(s)]" : "")
+                    + "\n");
+            agenticLoop.backgroundActiveTurn(task::appendOutput);
+            repl.stopGeneratingSpinner();
+            ChatCompleter.setActivity(null);
+            repl.requestStatusRedraw();
+            sessionMetrics.recordTaskBackgrounded();
+            return true;
         }
-        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.requestBackground();
-        if (task == null) {
-            return false;
-        }
-        task.appendOutput("\n[Backgrounded; queued input will be applied at the next safe boundary]\n");
-        agenticLoop.backgroundActiveTurn(task::appendOutput);
-        repl.stopGeneratingSpinner();
-        ChatCompleter.setActivity(null);
-        repl.requestStatusRedraw();
-        sessionMetrics.recordTaskBackgrounded();
-        return true;
+    }
+
+    int pendingBackgroundInputCount() {
+        return backgroundInputs.size();
     }
 
     private void cancelRemoteProcess(String processId) {
@@ -441,10 +476,24 @@ public class ChatMessageHandler {
         return true;
     }
 
+    /** Dispatch input that a detached owner could not consume before it ended. */
+    private boolean dispatchPendingBackgroundInputAfterTurnRelease() {
+        if (!acceptingDispatches.get()) return false;
+        BackgroundInput input = backgroundInputs.poll();
+        if (input == null) return false;
+        if (input.formerQueueId() != null) {
+            sessionMetrics.recordMessageAutoDequeued();
+        }
+        dispatchTurn(input.content(),
+                () -> handleAcceptedChatMessage(input.content()),
+                "standard-chat-background-successor");
+        return true;
+    }
+
     /**
      * Completes one accepted turn without launching its successor. dispatchTurn's
-     * owner-release callback first claims mandatory process events, then ordinary
-     * auto-dequeued user input, after active ownership has been relinquished.
+     * owner-release callback claims mandatory process events first, direct input
+     * from a background handoff second, and ordinary auto-dequeued input last.
      */
     private void completeAcceptedTurn() {
         synchronized (turnDispatchLock) {
@@ -492,8 +541,8 @@ public class ChatMessageHandler {
         }
     }
 
-    /** Atomically claim one queued message for the active agent loop. */
-    private String claimQueuedMessageAtBoundary() {
+    /** Atomically claim the highest-priority pending input for the active agent loop. */
+    private String claimPendingInputAtBoundary() {
         synchronized (turnDispatchLock) {
             if (!acceptingDispatches.get()) return null;
             if (!acceptingExternalMessages.get()) {
@@ -512,6 +561,20 @@ public class ChatMessageHandler {
             }
             if (external != null) {
                 externalWorkClaimed.set(false);
+            }
+            BackgroundInput backgroundInput = backgroundInputs.poll();
+            if (backgroundInput != null) {
+                if (backgroundInput.formerQueueId() != null) {
+                    sessionMetrics.recordMessageAutoDequeued();
+                }
+                sessionMetrics.recordUserTurn(backgroundInput.content());
+                chatHistory.logUserMessage(backgroundInput.content());
+                repl.requestStatusRedraw();
+                ChatCompleter.printAbove(renderer.cyan(
+                                "  ↪ Processing input immediately after backgrounding")
+                        + (backgroundInput.formerQueueId() == null
+                                ? "" : renderer.dim(" [" + backgroundInput.formerQueueId() + "]")));
+                return backgroundInput.content();
             }
             if (!repl.isAutoDequeueEnabled() && !backgroundTaskManager.isInQueueChain()) {
                 return null;
@@ -540,6 +603,44 @@ public class ChatMessageHandler {
             ChatCompleter.printAbove(renderer.cyan("  ↪ Sent queued message at tool boundary")
                     + renderer.dim(" [" + claimed.getId() + "]"));
             return claimed.getContent();
+        }
+    }
+
+    private boolean hasBackgroundedActiveTurn() {
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+        return turnActive.get() && activeDispatchThread.get() != null && task != null
+                && task.getStatus()
+                == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+    }
+
+    private void acceptBackgroundInput(String message, String formerQueueId) {
+        if (message == null || message.isBlank()) return;
+        backgroundInputs.add(new BackgroundInput(message, formerQueueId));
+        repl.requestStatusRedraw();
+        ChatCompleter.printAbove(renderer.cyan("  ↪ Processing with background task")
+                + renderer.dim(" (not queued)"));
+        ChatCompleter.printAbove(renderer.dim("     → ") + StringUtils.truncate(message, 60));
+    }
+
+    /** Move all currently sendable queue entries into the detached turn's direct lane. */
+    private int releaseQueuedInputToBackgroundTurn() {
+        int released = 0;
+        MessageQueue.QueuedMessage message;
+        while ((message = messageQueue.dequeue()) != null) {
+            backgroundInputs.add(new BackgroundInput(message.getContent(), message.getId()));
+            released++;
+        }
+        if (released > 0 && backgroundTaskManager.isInQueueChain()) {
+            backgroundTaskManager.endQueueChain();
+        }
+        return released;
+    }
+
+    /** Session shutdown must not lose input that was removed from the durable queue. */
+    private void restoreUnclaimedBackgroundInputs() {
+        BackgroundInput input;
+        while ((input = backgroundInputs.poll()) != null) {
+            messageQueue.enqueue(input.content());
         }
     }
 
@@ -702,6 +803,7 @@ public class ChatMessageHandler {
             emitLine("Sends a message to the configured agent with streaming output.");
             return;
         }
+        repl.initializeSessionTitleFromPrompt(message);
         dispatchTurn(message, () -> streamAgentChatAccepted(message), "server-stream-chat");
     }
 
@@ -729,6 +831,7 @@ public class ChatMessageHandler {
             request.put("ragSimilarityThreshold", 0.5);
             request.put("includeKeywordSearch", true);
             request.put("includeSemanticSearch", true);
+            request.put("systemPromptOverride", agenticLoop.getProjectContextPrompt());
             request.put("injectMcpTools", true);
             request.put("skipPermissions", true);
             request.put("timeoutSeconds", 300);
@@ -822,6 +925,7 @@ public class ChatMessageHandler {
             runAgenticChat(message);
             return;
         }
+        repl.initializeSessionTitleFromPrompt(message);
         dispatchTurn(message, () -> {
             try {
                 runAgenticChat(message);

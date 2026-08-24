@@ -38,6 +38,8 @@ public final class PipelineRuntimeSession implements AutoCloseable {
     private final BufferedWriter input;
     private final ConcurrentHashMap<String, CompletableFuture<Message>> pending =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Consumer<Message>> progressListeners =
+            new ConcurrentHashMap<>();
     private final CompletableFuture<Message> ready = new CompletableFuture<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean logFinished = new AtomicBoolean(false);
@@ -112,8 +114,13 @@ public final class PipelineRuntimeSession implements AutoCloseable {
             } catch (TimeoutException e) {
                 cancel(Duration.ofSeconds(2));
                 throw new IOException("Pipeline runtime execution timed out", e);
+            } catch (InterruptedException e) {
+                cancel(Duration.ofSeconds(2));
+                Thread.currentThread().interrupt();
+                throw e;
             } finally {
                 pending.remove(requestId, response);
+                progressListeners.remove(requestId);
             }
         }
 
@@ -129,10 +136,15 @@ public final class PipelineRuntimeSession implements AutoCloseable {
     }
 
     public Execution start(Map<String, Object> request) throws IOException {
+        return start(request, null);
+    }
+
+    public Execution start(Map<String, Object> request, Consumer<Message> progress) throws IOException {
         if (!isAlive()) throw new IOException("Pipeline runtime is not running");
         String requestId = UUID.randomUUID().toString();
         CompletableFuture<Message> response = new CompletableFuture<>();
         pending.put(requestId, response);
+        if (progress != null) progressListeners.put(requestId, progress);
         try {
             send(PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.EXECUTE,
                     requestId, definition.getPipelineId(),
@@ -140,6 +152,7 @@ public final class PipelineRuntimeSession implements AutoCloseable {
             return new Execution(requestId, response);
         } catch (IOException failure) {
             pending.remove(requestId, response);
+            progressListeners.remove(requestId);
             throw failure;
         }
     }
@@ -234,7 +247,14 @@ public final class PipelineRuntimeSession implements AutoCloseable {
                         && message.requestId() == null && !ready.isDone()) {
                     ready.completeExceptionally(runtimeFailure(message));
                 } else if (PipelineRuntimeProtocol.PROGRESS.equals(message.type())) {
-                    progressListener.accept(message);
+                    Consumer<Message> requestListener = message.requestId() == null
+                            ? null : progressListeners.get(message.requestId());
+                    try {
+                        if (requestListener != null) requestListener.accept(message);
+                        progressListener.accept(message);
+                    } catch (RuntimeException ignored) {
+                        // A caller callback must not stop protocol draining for pooled runtimes.
+                    }
                 } else if (message.requestId() != null) {
                     CompletableFuture<Message> future = pending.get(message.requestId());
                     if (future != null) {
@@ -278,6 +298,7 @@ public final class PipelineRuntimeSession implements AutoCloseable {
     private void failPending(Throwable error) {
         pending.values().forEach(future -> future.completeExceptionally(error));
         pending.clear();
+        progressListeners.clear();
     }
 
     private RuntimeFailure runtimeFailure(Message message) {

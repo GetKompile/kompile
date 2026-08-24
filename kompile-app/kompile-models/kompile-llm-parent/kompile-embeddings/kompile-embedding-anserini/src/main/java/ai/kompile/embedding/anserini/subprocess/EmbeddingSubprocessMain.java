@@ -38,6 +38,7 @@ import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
@@ -828,9 +829,24 @@ public class EmbeddingSubprocessMain {
             // Create new encoder
             loadingPhase = "CREATING_ENCODER";
             sendProgress("LOADING_MODEL", 20, "Creating encoder", "Initializing encoder for " + req.modelId());
-            sendLog("INFO", "ModelLoader", "Creating encoder via AnseriniEncoderFactory");
-
-            encoder = AnseriniEncoderFactory.createEncoder(req.modelId());
+            Map<String, String> modelConfig = req.modelConfig() == null ? Map.of() : req.modelConfig();
+            String explicitModelPath = modelConfig.get("modelPath");
+            String explicitVocabPath = modelConfig.get("vocabPath");
+            boolean explicitLocalModel = (explicitModelPath != null && !explicitModelPath.isBlank())
+                    || (explicitVocabPath != null && !explicitVocabPath.isBlank());
+            if (explicitLocalModel) {
+                if (explicitModelPath == null || explicitModelPath.isBlank()
+                        || explicitVocabPath == null || explicitVocabPath.isBlank()) {
+                    throw new IOException("Explicit local embedding models require both modelPath and vocabPath");
+                }
+                sendLog("INFO", "ModelLoader", "Creating encoder from explicit local artifact paths");
+                encoder = AnseriniEncoderFactory.createEncoderFromPaths(
+                        req.modelId(), explicitModelPath, explicitVocabPath,
+                        modelConfig.get("encoderType"));
+            } else {
+                sendLog("INFO", "ModelLoader", "Creating encoder via model registry");
+                encoder = AnseriniEncoderFactory.createEncoder(req.modelId());
+            }
             encoderType = encoder.getClass().getSimpleName();
             sendLog("INFO", "ModelLoader", "Encoder created: " + encoderType);
 
@@ -880,7 +896,8 @@ public class EmbeddingSubprocessMain {
 
             currentModelId = req.modelId();
             currentDimensions = testEmbedding.length;
-            modelSource = "REGISTRY";
+            modelSource = explicitLocalModel
+                    ? modelConfig.getOrDefault("modelSource", "LOCAL_PATH") : "REGISTRY";
 
             // Warmup DSP plans at key bucket sizes to avoid cold-start latency
             // and ensure the planner has seen representative shapes before real traffic.

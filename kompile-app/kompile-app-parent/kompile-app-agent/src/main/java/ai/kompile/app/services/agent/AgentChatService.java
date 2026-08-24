@@ -596,6 +596,13 @@ public class AgentChatService {
         String userMessage = request.getMessage();
         StringBuilder promptBuilder = new StringBuilder();
 
+        String systemPrompt = request.getSystemPromptOverride();
+        // API agents receive this through a real role=system message in
+        // ApiAgentChatExecutor. CLI subprocess agents require a prompt prefix.
+        if (embedHistory && systemPrompt != null && !systemPrompt.isBlank()) {
+            promptBuilder.append(systemPrompt.strip()).append("\n\n---\n\n");
+        }
+
         // Inject folder context if folderId is provided
         String folderContext = buildFolderContextPrefix(request.getFolderId());
         if (folderContext != null && !folderContext.isEmpty()) {
@@ -1086,11 +1093,13 @@ public class AgentChatService {
 
         try {
             ChatContextBudgetService.ContextBudget budget = contextBudgetService.resolve(agent);
-            int promptTokens = ChatContextBudgetService.estimateTokens(request.getMessage());
+            int promptTokens = ChatContextBudgetService.estimateTokens(request.getMessage())
+                    + ChatContextBudgetService.estimateTokens(request.getSystemPromptOverride());
             if (!historyCompactor.needsCompaction(history, budget, promptTokens)) return;
 
             ChatHistoryCompactor.Result result =
-                    historyCompactor.compact(history, budget, null, false, summarizerFor(agent));
+                    historyCompactor.compact(history, budget, null, promptTokens,
+                            false, summarizerFor(agent));
             if (!result.compacted()) return;
 
             request.setChatHistory(result.history());

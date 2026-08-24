@@ -108,6 +108,7 @@ public class ChatRepl {
     private final String sessionId;
     private final ChatHistory chatHistory;
     private final ChatMemory chatMemory;
+    private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
     private boolean ragEnabled;
     private String agentName;
     private String localAgentName;
@@ -512,6 +513,7 @@ public class ChatRepl {
         lifecycleManager.restoreSession();
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
+        restoreSessionTitle();
         if (!localMode) {
             try {
                 cachedTools = mcpClient.listTools();
@@ -523,7 +525,11 @@ public class ChatRepl {
         }
 
         try {
-            messageHandler.handleChatMessage(message);
+            initializeSessionTitleFromPrompt(message);
+            String effectiveMessage = skillRegistry.resolveInvocation(message)
+                    .map(SkillRegistry.SkillInvocation::prompt)
+                    .orElse(message);
+            messageHandler.handleChatMessage(effectiveMessage);
             if (crawlRunStore != null && runController != null) {
                 crawlRunStore.event("headless_completed", runController.state().name());
             }
@@ -552,6 +558,7 @@ public class ChatRepl {
         // Open transcript file for writing
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled,
                 workingDirectory);
+        restoreSessionTitle();
 
         // Pre-cache tools for completion (server mode only)
         if (!localMode) {
@@ -566,7 +573,7 @@ public class ChatRepl {
 
         Terminal terminal = ChatCompleter.buildSystemTerminal();
         Runnable codeIndexAlertCleanup = () -> { };
-        renderer.attachTerminal(terminal, "kompile chat" + (localMode ? " (local)" : " — " + agentName));
+        renderer.attachTerminal(terminal, readyTerminalTitle(defaultTerminalTitle()));
         // Clear tracking modes left behind by an older session so the host terminal
         // retains native transcript selection and paste behavior.
         disableTranscriptMouse(terminal);
@@ -620,20 +627,20 @@ public class ChatRepl {
             public boolean apply() {
                 if (messageHandler.requestBackground()) {
                     BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
-                    int queueSize = messageQueue.size();
+                    int releasedInput = messageHandler.pendingBackgroundInputCount();
                     ChatCompleter.printAbove("");
                     ChatCompleter.printAbove(renderer.yellow("  ◐ Task backgrounded")
                             + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
-                    if (queueSize > 0) {
-                        ChatCompleter.printAbove(renderer.dim("    " + queueSize
-                                + " queued message(s) will steer at the next tool boundary"));
+                    if (releasedInput > 0) {
+                        ChatCompleter.printAbove(renderer.dim("    " + releasedInput
+                                + " pending message(s) moved out of the queue for immediate processing"));
                     } else {
                         ChatCompleter.printAbove(renderer.dim("    Output is now retained in the task log"));
                     }
                     statusBar.getActiveSubagents().forEach(entry ->
                             refreshInlineSubagentBlock(tui, activityPanel, entry.getId(), true));
                     ChatCompleter.printAbove(renderer.dim(
-                            "    Use the rows below (↓ then Enter) or /jobs to inspect; keep typing to queue guidance"));
+                            "    Use the rows below (↓ then Enter) or /jobs to inspect; new input is processed, not queued"));
                     ChatCompleter.printAbove("");
                 }
                 return true;
@@ -796,10 +803,14 @@ public class ChatRepl {
         // Show AGENTS.md status
         String agentsMd = agenticLoop.getAgentsMdContent();
         if (agentsMd != null && !agentsMd.isEmpty()) {
-            AgentsMdLoader loader = new AgentsMdLoader(Paths.get(System.getProperty("user.dir")));
-            List<Path> files = loader.listFiles();
+            List<Path> files = agenticLoop.getAgentsMdFiles();
             System.out.println(renderer.dim("  Loaded AGENTS.md from: " +
                     files.stream().map(p -> p.getParent().toString()).collect(Collectors.joining(", "))));
+            int estimatedInstructionTokens = Math.max(1, agentsMd.length() / 4);
+            if (estimatedInstructionTokens > 16_000) {
+                System.out.println(renderer.yellow("  Warning: AGENTS.md contributes about "
+                        + estimatedInstructionTokens + " tokens before chat history and tools"));
+            }
         }
 
         // Show available subagents
@@ -1204,10 +1215,14 @@ public class ChatRepl {
                     .filter(Objects::nonNull)
                     .findFirst()
                     .orElse(now);
+            String exportedTitle = sessionTitle.get();
+            if (exportedTitle == null) {
+                exportedTitle = deriveTranscriptTitle(transcript);
+            }
             sessions.removeIf(s -> sessionId.equals(s.getSessionId()));
             sessions.add(KompileProjectChatSession.builder()
                     .sessionId(sessionId)
-                    .title(deriveTranscriptTitle(transcript))
+                    .title(exportedTitle)
                     .source("kompile-cli")
                     .messageCount(sessionMetrics.getTotalTurns())
                     .createdAt(createdAt)
@@ -1224,19 +1239,67 @@ public class ChatRepl {
      * transcript (lines are prefixed with {@code "> "}). Falls back to the session id.
      */
     private String deriveTranscriptTitle(Path transcript) {
+        String title = findTranscriptTitle(transcript);
+        return title == null ? "Session " + sessionId : title;
+    }
+
+    private String findTranscriptTitle(Path transcript) {
         try {
             for (String line : Files.readAllLines(transcript)) {
                 if (line.startsWith("> ")) {
-                    String title = line.substring(2).strip();
-                    if (!title.isEmpty()) {
-                        return title.length() > 80 ? title.substring(0, 77) + "..." : title;
-                    }
+                    String title = ChatSessionTitle.fromPrompt(line.substring(2));
+                    if (title != null) return title;
                 }
             }
         } catch (Exception ignored) {
-            // fall through to default
+            // fall through to no stored title
         }
-        return "Session " + sessionId;
+        return null;
+    }
+
+    private void restoreSessionTitle() {
+        if (sessionTitle.get() != null) return;
+        String restored = chatHistory.readSessionTitle();
+        if (restored == null) {
+            restored = findTranscriptTitle(chatHistory.getTranscriptFile());
+        }
+        if (restored != null) {
+            sessionTitle.replace(restored);
+        }
+    }
+
+    /** Set the title once from the first user prompt accepted by this session. */
+    void initializeSessionTitleFromPrompt(String prompt) {
+        if (sessionTitle.initializeFromPrompt(prompt) && activeTerminal != null) {
+            renderer.setReadyTerminalTitle(sessionTitle.get());
+        }
+    }
+
+    /** Replace the prompt-derived title with an explicit user-provided title. */
+    String setSessionTitle(String title) {
+        String updated = sessionTitle.replace(title);
+        chatHistory.logSessionTitle(updated);
+        if (activeTerminal != null) {
+            renderer.setReadyTerminalTitle(updated);
+        }
+        return updated;
+    }
+
+    String displayedSessionTitle() {
+        return readyTerminalTitle(defaultTerminalTitle());
+    }
+
+    String currentSessionTitle() {
+        return sessionTitle.get();
+    }
+
+    private String defaultTerminalTitle() {
+        return "kompile chat" + (localMode ? " (local)" : " — " + agentName);
+    }
+
+    private String readyTerminalTitle(String fallback) {
+        String current = sessionTitle.get();
+        return current == null ? fallback : current;
     }
 
     // ── Role assignment at startup (called by ChatCommand) ───────────────────
@@ -2452,7 +2515,8 @@ public class ChatRepl {
 
     private void refreshModelDisplay() {
         tui.setAgentName(activeModelDisplayName());
-        renderer.setReadyTerminalTitle("kompile chat (local) — " + activeModelDisplayName());
+        renderer.setReadyTerminalTitle(readyTerminalTitle(
+                "kompile chat (local) — " + activeModelDisplayName()));
         statusBar.requestRedraw();
     }
 

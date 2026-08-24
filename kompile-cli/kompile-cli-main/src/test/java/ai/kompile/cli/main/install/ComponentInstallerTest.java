@@ -3,6 +3,7 @@ package ai.kompile.cli.main.install;
 import ai.kompile.cli.main.install.registry.ComponentRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import picocli.CommandLine;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -134,6 +135,41 @@ public class ComponentInstallerTest {
         assertFalse(cacheDir.exists(), "install should clear stale Spring Boot extraction cache");
     }
 
+    @Test
+    public void pipelineServingStagesAtLauncherPathAtomically(@TempDir Path tempDir) throws Exception {
+        ComponentRegistry registry = registryAt(tempDir);
+        ComponentInstaller installer = new ComponentInstaller(registry);
+        File candidate = createExecutablePipelineJar(tempDir.resolve("pipeline-exec.jar"));
+        File cacheDir = tempDir.resolve("lib/.boot-inf-extracted").toFile();
+        assertTrue(cacheDir.mkdirs());
+        assertTrue(new File(cacheDir, "stale.classpath").createNewFile());
+
+        File staged = installer.installDistributionRuntimeFromLocalJar(
+                ComponentRegistry.KOMPILE_PIPELINE_SERVING, candidate);
+
+        assertEquals(tempDir.resolve("lib/kompile-pipeline-serving-exec.jar").toFile(), staged);
+        assertTrue(ComponentInstaller.isExecutablePipelineServingJar(staged));
+        assertFalse(cacheDir.exists(), "staging should clear the adjacent Boot extraction cache");
+    }
+
+    @Test
+    public void pipelineServingRejectsThinJar(@TempDir Path tempDir) throws Exception {
+        ComponentInstaller installer = new ComponentInstaller(registryAt(tempDir));
+        File thinJar = createJar(tempDir.resolve("pipeline-thin.jar"),
+                "ai/kompile/pipeline/serving/subprocess/PipelineServingSubprocessMain.class");
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> installer.installDistributionRuntimeFromLocalJar(
+                        ComponentRegistry.KOMPILE_PIPELINE_SERVING, thinJar));
+        assertTrue(error.getMessage().contains("non-executable pipeline-serving JAR"));
+    }
+
+    @Test
+    public void pipelineServingInstallCommandIsRegistered() {
+        assertTrue(new CommandLine(new InstallMain()).getSubcommands()
+                .containsKey("kompile-pipeline-serving"));
+    }
+
     private static ComponentRegistry registryAt(Path tempDir) {
         ComponentRegistry registry = new ComponentRegistry();
         registry.setInstallBaseDir(tempDir.toFile());
@@ -149,6 +185,19 @@ public class ComponentInstallerTest {
                 out.putNextEntry(new JarEntry(entry));
                 out.closeEntry();
             }
+        }
+        return path.toFile();
+    }
+
+    private static File createExecutablePipelineJar(Path path) throws Exception {
+        Manifest manifest = new Manifest();
+        manifest.getMainAttributes().putValue("Manifest-Version", "1.0");
+        manifest.getMainAttributes().putValue("Main-Class",
+                "ai.kompile.pipeline.serving.subprocess.PipelineServingSubprocessMain");
+        try (JarOutputStream out = new JarOutputStream(new FileOutputStream(path.toFile()), manifest)) {
+            out.putNextEntry(new JarEntry("ai/kompile/pipeline/serving/subprocess/"
+                    + "PipelineServingSubprocessMain.class"));
+            out.closeEntry();
         }
         return path.toFile();
     }

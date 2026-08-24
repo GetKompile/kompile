@@ -22,7 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 /**
@@ -74,8 +76,13 @@ final class LocalCrawlJobRegistry {
         cleanup();
         LocalCrawlJobStore.initialize(projectRoot, jobId, knowledgeBase, request);
         AsyncJob job = new AsyncJob(jobId, knowledgeBase, projectRoot, cancelHook, work);
+        FutureTask<Void> task = new FutureTask<>(() -> {
+            job.run();
+            return null;
+        });
+        job.future = task;
         JOBS.put(jobId, job);
-        job.future = EXECUTOR.submit(job::run);
+        EXECUTOR.execute(task);
         return job;
     }
 
@@ -149,6 +156,14 @@ final class LocalCrawlJobRegistry {
         }
     }
 
+    static void updatePipelineProgress(String jobId, String stage, String detail,
+                                       int progressPercent, Map<String, Object> progress) {
+        AsyncJob job = get(jobId);
+        if (job != null) {
+            job.updatePipelineProgress(stage, detail, progressPercent, progress);
+        }
+    }
+
     private static void cleanup() {
         long now = System.currentTimeMillis();
         for (AsyncJob job : JOBS.values()) {
@@ -193,6 +208,8 @@ final class LocalCrawlJobRegistry {
         private volatile String stageDetail = "Waiting for a project-local crawl worker";
         private volatile int progressPercent;
         private volatile Instant stageUpdatedAt = createdAt;
+        private volatile Map<String, Object> pipelineProgress = Map.of();
+        private final AtomicBoolean workerEntered = new AtomicBoolean(false);
 
         private AsyncJob(String jobId,
                          String knowledgeBase,
@@ -232,9 +249,6 @@ final class LocalCrawlJobRegistry {
                 return completed.isError() ? "FAILED" : "COMPLETED";
             }
             Future<?> submitted = future;
-            if (submitted != null && submitted.isCancelled()) {
-                return "CANCELLED";
-            }
             if (startedAt == null) {
                 if (cancelRequested) return "CANCELLING";
                 return "QUEUED";
@@ -247,6 +261,7 @@ final class LocalCrawlJobRegistry {
         }
 
         private void run() {
+            if (!workerEntered.compareAndSet(false, true)) return;
             startedAt = Instant.now();
             updateStage("PREPARING", "Preparing the project-local crawl request", 5);
             persist("JOB_STARTED");
@@ -268,22 +283,27 @@ final class LocalCrawlJobRegistry {
                         + failure.getClass().getName()
                         + (message == null || message.isBlank() ? "" : ": " + message));
             } finally {
-                finishedAt = Instant.now();
-                String terminalStage = status();
-                stage = terminalStage;
-                stageDetail = switch (terminalStage) {
-                    case "COMPLETED", "COMPLETED_WITH_ERRORS" -> "Project-local crawl finished";
-                    case "CANCELLED" -> "Project-local crawl was cancelled";
-                    default -> "Project-local crawl failed";
-                };
-                progressPercent = 100;
-                stageUpdatedAt = finishedAt;
-                persist("JOB_TERMINAL");
+                finish();
             }
         }
 
-        private void updateStage(String nextStage, String detail, int percent) {
-            if (nextStage == null || nextStage.isBlank() || terminal()) {
+        private synchronized void finish() {
+            finishedAt = Instant.now();
+            String terminalStage = status();
+            stage = terminalStage;
+            stageDetail = switch (terminalStage) {
+                case "COMPLETED", "COMPLETED_WITH_ERRORS" -> "Project-local crawl finished";
+                case "CANCELLED" -> "Project-local crawl was cancelled";
+                default -> "Project-local crawl failed";
+            };
+            progressPercent = 100;
+            stageUpdatedAt = finishedAt;
+            persist("JOB_TERMINAL");
+        }
+
+        private synchronized void updateStage(String nextStage, String detail, int percent) {
+            if (nextStage == null || nextStage.isBlank() || terminal()
+                    || (cancelRequested && !"CANCELLING".equalsIgnoreCase(nextStage))) {
                 return;
             }
             stage = nextStage.trim().toUpperCase(Locale.ROOT);
@@ -293,12 +313,19 @@ final class LocalCrawlJobRegistry {
             persist("JOB_STAGE");
         }
 
-        private boolean cancel() {
+        private synchronized void updatePipelineProgress(String nextStage, String detail, int percent,
+                                                         Map<String, Object> progress) {
+            if (cancelRequested || terminal()) return;
+            pipelineProgress = progress == null ? Map.of() : Map.copyOf(progress);
+            updateStage(nextStage, detail, percent);
+        }
+
+        private synchronized boolean cancel() {
             if (terminal()) {
                 return false;
             }
-            updateStage("CANCELLING", "Stopping the project-local crawl worker", progressPercent);
             cancelRequested = true;
+            updateStage("CANCELLING", "Stopping the project-local crawl worker", progressPercent);
             if (cancelHook != null) {
                 try {
                     cancelHook.run();
@@ -309,7 +336,7 @@ final class LocalCrawlJobRegistry {
             Future<?> submitted = future;
             if (submitted != null) {
                 boolean cancelled = submitted.cancel(true);
-                if (cancelled && startedAt == null) {
+                if (cancelled && workerEntered.compareAndSet(false, true)) {
                     result = ToolResult.error("Project-local crawl cancelled before execution.");
                     finishedAt = Instant.now();
                     stage = "CANCELLED";
@@ -329,7 +356,10 @@ final class LocalCrawlJobRegistry {
             metadata.put("status", status());
             metadata.put("terminal", terminal());
             metadata.put("stage", stage);
+            if (stageDetail != null) metadata.put("stageDetail", stageDetail);
             metadata.put("progressPercent", progressPercent);
+            metadata.put("stageUpdatedAt", stageUpdatedAt.toString());
+            if (!pipelineProgress.isEmpty()) metadata.put("pipelineProgress", pipelineProgress);
             return ToolResult.success("crawl_status", json(mapper, payload), metadata);
         }
 
@@ -351,7 +381,10 @@ final class LocalCrawlJobRegistry {
             metadata.put("status", status());
             metadata.put("terminal", true);
             metadata.put("stage", stage);
+            if (stageDetail != null) metadata.put("stageDetail", stageDetail);
             metadata.put("progressPercent", progressPercent);
+            metadata.put("stageUpdatedAt", stageUpdatedAt.toString());
+            if (!pipelineProgress.isEmpty()) metadata.put("pipelineProgress", pipelineProgress);
             return new ToolResult(completed.getTitle(), completed.getOutput(), metadata,
                     completed.isError() || "FAILED".equals(status()));
         }
@@ -371,6 +404,7 @@ final class LocalCrawlJobRegistry {
             if (stageDetail != null) payload.put("stageDetail", stageDetail);
             payload.put("progressPercent", progressPercent);
             payload.put("stageUpdatedAt", stageUpdatedAt.toString());
+            if (!pipelineProgress.isEmpty()) payload.put("pipelineProgress", pipelineProgress);
             payload.put("pollAfterMs", DEFAULT_POLL_AFTER_MS);
             payload.put("createdAt", createdAt.toString());
             if (startedAt != null) payload.put("startedAt", startedAt.toString());

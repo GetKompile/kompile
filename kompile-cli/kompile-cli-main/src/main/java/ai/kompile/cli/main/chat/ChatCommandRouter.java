@@ -78,6 +78,7 @@ public class ChatCommandRouter {
     private final BackgroundProcessManager processManager;
     private final ai.kompile.cli.main.chat.tui.StatusBar statusBar;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
+    private String serverCustomSystemPrompt;
 
     // Mutable state that the router can modify via ChatRepl accessors
     // (these are updated by individual handlers and ChatRepl reads them back)
@@ -191,6 +192,10 @@ public class ChatCommandRouter {
 
             case "/status":
                 printStatus();
+                return true;
+
+            case "/title":
+                handleTitle(rest);
                 return true;
 
             case "/history":
@@ -474,11 +479,11 @@ public class ChatCommandRouter {
                 return true;
 
             default:
-                // Check if it's a skill invocation (e.g. /commit, /review)
-                String skillName = cmd.substring(1); // strip leading /
-                SkillConfig skill = skillRegistry.get(skillName);
-                if (skill != null) {
-                    executeSkill(skill, rest);
+                // Check if it's a skill invocation (e.g. /commit, /review).
+                SkillRegistry.SkillInvocation invocation =
+                        skillRegistry.resolveInvocation(input).orElse(null);
+                if (invocation != null) {
+                    executeSkill(invocation);
                     return true;
                 }
                 System.out.println("Unknown command: " + cmd + ". Type /help for available commands.");
@@ -663,6 +668,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
             body.append("  ").append(renderer.cyan("/provider")).append("           Switch provider/model and keep this conversation\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure provider/runtime\n");
+            body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
             body.append("  ").append(renderer.cyan("/enforcer")).append(" [cmd]       Enforcer config (init/show/rules/run/delete)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
@@ -749,6 +755,7 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Auto-compaction status and policy\n");
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
+            body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
@@ -820,6 +827,15 @@ public class ChatCommandRouter {
         System.out.println(renderer.dim("  Conversations saved to ~/.kompile/conversations/"));
         System.out.println(renderer.dim("  Resume: kompile chat --resume <session-id>"));
         System.out.println(renderer.dim("  Continue last: kompile chat --continue"));
+    }
+
+    private void handleTitle(String requestedTitle) {
+        if (requestedTitle == null || requestedTitle.isBlank()) {
+            System.out.println(renderer.dim("  Session title: ") + repl.displayedSessionTitle());
+            return;
+        }
+        String updated = repl.setSessionTitle(requestedTitle);
+        System.out.println(renderer.green("  Session title updated: ") + updated);
     }
 
     // ========================================================================
@@ -1402,11 +1418,14 @@ public class ChatCommandRouter {
     // Skill execution
     // ========================================================================
 
-    private void executeSkill(SkillConfig skill, String args) {
-        String expandedPrompt = skill.expandTemplate(args);
-        String taggedPrompt = "<skill name=\"" + skill.getName() + "\">\n" + expandedPrompt + "\n</skill>";
-        chatHistory.logSystem("Executing skill: /" + skill.getName() + (args.isBlank() ? "" : " " + args));
-        messageHandler.handleChatMessage(taggedPrompt);
+    private void executeSkill(SkillRegistry.SkillInvocation invocation) {
+        SkillConfig skill = invocation.skill();
+        String args = invocation.arguments();
+        repl.initializeSessionTitleFromPrompt("/" + skill.getName()
+                + (args.isBlank() ? "" : " " + args));
+        chatHistory.logSystem("Executing skill: /" + skill.getName()
+                + (args.isBlank() ? "" : " " + args));
+        messageHandler.handleChatMessage(invocation.prompt());
     }
 
     private void listSkills() {
@@ -1997,6 +2016,16 @@ public class ChatCommandRouter {
         }
     }
 
+    private String serverSystemPrompt(String customPrompt) {
+        if (customPrompt != null) {
+            serverCustomSystemPrompt = customPrompt.isBlank() ? null : customPrompt.strip();
+        }
+        String projectPrompt = agenticLoop.getProjectContextPrompt();
+        String base = serverCustomSystemPrompt == null
+                ? "You are a helpful AI assistant." : serverCustomSystemPrompt;
+        return projectPrompt.isBlank() ? base : base + "\n\n" + projectPrompt;
+    }
+
     private void updateSessionRag(boolean enabled) {
         try {
             ObjectNode args = objectMapper.createObjectNode();
@@ -2006,7 +2035,7 @@ public class ChatCommandRouter {
             args.put("semanticK", 5);
             args.put("keywordK", 5);
             args.put("similarityThreshold", 0.5);
-            args.put("systemPrompt", "");
+            args.put("systemPrompt", serverSystemPrompt(null));
             mcpClient.callTool("update_session_config", args);
         } catch (Exception e) {
             // Best effort
@@ -2061,7 +2090,7 @@ public class ChatCommandRouter {
             args.put("semanticK", 5);
             args.put("keywordK", 5);
             args.put("similarityThreshold", 0.5);
-            args.put("systemPrompt", "");
+            args.put("systemPrompt", serverSystemPrompt(null));
             String rawResult = mcpClient.callTool("update_session_config", args);
 
             com.fasterxml.jackson.databind.JsonNode json = objectMapper.readTree(rawResult);
@@ -2106,7 +2135,7 @@ public class ChatCommandRouter {
             args.put("semanticK", 5);
             args.put("keywordK", 5);
             args.put("similarityThreshold", 0.5);
-            args.put("systemPrompt", "");
+            args.put("systemPrompt", serverSystemPrompt(null));
 
             switch (key.toLowerCase()) {
                 case "semantick":
@@ -2119,7 +2148,7 @@ public class ChatCommandRouter {
                     args.put("similarityThreshold", Double.parseDouble(value));
                     break;
                 case "systemprompt":
-                    args.put("systemPrompt", value);
+                    args.put("systemPrompt", serverSystemPrompt(value));
                     break;
                 default:
                     System.out.println("Unknown config key: " + key);

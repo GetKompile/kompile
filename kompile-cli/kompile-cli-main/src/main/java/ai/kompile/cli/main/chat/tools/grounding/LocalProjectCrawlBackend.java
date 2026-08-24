@@ -73,7 +73,7 @@ public final class LocalProjectCrawlBackend {
     private final LocalProjectRagSearch ragSearch;
 
     public LocalProjectCrawlBackend(ObjectMapper mapper) {
-        this(mapper, new LocalProjectGraphBackend(mapper), LocalModelPipelineRunner::extract);
+        this(mapper, new LocalProjectGraphBackend(mapper), null);
     }
 
     /**
@@ -363,7 +363,7 @@ public final class LocalProjectCrawlBackend {
             boolean dryRun = params.path("dryRun").asBoolean(false);
             String lockKey = project.root() + "\n" + knowledgeBase.id();
             ReentrantLock lock = CRAWL_LOCKS.computeIfAbsent(lockKey, ignored -> new ReentrantLock());
-            lock.lock();
+            lock.lockInterruptibly();
             try {
                 List<LocalProjectGraphBackend.CodeProjectSource> graphCodeProjects =
                         selectedProjects.projects().stream()
@@ -377,17 +377,19 @@ public final class LocalProjectCrawlBackend {
                                 project.id(), graphCodeProjects, text(params, "_asyncJobId"));
                 reportStage(params, "DOCUMENT_PROCESSING",
                         "Loading and extracting project documents", 30);
-                ProjectCrawlCommand.ModelPipelineExecutor effectiveModelExecutor =
-                        modelPipelineExecutor == null
-                                ? LocalModelPipelineRunner::extract : modelPipelineExecutor;
                 ProjectCrawlCommand.ModelPipelineExecutor reportingModelExecutor =
                         (root, file, pipeline, loadedText) -> {
                             reportStage(params, "MODEL_INITIALIZATION",
                                     "Initializing or running the selected model-backed document pipeline",
                                     30);
                             try {
-                                return effectiveModelExecutor.extract(
-                                        root, file, pipeline, loadedText);
+                                if (modelPipelineExecutor != null) {
+                                    return modelPipelineExecutor.extract(root, file, pipeline, loadedText);
+                                }
+                                return LocalModelPipelineRunner.extract(
+                                        root, file, pipeline, loadedText,
+                                        progress -> reportPipelineProgress(
+                                                params, file, pipeline, progress));
                             } finally {
                                 reportStage(params, "DOCUMENT_PROCESSING",
                                         "Processing extracted documents", 60);
@@ -397,6 +399,9 @@ public final class LocalProjectCrawlBackend {
                         LocalCrawlRunner.execute(
                                 profile, project.root(), dryRun, executionRequest,
                                 graphContext, mapper, reportingModelExecutor);
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("Project-local crawl cancelled before persistence");
+                }
                 reportStage(params, "PERSISTENCE",
                         "Persisting crawl metadata, graph updates, and searchable artifacts", 85);
                 ProjectCrawlCommand.LocalCrawlExecution execution = lifecycle.crawlExecution();
@@ -1761,7 +1766,9 @@ public final class LocalProjectCrawlBackend {
                 registered.put("supportedInputTypes", "application/pdf");
                 registered.put("configurationHint",
                         "VLM/OCR callers should explicitly set modelId/modelBindings and options.outputFormat, "
-                                + "maxNewTokens, pdfRenderDpi, pageBatchSize, temperature, and doSample; dryRun=true "
+                                + "maxResponseBytes, pdfRenderDpi, pageBatchSize, temperature, and doSample. Omit "
+                                + "maxNewTokens for normal EOS/context generation and set it only as an explicit "
+                                + "diagnostic limit; dryRun=true "
                                 + "shows the effective per-document resolution.");
             }
             ObjectNode options = registered.putObject("options");
@@ -1883,7 +1890,7 @@ public final class LocalProjectCrawlBackend {
         shape.put("codeProjects", "omit to use and auto-configure the current directory code project; codeProjects=[id|name|*] is an explicit opt-in for additional manifest registrations");
         shape.put("knowledgeBase", "knowledgeBase={name:<string>} or {id:<number>}; repeated calls add sources");
         shape.put("execution", "asynchronous MCP-host job by default: start returns jobId; poll crawl_control operation=status and respect pollAfterMs=1000; call crawl_result at terminal=true; async=false or waitForCompletion=true enables blocking compatibility");
-        shape.put("progress", "crawl_control status reports stage, stageDetail, progressPercent, and stageUpdatedAt; any resolved model-backed pipeline reports MODEL_INITIALIZATION while its executor is active and PERSISTENCE afterwards");
+        shape.put("progress", "crawl_control status reports stage, stageDetail, progressPercent, stageUpdatedAt, and request-scoped pipelineProgress including currentPage/totalPages when available");
         shape.put("graph", "portable incremental snapshot at data/crawls/<knowledge-base>/graph.kgraph");
         shape.put("embeddingTraining", "embeddingTraining={enabled?,algorithm:TRANSE|ROTATE,embeddingDim?,epochs?}");
         shape.put("reasoningLearning", "reasoningLearning={enabled?,pslSteps?,mebnEpochs?,consensusRounds?,consensusWeight?,maxRelationTypes?}; FOL/PSL/MEBN artifacts are stored in graph.kgraph");
@@ -1899,6 +1906,26 @@ public final class LocalProjectCrawlBackend {
         if (jobId != null) {
             LocalCrawlJobRegistry.updateStage(jobId, stage, detail, progressPercent);
         }
+    }
+
+    private void reportPipelineProgress(JsonNode params,
+                                        Path file,
+                                        LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                        Map<String, Object> progress) {
+        String jobId = text(params, "_asyncJobId");
+        if (jobId == null || progress == null || progress.isEmpty()) return;
+        Map<String, Object> snapshot = new LinkedHashMap<>(progress);
+        snapshot.put("pipelineId", pipeline.pipelineId());
+        snapshot.put("document", file.toAbsolutePath().normalize().toString());
+        String phase = String.valueOf(snapshot.getOrDefault("phase", "VLM_EXTRACTION"));
+        Object rawPercent = snapshot.containsKey("progressPercent")
+                ? snapshot.get("progressPercent") : snapshot.get("percent");
+        int pipelinePercent = rawPercent instanceof Number number ? number.intValue() : 0;
+        int crawlPercent = 30 + Math.round(Math.max(0, Math.min(100, pipelinePercent)) * 29 / 100.0f);
+        String detail = String.valueOf(snapshot.getOrDefault("message",
+                snapshot.getOrDefault("currentStep", "Running model-backed document pipeline")));
+        LocalCrawlJobRegistry.updatePipelineProgress(
+                jobId, phase, detail, crawlPercent, snapshot);
     }
 
     private void sourceType(ArrayNode target, String type, boolean available, String useWhen) {

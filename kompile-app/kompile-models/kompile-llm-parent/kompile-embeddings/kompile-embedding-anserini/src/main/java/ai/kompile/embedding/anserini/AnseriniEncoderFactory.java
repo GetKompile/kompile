@@ -523,6 +523,34 @@ public class AnseriniEncoderFactory {
     }
 
     /**
+     * Creates an encoder from already validated local artifact paths.
+     *
+     * <p>This path performs no registry lookup and no staging access. Callers own path scoping and
+     * artifact acquisition; the subprocess still validates that both files exist.</p>
+     */
+    public static SameDiffEncoder<float[]> createEncoderFromPaths(
+            String modelIdentifier,
+            String modelPath,
+            String vocabPath,
+            String configuredEncoderType) throws IOException {
+        java.nio.file.Path model = java.nio.file.Path.of(modelPath).toAbsolutePath().normalize();
+        java.nio.file.Path vocab = java.nio.file.Path.of(vocabPath).toAbsolutePath().normalize();
+        if (!java.nio.file.Files.isRegularFile(model)) {
+            throw new IOException("Local encoder artifact does not exist: " + model);
+        }
+        if (!java.nio.file.Files.isRegularFile(vocab)) {
+            throw new IOException("Local encoder vocabulary does not exist: " + vocab);
+        }
+        String normalizedType = normalizeEncoderType(configuredEncoderType);
+        EncoderType encoderType = normalizedType == null
+                ? getEncoderTypeFromModelId(modelIdentifier)
+                : parseEncoderType(normalizedType);
+        logger.info("Creating {} encoder from explicit local paths (model={}, vocab={})",
+                encoderType, model, vocab);
+        return createEncoderLegacy(encoderType, modelIdentifier, model.toString(), vocab.toString());
+    }
+
+    /**
      * Legacy method for backward compatibility - creates encoder with explicit paths.
      * 
      * @deprecated Use createEncoder(String modelIdentifier) instead for automatic model management

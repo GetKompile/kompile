@@ -809,7 +809,7 @@ class GraphExtractionOrchestrator {
             UnifiedCrawlJob job,
             GraphSchema establishedSchema,
             ExplicitAssertionSchemaInferencer.Analysis explicitAssertions) {
-        if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
+        if (llmDispatcher == null || !llmDispatcher.hasModelBackend(job)) {
             return new ModelSchemaDiscovery(null, false);
         }
         int explicitEntityCount = explicitAssertions == null

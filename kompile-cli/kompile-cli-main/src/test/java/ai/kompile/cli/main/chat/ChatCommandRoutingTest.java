@@ -60,6 +60,29 @@ class ChatCommandRoutingTest {
     }
 
     @Test
+    void serverSystemPromptIncludesProjectInstructionsAndSkillCatalog(
+            @org.junit.jupiter.api.io.TempDir Path tempDir) throws Exception {
+        java.nio.file.Files.writeString(tempDir.resolve("AGENTS.md"),
+                "SERVER_AGENTS_MARKER");
+        Path skills = tempDir.resolve(".kompile/skills");
+        java.nio.file.Files.createDirectories(skills);
+        java.nio.file.Files.writeString(skills.resolve("server-check.md"), """
+                ---
+                name: server-check
+                description: Server skill marker
+                ---
+                SERVER_SKILL_TEMPLATE {{args}}
+                """);
+
+        ChatCommand command = parse("--working-dir", tempDir.toString());
+        String prompt = command.serverSystemPrompt();
+
+        assertTrue(prompt.contains("SERVER_AGENTS_MARKER"));
+        assertTrue(prompt.contains("/server-check"));
+        assertTrue(prompt.contains("Server skill marker"));
+    }
+
+    @Test
     void directPassthroughDoesNotConsiderImplicitProjectEnforcement() {
         ChatConfig config = passthroughConfig(false);
 

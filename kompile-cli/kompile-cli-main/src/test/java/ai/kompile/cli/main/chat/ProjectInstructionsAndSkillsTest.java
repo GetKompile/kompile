@@ -53,6 +53,34 @@ class ProjectInstructionsAndSkillsTest {
     }
 
     @Test
+    void agentsLoaderDoesNotFollowInstructionSymlinks() throws Exception {
+        Path project = tempDir.resolve("symlink-project");
+        Files.createDirectories(project.resolve(".git"));
+        Path outside = tempDir.resolve("outside-agents.md");
+        Files.writeString(outside, "OUTSIDE_SECRET_MARKER");
+        Files.createSymbolicLink(project.resolve("AGENTS.md"), outside);
+
+        assertFalse(new AgentsMdLoader(project).load().contains("OUTSIDE_SECRET_MARKER"));
+    }
+
+    @Test
+    void agentsHierarchyStopsAtNearestProjectBoundary() throws Exception {
+        Path workspace = tempDir.resolve("workspace");
+        Path project = workspace.resolve("project");
+        Path module = project.resolve("module");
+        Files.createDirectories(module);
+        Files.createDirectories(project.resolve(".git"));
+        Files.writeString(workspace.resolve("AGENTS.md"), "OUTSIDE_PROJECT_MARKER");
+        Files.writeString(project.resolve("AGENTS.md"), "PROJECT_MARKER");
+        Files.writeString(module.resolve("AGENTS.md"), "MODULE_MARKER");
+
+        String loaded = new AgentsMdLoader(module).load();
+
+        assertFalse(loaded.contains("OUTSIDE_PROJECT_MARKER"));
+        assertTrue(loaded.indexOf("PROJECT_MARKER") < loaded.indexOf("MODULE_MARKER"));
+    }
+
+    @Test
     void emulatedContextCombinesAgentsMdAndSkillsThenRestoresOriginalFile() throws Exception {
         Path workingDirectory = tempDir.resolve("managed-project");
         Files.createDirectories(workingDirectory);

@@ -13,12 +13,32 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NormalChatProjectContextTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void oversizedProjectContextFailsClearly() throws Exception {
+        Path workingDirectory = tempDir.resolve("oversized-project");
+        Files.createDirectories(workingDirectory);
+        Files.writeString(workingDirectory.resolve("AGENTS.md"), "x".repeat(128));
+        String previous = System.getProperty("kompile.chat.maxProjectContextChars");
+        System.setProperty("kompile.chat.maxProjectContextChars", "32");
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> ProjectChatContext.load(workingDirectory));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("kompile.chat.maxProjectContextChars");
+            } else {
+                System.setProperty("kompile.chat.maxProjectContextChars", previous);
+            }
+        }
+    }
 
     @Test
     void normalChatSystemPromptIncludesAgentsMdAndLoadedSkillCatalog() throws Exception {

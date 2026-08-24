@@ -110,15 +110,22 @@ public class ServerSubagentRunner implements SubagentRunner {
 
         notifyStatus(subagentId, "connecting");
         try {
-        // Build the system prompt with available tools
-        String systemPrompt = agent.getSystemPrompt() + "\n\n" +
+        // Build the system prompt with available tools and the parent's project context.
+        String agentPrompt = agent.getSystemPrompt() == null ? "" : agent.getSystemPrompt();
+        String systemPrompt = agentPrompt + "\n\n" +
                 toolRegistry.buildToolDescriptionsText(agent);
+        String projectPrompt = ProjectChatContext.load(parentContext.getWorkingDirectory())
+                .renderSystemPrompt();
+        if (!projectPrompt.isBlank()) {
+            systemPrompt += "\n\n" + projectPrompt;
+        }
 
         // Send to server agent endpoint
         ObjectNode request = objectMapper.createObjectNode();
         request.put("message", prompt);
         request.put("agentName", "claude");
         request.put("enableRag", false);
+        request.put("workingDirectory", parentContext.getWorkingDirectory().toAbsolutePath().toString());
         request.put("skipPermissions", true);
         request.put("timeoutSeconds", 120);
         request.put("systemPromptOverride", systemPrompt);

@@ -73,8 +73,6 @@ public class DefaultContext implements Context {
         if (value != null && type.isInstance(value)) {
             return Optional.of((T) value);
         }
-        // Optionally, could check parent context if not found here
-        // if (parentContext != null) { return parentContext.get(key, type); }
         return Optional.empty();
     }
 
@@ -91,7 +89,6 @@ public class DefaultContext implements Context {
     @Override
     public boolean containsKey(String key) {
         return entries.containsKey(key);
-        // Optionally, check parent: || (parentContext != null && parentContext.containsKey(key));
     }
 
     @Override

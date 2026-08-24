@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Resolves and executes the single unified pipeline contract for a project-local crawl.
@@ -200,6 +201,14 @@ public final class LocalModelPipelineRunner {
                                  Path file,
                                  LocalCrawlCapabilities.ResolvedPipeline pipeline,
                                  String loadedText) throws Exception {
+        return extract(projectRoot, file, pipeline, loadedText, null);
+    }
+
+    public static String extract(Path projectRoot,
+                                 Path file,
+                                 LocalCrawlCapabilities.ResolvedPipeline pipeline,
+                                 String loadedText,
+                                 Consumer<Map<String, Object>> progress) throws Exception {
         Map<String, Object> processor = new LinkedHashMap<>(pipeline.processor());
         Object definition = firstObject(
                 processor.get("pipelineDefinition"),
@@ -217,7 +226,8 @@ public final class LocalModelPipelineRunner {
 
         if ("UNIFIED_PIPELINE".equalsIgnoreCase(type)) {
             return runUnified(
-                    projectRoot, file, pipeline, loadedText, definition, definitionPath, definitionId);
+                    projectRoot, file, pipeline, loadedText, definition, definitionPath, definitionId,
+                    progress);
         }
         throw new IllegalArgumentException(
                 "Pipeline '" + pipeline.pipelineId()
@@ -230,7 +240,8 @@ public final class LocalModelPipelineRunner {
                                      String loadedText,
                                      Object inlineDefinition,
                                      Object definitionPath,
-                                     Object definitionId) throws Exception {
+                                     Object definitionId,
+                                     Consumer<Map<String, Object>> progress) throws Exception {
         UnifiedPipelineDefinition definition;
         if (inlineDefinition != null) {
             definition = inlineDefinition instanceof String json
@@ -286,7 +297,8 @@ public final class LocalModelPipelineRunner {
         long timeoutMinutes = Math.max(1L,
                 longValue(pipeline.chunkerOptions().get("timeoutMinutes"), 30L));
         Map<String, Object> result = PipelineRuntimeSupervisor.execute(
-                definition, input, java.time.Duration.ofMinutes(timeoutMinutes));
+                definition, input, java.time.Duration.ofMinutes(timeoutMinutes),
+                progress == null ? null : message -> progress.accept(message.payload()));
 
         String text = textualOutput(result);
         if (text == null || text.isBlank()) {

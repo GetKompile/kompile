@@ -46,6 +46,7 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.Writer;
@@ -1414,15 +1415,27 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                 profile, normalizedRoot, outputDir, markdownDir, projectName, request,
                 modelPipelineExecutor);
         writeLocalCrawlArtifacts(profile, normalizedRoot, outputDir, markdownDir, result);
-        try {
-            store.syncMarkdownCatalog(normalizedRoot);
-            store.syncCrawlCatalog(normalizedRoot);
-        } catch (Exception ignored) {
-            // Catalog synchronization requires a manifest; local artifacts do not.
-        }
+        bestEffortCatalogSync(() -> store.syncMarkdownCatalog(normalizedRoot));
+        bestEffortCatalogSync(() -> store.syncCrawlCatalog(normalizedRoot));
         return new LocalCrawlExecution(crawlId, outputDir, markdownDir,
                 result.documents().size(), result.chunkCount(), result.markdownCount(),
                 result.status(), result.failures(), false);
+    }
+
+    /** Optional catalog projection must not invalidate already-persisted local crawl artifacts. */
+    static boolean bestEffortCatalogSync(CatalogSync sync) {
+        try {
+            sync.run();
+            return true;
+        } catch (Exception | LinkageError ignored) {
+            // A plain/CLI project may not carry every optional catalog runtime dependency.
+            return false;
+        }
+    }
+
+    @FunctionalInterface
+    interface CatalogSync {
+        void run() throws Exception;
     }
 
     static int runLocalCrawl(KompileProjectCrawlProfile profile, Path projectRoot, boolean dryRun) {
@@ -1487,12 +1500,15 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         try (BufferedWriter chunks = Files.newBufferedWriter(chunksPath, StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
             for (String source : profile.getSources()) {
+                checkCancellation();
                 Path sourcePath = resolveLocalCrawlSource(projectRoot, source);
                 if (!Files.exists(sourcePath)) {
                     throw new IOException("Crawl source does not exist: " + sourcePath);
                 }
                 List<Path> sourceFiles = localCrawlFiles(sourcePath, projectRoot, outputDir, markdownDir, profile);
+                checkCancellation();
                 for (Path file : sourceFiles) {
+                    checkCancellation();
                     if (maxDocuments > 0 && documents.size() >= maxDocuments) {
                         break;
                     }
@@ -1501,6 +1517,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                             LocalCrawlCapabilities.resolve(request, profile, sourcePath, file);
                     LocalMarkdownArtifact markdown = writeLocalCrawlMarkdown(projectRoot, markdownDir,
                             document, file, profile, projectName, pipeline, modelPipelineExecutor);
+                    checkCancellation();
                     document = document.withMarkdown(markdown);
                     if (markdown.markdownPath() != null) {
                         Path markdownPath = projectRoot.resolve(markdown.markdownPath()).normalize();
@@ -1510,6 +1527,7 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                         document = document.withMarkdown(markdown);
                     }
                     documents.add(document);
+                    checkCancellation();
                 }
                 if (maxDocuments > 0 && documents.size() >= maxDocuments) {
                     break;
@@ -1518,6 +1536,12 @@ public class ProjectCrawlCommand implements Callable<Integer> {
         }
         return new LocalCrawlResult(documents, statistics.chunkCount,
                 statistics.analysisWordCount, Map.copyOf(statistics.terms));
+    }
+
+    private static void checkCancellation() throws InterruptedIOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Project-local crawl cancelled");
+        }
     }
 
     private static List<Path> localCrawlFiles(Path sourcePath, Path projectRoot, Path outputDir, Path markdownDir,
@@ -1679,6 +1703,9 @@ public class ProjectCrawlCommand implements Callable<Integer> {
                     .toString()
                     .replace('\\', '/');
             return LocalMarkdownArtifact.extracted(title, relativeMarkdown, pipeline, bodyResult.outputs());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Model-backed document extraction was cancelled", interrupted);
         } catch (Exception e) {
             return LocalMarkdownArtifact.failed(e.getMessage(), pipeline);
         } finally {
@@ -1737,10 +1764,12 @@ public class ProjectCrawlCommand implements Callable<Integer> {
             try {
                 LocalDocumentLoaderRegistry.LoadedDocument loaded =
                         LocalDocumentLoaderRegistry.load(file, loaderName, loaderOptions);
-                if (loaded.text() != null && !loaded.text().isBlank()) {
+                if ("html".equals(loaderName)) {
+                    title = firstNonBlank(streamHtmlToMarkdown(file, output), loaded.title(), title);
+                } else if (loaded.text() != null && !loaded.text().isBlank()) {
                     output.write(loaded.text());
+                    title = firstNonBlank(loaded.title(), title);
                 }
-                title = firstNonBlank(loaded.title(), title);
                 outputs = loaded.outputs();
             } catch (Exception e) {
                 throw new IOException("Unable to extract " + loaderName + " content from " + file

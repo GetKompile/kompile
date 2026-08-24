@@ -7,6 +7,7 @@ package ai.kompile.cli.main.chat.tools.grounding;
 
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessLauncher;
 import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMessage;
+import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -107,7 +108,7 @@ final class LocalEmbeddingRuntime {
         try {
             launcher.start();
             EmbeddingSubprocessMessage.LoadModelResponse loaded = launcher
-                    .loadModel(selection.modelId(), 32, 64, 64, Map.of())
+                    .loadModel(selection.modelId(), 32, 64, 64, selection.modelConfig())
                     .get(LOAD_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             if (!loaded.success()) {
                 throw new IOException("Local embedding subprocess rejected model '"
@@ -187,46 +188,30 @@ final class LocalEmbeddingRuntime {
         Path configuredRegistryPath = modelsDirectory.resolve("registry.json");
         Path registryPath = containedRegularFile(modelsDirectory,
                 configuredRegistryPath, "model registry");
-        if (registryPath == null) {
-            throw new IOException("No folder-local model registry exists at " + configuredRegistryPath
-                    + ". Materialize an ENCODER project model before semantic search.");
-        }
-        JsonNode registry = mapper.readTree(registryPath.toFile());
+        JsonNode registry = registryPath == null
+                ? mapper.createObjectNode() : mapper.readTree(registryPath.toFile());
         String modelId = encoderModelId(projectRoot, registry, mapper);
         JsonNode entry = registry.path("models").path(modelId);
-        if (entry.isMissingNode()) {
-            throw new IOException("Folder-local encoder '" + modelId
-                    + "' is absent from " + registryPath);
-        }
-        String status = entry.path("status").asText("active");
-        if (!"active".equalsIgnoreCase(status)) {
-            throw new IOException("Folder-local encoder '" + modelId
-                    + "' is not materialized (registry status: " + status + ")");
-        }
 
-        String relativeDirectory = firstNonBlank(text(entry, "path"), modelId);
-        // Mirror RegistryBasedModelManager exactly: <cache>/<modelId> wins when it exists;
-        // entry.path is consulted only when that directory is absent.
-        Path defaultModelDirectory = modelsDirectory.resolve(modelId).normalize();
-        Path modelDirectory = Files.exists(defaultModelDirectory)
-                ? defaultModelDirectory : modelsDirectory.resolve(relativeDirectory).normalize();
-        if (!Files.isDirectory(modelDirectory)) {
-            throw new IOException("Folder-local encoder directory is missing: " + modelDirectory);
+        LocalProjectModelBootstrap.ResolvedProjectModel resolved;
+        try {
+            // Read-only and autoBootstrap=false is the local execution contract: resolve physical
+            // project artifacts, but never invoke model-staging or mutate the project.
+            resolved = LocalProjectModelBootstrap.ensure(projectRoot, modelId,
+                    Map.of("autoBootstrap", false), false);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while resolving folder-local encoder '" + modelId + "'", e);
         }
-        modelDirectory = modelDirectory.toRealPath();
-        if (!modelDirectory.startsWith(modelsDirectory)) {
-            throw new IOException("Encoder registry path escapes the current project: "
-                    + relativeDirectory);
-        }
-        String modelFile = firstNonBlank(text(entry, "model_file"), "model.sdz");
-        String vocabFile = firstNonBlank(text(entry, "vocab_file"), "vocab.txt");
         Path modelPath = containedRegularFile(modelsDirectory,
-                modelDirectory.resolve(modelFile), "encoder artifact");
+                resolved.modelPath(), "encoder artifact");
         if (modelPath == null) {
-            throw new IOException("Folder-local encoder artifact is missing: "
-                    + modelDirectory.resolve(modelFile));
+            throw new IOException("Folder-local encoder artifact is missing: " + resolved.modelPath());
         }
-        Path vocabCandidate = modelDirectory.resolve(vocabFile);
+        Path modelDirectory = modelPath.getParent();
+        String vocabFile = firstNonBlank(text(entry, "vocab_file"), "vocab.txt");
+        Path vocabCandidate = resolved.tokenizerPath() == null
+                ? modelDirectory.resolve(vocabFile) : resolved.tokenizerPath();
         if (!Files.exists(vocabCandidate)) {
             Path vocabTxt = modelDirectory.resolve("vocab.txt");
             vocabCandidate = Files.exists(vocabTxt)
@@ -238,9 +223,13 @@ final class LocalEmbeddingRuntime {
             throw new IOException("Folder-local encoder vocabulary is missing: "
                     + modelDirectory.resolve(vocabFile));
         }
-        String fingerprint = sha256(modelId + "\n" + mapper.writeValueAsString(entry) + "\n"
+        String encoderType = firstNonBlank(
+                text(entry.path("metadata"), "encoder_type"),
+                text(entry, "encoder_type"));
+        String fingerprint = sha256(modelId + "\n" + (encoderType == null ? "" : encoderType) + "\n"
+                + entry.path("metadata") + "\n" + entry.path("tokenizer") + "\n"
                 + artifactChecksum(modelPath) + "\n" + artifactChecksum(vocabPath));
-        return new ModelSelection(modelId, fingerprint);
+        return new ModelSelection(modelId, modelPath, vocabPath, encoderType, fingerprint);
     }
 
     private static String encoderModelId(Path projectRoot, JsonNode registry,
@@ -310,6 +299,13 @@ final class LocalEmbeddingRuntime {
         Path models = root.resolve("data/models").toRealPath();
         if (!models.startsWith(root)) throw new IOException("Model directory escapes project");
         return resolveModel(root, models, mapper).fingerprint();
+    }
+
+    static synchronized Map<String, String> modelConfig(Path projectRoot, ObjectMapper mapper)
+            throws IOException {
+        Path root = projectRoot.toRealPath();
+        Path models = root.resolve("data/models").toRealPath();
+        return resolveModel(root, models, mapper).modelConfig();
     }
 
     private static String artifactChecksum(Path path) throws IOException {
@@ -389,7 +385,18 @@ final class LocalEmbeddingRuntime {
         }
     }
 
-    private record ModelSelection(String modelId, String fingerprint) {
+    private record ModelSelection(String modelId, Path modelPath, Path vocabPath,
+                                  String encoderType, String fingerprint) {
+        private Map<String, String> modelConfig() {
+            Map<String, String> config = new LinkedHashMap<>();
+            config.put("modelPath", modelPath.toString());
+            config.put("vocabPath", vocabPath.toString());
+            config.put("modelSource", "LOCAL_PROJECT");
+            if (encoderType != null && !encoderType.isBlank()) {
+                config.put("encoderType", encoderType);
+            }
+            return Map.copyOf(config);
+        }
     }
 
     private record ArtifactHash(String identity, String sha256) {

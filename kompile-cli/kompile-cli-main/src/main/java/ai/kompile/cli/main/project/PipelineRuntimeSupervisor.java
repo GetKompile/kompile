@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * Long-lived stdio-MCP owner for reusable, isolated pipeline runtime processes.
@@ -41,6 +42,10 @@ public final class PipelineRuntimeSupervisor {
 
     interface ManagedRuntime extends AutoCloseable {
         RunningExecution start(Map<String, Object> input) throws Exception;
+        default RunningExecution start(Map<String, Object> input,
+                                       Consumer<PipelineRuntimeProtocol.Message> progress) throws Exception {
+            return start(input);
+        }
         boolean isAlive();
         long pid();
         @Override void close();
@@ -55,7 +60,13 @@ public final class PipelineRuntimeSupervisor {
     private record SessionRuntime(PipelineRuntimeSession session) implements ManagedRuntime {
         @Override
         public RunningExecution start(Map<String, Object> input) throws Exception {
-            PipelineRuntimeSession.Execution execution = session.start(input);
+            return start(input, null);
+        }
+
+        @Override
+        public RunningExecution start(Map<String, Object> input,
+                                      Consumer<PipelineRuntimeProtocol.Message> progress) throws Exception {
+            PipelineRuntimeSession.Execution execution = session.start(input, progress);
             return new RunningExecution() {
                 @Override
                 public Map<String, Object> await(Duration timeout) throws Exception {
@@ -94,11 +105,29 @@ public final class PipelineRuntimeSupervisor {
 
         public Map<String, Object> execute(Map<String, Object> input, Duration timeout)
                 throws Exception {
-            return start(input).await(timeout);
+            return execute(input, timeout, null);
+        }
+
+        public Map<String, Object> execute(Map<String, Object> input, Duration timeout,
+                                           Consumer<PipelineRuntimeProtocol.Message> progress)
+                throws Exception {
+            RunningExecution execution = start(input, progress);
+            try {
+                return execution.await(timeout);
+            } catch (InterruptedException interrupted) {
+                execution.cancel(Duration.ofSeconds(2));
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            }
         }
 
         public RunningExecution start(Map<String, Object> input) throws Exception {
             return delegate.resource().start(input);
+        }
+
+        public RunningExecution start(Map<String, Object> input,
+                                      Consumer<PipelineRuntimeProtocol.Message> progress) throws Exception {
+            return delegate.resource().start(input, progress);
         }
 
         public boolean isHealthy() {
@@ -146,8 +175,16 @@ public final class PipelineRuntimeSupervisor {
     public static Map<String, Object> execute(UnifiedPipelineDefinition definition,
                                               Map<String, Object> input,
                                               Duration timeout) throws Exception {
+        return execute(definition, input, timeout, null);
+    }
+
+    public static Map<String, Object> execute(UnifiedPipelineDefinition definition,
+                                              Map<String, Object> input,
+                                              Duration timeout,
+                                              Consumer<PipelineRuntimeProtocol.Message> progress)
+            throws Exception {
         try (Lease runtime = acquire(definition, timeout)) {
-            return runtime.execute(input, timeout);
+            return runtime.execute(input, timeout, progress);
         }
     }
 

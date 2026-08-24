@@ -101,16 +101,25 @@ public class ChatHistoryCompactor {
                           String focusInstruction,
                           boolean force,
                           Summarizer summarizer) {
+        return compact(history, budget, focusInstruction, 0, force, summarizer);
+    }
+
+    public Result compact(List<ChatHistoryEntry> history,
+                          ChatContextBudgetService.ContextBudget budget,
+                          String focusInstruction,
+                          int upcomingPromptTokens,
+                          boolean force,
+                          Summarizer summarizer) {
         if (history == null || history.isEmpty() || budget == null) {
             return Result.unchanged(history, 0);
         }
 
         int tokensBefore = ChatContextBudgetService.estimateHistoryTokens(history);
-        if (!force && !needsCompaction(history, budget, 0)) {
+        if (!force && !needsCompaction(history, budget, upcomingPromptTokens)) {
             return Result.unchanged(history, tokensBefore);
         }
 
-        int cutoff = tailCutoffIndex(history, budget, force);
+        int cutoff = tailCutoffIndex(history, budget, upcomingPromptTokens, force);
         if (cutoff <= 0) {
             // Everything already fits inside the preserved tail — nothing to summarize.
             return Result.unchanged(history, tokensBefore);
@@ -163,6 +172,7 @@ public class ChatHistoryCompactor {
      */
     private int tailCutoffIndex(List<ChatHistoryEntry> history,
                                 ChatContextBudgetService.ContextBudget budget,
+                                int upcomingPromptTokens,
                                 boolean force) {
         if (force) {
             for (int i = history.size() - 1; i >= 0; i--) {
@@ -174,7 +184,9 @@ public class ChatHistoryCompactor {
             return history.size() > MIN_TAIL_MESSAGES ? history.size() - MIN_TAIL_MESSAGES : 0;
         }
 
-        int tailBudget = Math.min(MAX_TAIL_TOKENS, Math.max(256, budget.inputBudgetTokens() / 4));
+        int available = Math.max(256,
+                budget.inputBudgetTokens() - Math.max(0, upcomingPromptTokens));
+        int tailBudget = Math.min(MAX_TAIL_TOKENS, Math.max(256, available / 4));
         int tokens = 0;
         int cutoff = history.size();
         for (int i = history.size() - 1; i >= 0; i--) {

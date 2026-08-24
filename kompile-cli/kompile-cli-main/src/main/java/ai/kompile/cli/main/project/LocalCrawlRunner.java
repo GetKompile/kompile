@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -44,12 +45,15 @@ public final class LocalCrawlRunner {
             GraphContext graphContext,
             ObjectMapper mapper,
             ProjectCrawlCommand.ModelPipelineExecutor modelPipelineExecutor) throws IOException {
+        checkCancellation();
         ProjectCrawlCommand.LocalCrawlExecution execution = modelPipelineExecutor == null
                 ? ProjectCrawlCommand.executeLocalCrawl(profile, projectRoot, dryRun, request)
                 : ProjectCrawlCommand.executeLocalCrawl(
                         profile, projectRoot, dryRun, request, modelPipelineExecutor);
+        checkCancellation();
         LocalProjectGraphBackend.GraphUpdate graphUpdate =
                 updateGraph(projectRoot, dryRun, request, graphContext, execution, mapper);
+        checkCancellation();
         return new ExecutionResult(execution, graphUpdate);
     }
 
@@ -83,6 +87,12 @@ public final class LocalCrawlRunner {
         }
         return current.getMessage() == null
                 ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    private static void checkCancellation() throws InterruptedIOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Project-local crawl cancelled");
+        }
     }
 
     public record GraphContext(String knowledgeBaseId,

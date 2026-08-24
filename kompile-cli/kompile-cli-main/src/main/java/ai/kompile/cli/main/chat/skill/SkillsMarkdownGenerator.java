@@ -47,7 +47,7 @@ public class SkillsMarkdownGenerator {
         md.append("**IMPORTANT:** These are NOT native slash commands. Do NOT use the Skill tool to invoke them. ");
         md.append("To use a skill, call the MCP tool:\n");
         md.append("```\n");
-        md.append("mcp__kompile__skill_manager action=apply_skill name=<skill-name> args=\"<your instructions>\"\n");
+        md.append("mcp__kompile__skill_manager action=expand_template name=<skill-name> args=\"<your instructions>\"\n");
         md.append("```\n");
         md.append("This returns the expanded prompt template. Follow those instructions exactly.\n\n");
         md.append("When a user says `/skillname` or asks to use a skill, use `mcp__kompile__skill_manager` — never the native Skill tool.\n\n");
@@ -85,7 +85,7 @@ public class SkillsMarkdownGenerator {
                 // Show if it accepts arguments
                 if (skill.getPromptTemplate() != null
                         && skill.getPromptTemplate().contains("{{args}}")) {
-                    md.append("  - Accepts arguments: `mcp__kompile__skill_manager action=apply_skill name=")
+                    md.append("  - Accepts arguments: `mcp__kompile__skill_manager action=expand_template name=")
                             .append(skill.getName())
                             .append(" args=\"<your instructions>\"`\n");
                 }

@@ -38,7 +38,8 @@ import java.util.concurrent.Callable;
         InstallHeaders.class,
         InstallPythonWrappers.class,
         InstallKompileApp.class,
-        InstallModelStaging.class
+        InstallModelStaging.class,
+        InstallPipelineServing.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

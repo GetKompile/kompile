@@ -10,6 +10,7 @@ import ai.kompile.cli.common.routing.KompileService;
 import ai.kompile.cli.common.routing.KompileServiceEndpoints;
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.agent.AgentRunController;
+import ai.kompile.cli.main.chat.agent.ProjectChatContext;
 import ai.kompile.cli.main.chat.crawl.CrawlRunStore;
 import ai.kompile.cli.main.chat.exec.HeadlessAgentRunner;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -396,7 +397,10 @@ public final class CrawlCommand implements Callable<Integer> {
         args.put("keywordK", 5);
         args.put("maxHistoryMessages", 50);
         args.put("similarityThreshold", 0.5);
-        args.put("systemPrompt", "");
+        String projectPrompt = ProjectChatContext.load(
+                Path.of(System.getProperty("user.dir"))).renderSystemPrompt();
+        args.put("systemPrompt", projectPrompt.isBlank() ? ""
+                : "You are a helpful AI assistant.\n\n" + projectPrompt);
         client.callTool("create_chat_session", args);
     }
 }

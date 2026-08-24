@@ -15,10 +15,15 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executors;
@@ -32,6 +37,7 @@ import java.util.concurrent.TimeUnit;
  */
 final class CodexAppServerModelDiscovery {
     static final String ATTEMPTED_RESOURCE = "native:codex app-server/model/list";
+    static final String CODEX_SHIM_ENV = "KOMPILE_CODEX_APP_SERVER_SHIM";
     private static final ObjectMapper MAPPER =
             ai.kompile.cli.common.util.JsonUtils.standardMapper();
 
@@ -40,20 +46,209 @@ final class CodexAppServerModelDiscovery {
 
     static ModelDiscovery.Result discover(ModelDiscovery.Context context) {
         String executable = System.getProperty("kompile.codex.executable", "codex");
-        return discover(context, List.of(executable, "app-server"));
+        LaunchSpec launch = appServerCommand(executable);
+        if (!launch.available()) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.UNSUPPORTED,
+                    launch.error(),
+                    List.of(ATTEMPTED_RESOURCE));
+        }
+        return discover(context, launch.command(), launch.environment());
+    }
+
+    static LaunchSpec appServerCommand(String executable) {
+        boolean windows = System.getProperty("os.name", "")
+                .toLowerCase(Locale.ROOT).contains("win");
+        return appServerCommand(
+                executable,
+                windows,
+                environment("PATH", "Path"),
+                environment("PATHEXT", "PathExt"),
+                environment("ComSpec", "COMSPEC"));
+    }
+
+    /**
+     * Builds a platform-safe Codex app-server command.
+     *
+     * <p>npm exposes Codex as {@code codex.cmd} on Windows. Windows cannot
+     * execute that shim directly through {@link ProcessBuilder}, so resolve it
+     * using {@code PATH}/{@code PATHEXT} and invoke it through {@code ComSpec}.
+     * Native executables remain direct child processes.</p>
+     */
+    static LaunchSpec appServerCommand(
+            String executable,
+            boolean windows,
+            String path,
+            String pathExt,
+            String commandInterpreter) {
+        String configured = executable == null || executable.isBlank()
+                ? "codex" : executable.trim();
+        String discovered = windows
+                ? resolveWindowsExecutable(configured, path, pathExt) : null;
+        if (windows && discovered == null) {
+            return LaunchSpec.unavailable(
+                    "Unable to start Codex app-server: Codex executable was not found at its configured path or on PATH");
+        }
+        String resolved = discovered == null ? configured : discovered;
+        if (windows && discovered != null && isBatchFile(resolved)) {
+            String interpreter = commandInterpreter == null ? "" : commandInterpreter.trim();
+            if (!isAbsoluteWindowsPath(interpreter)) {
+                return LaunchSpec.unavailable(
+                        "Unable to start Codex app-server: Windows ComSpec is unavailable");
+            }
+            return new LaunchSpec(
+                    List.of(interpreter, "/d", "/v:off", "/s", "/c",
+                            "\"%" + CODEX_SHIM_ENV + "%\" app-server"),
+                    Map.of(CODEX_SHIM_ENV, resolved), "");
+        }
+        return new LaunchSpec(List.of(resolved, "app-server"), Map.of(), "");
+    }
+
+    private static String resolveWindowsExecutable(
+            String executable, String path, String pathExt) {
+        List<String> extensions = windowsExecutableExtensions(pathExt);
+        if (isPathReference(executable)) {
+            return existingWindowsExecutable(path(executable), extensions);
+        }
+        if (path != null && !path.isBlank()) {
+            for (String entry : path.split(";")) {
+                String directory = stripOuterQuotes(entry.trim());
+                if (directory.isBlank()) {
+                    continue;
+                }
+                Path root = path(directory);
+                if (root == null) {
+                    continue;
+                }
+                String resolved = existingWindowsExecutable(resolve(root, executable), extensions);
+                if (resolved != null) {
+                    return resolved;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String existingWindowsExecutable(Path candidate, List<String> extensions) {
+        if (candidate == null) {
+            return null;
+        }
+        String fileName = candidate.getFileName() == null
+                ? "" : candidate.getFileName().toString();
+        if (fileName.lastIndexOf('.') > 0 && Files.isRegularFile(candidate)) {
+            return candidate.toAbsolutePath().normalize().toString();
+        }
+        for (String extension : extensions) {
+            Path withExtension = candidate.resolveSibling(fileName + extension);
+            if (Files.isRegularFile(withExtension)) {
+                return withExtension.toAbsolutePath().normalize().toString();
+            }
+        }
+        return Files.isRegularFile(candidate)
+                ? candidate.toAbsolutePath().normalize().toString() : null;
+    }
+
+    private static List<String> windowsExecutableExtensions(String pathExt) {
+        String configured = pathExt == null || pathExt.isBlank()
+                ? ".com;.exe;.bat;.cmd" : pathExt;
+        LinkedHashSet<String> extensions = new LinkedHashSet<>();
+        for (String value : configured.split(";")) {
+            String extension = value.trim().toLowerCase(Locale.ROOT);
+            if (extension.isBlank()) {
+                continue;
+            }
+            String normalized = extension.startsWith(".") ? extension : "." + extension;
+            if (normalized.matches("\\.[a-z0-9]+")) {
+                extensions.add(normalized);
+            }
+        }
+        return List.copyOf(extensions);
+    }
+
+    private static boolean isPathReference(String executable) {
+        Path value = path(executable);
+        return executable.contains("/") || executable.contains("\\")
+                || value != null && value.isAbsolute();
+    }
+
+    private static boolean isBatchFile(String executable) {
+        String normalized = executable.toLowerCase(Locale.ROOT);
+        return normalized.endsWith(".cmd") || normalized.endsWith(".bat");
+    }
+
+    private static boolean isAbsoluteWindowsPath(String value) {
+        Path candidate = path(value);
+        return candidate != null && candidate.isAbsolute()
+                || value.matches("^[A-Za-z]:[\\\\/].+")
+                || value.startsWith("\\\\");
+    }
+
+    private static Path path(String value) {
+        try {
+            return value == null || value.isBlank() ? null : Path.of(value);
+        } catch (InvalidPathException ignored) {
+            return null;
+        }
+    }
+
+    private static Path resolve(Path root, String child) {
+        try {
+            return root.resolve(child);
+        } catch (InvalidPathException ignored) {
+            return null;
+        }
+    }
+
+    private static String stripOuterQuotes(String value) {
+        return value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")
+                ? value.substring(1, value.length() - 1) : value;
+    }
+
+    private static String environment(String... names) {
+        for (String name : names) {
+            String value = System.getenv(name);
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    record LaunchSpec(List<String> command, Map<String, String> environment, String error) {
+        LaunchSpec {
+            command = List.copyOf(command);
+            environment = Map.copyOf(environment);
+            error = error == null ? "" : error;
+        }
+
+        static LaunchSpec unavailable(String error) {
+            return new LaunchSpec(List.of(), Map.of(), error);
+        }
+
+        boolean available() {
+            return error.isBlank();
+        }
     }
 
     static ModelDiscovery.Result discover(
             ModelDiscovery.Context context, List<String> command) {
+        return discover(context, command, Map.of());
+    }
+
+    static ModelDiscovery.Result discover(
+            ModelDiscovery.Context context,
+            List<String> command,
+            Map<String, String> environment) {
         Duration timeout = context == null || context.timeout() == null
                 ? Duration.ofSeconds(15) : context.timeout();
         long deadline = System.nanoTime() + timeout.toNanos();
         Process process = null;
         ExecutorService readerExecutor = null;
         try {
-            process = new ProcessBuilder(List.copyOf(command))
-                    .redirectErrorStream(true)
-                    .start();
+            ProcessBuilder processBuilder = new ProcessBuilder(List.copyOf(command))
+                    .redirectErrorStream(true);
+            processBuilder.environment().putAll(environment);
+            process = processBuilder.start();
             BlockingQueue<ReadEvent> events = new LinkedBlockingQueue<>();
             BufferedReader reader = new BufferedReader(new InputStreamReader(
                     process.getInputStream(), StandardCharsets.UTF_8));

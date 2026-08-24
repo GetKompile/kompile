@@ -32,10 +32,10 @@ import java.util.Set;
  * <p>
  * Search order (all found files are concatenated):
  * <ol>
- *   <li>Walk from cwd up to filesystem root, collecting AGENTS.md files</li>
  *   <li>~/.kompile/AGENTS.md (global user instructions)</li>
+ *   <li>Walk from the project root to cwd, collecting AGENTS.md files</li>
  * </ol>
- * Files higher in the tree are included first (most general → most specific).
+ * General instructions are included before project- and directory-specific instructions.
  */
 public class AgentsMdLoader {
 
@@ -76,35 +76,48 @@ public class AgentsMdLoader {
     }
 
     /**
-     * Find all AGENTS.md files in hierarchy order (root → cwd, then ~/.kompile/).
+     * Find all AGENTS.md files in precedence order (global → project root → cwd).
      */
     private List<Path> findAgentsMdFiles() {
-        // Use LinkedHashSet to deduplicate while preserving order
         Set<Path> found = new LinkedHashSet<>();
 
-        // Walk up from cwd, collect in reverse (we'll reverse at the end)
-        List<Path> cwdFiles = new ArrayList<>();
-        Path dir = workingDirectory.toAbsolutePath().normalize();
-        while (dir != null) {
-            Path candidate = dir.resolve(AGENTS_MD);
-            if (Files.isRegularFile(candidate)) {
-                cwdFiles.add(candidate.toAbsolutePath().normalize());
-            }
-            dir = dir.getParent();
-        }
-
-        // Reverse so root-level files come first
-        for (int i = cwdFiles.size() - 1; i >= 0; i--) {
-            found.add(cwdFiles.get(i));
-        }
-
-        // Global user config
+        // Global user instructions are the most general and must not override a project file.
         Path globalFile = KompileHome.homeDirectory().toPath().resolve(AGENTS_MD);
-        if (Files.isRegularFile(globalFile)) {
+        if (Files.isRegularFile(globalFile, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             found.add(globalFile.toAbsolutePath().normalize());
         }
 
+        // Stay inside the nearest project boundary when one is available. Without a
+        // project marker, preserve the historical filesystem-root walk.
+        List<Path> cwdFiles = new ArrayList<>();
+        Path cwd = workingDirectory.toAbsolutePath().normalize();
+        Path projectRoot = findProjectRoot(cwd);
+        Path dir = cwd;
+        while (dir != null) {
+            Path candidate = dir.resolve(AGENTS_MD);
+            if (Files.isRegularFile(candidate, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                cwdFiles.add(candidate.toAbsolutePath().normalize());
+            }
+            if (dir.equals(projectRoot)) break;
+            dir = dir.getParent();
+        }
+
+        for (int i = cwdFiles.size() - 1; i >= 0; i--) {
+            found.add(cwdFiles.get(i));
+        }
         return new ArrayList<>(found);
+    }
+
+    private Path findProjectRoot(Path cwd) {
+        Path dir = cwd;
+        while (dir != null) {
+            if (Files.exists(dir.resolve(".git"))
+                    || Files.isRegularFile(dir.resolve("kompile.project.json"))) {
+                return dir;
+            }
+            dir = dir.getParent();
+        }
+        return cwd.getRoot();
     }
 
     /**

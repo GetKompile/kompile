@@ -80,6 +80,7 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/copy", "Copy the latest assistant response");
         COMMANDS.put("/conversations", "List conversations");
         COMMANDS.put("/sessions", "List sessions");
+        COMMANDS.put("/title", "Show or change the session title");
 
         // RAG & planning
         COMMANDS.put("/rag", "Toggle or configure RAG");

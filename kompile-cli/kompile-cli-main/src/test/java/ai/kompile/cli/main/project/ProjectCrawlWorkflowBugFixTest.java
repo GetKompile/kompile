@@ -357,7 +357,7 @@ class ProjectCrawlWorkflowBugFixTest {
         assertTrue(startWorkflow >= 0, "--serve should select the start-services workflow. Output: " + output);
         assertTrue(crawlWorkflow > startWorkflow,
                 "start-services must run before auto-ingest. Output: " + output);
-        assertTrue(output.contains("Pipeline serving is app-managed for this project — no standalone service started."),
+        assertTrue(output.contains("Pipeline runtimes are MCP-managed and start on demand — no standalone service started."),
                 "VLM/OCR projects should explicitly skip standalone serving without creating a no-op PID. Output: " + output);
     }
 

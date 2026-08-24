@@ -150,6 +150,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private final ObjectMapper objectMapper = JsonUtils.standardMapper();
     private final PassthroughStreamParser parser = new PassthroughStreamParser();
     private final ChatCompleter chatCompleter = new ChatCompleter(() -> null);
+    private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
     private TerminalRenderer renderer;
@@ -476,7 +477,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             term = ChatCompleter.buildSystemTerminal();
             this.terminal = term;
             renderer = new TerminalRenderer();
-            renderer.attachTerminal(term, "kompile [" + agent + "]");
+            renderer.attachTerminal(term, readyTerminalTitle());
             int termWidth = term.getWidth();
             if (termWidth <= 0) termWidth = 120;
             ascii = new AsciiRenderer(renderer, termWidth);
@@ -541,6 +542,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             } catch (IOException e) {
                 System.err.println("Warning: Could not open chat history: " + e.getMessage());
             }
+            restoreResumedSessionTitle(history);
 
             // MCP tool injection
             injectMcpTools();
@@ -1230,7 +1232,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         currentStatus = normalized;
         foregroundPhase = phaseForStatus(normalized);
-        renderer.updateActivity(normalized);
+        if (renderer != null) renderer.updateActivity(normalized);
         redrawStatusLine();
         // KompileTui's bottom StatusBar tracks its own consolidated metrics separately.
         if (tui != null) {
@@ -1260,7 +1262,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         cancelSignal.set(false);
         foregroundPhase = ForegroundPhase.THINKING;
         currentStatus = ForegroundPhase.THINKING.label;
-        renderer.updateActivity(currentStatus);
+        if (renderer != null) renderer.updateActivity(currentStatus);
         redrawStatusLine();
         if (tui != null) tui.getStatusBar().requestRedraw();
     }
@@ -1269,7 +1271,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         foregroundTerminal = true;
         foregroundPhase = ForegroundPhase.INTERRUPTED;
         currentStatus = ForegroundPhase.INTERRUPTED.label;
-        renderer.updateActivity(currentStatus);
+        if (renderer != null) renderer.updateActivity(currentStatus);
         redrawStatusLine();
         if (tui != null) tui.getStatusBar().requestRedraw();
     }
@@ -5536,6 +5538,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/help" -> printHelp();
             case "/agent" -> switchAgent(rest.isBlank() ? null : rest.trim(), lineReader);
             case "/status" -> printStatus(metrics);
+            case "/title" -> handleTitle(rest, history);
             case "/copy" -> copyLatestResponse(rest, history);
             case "/clear" -> initScrollLayout();
             case "/passthrough", "/keys" -> {
@@ -6038,6 +6041,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /jobs-clear        Clear completed retained activities
                   /statusbar         Toggle the bottom status bar
                   /status            Show session metrics
+                  /title [text]      Show or change the session title
                   /copy              Copy the latest assistant response
                   /clear             Clear the screen
                   /passthrough|/keys Forward keys straight to the agent (Ctrl+] to exit)
@@ -6069,6 +6073,36 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             safePrintln(line);
         }
         safePrintln("");
+    }
+
+    private void handleTitle(String requestedTitle, ChatHistory history) {
+        if (requestedTitle == null || requestedTitle.isBlank()) {
+            safePrintln(renderer.dim("  Session title: ") + readyTerminalTitle());
+            return;
+        }
+        String updated = sessionTitle.replace(requestedTitle);
+        history.logSessionTitle(updated);
+        renderer.setReadyTerminalTitle(updated);
+        safePrintln(renderer.green("  Session title updated: ") + updated);
+    }
+
+    private void restoreResumedSessionTitle(ChatHistory history) {
+        if (resumeSessionId == null || resumeSessionId.isBlank()) return;
+        ChatHistory.listConversations().stream()
+                .filter(conversation -> resumeSessionId.equals(conversation.sessionId()))
+                .map(ChatHistory.ConversationSummary::title)
+                .filter(title -> title != null && !title.isBlank())
+                .findFirst()
+                .ifPresent(title -> {
+                    sessionTitle.replace(title);
+                    history.logSessionTitle(title);
+                    renderer.setReadyTerminalTitle(title);
+                });
+    }
+
+    private String readyTerminalTitle() {
+        String current = sessionTitle.get();
+        return current == null ? "kompile [" + agent + "]" : current;
     }
 
     private void switchAgent(String newAgent, LineReader lineReader) {
@@ -6105,7 +6139,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         resetNativeResumeForFreshSession();
         safePrintln(renderer.green("  Switched to " + agent));
         safePrintln(renderer.dim("  Conversation context reset (new agent session)."));
-        renderer.setReadyTerminalTitle("kompile [" + agent + "]");
+        renderer.setReadyTerminalTitle(readyTerminalTitle());
     }
 
     private void printStatus(ChatSessionMetrics metrics) {
@@ -6172,7 +6206,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         }
         safePrintln("");
 
-        renderer.setReadyTerminalTitle("kompile [" + agent + "]");
+        renderer.setReadyTerminalTitle(readyTerminalTitle());
     }
 
     // ── Session summary ────────────────────────────────────────────────────
@@ -6701,6 +6735,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * The REPL blocks until the agent finishes, giving real-time streaming output.
      */
     private boolean dispatchToAgent(String message, ChatHistory history, ChatSessionMetrics metrics) {
+        if (sessionTitle.initializeFromPrompt(message)) {
+            renderer.setReadyTerminalTitle(sessionTitle.get());
+        }
         agentBusy = true;
         beginForegroundTurn();
         backgroundSignal.set(false);

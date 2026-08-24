@@ -22,7 +22,10 @@ import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol;
 import ai.kompile.pipeline.serving.protocol.PipelineRuntimeProtocol.Message;
 import ai.kompile.pipelines.framework.api.Pipeline;
 import ai.kompile.pipelines.framework.api.PipelineExecutor;
+import ai.kompile.pipelines.framework.api.context.Context;
+import ai.kompile.pipelines.framework.api.context.PipelineProgressListener;
 import ai.kompile.pipelines.framework.api.data.Data;
+import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import ai.kompile.utils.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -199,7 +202,22 @@ public class PipelineServingSubprocessMain {
                                         ? (Map<String, Object>) values : Map.of();
                                 Data data = Data.fromMap(withDefinitionContext(
                                         request, definitionRef.get()));
-                                Data output = executorRef.get().exec(data);
+                                Context executionContext = new DefaultContext(data, requestId);
+                                executionContext.put(PipelineProgressListener.CONTEXT_KEY,
+                                        (PipelineProgressListener) progress -> {
+                                            try {
+                                                PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
+                                                        PipelineRuntimeProtocol.message(
+                                                                PipelineRuntimeProtocol.PROGRESS,
+                                                                requestId,
+                                                                definitionRef.get().getPipelineId(),
+                                                                progress.toMap()));
+                                            } catch (Exception progressFailure) {
+                                                log.warn("Unable to publish pipeline progress for {}: {}",
+                                                        requestId, progressFailure.getMessage());
+                                            }
+                                        });
+                                Data output = executorRef.get().exec(data, executionContext);
                                 PipelineRuntimeProtocol.write(ORIGINAL_STDOUT,
                                         PipelineRuntimeProtocol.message(PipelineRuntimeProtocol.RESULT,
                                                 requestId, definitionRef.get().getPipelineId(), Map.of(

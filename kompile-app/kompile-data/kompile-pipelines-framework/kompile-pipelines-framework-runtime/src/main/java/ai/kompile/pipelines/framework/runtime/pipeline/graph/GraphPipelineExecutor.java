@@ -22,6 +22,7 @@ import ai.kompile.pipelines.framework.api.PipelineStepRunner;
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
 import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.context.Context;
+import ai.kompile.pipelines.framework.api.context.PipelineProgressListener;
 import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.api.data.PipelineDataConstants;
@@ -283,6 +284,8 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
                 graphChangedStateInIteration = true;
                 String stepContextName = (currentStepConfig.runnerClassName() != null ? currentStepConfig.runnerClassName() : stepIdToRun);
                 Context stepContext = currentPipelineContext.child(stepContextName + "-turn-" + iterations + "-" + System.nanoTime());
+                currentPipelineContext.get(PipelineProgressListener.CONTEXT_KEY, PipelineProgressListener.class)
+                        .ifPresent(listener -> stepContext.put(PipelineProgressListener.CONTEXT_KEY, listener));
 
                 Data stepInput = prepareStepInput(standardNodeToRun, completedStepOutputs, executionId);
 
@@ -410,6 +413,8 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
             // Execute body step
             Context iterContext = pipelineContext.child(
                     loopConfig.getName() + "-loop-iter-" + iteration + "-" + System.nanoTime());
+            pipelineContext.get(PipelineProgressListener.CONTEXT_KEY, PipelineProgressListener.class)
+                    .ifPresent(listener -> iterContext.put(PipelineProgressListener.CONTEXT_KEY, listener));
             Data iterOutput;
             try {
                 iterOutput = bodyRunner.exec(loopState, iterContext);

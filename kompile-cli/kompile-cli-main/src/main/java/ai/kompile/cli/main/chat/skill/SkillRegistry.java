@@ -24,6 +24,21 @@ import java.util.stream.Collectors;
  * Skills are reusable prompt templates invoked as /skillname [args].
  */
 public class SkillRegistry {
+    private static final String VALID_NAME_PATTERN = "[A-Za-z][A-Za-z0-9_-]*";
+    private static final Set<String> RESERVED_CHAT_COMMANDS = Set.of(
+            "quit", "exit", "help", "setup", "provider", "tools", "subagents",
+            "local-tools", "tool", "local-tool", "status", "history", "clear",
+            "compact", "auto-compact", "rag", "agents", "local-agents", "agent",
+            "local-agent", "config", "sessions", "ask", "agent-chat", "crawl",
+            "conversations", "transcript", "copy", "memory", "recall", "permissions",
+            "todos", "plan", "queue", "queues", "queue-send", "queue-send-all",
+            "queue-remove", "queue-edit", "queue-move", "queue-clear", "queue-status",
+            "loop", "jobs", "jobs-remove", "jobs-clear", "processes", "process-kill",
+            "process-output", "process-status", "statusbar", "auto-dequeue", "stats",
+            "passthrough", "resume", "mode", "menu", "skills", "roles", "role",
+            "model", "enforce", "enforcer", "forward", "image", "file", "attach",
+            "attachments", "title", "activity", "keys", "render", "rules",
+            "archive", "rollback", "diff", "purge");
     private final Map<String, SkillConfig> skills = new LinkedHashMap<>();
 
     public SkillRegistry() {
@@ -108,12 +123,47 @@ public class SkillRegistry {
     }
 
     public void register(SkillConfig skill) {
-        skills.put(skill.getName(), skill);
+        Objects.requireNonNull(skill, "skill");
+        if (!isInvokableName(skill.getName())) {
+            throw new IllegalArgumentException("Invalid or reserved skill name: " + skill.getName());
+        }
+        skills.put(normalizeName(skill.getName()), skill);
+    }
+
+    public static boolean isValidName(String name) {
+        return name != null && name.matches(VALID_NAME_PATTERN);
+    }
+
+    public static boolean isInvokableName(String name) {
+        return isValidName(name)
+                && !RESERVED_CHAT_COMMANDS.contains(normalizeName(name));
     }
 
     public SkillConfig get(String name) {
-        return skills.get(name);
+        return name == null ? null : skills.get(normalizeName(name));
     }
+
+    /** Resolve and fully expand a leading /skill invocation. */
+    public Optional<SkillInvocation> resolveInvocation(String input) {
+        if (input == null) return Optional.empty();
+        String trimmed = input.trim();
+        if (!trimmed.startsWith("/") || trimmed.length() == 1) return Optional.empty();
+
+        String[] parts = trimmed.split("\\s+", 2);
+        SkillConfig skill = get(parts[0].substring(1));
+        if (skill == null) return Optional.empty();
+
+        String arguments = parts.length > 1 ? parts[1] : "";
+        String prompt = "<skill name=\"" + skill.getName() + "\">\n"
+                + skill.expandTemplate(arguments) + "\n</skill>";
+        return Optional.of(new SkillInvocation(skill, arguments, prompt));
+    }
+
+    private static String normalizeName(String name) {
+        return name.trim().toLowerCase(Locale.ROOT);
+    }
+
+    public record SkillInvocation(SkillConfig skill, String arguments, String prompt) { }
 
     public Collection<SkillConfig> all() {
         return Collections.unmodifiableCollection(skills.values());

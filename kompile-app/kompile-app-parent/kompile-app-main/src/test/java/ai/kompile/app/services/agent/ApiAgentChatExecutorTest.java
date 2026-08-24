@@ -98,6 +98,36 @@ class ApiAgentChatExecutorTest {
     }
 
     @Test
+    void buildRequestUsesRealSystemMessageForProjectContext() throws Exception {
+        AgentProvider agent = buildAgent("gpt-4o");
+        AgentChatRequest request = new AgentChatRequest();
+        request.setMessage("Hello world");
+        request.setSystemPromptOverride("PROJECT_CONTEXT_MARKER");
+
+        String json = invokeBuildOpenAiRequest(agent, request, "Hello world");
+        JsonNode messages = mapper.readTree(json).get("messages");
+
+        assertEquals("system", messages.get(0).get("role").asText());
+        assertEquals("PROJECT_CONTEXT_MARKER", messages.get(0).get("content").asText());
+        assertEquals("user", messages.get(messages.size() - 1).get("role").asText());
+    }
+
+    @Test
+    void oversizedFixedContextIsRejectedBeforeRequest() throws Exception {
+        var field = ApiAgentChatExecutor.class.getDeclaredField("contextBudgetService");
+        field.setAccessible(true);
+        field.set(executor, new ChatContextBudgetService(
+                new ModelCapabilityService(null), null));
+        AgentChatRequest request = new AgentChatRequest();
+        request.setMessage("hello");
+        request.setSystemPromptOverride("x".repeat(1_000_000));
+
+        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> invokeBuildOpenAiRequest(buildAgent("gpt-4o"), request, "hello"));
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+    }
+
+    @Test
     void buildRequestWithImageAttachmentUsesContentArray() throws Exception {
         AgentProvider agent = buildAgent("gpt-4o");
         AgentChatRequest request = new AgentChatRequest();

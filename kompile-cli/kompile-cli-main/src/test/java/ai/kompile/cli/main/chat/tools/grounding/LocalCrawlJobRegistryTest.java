@@ -77,24 +77,64 @@ class LocalCrawlJobRegistryTest {
     }
 
     @Test
-    void cancelIsTerminalAndDoesNotRequireStartingAgain() throws Exception {
+    void cancelRemainsNonTerminalUntilWorkerCleanupFinishes() throws Exception {
         CountDownLatch started = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
         String jobId = LocalCrawlJobRegistry.newJobId();
-        LocalCrawlJobRegistry.submit(jobId, null, release::countDown, () -> {
+        LocalCrawlJobRegistry.submit(jobId, null, null, () -> {
             started.countDown();
-            release.await(5, TimeUnit.SECONDS);
-            return ToolResult.success("crawl_documents", "unexpected",
-                    Map.of("status", "COMPLETED"));
+            try {
+                new CountDownLatch(1).await();
+                throw new AssertionError("crawl worker was not interrupted");
+            } catch (InterruptedException expected) {
+                interrupted.countDown();
+                releaseCleanup.await(5, TimeUnit.SECONDS);
+                throw expected;
+            }
         });
 
         assertTrue(started.await(5, TimeUnit.SECONDS));
         assertTrue(LocalCrawlJobRegistry.cancel(jobId));
-        JsonNode status = mapper.readTree(
+        assertTrue(interrupted.await(5, TimeUnit.SECONDS));
+        JsonNode cancelling = mapper.readTree(
                 LocalCrawlJobRegistry.status(jobId, mapper).getOutput());
+        assertEquals("CANCELLING", cancelling.path("status").asText());
+        assertFalse(cancelling.path("terminal").asBoolean());
+
+        releaseCleanup.countDown();
+        JsonNode status = awaitTerminal(jobId);
         assertEquals("CANCELLED", status.path("status").asText());
         assertTrue(status.path("terminal").asBoolean());
         assertTrue(LocalCrawlJobRegistry.result(jobId, mapper).getOutput().contains("cancel"));
+    }
+
+    @Test
+    void statusIncludesLatestStructuredPipelineProgress() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        String jobId = LocalCrawlJobRegistry.newJobId();
+        LocalCrawlJobRegistry.submit(jobId, "notes", null, () -> {
+            started.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return ToolResult.success("crawl_documents", "done", Map.of("status", "COMPLETED"));
+        });
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+
+        LocalCrawlJobRegistry.updatePipelineProgress(jobId, "VLM_EXTRACTION", "Page 2/3", 49,
+                Map.of("phase", "VLM_EXTRACTION", "currentPage", 2, "totalPages", 3));
+        JsonNode status = mapper.readTree(LocalCrawlJobRegistry.status(jobId, mapper).getOutput());
+        assertEquals("VLM_EXTRACTION", status.path("stage").asText());
+        assertEquals(49, status.path("progressPercent").asInt());
+        assertEquals(2, status.path("pipelineProgress").path("currentPage").asInt());
+        assertEquals(3, status.path("pipelineProgress").path("totalPages").asInt());
+        release.countDown();
+        awaitTerminal(jobId);
+        LocalCrawlJobRegistry.updatePipelineProgress(jobId, "STALE", "late update", 1,
+                Map.of("currentPage", 99));
+        JsonNode unchanged = mapper.readTree(LocalCrawlJobRegistry.status(jobId, mapper).getOutput());
+        assertEquals("COMPLETED", unchanged.path("stage").asText());
+        assertEquals(2, unchanged.path("pipelineProgress").path("currentPage").asInt());
     }
 
     private JsonNode awaitTerminal(String jobId) throws Exception {

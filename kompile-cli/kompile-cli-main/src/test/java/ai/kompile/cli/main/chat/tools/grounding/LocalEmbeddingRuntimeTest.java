@@ -10,15 +10,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class LocalEmbeddingRuntimeTest {
     private final ObjectMapper mapper = JsonUtils.standardMapper();
@@ -40,15 +40,16 @@ class LocalEmbeddingRuntimeTest {
     }
 
     @Test
-    void childLoaderPrecedenceCannotUseModelIdSymlinkOutsideProject() throws Exception {
-        writeModelRegistry();
+    void explicitLocalPathsBypassRegistryModelIdSymlink() throws Exception {
+        Path model = writeModelRegistry();
         Path outside = Files.createTempDirectory(projectRoot.getParent(), "foreign-model-");
         Files.writeString(outside.resolve("model.sdz"), "aaaa", StandardCharsets.UTF_8);
         Files.writeString(outside.resolve("vocab.txt"), "token", StandardCharsets.UTF_8);
         Files.createSymbolicLink(projectRoot.resolve("data/models/test-encoder"), outside);
 
-        assertThrows(IOException.class,
-                () -> LocalEmbeddingRuntime.modelFingerprint(projectRoot, mapper));
+        Map<String, String> config = LocalEmbeddingRuntime.modelConfig(projectRoot, mapper);
+        assertEquals(model.toRealPath().toString(), config.get("modelPath"));
+        assertEquals("LOCAL_PROJECT", config.get("modelSource"));
     }
 
     @Test
@@ -75,9 +76,24 @@ class LocalEmbeddingRuntimeTest {
                       "path": "encoders/test-encoder",
                       "model_file": "model.sdz",
                       "vocab_file": "vocab.txt",
-                      "status": "active"
+                      "status": "staged"
                     }
                   }
+                }
+                """, StandardCharsets.UTF_8);
+        Files.writeString(projectRoot.resolve("kompile.project.json"), """
+                {
+                  "schemaVersion": 1,
+                  "projectId": "local-rag-test",
+                  "name": "local-rag-test",
+                  "models": [{
+                    "id": "test-encoder",
+                    "modelId": "test-encoder",
+                    "registryModelId": "test-encoder",
+                    "role": "ENCODER",
+                    "lifecycle": "ACTIVE",
+                    "metadata": {"registry.type": "dense_encoder"}
+                  }]
                 }
                 """, StandardCharsets.UTF_8);
         return model;

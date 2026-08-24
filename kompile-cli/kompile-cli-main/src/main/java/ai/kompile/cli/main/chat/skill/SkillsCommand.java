@@ -188,8 +188,8 @@ public class SkillsCommand implements Callable<Integer> {
         @Override
         public Integer call() {
             // Validate name
-            if (!name.matches("[a-zA-Z][a-zA-Z0-9_-]*")) {
-                System.err.println("Invalid skill name. Must start with a letter and contain only letters, digits, hyphens, or underscores.");
+            if (!SkillRegistry.isInvokableName(name)) {
+                System.err.println("Invalid or reserved skill name. Use a letter-led identifier that does not conflict with a chat command.");
                 return 1;
             }
 
@@ -200,14 +200,14 @@ public class SkillsCommand implements Callable<Integer> {
                 targetDir = KompileHome.homeDirectory().toPath().resolve("skills");
             }
 
+            Path skillFile;
             try {
+                skillFile = SkillPathPolicy.resolve(targetDir, name);
                 Files.createDirectories(targetDir);
             } catch (IOException e) {
                 System.err.println("Could not create skills directory: " + e.getMessage());
                 return 1;
             }
-
-            Path skillFile = targetDir.resolve(name + ".md");
             if (Files.exists(skillFile)) {
                 System.err.println("Skill already exists: " + skillFile);
                 System.err.println("Edit it directly or delete it first with: kompile skills delete " + name);
@@ -233,7 +233,9 @@ public class SkillsCommand implements Callable<Integer> {
             content.append(promptTemplate);
 
             try {
-                Files.writeString(skillFile, content.toString());
+                Files.writeString(skillFile, content.toString(),
+                        java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE);
                 System.out.println("Created skill: " + skillFile);
                 System.out.println("Edit the file to customize the prompt template.");
                 System.out.println("Use /" + name + " in chat to invoke it.");
@@ -255,6 +257,11 @@ public class SkillsCommand implements Callable<Integer> {
 
         @Override
         public Integer call() {
+            if (!SkillRegistry.isInvokableName(name)) {
+                System.err.println("Invalid or reserved skill name: " + name);
+                return 1;
+            }
+
             // Check if it's a built-in skill
             SkillRegistry registry = new SkillRegistry();
             if (registry.get(name) != null) {
@@ -263,8 +270,17 @@ public class SkillsCommand implements Callable<Integer> {
             }
 
             // Try project scope first, then user scope
-            Path projectFile = Path.of(System.getProperty("user.dir"), ".kompile", "skills", name + ".md");
-            Path userFile = KompileHome.homeDirectory().toPath().resolve("skills").resolve(name + ".md");
+            Path projectFile;
+            Path userFile;
+            try {
+                projectFile = SkillPathPolicy.resolve(
+                        Path.of(System.getProperty("user.dir"), ".kompile", "skills"), name);
+                userFile = SkillPathPolicy.resolve(
+                        KompileHome.homeDirectory().toPath().resolve("skills"), name);
+            } catch (IOException e) {
+                System.err.println("Unsafe skill path: " + e.getMessage());
+                return 1;
+            }
 
             boolean deleted = false;
             if (Files.exists(projectFile)) {
