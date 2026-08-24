@@ -59,9 +59,11 @@ import org.jline.terminal.Terminal;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.impl.LineReaderImpl;
 import org.jline.utils.InfoCmp;
+import org.jline.utils.NonBlockingReader;
 
 import java.io.File;
 import java.io.IOError;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
@@ -1707,6 +1709,19 @@ public class ChatRepl {
             KompileTui tui,
             Consumer<String> queueEditStarted,
             Supplier<String> clipboardTextSupplier) {
+        bindStandardChatActivityKeys(
+                reader, queue, activityPanel, tui, queueEditStarted, clipboardTextSupplier,
+                text -> ClipboardUtil.copyToClipboardAsync(text, reader.getTerminal()));
+    }
+
+    static void bindStandardChatActivityKeys(
+            LineReaderImpl reader,
+            MessageQueue queue,
+            StandardChatActivityPanel activityPanel,
+            KompileTui tui,
+            Consumer<String> queueEditStarted,
+            Supplier<String> clipboardTextSupplier,
+            Consumer<String> clipboardCopyConsumer) {
         bindStandardChatUpArrow(reader, queue, activityPanel, tui, queueEditStarted);
 
         Widget originalDown = reader.getWidgets().get(LineReader.DOWN_LINE_OR_HISTORY);
@@ -1755,27 +1770,58 @@ public class ChatRepl {
             redisplayWithContent(reader, tui);
             return changed;
         });
+        MouseEvent[] previousMouseEvent = new MouseEvent[1];
         reader.getWidgets().put(STANDARD_CHAT_SCROLL_MOUSE_WIDGET, () -> {
             boolean changed = false;
             try {
-                MouseEvent event = reader.getTerminal().readMouseEvent();
+                MouseEvent event = readStandardChatMouseEvent(reader, previousMouseEvent[0]);
                 if (event != null && tui != null) {
+                    previousMouseEvent[0] = event;
                     switch (event.getButton()) {
                         case WheelUp -> changed = tui.scrollContent(3);
                         case WheelDown -> changed = tui.scrollContent(-3);
                         case Button1 -> {
-                            if (event.getType() == MouseEvent.Type.Pressed) {
-                                changed = tui.handleScrollToBottomClick(
+                            switch (event.getType()) {
+                                case Pressed -> {
+                                    changed = tui.handleScrollToBottomClick(
+                                            event.getX(), event.getY());
+                                    if (!changed) {
+                                        changed = tui.beginTranscriptSelection(
+                                                event.getX(), event.getY());
+                                    }
+                                }
+                                case Dragged -> changed = tui.dragTranscriptSelection(
                                         event.getX(), event.getY());
+                                case Released -> changed = tui.finishTranscriptSelection(
+                                        event.getX(), event.getY());
+                                default -> { /* ignore motion without Button1 */ }
                             }
                         }
-                        case Button2, Button3 -> {
+                        case Button2 -> {
                             if (event.getType() == MouseEvent.Type.Pressed) {
                                 String clipboardText = clipboardTextSupplier.get();
                                 changed = ChatCompleter.insertPastedText(reader, clipboardText);
                             }
                         }
-                        default -> { /* consume clicks and motion */ }
+                        case Button3 -> {
+                            if (event.getType() == MouseEvent.Type.Pressed) {
+                                String selected = tui.getSelectedTranscriptText();
+                                if (!selected.isEmpty()
+                                        && tui.isTranscriptCoordinate(event.getX(), event.getY())) {
+                                    clipboardCopyConsumer.accept(selected);
+                                    changed = true;
+                                } else {
+                                    String clipboardText = clipboardTextSupplier.get();
+                                    changed = ChatCompleter.insertPastedText(reader, clipboardText);
+                                }
+                            }
+                        }
+                        case NoButton -> {
+                            if (event.getType() == MouseEvent.Type.Released) {
+                                changed = tui.finishTranscriptSelection(
+                                        event.getX(), event.getY());
+                            }
+                        }
                     }
                 }
             } catch (RuntimeException ignored) {
@@ -1906,19 +1952,102 @@ public class ChatRepl {
         return new ArrayList<>(sequences);
     }
 
+    /** Decode either legacy X10 reports or SGR reports used for drag selection. */
+    private static MouseEvent readStandardChatMouseEvent(
+            LineReaderImpl reader, MouseEvent previous) {
+        if ("\033[<".equals(reader.getLastBinding())) {
+            return readSgrMouseEvent(reader.getTerminal(), previous);
+        }
+        return reader.getTerminal().readMouseEvent();
+    }
+
+    private static MouseEvent readSgrMouseEvent(Terminal terminal, MouseEvent previous) {
+        StringBuilder report = new StringBuilder(24);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);
+        try {
+            while (report.length() < 64) {
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0) return null;
+                long timeoutMillis = Math.max(1L,
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+                int next = terminal.reader().read(timeoutMillis);
+                if (next == NonBlockingReader.READ_EXPIRED || next < 0) return null;
+                char value = (char) next;
+                report.append(value);
+                if (value == 'M' || value == 'm') {
+                    return parseSgrMouseEvent(report.toString(), previous);
+                }
+                if (value != ';' && (value < '0' || value > '9')) return null;
+            }
+        } catch (IOException ignored) {
+            // A terminal can disappear between the bound prefix and report body.
+        }
+        return null;
+    }
+
+    static MouseEvent parseSgrMouseEvent(String report, MouseEvent previous) {
+        if (report == null || report.length() < 6) return null;
+        char terminator = report.charAt(report.length() - 1);
+        if (terminator != 'M' && terminator != 'm') return null;
+        String[] fields = report.substring(0, report.length() - 1).split(";", -1);
+        if (fields.length != 3) return null;
+        try {
+            int code = Integer.parseInt(fields[0]);
+            int reportedX = Integer.parseInt(fields[1]);
+            int reportedY = Integer.parseInt(fields[2]);
+            if (code < 0 || reportedX <= 0 || reportedY <= 0 || (code & ~0x7f) != 0) return null;
+            int x = reportedX - 1;
+            int y = reportedY - 1;
+            EnumSet<MouseEvent.Modifier> modifiers = EnumSet.noneOf(MouseEvent.Modifier.class);
+            if ((code & 4) != 0) modifiers.add(MouseEvent.Modifier.Shift);
+            if ((code & 8) != 0) modifiers.add(MouseEvent.Modifier.Alt);
+            if ((code & 16) != 0) modifiers.add(MouseEvent.Modifier.Control);
+
+            MouseEvent.Type type;
+            MouseEvent.Button button;
+            if ((code & 64) != 0) {
+                if ((code & 3) > 1 || (code & 32) != 0 || terminator != 'M') return null;
+                type = MouseEvent.Type.Wheel;
+                button = (code & 1) == 0
+                        ? MouseEvent.Button.WheelUp : MouseEvent.Button.WheelDown;
+            } else {
+                button = switch (code & 3) {
+                    case 0 -> MouseEvent.Button.Button1;
+                    case 1 -> MouseEvent.Button.Button2;
+                    case 2 -> MouseEvent.Button.Button3;
+                    default -> MouseEvent.Button.NoButton;
+                };
+                if (terminator == 'm' || ((code & 3) == 3 && (code & 32) == 0)) {
+                    type = MouseEvent.Type.Released;
+                    if (button == MouseEvent.Button.NoButton && previous != null) {
+                        button = previous.getButton();
+                    }
+                } else if ((code & 32) != 0) {
+                    type = button == MouseEvent.Button.NoButton
+                            ? MouseEvent.Type.Moved : MouseEvent.Type.Dragged;
+                } else {
+                    type = MouseEvent.Type.Pressed;
+                }
+            }
+            return new MouseEvent(type, button, modifiers, x, y);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     private void enableTranscriptMouse(Terminal terminal) {
         forceTranscriptMouseCapture(terminal);
     }
 
-    /** Re-send mouse tracking before each prompt because JLine may reset it. */
+    /** Re-send button-motion and SGR tracking before each prompt because JLine may reset it. */
     private void forceTranscriptMouseCapture(Terminal terminal) {
         if (terminal == null) return;
         try {
-            terminal.writer().print("\033[?1000h");
+            terminal.writer().print("\033[?1000h\033[?1002h\033[?1006h");
             terminal.writer().flush();
             transcriptMouseEnabled = true;
         } catch (RuntimeException | IOError ignored) {
-            // Wheel capture is best-effort; keyboard bindings remain available.
+            // Mouse selection is best-effort; keyboard scrolling remains available.
         }
     }
 

@@ -83,6 +83,7 @@ internal object SdxPlatformRuntimeOwner {
         modelPath: String,
         diagnosticModelPath: String = modelPath,
         diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
+        expectedCompileKey: String? = null,
         routeName: String,
         modelIdPrefix: String,
         loadTransaction: NativeOperationTransaction
@@ -183,6 +184,12 @@ internal object SdxPlatformRuntimeOwner {
             check(resolved.getString("targetProfile") == BuildConfig.SDX_TARGET_PROFILE) {
                 "Resolved SDX target ${resolved.getString("targetProfile")} does not match " +
                     BuildConfig.SDX_TARGET_PROFILE
+            }
+            expectedCompileKey?.let { expected ->
+                val actual = resolved.getString("compileKey")
+                check(actual == expected) {
+                    "Resolved SDX compile key $actual does not match selected cache entry $expected"
+                }
             }
             val bundle = requireCachePath(
                 modelCache,
@@ -294,9 +301,13 @@ internal object SdxPlatformRuntimeOwner {
     ) {
         try {
             transaction.checkpoint(checkpoint)
+        } catch (checkpointFailure: Throwable) {
+            primary.addSuppressed(checkpointFailure)
+        }
+        try {
             close()
-        } catch (cleanupFailure: Throwable) {
-            primary.addSuppressed(cleanupFailure)
+        } catch (closeFailure: Throwable) {
+            primary.addSuppressed(closeFailure)
         }
     }
 
@@ -668,13 +679,22 @@ internal object SdxPlatformRuntimeOwner {
             closeSteps.forEach { (checkpoint, closeStep) ->
                 try {
                     operation.checkpoint(checkpoint)
-                    closeStep()
-                } catch (failure: Throwable) {
+                } catch (checkpointFailure: Throwable) {
                     if (firstFailure == null) {
-                        firstFailure = failure
+                        firstFailure = checkpointFailure
                         firstFailureCheckpoint = checkpoint
                     } else {
-                        firstFailure?.addSuppressed(failure)
+                        firstFailure?.addSuppressed(checkpointFailure)
+                    }
+                }
+                try {
+                    closeStep()
+                } catch (closeFailure: Throwable) {
+                    if (firstFailure == null) {
+                        firstFailure = closeFailure
+                        firstFailureCheckpoint = checkpoint
+                    } else {
+                        firstFailure?.addSuppressed(closeFailure)
                     }
                 }
             }
@@ -683,7 +703,13 @@ internal object SdxPlatformRuntimeOwner {
                 operation.complete()
                 return
             }
-            firstFailureCheckpoint?.let { operation.checkpoint(it) }
+            firstFailureCheckpoint?.let { checkpoint ->
+                try {
+                    operation.checkpoint(checkpoint)
+                } catch (checkpointFailure: Throwable) {
+                    failure.addSuppressed(checkpointFailure)
+                }
+            }
             throw failure
         }
     }

@@ -85,6 +85,7 @@ enum class ImportOperationKind {
     NONE,
     HUGGING_FACE,
     LOCAL_MODEL_OPTIMIZATION,
+    CACHED_MODEL_ACTIVATION,
     MODEL_ARCHIVE,
     PROJECT_ARCHIVE,
     GRAPH,
@@ -115,6 +116,7 @@ internal fun isModelLoading(
 ): Boolean = modelState is ModelUiState.Checking || operation in setOf(
     ImportOperationKind.HUGGING_FACE,
     ImportOperationKind.LOCAL_MODEL_OPTIMIZATION,
+    ImportOperationKind.CACHED_MODEL_ACTIVATION,
     ImportOperationKind.MODEL_ARCHIVE,
     ImportOperationKind.PROJECT_ARCHIVE
 )
@@ -147,6 +149,8 @@ internal fun modelStatusUi(
                 "Preparing Hugging Face model…" to "Importing and proving the local runtime"
             ImportOperationKind.LOCAL_MODEL_OPTIMIZATION ->
                 "Optimizing local model…" to "Preparing an accelerator-ready chat model"
+            ImportOperationKind.CACHED_MODEL_ACTIVATION ->
+                "Loading optimized model…" to "Reusing the existing canonical SDZ and accelerator cache"
             ImportOperationKind.MODEL_ARCHIVE ->
                 "Loading model archive…" to "Opening and proving the selected model"
             ImportOperationKind.PROJECT_ARCHIVE ->

@@ -282,7 +282,21 @@ audit_elf(){ local b=$1 f=$2 h d s needed undefined dependency_surface dep elf_i
  fi
  if [[ $VARIANT == tensorG3 && $b == libnd4jnnapi.so ]]; then
    grep -Fq libneuralnetworks.so <<<"$needed" || fail "NNAPI system dependency missing"
-   grep -Eq 'ANeuralNetworks[A-Za-z0-9_]+' <<<"$s" || fail "NNAPI symbols missing"
+   for symbol in \
+     ANeuralNetworks_getDeviceCount \
+     ANeuralNetworks_getDevice \
+     ANeuralNetworksDevice_getName \
+     ANeuralNetworksDevice_getType \
+     ANeuralNetworksDevice_getFeatureLevel \
+     ANeuralNetworksModel_getSupportedOperationsForDevices \
+     ANeuralNetworksCompilation_createForDevices; do
+    grep -Eq "[[:space:]]${symbol}(@[^[:space:]]*)?$" <<<"$s" ||
+      fail "Tensor G3 provider missing pinned-device symbol: $symbol"
+   done
+   ! grep -Eq '[[:space:]]ANeuralNetworksCompilation_create(@[^[:space:]]*)?$' <<<"$s" ||
+     fail "Tensor G3 provider contains forbidden generic NNAPI compilation"
+   grep -aFq google-edgetpu "$f" ||
+     fail "Tensor G3 provider missing google-edgetpu device fingerprint"
  fi
  if [[ $b == libsdx_llm.so ]]; then
   # This native image is confined to :sdx_model_import. It prepares and caches an
@@ -355,7 +369,8 @@ for c in "${CLASSES[@]}"; do grep -Fxq "$c" "$TMP/classes.names" || fail "AAR mi
 mapfile -t AE < <(grep -E '^jni/[^/]+/[^/]+\.so$' "$AN"||true); [[ ${#AE[@]} -gt 0 ]] || fail "AAR has no native libs"
 declare -A AL=(); for e in "${AE[@]}"; do [[ $e == jni/arm64-v8a/* ]] || fail "AAR has non-arm64 ABI"; AL[${e##*/}]=1; done
 # Provider-independent application runtimes are staged outside the provider AAR:
-# libsdx_llm and its direct host JNI bridge come from DL4J's explicit android-aot SDK.
+# libsdx_llm comes from DL4J's explicit android-aot SDK; Kompile builds its own
+# direct host JNI bridge against that stable C ABI.
 for l in "${REQUIRED[@]}"; do
  case "$l" in libsdx_llm.so|libjnisdx_llm.so) continue;; esac
  [[ -n ${AL[$l]:-} ]] || fail "AAR missing $l"
@@ -411,7 +426,7 @@ SDX_NATIVE_BYTES=$SDX_SDK/metadata/sdk-native-bytes.txt
 SDX_BUILD_RECEIPT=$SDX_SDK/metadata/build-receipt
 SDX_COMPLETION=$SDX_SDK/.complete.cmake
 [[ -s $SDX_JNI_DIR/libsdx_llm.so ]] || fail "SDX SDK is missing jni/arm64-v8a/libsdx_llm.so"
-[[ -s $SDX_JNI_DIR/libjnisdx_llm.so ]] || fail "SDX SDK is missing jni/arm64-v8a/libjnisdx_llm.so"
+[[ ! -e $SDX_JNI_DIR/libjnisdx_llm.so ]] || fail "SDX SDK contains the Kompile-owned Android JNI bridge"
 [[ -s $SDX_NATIVE_MANIFEST ]] || fail "SDX SDK native manifest is missing"
 [[ -s $SDX_NATIVE_BYTES ]] || fail "SDX SDK native byte manifest is missing"
 [[ -s $SDX_BUILD_RECEIPT ]] || fail "SDX SDK build receipt is missing"
@@ -489,8 +504,7 @@ SDX_EXPECTED_ARCHIVE_NAMES=$TMP/sdx-sdk.expected-names
   metadata/sdk-native-bytes.txt \
   metadata/native-dependency-closure.txt \
   metadata/jnijavacpp.cpp \
-  metadata/javacpp_jni_lifecycle.cpp \
-  metadata/jnisdx_llm.cpp
+  metadata/javacpp_jni_lifecycle.cpp
  while IFS= read -r sdk_name; do
   printf 'jni/arm64-v8a/%s\n' "$sdk_name"
  done <"$SDX_NATIVE_MANIFEST"

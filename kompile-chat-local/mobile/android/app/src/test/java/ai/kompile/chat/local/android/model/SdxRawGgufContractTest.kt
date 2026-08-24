@@ -11,6 +11,19 @@ import org.junit.Test
 class SdxRawGgufContractTest {
 
     @Test
+    fun cachedCanonicalSdzBypassesRawModelPreparation() {
+        assertTrue(SdxGgufModelImporter.supports("retained.gguf"))
+        assertTrue(SdxGgufModelImporter.supports("retained.ggml"))
+        assertFalse(SdxGgufModelImporter.supports("cache/v1/sources/abc/model.sdz"))
+
+        val viewModel = java.io.File(
+            "src/main/java/ai/kompile/chat/local/android/viewmodel/ChatViewModel.kt"
+        ).readText()
+        assertTrue(viewModel.contains("activateCachedOptimizedModel"))
+        assertTrue(viewModel.contains("modelPath = cached.canonicalSdzPath"))
+    }
+
+    @Test
     fun runtimeDiagnosticsHonorThePersistedSettingsSelection() {
         ModelDiagnosticMode.entries.forEach { selected ->
             assertEquals(selected, effectiveDiagnosticModeForRuntime(selected))

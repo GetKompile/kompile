@@ -245,6 +245,9 @@ class UiValidationTest {
         assertTrue(settings.contains("ClipData.newUri("))
         assertTrue(settings.contains("catch (cancelled: CancellationException)"))
         assertTrue(settings.contains("testTag(\"share_dsp_diagnostics_trace\")"))
+        assertTrue(settings.contains("DspDiagnosticsTraceLog(context).clearAll()"))
+        assertTrue(settings.contains("testTag(\"clear_dsp_diagnostics_trace\")"))
+        assertTrue(settings.contains("modelSmokeState !is ModelSmokeUiState.Running"))
         assertFalse(
             settings.contains(
                 "AnnotatedString(DspDiagnosticsTraceLog(context).readContents())"
@@ -571,5 +574,19 @@ class UiValidationTest {
             "Import blocked: Another import is already running. Wait for it to finish.",
             failure.displayMessage
         )
+    }
+
+    @Test
+    fun settingsExposeOptimizedModelsAndTheirStorageSeparatelyFromRawSources() {
+        val settings = File(
+            "src/main/java/ai/kompile/chat/local/android/ui/screens/SettingsScreen.kt"
+        ).readText()
+
+        assertTrue(settings.contains("Models stored on this phone"))
+        assertTrue(settings.contains("optimizedModelStorage.optimizedCacheBytes"))
+        assertTrue(settings.contains("optimizedModelStorage.retainedModelBytes"))
+        assertTrue(settings.contains("optimizedModelStorage.deviceCompilationBytes"))
+        assertTrue(settings.contains("Reuse optimized model"))
+        assertTrue(settings.indexOf("Models stored on this phone") < settings.indexOf("Optimize local model"))
     }
 }

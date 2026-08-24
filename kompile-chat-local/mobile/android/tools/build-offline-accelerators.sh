@@ -183,6 +183,63 @@ sha256_file() {
   sha256sum "$1" | cut -d ' ' -f 1
 }
 
+build_sdx_android_jni_bridge() {
+  local source="$SCRIPT_DIR/app/src/main/cpp/sdx_llm_android_jni.cpp"
+  local include_dir="$SDX_LLM_SDK/include"
+  local runtime_library="$JNI_OUTPUT_DIR/libsdx_llm.so"
+  local output_library="$JNI_OUTPUT_DIR/libjnisdx_llm.so"
+  local host_tag="${NDK_HOST_TAG:-linux-x86_64}"
+  local toolchain="$ANDROID_NDK_ARG/toolchains/llvm/prebuilt/$host_tag/bin"
+  local clangxx="$toolchain/aarch64-linux-android28-clang++"
+  local llvm_nm="$toolchain/llvm-nm"
+  local llvm_readelf="$toolchain/llvm-readelf"
+  local symbols="$APP_BUILD_ROOT/libjnisdx_llm.dynamic-symbols"
+  local binding
+
+  [[ -f "$source" && ! -L "$source" && -s "$source" ]] || {
+    echo "Kompile-owned Android SDX JNI source is missing or unsafe: $source" >&2
+    return 1
+  }
+  [[ -s "$include_dir/sdx_llm_c.h" && -s "$runtime_library" ]] || {
+    echo "The selected SDX SDK does not provide its stable C header/runtime" >&2
+    return 1
+  }
+  for tool in "$clangxx" "$llvm_nm" "$llvm_readelf"; do
+    [[ -x "$tool" ]] || {
+      echo "Required Android JNI bridge tool is missing: $tool" >&2
+      return 1
+    }
+  done
+
+  mkdir -p -- "$APP_BUILD_ROOT" "$JNI_OUTPUT_DIR"
+  rm -f -- "$output_library"
+  "$clangxx" \
+    -shared -fPIC -O2 -std=c++17 -DANDROID \
+    -Wl,--no-undefined -Wl,--build-id=sha1 \
+    -Wl,-z,relro,-z,now -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 \
+    -Wl,-soname,libjnisdx_llm.so \
+    -I"$include_dir" "$source" "$runtime_library" \
+    -o "$output_library" -llog -ldl -lm
+
+  "$llvm_nm" -D --defined-only "$output_library" >"$symbols"
+  for binding in \
+    nativeCreateRuntime nativeDestroyRuntime nativeAbiVersion nativePrepareGguf \
+    nativeResolveModelBundle nativeLoadCompiledModel nativeUnloadModel \
+    nativeRenderChatPrompt nativeTokenCount nativeParseChatResult \
+    nativeLastResultJson nativeGenerateStreaming nativeReadUtf8 nativeFree \
+    nativeGetLastError; do
+    grep -Fq "Java_ai_kompile_chat_local_android_model_SdxAndroidLlmNative_${binding}" \
+      "$symbols" || {
+      echo "Kompile Android SDX JNI bridge omitted binding: $binding" >&2
+      return 1
+    }
+  done
+  if "$llvm_readelf" -d "$output_library" | grep -q 'Shared library: \[libjnijavacpp[.]so\]'; then
+    echo "ART-facing Kompile JNI bridge must not depend on JavaCPP's process-global JNI cache" >&2
+    return 1
+  fi
+}
+
 require_receipt_value() {
   local receipt_label="$1"
   local field="$2"
@@ -497,7 +554,6 @@ verify_sdx_aot_sdk_receipt() {
   local jdk_support_receipt="$SDX_LLM_SDK/metadata/jdk-support-receipt"
   local optimization_metadata="$SDX_LLM_SDK/metadata/native-image-optimization.txt"
   local generated_javacpp="$SDX_LLM_SDK/metadata/jnijavacpp.cpp"
-  local generated_sdx="$SDX_LLM_SDK/metadata/jnisdx_llm.cpp"
   local staged_javacpp_lifecycle_bridge="$SDX_LLM_SDK/metadata/javacpp_jni_lifecycle.cpp"
   local expected_build_script="$DL4J_ROOT/nd4j/sdx-aot/src/main/android/build-android-aot-sdk.sh"
   local expected_object_builder="$GRAPH_MODULE/build-android-ndk.sh"
@@ -506,7 +562,7 @@ verify_sdx_aot_sdk_receipt() {
   local expected_javacpp_lifecycle_bridge="$DL4J_ROOT/nd4j/sdx-aot/src/main/android/javacpp_jni_lifecycle.cpp"
   local expected_source expected_inputs actual_native_bytes actual_native_set declared_native_set library_name key canonical_sdk
   local artifact source_sha tree_sha extra expected_maven maven_version java_version
-  local base_sdk base_sdk_actual_sha base_sdk_receipt svm_support importer_library importer_hash importer_entry
+  local base_sdk base_sdk_actual_sha base_sdk_receipt importer_library importer_hash importer_entry
   local expected_build_mode expected_optimization expected_optimization_config_sha256 optimization_contract process_symbol_contract
   declare -A expected_module_roots=(
     [nd4j-api]="nd4j/nd4j-backends/nd4j-api-parent/nd4j-api"
@@ -539,14 +595,14 @@ verify_sdx_aot_sdk_receipt() {
     base_sdk base_sdk_sha256 base_sdk_receipt_sha256 base_sdk_native_sha256
     process_blas_symbols_abi process_blas_symbols_capability
     build_script build_script_sha256 native_image_cache_helper_sha256
-    object_builder object_builder_sha256 jdk_support_receipt_sha256
-    svm_support libjvm_sha256 liblibchelper_sha256
+    object_builder_sha256 jdk_support_receipt_sha256
+    libjvm_sha256 liblibchelper_sha256
     maven maven_sha256 maven_version_sha256
     java_home java_version_sha256 linker_script_sha256
     javacpp_jar javacpp_jar_sha256 ndk_revision_sha256 graalvm_version_sha256
-    android_api android_abi libsdx_sha256 libjnisdx_sha256
+    android_api android_abi libsdx_sha256
     libjnijavacpp_sha256 jnijavacpp_source_sha256
-    javacpp_lifecycle_source_sha256 jnisdx_source_sha256
+    javacpp_lifecycle_source_sha256
     native_manifest_sha256 sdk_native_bytes_sha256 native_library_count
   )
 
@@ -658,15 +714,6 @@ verify_sdx_aot_sdk_receipt() {
       return 1
     fi
   done
-  svm_support="$(realpath -e -- "${SDX_AOT_RECEIPT_VALUES[svm_support]}")" || return 1
-  [[ -d "$svm_support" && ! -L "$svm_support" &&
-     -f "$svm_support/libjvm.a" && ! -L "$svm_support/libjvm.a" &&
-     -f "$svm_support/liblibchelper.a" && ! -L "$svm_support/liblibchelper.a" &&
-     "$(sha256_file "$svm_support/libjvm.a")" == "${SDX_AOT_RECEIPT_VALUES[libjvm_sha256]}" &&
-     "$(sha256_file "$svm_support/liblibchelper.a")" == "${SDX_AOT_RECEIPT_VALUES[liblibchelper_sha256]}" ]] || {
-    echo "SDX AOT SVM support closure changed after receipt creation" >&2
-    return 1
-  }
   for required_file in \
     "$native_manifest" \
     "$native_bytes" \
@@ -677,7 +724,6 @@ verify_sdx_aot_sdk_receipt() {
     "$jdk_support_receipt" \
     "$optimization_metadata" \
     "$generated_javacpp" \
-    "$generated_sdx" \
     "$staged_javacpp_lifecycle_bridge"; do
     [[ -s "$required_file" ]] || {
       echo "SDX AOT SDK receipt dependency is missing: $required_file" >&2
@@ -705,7 +751,7 @@ verify_sdx_aot_sdk_receipt() {
   expected_maven="$(realpath -e -- "$expected_maven")" || return 1
   maven_version="$({ env -u JAVA_TOOL_OPTIONS JAVA_HOME="$JAVA_HOME_ARG" PATH="$JAVA_HOME_ARG/bin:$PATH" "$expected_maven" --version; } 2>&1)"
   java_version="$({ env -u JAVA_TOOL_OPTIONS "$JAVA_HOME_ARG/bin/java" -version; } 2>&1)"
-  require_receipt_value "SDX AOT SDK" format "${SDX_AOT_RECEIPT_VALUES[format]}" "8" || return 1
+  require_receipt_value "SDX AOT SDK" format "${SDX_AOT_RECEIPT_VALUES[format]}" "9" || return 1
   require_receipt_value "SDX AOT SDK" stage "${SDX_AOT_RECEIPT_VALUES[stage]}" "android-aot-sdk" || return 1
   if (( REUSE_RECEIPTED_PRODUCERS == 0 )); then
     require_receipt_value "SDX AOT SDK" source_manifest_sha256 "${SDX_AOT_RECEIPT_VALUES[source_manifest_sha256]}" "$expected_source" || return 1
@@ -720,7 +766,6 @@ verify_sdx_aot_sdk_receipt() {
     require_receipt_value "SDX AOT SDK" javacpp_lifecycle_source_sha256 "${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" "$(sha256_file "$expected_javacpp_lifecycle_bridge")" || return 1
     require_receipt_value "SDX AOT SDK" build_script "${SDX_AOT_RECEIPT_VALUES[build_script]}" "$(realpath -e -- "$expected_build_script")" || return 1
     require_receipt_value "SDX AOT SDK" build_script_sha256 "${SDX_AOT_RECEIPT_VALUES[build_script_sha256]}" "$(sha256_file "$expected_build_script")" || return 1
-    require_receipt_value "SDX AOT SDK" object_builder "${SDX_AOT_RECEIPT_VALUES[object_builder]}" "$(realpath -e -- "$expected_object_builder")" || return 1
     require_receipt_value "SDX AOT SDK" object_builder_sha256 "${SDX_AOT_RECEIPT_VALUES[object_builder_sha256]}" "$(sha256_file "$expected_object_builder")" || return 1
     require_receipt_value "SDX AOT SDK" linker_script_sha256 "${SDX_AOT_RECEIPT_VALUES[linker_script_sha256]}" "$(sha256_file "$expected_linker_script")" || return 1
   fi
@@ -798,13 +843,11 @@ verify_sdx_aot_sdk_receipt() {
     return 1
   fi
   [[ "${SDX_AOT_RECEIPT_VALUES[libsdx_sha256]}" == "$(sha256_file "$SDX_LLM_JNI_DIR/libsdx_llm.so")" &&
-     "${SDX_AOT_RECEIPT_VALUES[libjnisdx_sha256]}" == "$(sha256_file "$SDX_LLM_JNI_DIR/libjnisdx_llm.so")" &&
      "${SDX_AOT_RECEIPT_VALUES[libjnijavacpp_sha256]}" == "$(sha256_file "$SDX_LLM_JNI_DIR/libjnijavacpp.so")" &&
      "${SDX_AOT_RECEIPT_VALUES[classpath_manifest_sha256]}" == "$(sha256_file "$classpath_manifest")" &&
      "${SDX_AOT_RECEIPT_VALUES[base_sdk_native_sha256]}" == "$(sha256_file "$base_native_bytes")" &&
      "${SDX_AOT_RECEIPT_VALUES[jnijavacpp_source_sha256]}" == "$(sha256_file "$generated_javacpp")" &&
      "${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" == "$(sha256_file "$staged_javacpp_lifecycle_bridge")" &&
-     "${SDX_AOT_RECEIPT_VALUES[jnisdx_source_sha256]}" == "$(sha256_file "$generated_sdx")" &&
      "${SDX_AOT_RECEIPT_VALUES[native_manifest_sha256]}" == "$(sha256_file "$native_manifest")" &&
      "${SDX_AOT_RECEIPT_VALUES[sdk_native_bytes_sha256]}" == "$(sha256_file "$native_bytes")" ]] || {
     echo "SDX AOT SDK bytes changed after receipt creation" >&2
@@ -869,11 +912,9 @@ verify_sdx_aot_sdk_receipt() {
       "ndk_revision_sha256=${SDX_AOT_RECEIPT_VALUES[ndk_revision_sha256]}" \
       "graalvm_version_sha256=${SDX_AOT_RECEIPT_VALUES[graalvm_version_sha256]}" \
       "libsdx_sha256=${SDX_AOT_RECEIPT_VALUES[libsdx_sha256]}" \
-      "libjnisdx_sha256=${SDX_AOT_RECEIPT_VALUES[libjnisdx_sha256]}" \
       "libjnijavacpp_sha256=${SDX_AOT_RECEIPT_VALUES[libjnijavacpp_sha256]}" \
       "jnijavacpp_source_sha256=${SDX_AOT_RECEIPT_VALUES[jnijavacpp_source_sha256]}" \
       "javacpp_lifecycle_source_sha256=${SDX_AOT_RECEIPT_VALUES[javacpp_lifecycle_source_sha256]}" \
-      "jnisdx_source_sha256=${SDX_AOT_RECEIPT_VALUES[jnisdx_source_sha256]}" \
       "native_manifest_sha256=${SDX_AOT_RECEIPT_VALUES[native_manifest_sha256]}" \
       "sdk_native_bytes_sha256=${SDX_AOT_RECEIPT_VALUES[sdk_native_bytes_sha256]}" |
       sha256sum | cut -d ' ' -f 1
@@ -1418,9 +1459,8 @@ SDX_NATIVE_MANIFEST="$SDX_LLM_SDK/metadata/cmake-owned-native-libraries.txt"
   echo "Build it explicitly with nd4j/sdx-aot -Pandroid-aot -Dbackend.artifactId=<importer-backend>, or pass --sdx-llm-sdk." >&2
   exit 1
 }
-[[ -s "$SDX_LLM_JNI_DIR/libjnisdx_llm.so" ]] || {
-  echo "DL4J Android SDX direct JNI transport not found: $SDX_LLM_JNI_DIR/libjnisdx_llm.so" >&2
-  echo "Rebuild nd4j/sdx-aot with the explicit android-aot profile." >&2
+[[ ! -e "$SDX_LLM_JNI_DIR/libjnisdx_llm.so" ]] || {
+  echo "DL4J Android SDX SDK still contains the Kompile-owned JNI transport" >&2
   exit 1
 }
 [[ -s "$SDX_LLM_SDK/metadata/build.properties" ]] || {
@@ -1548,8 +1588,9 @@ done <"$SDX_NATIVE_MANIFEST"
   echo "libsdx_llm.so was not staged into the APK JNI directory" >&2
   exit 1
 }
+build_sdx_android_jni_bridge || exit 1
 [[ -s "$JNI_OUTPUT_DIR/libjnisdx_llm.so" ]] || {
-  echo "libjnisdx_llm.so was not staged into the APK JNI directory" >&2
+  echo "Kompile-owned libjnisdx_llm.so was not built into the APK JNI directory" >&2
   exit 1
 }
 

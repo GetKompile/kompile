@@ -290,6 +290,10 @@ class GraphExtractionOrchestratorDecomposedSeamTest {
 
         assertFalse(GraphExtractionOrchestrator.ontologyUpdatesAllowed(lenient, established));
         assertTrue(GraphExtractionOrchestrator.ontologyUpdatesAllowed(lenient, null));
+        assertEquals(SchemaEnforcementMode.STRICT,
+                GraphExtractionOrchestrator.effectiveSchemaMode(lenient, established));
+        assertEquals(SchemaEnforcementMode.LENIENT,
+                GraphExtractionOrchestrator.effectiveSchemaMode(lenient, null));
     }
 
     @Test

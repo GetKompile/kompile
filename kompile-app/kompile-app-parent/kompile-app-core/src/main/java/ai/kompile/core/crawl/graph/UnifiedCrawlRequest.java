@@ -107,7 +107,7 @@ public class UnifiedCrawlRequest {
     @Builder.Default
     private List<String> retryDocumentKeys = new ArrayList<>();
 
-    /** Maximum number of validation retries per document before marking as permanently failed */
+    /** Maximum validation-repair retries per model unit (schema batch, document, or chunk group). */
     @Builder.Default
     private int maxValidationRetries = 2;
 

@@ -140,6 +140,7 @@ fun SettingsScreen(
     val modelPreparationOptions by vm.modelPreparationOptions.collectAsState()
     val localModelOptimizationState by vm.localModelOptimizationState.collectAsState()
     val localModelSources by vm.localModelSources.collectAsState()
+    val optimizedModelStorage by vm.optimizedModelStorage.collectAsState()
     val huggingFaceBusy = huggingFaceImportState is HuggingFaceImportUiState.Working ||
         huggingFaceImportState is HuggingFaceImportUiState.Retrying
     var importError by remember { mutableStateOf<String?>(null) }
@@ -147,6 +148,7 @@ fun SettingsScreen(
     var importNotice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var dspShareInProgress by remember { mutableStateOf(false) }
+    var dspClearInProgress by remember { mutableStateOf(false) }
     var pendingHuggingFaceStart by remember { mutableStateOf<(() -> Boolean)?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -195,7 +197,12 @@ fun SettingsScreen(
         ) {
             refreshSelectionFromPrefs()
             vm.refreshLocalModelSources()
+            vm.refreshOptimizedModelStorage()
         }
+    }
+
+    LaunchedEffect(Unit) {
+        vm.refreshOptimizedModelStorage()
     }
 
     // SAF launchers copy large assets on Dispatchers.IO; project archives may be gigabytes.
@@ -624,6 +631,94 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
+                        text = "Models stored on this phone",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        text = "Total ${formatModelBytes(optimizedModelStorage.totalModelBytes)} · " +
+                            "optimized ${formatModelBytes(optimizedModelStorage.optimizedCacheBytes)} · " +
+                            "retained originals ${formatModelBytes(optimizedModelStorage.retainedModelBytes)} · " +
+                            "device cache ${formatModelBytes(optimizedModelStorage.deviceCompilationBytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (optimizedModelStorage.invalidCacheEntries > 0) {
+                        Text(
+                            text = "${optimizedModelStorage.invalidCacheEntries} incomplete or invalid optimized cache " +
+                                "${if (optimizedModelStorage.invalidCacheEntries == 1) "entry was" else "entries were"} excluded.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    if (optimizedModelStorage.entries.isEmpty()) {
+                        Text(
+                            text = "No reusable optimized models were found for this accelerator.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        optimizedModelStorage.entries.forEach { cached ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = settingsCardColors(),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = cached.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = cached.profileLabel + " · " + cached.targetProfile,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = "Canonical ${formatModelBytes(cached.canonicalBytes)} + " +
+                                            "compiled ${formatModelBytes(cached.compiledObjectBytes)} · " +
+                                            cached.compileKey.take(12),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (cached.active) {
+                                        Text(
+                                            text = "Active model",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    clearImportError()
+                                                    importNotice = null
+                                                    val result = vm.activateCachedOptimizedModel(cached.compileKey)
+                                                    refreshSelectionFromPrefs()
+                                                    result.onSuccess {
+                                                        importNotice = "Reused ${cached.displayName} without reconversion."
+                                                    }.exceptionOrNull()?.let { failure ->
+                                                        importError = failure.message
+                                                            ?: "The optimized model could not be reused."
+                                                        importErrorStackTrace = failure.stackTraceToString()
+                                                    }
+                                                }
+                                            },
+                                            enabled = !importBlocked && !huggingFaceBusy,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Reuse optimized model")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
                         text = "Optimize local model",
                         style = MaterialTheme.typography.labelLarge
                     )
@@ -939,7 +1034,7 @@ fun SettingsScreen(
                     }
                     OutlinedButton(
                         onClick = {
-                            if (!dspShareInProgress) {
+                            if (!dspShareInProgress && !dspClearInProgress) {
                                 dspShareInProgress = true
                                 scope.launch {
                                     try {
@@ -997,7 +1092,7 @@ fun SettingsScreen(
                                 }
                             }
                         },
-                        enabled = !dspShareInProgress,
+                        enabled = !dspShareInProgress && !dspClearInProgress,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("share_dsp_diagnostics_trace")
@@ -1010,8 +1105,55 @@ fun SettingsScreen(
                             }
                         )
                     }
+                    OutlinedButton(
+                        onClick = {
+                            if (!dspShareInProgress && !dspClearInProgress) {
+                                dspClearInProgress = true
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            DspDiagnosticsTraceLog(context).clearAll()
+                                        }
+                                        Toast.makeText(
+                                            context,
+                                            "DSP diagnostics cleared.",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Throwable) {
+                                        Log.e(
+                                            "DspDiagnosticsClear",
+                                            "Unable to clear DSP diagnostics",
+                                            failure,
+                                        )
+                                        Toast.makeText(
+                                            context,
+                                            "Unable to clear DSP diagnostics. Try again when model work is idle.",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    } finally {
+                                        dspClearInProgress = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !dspShareInProgress && !dspClearInProgress &&
+                            !lifecycleBusy && modelSmokeState !is ModelSmokeUiState.Running,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("clear_dsp_diagnostics_trace")
+                    ) {
+                        Text(
+                            if (dspClearInProgress) {
+                                "Clearing DSP diagnostics…"
+                            } else {
+                                "Clear DSP diagnostics files"
+                            }
+                        )
+                    }
                     Text(
-                        text = "Both traces are retained in app-private storage with three rotating backups. DSP diagnostics are streamed into a shareable file without loading the report into memory. Select DSP diagnostics in Model optimization before preparing or decoding to populate the deep report.",
+                        text = "Both traces are retained in app-private storage with three rotating backups. DSP diagnostics are streamed into a shareable file without loading the report into memory. Clear DSP diagnostics files removes the active trace, backups, and prior share files. Select DSP diagnostics in Model optimization before preparing or decoding to populate the deep report.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1220,4 +1362,14 @@ private fun huggingFaceCandidateLabel(candidate: HuggingFaceGgmlResolver.Candida
         }
     }
     return candidate.path + if (details.isEmpty()) "" else " — ${details.joinToString(" · ")}"
+}
+
+private fun formatModelBytes(bytes: Long): String {
+    val gib = 1024.0 * 1024.0 * 1024.0
+    val mib = 1024.0 * 1024.0
+    return if (bytes >= gib) {
+        "%.2f GiB".format(bytes / gib)
+    } else {
+        "%.1f MiB".format(bytes / mib)
+    }
 }

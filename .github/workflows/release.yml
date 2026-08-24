@@ -238,13 +238,11 @@ jobs:
             -DnewVersion="${VERSION}" \
             -DgenerateBackupPoms=false
 
-      - name: Build CLI native image
+      - name: Install CLI Java reactor
         if: steps.platform.outputs.selected == 'true'
         shell: bash
-        # Install the upstream Java reactor first. Applying -Dkompile.dist to -am
-        # would activate every upstream native profile and AOT-build unrelated
-        # pipeline/service images before the CLI.
-        # Then activate the native profile only in cli-main, matching build-dist.sh.
+        # Applying -Dkompile.dist to -am would activate every upstream native
+        # profile and AOT-build unrelated pipeline/service images before the CLI.
         run: |
           mvn -B -ntp -DskipTests \
             -Dnd4j.version="${ND4J_VERSION}" \
@@ -253,6 +251,24 @@ jobs:
             -pl kompile-cli/kompile-cli-main -am \
             clean install
 
+      - name: Test Windows direct-provider model discovery
+        if: steps.platform.outputs.selected == 'true' && matrix.os_id == 'windows'
+        shell: bash
+        run: |
+          mvn -B -ntp -pl :kompile-cli-main \
+            -Dnd4j.version="${ND4J_VERSION}" \
+            -Ddl4j.repository.id="${DL4J_MAVEN_REPOSITORY_ID}" \
+            -Ddl4j.repository.url="${DL4J_MAVEN_REPOSITORY_URL}" \
+            -Dtest=CodexAppServerModelDiscoveryTest,ModelDiscoveryHttpTest \
+            -DexcludedGroups=live \
+            -Dsurefire.failIfNoSpecifiedTests=false \
+            test
+
+      - name: Build CLI native image
+        if: steps.platform.outputs.selected == 'true'
+        shell: bash
+        # Activate the native profile only in cli-main, matching build-dist.sh.
+        run: |
           mvn -B -ntp -f kompile-cli/kompile-cli-main/pom.xml \
             -Dkompile.dist=true -Dnative.quickBuild=false -DskipTests \
             -Dnd4j.version="${ND4J_VERSION}" \

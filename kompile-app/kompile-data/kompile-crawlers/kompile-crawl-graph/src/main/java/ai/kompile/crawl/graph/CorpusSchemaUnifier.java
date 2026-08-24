@@ -45,7 +45,9 @@ final class CorpusSchemaUnifier {
     private static final String SCHEMA_NAME_PATTERN = "^[A-Z][A-Z0-9_]*$";
     private static final int MAX_MODEL_PASSAGES_PER_CALL = 8;
     private static final int MAX_MODEL_PASSAGE_CHARS = 1_024;
+    private static final int MIN_MODEL_PASSAGE_BOUNDARY_CHARS = 512;
     private static final int MAX_MODEL_TEXT_CHARS_PER_CALL = 6_144;
+    private static final int MAX_VALIDATION_FEEDBACK_CHARS = 1_000;
     private static final Logger log = LoggerFactory.getLogger(CorpusSchemaUnifier.class);
     private static final Map<String, Object> SCHEMA_TOOL_PARAMETERS = schemaToolParameters();
 
@@ -77,32 +79,54 @@ final class CorpusSchemaUnifier {
             return establishedSchema;
         }
 
-        boolean structured = dispatcher.hasStructuredChatBackend();
-        if (!structured && !dispatcher.hasLlmChat()) {
-            return establishedSchema;
+        if (!dispatcher.hasStructuredChatBackend()) {
+            throw new IllegalStateException(
+                    "Semantic corpus schema induction requires structured-chat tool support");
         }
 
         CrawlOntology ontology = new CrawlOntology(establishedSchema);
         List<String> failures = new ArrayList<>();
         List<Map<String, String>> batches = modelPassageBatches(passageTexts);
+        int maxValidationRetries = maxValidationRetries(job);
         for (int batchIndex = 0; batchIndex < batches.size(); batchIndex++) {
             try {
-                String prompt = CorpusSchemaPromptBuilder.build(
-                        batches.get(batchIndex), ontology.snapshot(), structured);
-                CrawlLlmDispatcher.LlmCallScope scope =
-                        schemaScope(job, corpusSnapshotId, batchIndex + 1);
-                CorpusSchemaResponseParser.ParseResult parsed = structured
-                        ? parseStructured(dispatcher.promptStructuredWithCapacityFallback(
-                                structuredRequest(prompt), TASK_TYPE, job, scope))
-                        : CorpusSchemaResponseParser.parse(
-                                dispatcher.promptWithCapacityFallback(prompt, TASK_TYPE, job, scope));
-                if (!parsed.valid()) {
-                    throw new IllegalStateException(String.join("; ", parsed.errors()));
-                }
+                String basePrompt = CorpusSchemaPromptBuilder.build(
+                        batches.get(batchIndex), ontology.snapshot(), true);
+                String validationErrors = null;
+                boolean batchSucceeded = false;
+                for (int attempt = 1; attempt <= maxValidationRetries + 1; attempt++) {
+                    String prompt = attempt == 1
+                            ? basePrompt
+                            : schemaRepairPrompt(
+                                    basePrompt, validationErrors, attempt, maxValidationRetries + 1);
+                    CrawlLlmDispatcher.LlmCallScope scope = schemaScope(
+                            job, corpusSnapshotId, batchIndex + 1, attempt);
+                    CorpusSchemaResponseParser.ParseResult parsed = parseStructured(
+                            dispatcher.promptStructuredWithCapacityFallback(
+                                    structuredRequest(prompt), TASK_TYPE, job, scope));
+                    if (!parsed.valid()) {
+                        validationErrors = conciseValidationErrors(parsed.errors());
+                    } else {
+                        CrawlOntology.UpdateResult update = ontology.update(parsed.schema());
+                        if (update.valid()) {
+                            batchSucceeded = true;
+                            break;
+                        }
+                        validationErrors = conciseValidationErrors(update.errors());
+                    }
 
-                CrawlOntology.UpdateResult update = ontology.update(parsed.schema());
-                if (!update.valid()) {
-                    throw new IllegalStateException(String.join("; ", update.errors()));
+                    if (attempt <= maxValidationRetries) {
+                        log.warn(
+                                "[Job {}] Corpus schema validation failed for snapshot {} batch {}/{} "
+                                        + "attempt {}/{}; retrying with validator feedback: {}",
+                                job.getJobId(), corpusSnapshotId, batchIndex + 1, batches.size(),
+                                attempt, maxValidationRetries + 1, validationErrors);
+                    }
+                }
+                if (!batchSucceeded) {
+                    throw new IllegalStateException(validationErrors == null
+                            ? "Corpus schema validation failed without diagnostics"
+                            : validationErrors);
                 }
             } catch (RuntimeException modelFailure) {
                 failures.add("batch " + (batchIndex + 1) + ": " + conciseMessage(modelFailure));
@@ -119,14 +143,9 @@ final class CorpusSchemaUnifier {
                     "Semantic corpus schema induction failed for snapshot "
                             + corpusSnapshotId + ": " + String.join("; ", failures));
         }
-        GraphSchema unified = ontology.snapshot();
-        if (hasSchemaContent(unified)) {
-            return unified;
-        }
-        // An empty overlay is a valid semantic result: the corpus batch may support no reusable
-        // additions beyond the established ontology. Preserve the pre-existing null=no-schema
-        // contract instead of turning that answer into a crawl error.
-        return null;
+        // Preserve an explicit empty schema as a frozen result. Null means no authoritative schema
+        // exists and would re-enable ontology mutation during entity extraction.
+        return ontology.snapshot();
     }
 
     private static StructuredChatLanguageModel.Request structuredRequest(String prompt) {
@@ -161,14 +180,16 @@ final class CorpusSchemaUnifier {
                 return CorpusSchemaResponseParser.parse(call.arguments());
             }
         }
-
-        String raw = hasText(response.content()) ? response.content() : response.rawText();
-        CorpusSchemaResponseParser.ParseResult parsed = CorpusSchemaResponseParser.parse(raw);
-        if (parsed.valid() || response.parseErrors().isEmpty()) {
-            return parsed;
-        }
-
-        List<String> errors = new java.util.ArrayList<>(parsed.errors());
+        List<String> errors = new java.util.ArrayList<>();
+        List<String> returnedTools = response.toolCalls().stream()
+                .filter(java.util.Objects::nonNull)
+                .map(StructuredChatLanguageModel.ToolCall::name)
+                .filter(CorpusSchemaUnifier::hasText)
+                .toList();
+        errors.add(returnedTools.isEmpty()
+                ? "[SCHEMA_TOOL_CALL] Structured response did not call submit_corpus_schema"
+                : "[SCHEMA_TOOL_CALL] Structured response called the wrong tool(s): "
+                        + returnedTools);
         response.parseErrors().stream()
                 .filter(CorpusSchemaUnifier::hasText)
                 .map(error -> "[SCHEMA_TOOL_CALL] " + error)
@@ -177,19 +198,49 @@ final class CorpusSchemaUnifier {
     }
 
     private static CrawlLlmDispatcher.LlmCallScope schemaScope(
-            UnifiedCrawlJob job, String corpusSnapshotId, int batchIndex) {
+            UnifiedCrawlJob job, String corpusSnapshotId, int batchIndex, int attempt) {
         String jobId = hasText(job.getJobId()) ? job.getJobId() : "crawl";
+        String taskId = jobId + ":corpus-schema:" + batchIndex
+                + (attempt > 1 ? ":attempt:" + attempt : "");
         return new CrawlLlmDispatcher.LlmCallScope(
                 "SCHEMA_PREPASS",
                 "corpus-schema-" + batchIndex,
-                batchIndex,
-                jobId + ":corpus-schema:" + batchIndex,
+                attempt,
+                taskId,
                 null,
                 null,
                 corpusSnapshotId,
                 null,
                 0,
                 0);
+    }
+
+    private static int maxValidationRetries(UnifiedCrawlJob job) {
+        return job == null || job.getRequest() == null
+                ? 0
+                : Math.max(0, job.getRequest().getMaxValidationRetries());
+    }
+
+    private static String schemaRepairPrompt(
+            String basePrompt, String validationErrors, int attempt, int totalAttempts) {
+        return basePrompt
+                + "\n\nSCHEMA REPAIR REQUIRED (attempt " + attempt + " of " + totalAttempts + ")\n"
+                + "The previous submit_corpus_schema call failed validation:\n"
+                + (hasText(validationErrors) ? validationErrors : "Unknown schema validation error")
+                + "\nReturn one complete corrected submit_corpus_schema call. Do not return a patch. "
+                + "Every pattern endpoint must appear in nodeTypes or the existing schema, and every "
+                + "pattern relationship must appear in relationshipTypes or the existing schema.\n";
+    }
+
+    private static String conciseValidationErrors(List<String> errors) {
+        String feedback = errors == null ? "" : String.join("; ", errors);
+        String compact = feedback.replace('\n', ' ').trim();
+        if (compact.isEmpty()) {
+            return "Schema validation failed without diagnostics";
+        }
+        return compact.length() > MAX_VALIDATION_FEEDBACK_CHARS
+                ? compact.substring(0, MAX_VALIDATION_FEEDBACK_CHARS)
+                : compact;
     }
 
     static List<Map<String, String>> modelPassageBatches(Map<String, String> passageTexts) {
@@ -205,8 +256,9 @@ final class CorpusSchemaUnifier {
             }
             String text = passage.getValue();
             int fragment = 0;
-            for (int offset = 0; offset < text.length(); offset += MAX_MODEL_PASSAGE_CHARS) {
-                int end = Math.min(text.length(), offset + MAX_MODEL_PASSAGE_CHARS);
+            int offset = 0;
+            while (offset < text.length()) {
+                int end = semanticFragmentEnd(text, offset);
                 String value = text.substring(offset, end);
                 if (!current.isEmpty()
                         && (current.size() >= MAX_MODEL_PASSAGES_PER_CALL
@@ -219,6 +271,7 @@ final class CorpusSchemaUnifier {
                 String key = passage.getKey() + "#schema-" + (++fragment);
                 current.put(key, value);
                 currentChars += value.length();
+                offset = end;
             }
         }
         if (!current.isEmpty()) {
@@ -226,6 +279,30 @@ final class CorpusSchemaUnifier {
                     new LinkedHashMap<>(current)));
         }
         return List.copyOf(batches);
+    }
+
+    private static int semanticFragmentEnd(String text, int offset) {
+        int hardEnd = Math.min(text.length(), offset + MAX_MODEL_PASSAGE_CHARS);
+        if (hardEnd >= text.length()) {
+            return text.length();
+        }
+
+        int minimumBoundary = Math.min(hardEnd, offset + MIN_MODEL_PASSAGE_BOUNDARY_CHARS);
+        for (int index = hardEnd - 1; index >= minimumBoundary; index--) {
+            char current = text.charAt(index);
+            if (current == '\n' || current == '.' || current == '!' || current == '?'
+                    || current == ';' || current == ':') {
+                return index + 1;
+            }
+        }
+
+        int end = hardEnd;
+        if (Character.isHighSurrogate(text.charAt(end - 1))
+                && end < text.length()
+                && Character.isLowSurrogate(text.charAt(end))) {
+            end--;
+        }
+        return end;
     }
 
     private static Map<String, Object> schemaToolParameters() {
@@ -277,14 +354,6 @@ final class CorpusSchemaUnifier {
         schema.put("required", required);
         schema.put("additionalProperties", false);
         return Map.copyOf(schema);
-    }
-
-    private static boolean hasSchemaContent(GraphSchema schema) {
-        return schema != null
-                && ((schema.getNodeTypes() != null && !schema.getNodeTypes().isEmpty())
-                || (schema.getRelationshipTypes() != null
-                        && !schema.getRelationshipTypes().isEmpty())
-                || (schema.getPatterns() != null && !schema.getPatterns().isEmpty()));
     }
 
     private static String conciseMessage(Throwable failure) {

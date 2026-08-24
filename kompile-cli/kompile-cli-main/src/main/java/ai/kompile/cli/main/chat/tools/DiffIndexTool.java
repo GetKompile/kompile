@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.tools;
 import ai.kompile.app.services.diffindex.DiffIndexEntry;
 import ai.kompile.app.services.diffindex.DiffIndexService;
 import ai.kompile.cli.common.util.JsonUtils;
+import ai.kompile.project.KompileProjectStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -30,6 +31,7 @@ import java.net.URLEncoder;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.HashMap;
@@ -37,6 +39,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * Read-only MCP bridge to the application's diff index.
@@ -53,10 +57,13 @@ public class DiffIndexTool implements CliTool {
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
     private static final int SNIPPET_CHARS = 600;
+    private static final Path LOCAL_INDEX_PATH =
+            Path.of(".kompile", "agent-state", "diff-index");
     private static final Set<String> SORT_FIELDS = Set.of(
             "timestamp", "file_path", "project", "agent", "source",
             "lines_added", "lines_removed", "total_changes");
     private static final Set<String> SORT_DIRECTIONS = Set.of("asc", "desc");
+    private static final Set<String> SCOPES = Set.of("project", "global");
 
     private final ObjectMapper objectMapper;
     private final BackendGateway backend;
@@ -82,14 +89,17 @@ public class DiffIndexTool implements CliTool {
         return "Search historical file edits mined from Claude, Codex, OpenCode, Gemini, "
                 + "and other coding-agent transcripts. Unlike grep (current file content) and "
                 + "file_activity (path-level notifications), this queries old text, new text, "
-                + "and unified diffs. Actions: 'search' (content/path/project/agent/source/time "
+                + "and unified diffs. Local mode uses the current directory project and stores its "
+                + "index under that project; pass scope='global' only for cross-project history. "
+                + "Actions: 'search' (content/path/project/agent/source/time "
                 + "filters plus configurable sorting), 'get' (full edit by id), 'projects', 'agents', 'sessions', "
                 + "'session' (all edits in one session), and 'stats'.";
     }
 
     @Override
     public String compactHint() {
-        return "Historical edit search. action=search supports filters plus sort_by/sort_dir; "
+        return "Historical edit search scoped to the current directory project by default; "
+                + "use scope=global only for cross-project history. action=search supports filters plus sort_by/sort_dir; "
                 + "action=get with id returns the full old/new/unified diff.";
     }
 
@@ -105,6 +115,10 @@ public class DiffIndexTool implements CliTool {
         action.putArray("enum")
                 .add("search").add("get").add("projects").add("agents")
                 .add("sessions").add("session").add("stats");
+
+        ObjectNode scope = prop(props, "scope", "string",
+                "Local mode scope: project (default, current directory project) or global (cross-project user index)");
+        scope.putArray("enum").add("project").add("global");
 
         prop(props, "query", "string",
                 "search: case-insensitive substring in file path, old text, new text, or unified diff");
@@ -151,20 +165,30 @@ public class DiffIndexTool implements CliTool {
         context.checkPermission(permissionKey(), "Query historical file edits");
 
         String action = params.path("action").asText("").trim().toLowerCase();
+        String requestedScope = text(params, "scope");
+        requestedScope = requestedScope == null ? "project" : requestedScope.toLowerCase(Locale.ROOT);
+        if (!SCOPES.contains(requestedScope)) {
+            return ToolResult.error("scope must be 'project' or 'global'");
+        }
+        RequestScope scope = backend.isLocal()
+                ? ("global".equals(requestedScope)
+                    ? RequestScope.global()
+                    : RequestScope.project(resolveProjectRoot(context.getWorkingDirectory())))
+                : RequestScope.remote();
         return switch (action) {
-            case "search" -> search(params);
-            case "get" -> getEntry(params);
-            case "projects" -> getJson(API_ROOT + "/projects", "diff_index: projects", "projects");
-            case "agents" -> getJson(API_ROOT + "/agents", "diff_index: agents", "agents");
-            case "sessions" -> getJson(API_ROOT + "/sessions", "diff_index: sessions", "sessions");
-            case "session" -> getSession(params);
-            case "stats" -> getJson(API_ROOT + "/stats", "diff_index: stats", "stats");
+            case "search" -> search(params, scope);
+            case "get" -> getEntry(params, scope);
+            case "projects" -> getJson(API_ROOT + "/projects", "diff_index: projects", "projects", scope);
+            case "agents" -> getJson(API_ROOT + "/agents", "diff_index: agents", "agents", scope);
+            case "sessions" -> getJson(API_ROOT + "/sessions", "diff_index: sessions", "sessions", scope);
+            case "session" -> getSession(params, scope);
+            case "stats" -> getJson(API_ROOT + "/stats", "diff_index: stats", "stats", scope);
             default -> ToolResult.error("Unknown action: '" + action
                     + "'. Use search, get, projects, agents, sessions, session, or stats.");
         };
     }
 
-    private ToolResult search(JsonNode params) {
+    private ToolResult search(JsonNode params, RequestScope scope) {
         int limit = params.path("limit").asInt(DEFAULT_LIMIT);
         if (limit < 1 || limit > MAX_LIMIT) {
             return ToolResult.error("limit must be between 1 and " + MAX_LIMIT);
@@ -179,69 +203,72 @@ public class DiffIndexTool implements CliTool {
         }
 
         String path = buildSearchPath(params, limit);
-        BackendResponse response = request(path);
+        BackendResponse response = request(path, scope);
         if (response.error() != null) {
             return ToolResult.error(response.error());
         }
 
         try {
             JsonNode entries = objectMapper.readTree(response.body());
-            return formatEntries("diff_index: search", entries, params);
+            return formatEntries("diff_index: search", entries, params, scope);
         } catch (Exception e) {
             return ToolResult.error("Invalid diff-index search response: " + e.getMessage());
         }
     }
 
-    private ToolResult getEntry(JsonNode params) {
+    private ToolResult getEntry(JsonNode params, RequestScope scope) {
         String id = text(params, "id");
         if (id == null) {
             return ToolResult.error("id is required for get");
         }
-        return getJson(API_ROOT + "/entries/" + encode(id), "diff_index: " + id, "get");
+        return getJson(API_ROOT + "/entries/" + encode(id), "diff_index: " + id, "get", scope);
     }
 
-    private ToolResult getSession(JsonNode params) {
+    private ToolResult getSession(JsonNode params, RequestScope scope) {
         String sessionId = text(params, "session_id");
         if (sessionId == null) {
             return ToolResult.error("session_id is required for session");
         }
 
-        BackendResponse response = request(API_ROOT + "/sessions/" + encode(sessionId));
+        BackendResponse response = request(API_ROOT + "/sessions/" + encode(sessionId), scope);
         if (response.error() != null) {
             return ToolResult.error(response.error());
         }
         try {
             JsonNode entries = objectMapper.readTree(response.body());
-            return formatEntries("diff_index: session " + sessionId, entries, params);
+            return formatEntries("diff_index: session " + sessionId, entries, params, scope);
         } catch (Exception e) {
             return ToolResult.error("Invalid diff-index session response: " + e.getMessage());
         }
     }
 
-    private ToolResult getJson(String path, String title, String action) {
-        BackendResponse response = request(path);
+    private ToolResult getJson(String path, String title, String action, RequestScope scope) {
+        BackendResponse response = request(path, scope);
         if (response.error() != null) {
             return ToolResult.error(response.error());
         }
         try {
             JsonNode json = objectMapper.readTree(response.body());
             int count = json.isArray() ? json.size() : 1;
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("action", action);
+            metadata.put("count", count);
+            scope.addMetadata(metadata);
             return ToolResult.success(title,
-                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(json),
-                    Map.of("action", action, "count", count));
+                    objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(json), metadata);
         } catch (Exception e) {
             return ToolResult.error("Invalid diff-index response: " + e.getMessage());
         }
     }
 
-    private BackendResponse request(String path) {
+    private BackendResponse request(String path, RequestScope scope) {
         if (!backend.isAvailable(path)) {
             return BackendResponse.error("The explicitly configured remote diff-index backend is unavailable. "
                     + "Remove --url to use the in-process stdio index, or restore that remote endpoint.");
         }
 
         try {
-            BackendResponse response = backend.get(path, REQUEST_TIMEOUT);
+            BackendResponse response = backend.get(path, REQUEST_TIMEOUT, scope);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 return BackendResponse.error("Diff-index request failed (HTTP "
                         + response.statusCode() + "): " + extractError(response.body()));
@@ -272,7 +299,8 @@ public class DiffIndexTool implements CliTool {
         return path.toString();
     }
 
-    private ToolResult formatEntries(String title, JsonNode entries, JsonNode params) {
+    private ToolResult formatEntries(String title, JsonNode entries, JsonNode params,
+                                     RequestScope scope) {
         if (!entries.isArray()) {
             return ToolResult.error("Diff-index response was not an array of edit entries.");
         }
@@ -332,6 +360,7 @@ public class DiffIndexTool implements CliTool {
             metadata.put("sort_by", sortBy(params));
             metadata.put("sort_dir", sortDir(params));
         }
+        scope.addMetadata(metadata);
         return ToolResult.success(title, out.toString(), metadata);
     }
 
@@ -401,6 +430,12 @@ public class DiffIndexTool implements CliTool {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
+    private static Path resolveProjectRoot(Path workingDirectory) {
+        Path working = (workingDirectory == null ? Path.of(".") : workingDirectory)
+                .toAbsolutePath().normalize();
+        return new KompileProjectStore().findProjectRoot(working).orElse(working);
+    }
+
     private String extractError(String body) {
         if (body == null || body.isBlank()) {
             return "empty response";
@@ -432,7 +467,7 @@ public class DiffIndexTool implements CliTool {
             }
 
             @Override
-            public BackendResponse get(String path, Duration timeout) throws Exception {
+            public BackendResponse get(String path, Duration timeout, RequestScope scope) throws Exception {
                 HttpResponse<String> response = client.get(path, timeout);
                 return new BackendResponse(response.statusCode(), response.body(), null);
             }
@@ -442,16 +477,23 @@ public class DiffIndexTool implements CliTool {
     /** In-process adapter over the same persisted diff index used by the application UI. */
     static final class LocalBackendGateway implements BackendGateway {
         private final ObjectMapper mapper;
-        private final DiffIndexService service;
-        private boolean initialized;
+        private final Function<RequestScope, DiffIndexService> serviceFactory;
+        private final Map<String, ServiceState> services = new ConcurrentHashMap<>();
 
         LocalBackendGateway(ObjectMapper mapper) {
-            this(mapper, new DiffIndexService());
+            this(mapper, scope -> scope.isGlobal()
+                    ? new DiffIndexService()
+                    : new DiffIndexService(scope.projectRoot().resolve(LOCAL_INDEX_PATH)));
         }
 
         LocalBackendGateway(ObjectMapper mapper, DiffIndexService service) {
+            this(mapper, ignored -> service);
+        }
+
+        private LocalBackendGateway(ObjectMapper mapper,
+                                    Function<RequestScope, DiffIndexService> serviceFactory) {
             this.mapper = Objects.requireNonNull(mapper, "mapper");
-            this.service = Objects.requireNonNull(service, "service");
+            this.serviceFactory = Objects.requireNonNull(serviceFactory, "serviceFactory");
         }
 
         @Override
@@ -460,9 +502,17 @@ public class DiffIndexTool implements CliTool {
         }
 
         @Override
-        public synchronized BackendResponse get(String path, Duration timeout) {
+        public boolean isLocal() {
+            return true;
+        }
+
+        @Override
+        public synchronized BackendResponse get(String path, Duration timeout, RequestScope scope) {
             try {
-                ensureIndexed();
+                ServiceState state = services.computeIfAbsent(scope.cacheKey(),
+                        ignored -> new ServiceState(serviceFactory.apply(scope)));
+                ensureIndexed(state, scope);
+                DiffIndexService service = state.service;
                 URI uri = URI.create("http://stdio.local" + path);
                 String route = uri.getRawPath();
                 Map<String, String> query = query(uri.getRawQuery());
@@ -500,15 +550,19 @@ public class DiffIndexTool implements CliTool {
             }
         }
 
-        private void ensureIndexed() {
-            if (initialized) {
+        private void ensureIndexed(ServiceState state, RequestScope scope) {
+            if (state.initialized) {
                 return;
             }
-            service.init();
-            Thread refresh = new Thread(service::reindexAll, "kompile-diff-index-refresh");
+            state.service.init();
+            Runnable reindex = scope.isGlobal()
+                    ? state.service::reindexAll
+                    : () -> state.service.reindexAll(scope.projectRoot());
+            Thread refresh = new Thread(reindex,
+                    "kompile-diff-index-refresh-" + scope.cacheKey().replaceAll("[^A-Za-z0-9._-]", "-"));
             refresh.setDaemon(true);
             refresh.start();
-            initialized = true;
+            state.initialized = true;
         }
 
         private static Map<String, String> query(String rawQuery) {
@@ -532,12 +586,54 @@ public class DiffIndexTool implements CliTool {
         private static String decode(String value) {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
         }
+
+        private static final class ServiceState {
+            private final DiffIndexService service;
+            private boolean initialized;
+
+            private ServiceState(DiffIndexService service) {
+                this.service = Objects.requireNonNull(service, "service");
+            }
+        }
     }
 
     interface BackendGateway {
         boolean isAvailable(String path);
 
-        BackendResponse get(String path, Duration timeout) throws Exception;
+        default boolean isLocal() {
+            return false;
+        }
+
+        BackendResponse get(String path, Duration timeout, RequestScope scope) throws Exception;
+    }
+
+    record RequestScope(String name, Path projectRoot) {
+        static RequestScope project(Path projectRoot) {
+            return new RequestScope("project", projectRoot.toAbsolutePath().normalize());
+        }
+
+        static RequestScope global() {
+            return new RequestScope("global", null);
+        }
+
+        static RequestScope remote() {
+            return new RequestScope("remote", null);
+        }
+
+        boolean isGlobal() {
+            return "global".equals(name);
+        }
+
+        String cacheKey() {
+            return isGlobal() ? "global" : projectRoot.toString();
+        }
+
+        void addMetadata(Map<String, Object> metadata) {
+            metadata.put("scope", name);
+            if (projectRoot != null) {
+                metadata.put("project_root", projectRoot.toString());
+            }
+        }
     }
 
     record BackendResponse(int statusCode, String body, String error) {

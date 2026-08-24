@@ -77,6 +77,7 @@ class SdxModelPreparationProcessTest {
             sdxRuntimeWorkerMustRestartBeforeOpen(
                 SdxRuntimeWorkerState(
                     pid = 101,
+                    startTimeTicks = 1_001L,
                     ownsModelSession = false,
                     retiring = false
                 )
@@ -86,6 +87,7 @@ class SdxModelPreparationProcessTest {
             sdxRuntimeWorkerMustRestartBeforeOpen(
                 SdxRuntimeWorkerState(
                     pid = 102,
+                    startTimeTicks = 1_002L,
                     ownsModelSession = true,
                     retiring = false
                 )
@@ -96,6 +98,7 @@ class SdxModelPreparationProcessTest {
             sdxRuntimeWorkerMustRestartBeforeOpen(
                 SdxRuntimeWorkerState(
                     pid = 103,
+                    startTimeTicks = 1_003L,
                     ownsModelSession = false,
                     retiring = true
                 )
@@ -109,7 +112,8 @@ class SdxModelPreparationProcessTest {
         assertTrue(source.contains("putBoolean(KEY_HAS_ACTIVE_SESSION, activeSession != null)"))
         assertTrue(source.contains("putBoolean(KEY_WORKER_RETIRING, sdxRuntimeWorkerRetiring.get())"))
         assertTrue(source.contains("check(!sdxRuntimeWorkerRetiring.get())"))
-        assertTrue(source.contains("Process.killProcess(state.pid)"))
+        assertTrue(source.contains("connection.retireAndAwait(state.pid, state.startTimeTicks)"))
+        assertTrue(source.contains("if (sdxRuntimeProcessMatches(pid, startTimeTicks)) Process.killProcess(pid)"))
         assertTrue(source.contains("check(state.pid != Process.myPid())"))
         val unbindStart = source.indexOf("override fun onUnbind(intent: Intent?): Boolean")
         val unbindEnd = source.indexOf("override fun onDestroy()", unbindStart)
@@ -121,6 +125,62 @@ class SdxModelPreparationProcessTest {
         assertTrue("Worker retirement must be visible before queued process death", retire >= 0)
         assertTrue("Queued process death must follow the retirement marker", kill > retire)
         assertFalse(unbind.contains("postDelayed"))
+    }
+
+    @Test
+    fun runtimeCloseWaitsUntilTheRetiredWorkerPidIsGone() {
+        var checks = 0
+        var waits = 0
+
+        val exited = awaitSdxRuntimeWorkerExit(
+            pid = 1234,
+            startTimeTicks = 99L,
+            maxChecks = 4,
+            processMatches = { _, _ ->
+                checks++
+                checks < 3
+            },
+            waitBetweenChecks = { waits++ },
+        )
+
+        assertTrue(exited)
+        assertEquals(3, checks)
+        assertEquals(2, waits)
+
+        val source = File(
+            "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"
+        ).readText()
+        assertTrue(source.contains("connection.retireAndAwait(processId, processStartTimeTicks)"))
+        assertTrue(source.contains("sdxRuntimeWorkerRetiring.set(true)"))
+        assertTrue(source.contains("Process.killProcess(pid)"))
+    }
+
+    @Test
+    fun runtimeCloseRejectsAWorkerThatNeverExits() {
+        var waits = 0
+
+        val exited = awaitSdxRuntimeWorkerExit(
+            pid = 4321,
+            startTimeTicks = 100L,
+            maxChecks = 3,
+            processMatches = { _, _ -> true },
+            waitBetweenChecks = { waits++ },
+        )
+
+        assertFalse(exited)
+        assertEquals(2, waits)
+    }
+
+    @Test
+    fun runtimePidIdentityIncludesProcStartTimeToRejectPidReuse() {
+        val stat = "1234 (sdx worker thread) " +
+            (3..22).joinToString(" ") { field -> if (field == 22) "987654" else field.toString() }
+
+        assertEquals(
+            987654L,
+            sdxRuntimeProcessStartTimeTicks(1234) { stat },
+        )
+        assertEquals(null, sdxRuntimeProcessStartTimeTicks(1234) { "invalid" })
     }
 
     @Test
@@ -293,7 +353,7 @@ class SdxModelPreparationProcessTest {
         val resolver = File(
             "src/main/java/ai/kompile/chat/local/android/model/MobileModelArtifactResolver.kt"
         ).readText()
-        assertCheckpointBeforeCall(resolver, "SdxModelCache(cacheRoot.toPath()).resolve(", "RESOLVE_MODEL_ASSETS")
+        assertCheckpointBeforeCall(resolver, "SdxModelCache(cacheRoot.toPath()).resolveVerified(", "RESOLVE_MODEL_ASSETS")
         assertTrue(resolver.contains("NativeOperationJournal(applicationContext).begin"))
         assertTrue(resolver.contains("operation.failAndPersist(failure)"))
 
@@ -405,6 +465,11 @@ class SdxModelPreparationProcessTest {
         ).readText()
         assertTrue(runtimeEnvironment.contains("ND4J_DSP_NATIVE_DUMP_OUTPUTS"))
         assertTrue(runtimeEnvironment.contains("ND4J_DSP_DIAG_EXEC_LIMIT"))
+        assertTrue(
+            runtimeEnvironment.contains(
+                "Os.setenv(\"ND4J_DSP_DIAG_EXEC_LIMIT\", \"64\", true)"
+            )
+        )
         assertTrue(runtimeEnvironment.contains("effectiveDiagnosticMode.capturesDspTrace"))
 
         val androidAbi = File(
@@ -428,6 +493,22 @@ class SdxModelPreparationProcessTest {
         assertFalse(androidAbi.contains("com.sun.jna"))
         assertFalse(androidAbi.contains("Native.load"))
 
+        val androidJni = File("src/main/cpp/sdx_llm_android_jni.cpp").readText()
+        assertTrue(androidJni.contains("#include \"sdx_llm_c.h\""))
+        assertTrue(
+            androidJni.contains(
+                "Java_ai_kompile_chat_local_android_model_SdxAndroidLlmNative_nativeCreateRuntime"
+            )
+        )
+        assertTrue(androidJni.contains("sdxLlmGenerateStreaming("))
+        assertFalse(androidJni.contains("kompile_reasoning"))
+
+        val androidPackager = File("../tools/build-offline-accelerators.sh").readText()
+        assertTrue(androidPackager.contains("build_sdx_android_jni_bridge()"))
+        assertTrue(androidPackager.contains("Kompile-owned Android SDX JNI source"))
+        assertTrue(androidPackager.contains("SDX SDK still contains the Kompile-owned JNI transport"))
+        assertTrue(androidPackager.contains("-Wl,-soname,libjnisdx_llm.so"))
+
         val shrinkerRules = File("proguard-rules.pro").readText()
         assertTrue(shrinkerRules.contains("-keep class org.nd4j.dsp.model.SdxLlmNative { *; }"))
         assertTrue(shrinkerRules.contains("-checkdiscard class ai.kompile.chat.local.sdx.SdxLlmAbi"))
@@ -441,6 +522,17 @@ class SdxModelPreparationProcessTest {
         assertTrue(apkVerifier.contains("causal-lm-in-graph-state-v2"))
         assertTrue(apkVerifier.contains("io.recurrentStates"))
         assertTrue(apkVerifier.contains("duplicate recurrent state input"))
+        listOf(
+            "ANeuralNetworks_getDeviceCount",
+            "ANeuralNetworks_getDevice",
+            "ANeuralNetworksDevice_getName",
+            "ANeuralNetworksDevice_getType",
+            "ANeuralNetworksDevice_getFeatureLevel",
+            "ANeuralNetworksModel_getSupportedOperationsForDevices",
+            "ANeuralNetworksCompilation_createForDevices",
+        ).forEach { symbol -> assertTrue(apkVerifier.contains(symbol)) }
+        assertTrue(apkVerifier.contains("forbidden generic NNAPI compilation"))
+        assertTrue(apkVerifier.contains("google-edgetpu device fingerprint"))
 
         val runtimeProcess = File(
             "src/sdx/java/ai/kompile/chat/local/android/model/SdxRuntimeProcess.kt"

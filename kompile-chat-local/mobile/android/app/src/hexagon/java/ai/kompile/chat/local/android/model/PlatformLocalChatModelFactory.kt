@@ -13,11 +13,13 @@ internal object PlatformLocalChatModelFactory {
         maxTokens: Int,
         diagnosticModelPath: String = modelPath,
         diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
+        expectedCompileKey: String? = null,
     ): PlatformLocalChatSession = SdxPlatformChatSession.open(
         context = context,
         modelPath = modelPath,
         diagnosticModelPath = diagnosticModelPath,
         diagnosticMode = diagnosticMode,
+        expectedCompileKey = expectedCompileKey,
         routeName = "LOCAL_HEXAGON",
         modelIdPrefix = "sdx-hexagon"
     )

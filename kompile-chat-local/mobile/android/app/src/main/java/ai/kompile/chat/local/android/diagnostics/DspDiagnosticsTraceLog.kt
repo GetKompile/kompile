@@ -37,6 +37,11 @@ internal class DspDiagnosticsTraceLog(context: Context) {
         DspDiagnosticsExportPolicy.resetForChat(directory)
     }
 
+    /** Removes every current, rotated, and shareable DSP diagnostic artifact. */
+    fun clearAll() {
+        DspDiagnosticsExportPolicy.clearAll(directory)
+    }
+
     fun locationDescription(): String =
         "$LOG_RELATIVE_PATH (rotating backups .1 through .$MAX_BACKUP_FILES)"
 
@@ -101,16 +106,35 @@ internal object DspDiagnosticsExportPolicy {
 
     fun resetForChat(directory: File) {
         withCaptureLock(directory) {
-            (1..MAX_BACKUP_FILES).forEach { index ->
-                val backup = File(directory, "$ACTIVE_FILE.$index")
-                check(!backup.exists() || backup.delete()) {
-                    "Unable to remove stale DSP diagnostics backup: ${backup.absolutePath}"
+            resetCaptureLocked(directory)
+        }
+    }
+
+    fun clearAll(directory: File) = synchronized(processExportLock) {
+        withCaptureLock(directory) {
+            resetCaptureLocked(directory)
+            directory.listFiles { file ->
+                file.isFile && file.name.startsWith(SHARE_FILE_PREFIX) &&
+                    (file.name.endsWith(SHARE_FILE_SUFFIX) ||
+                        file.name.endsWith("$SHARE_FILE_SUFFIX.tmp"))
+            }.orEmpty().forEach { file ->
+                check(file.delete()) {
+                    "Unable to remove DSP diagnostics export: ${file.absolutePath}"
                 }
             }
-            FileOutputStream(File(directory, ACTIVE_FILE), false).use { output ->
-                output.flush()
-                output.fd.sync()
+        }
+    }
+
+    private fun resetCaptureLocked(directory: File) {
+        (1..MAX_BACKUP_FILES).forEach { index ->
+            val backup = File(directory, "$ACTIVE_FILE.$index")
+            check(!backup.exists() || backup.delete()) {
+                "Unable to remove stale DSP diagnostics backup: ${backup.absolutePath}"
             }
+        }
+        FileOutputStream(File(directory, ACTIVE_FILE), false).use { output ->
+            output.flush()
+            output.fd.sync()
         }
     }
 

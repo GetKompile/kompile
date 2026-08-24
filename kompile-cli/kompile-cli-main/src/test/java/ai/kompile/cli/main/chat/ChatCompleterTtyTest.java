@@ -21,6 +21,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -328,6 +329,91 @@ class ChatCompleterTtyTest {
             keyboardPipe.write(CR);
             keyboardPipe.flush();
             assertEquals(pasted + " tail", line.get(5, TimeUnit.SECONDS));
+        } finally {
+            queue.clear();
+            ChatCompleter.clearTerminalRef(reader);
+            tui.detachLineReader();
+            executor.shutdownNow();
+            tui.stop();
+            processes.close();
+        }
+    }
+
+    @Test
+    void sgrDragHighlightsTranscriptAndRightClickCopiesOrPastesBySurface() throws Exception {
+        BackgroundTaskManager tasks = new BackgroundTaskManager();
+        BackgroundProcessManager processes =
+                new BackgroundProcessManager("chat-completer-selection-copy-test");
+        MessageQueue queue = new MessageQueue(
+                "chat-completer-selection-copy-" + UUID.randomUUID());
+        queue.clear();
+        KompileTui tui = new KompileTui(
+                tasks, processes, queue, new TerminalRenderer(true));
+        StandardChatActivityPanel activityPanel = new StandardChatActivityPanel(
+                tasks, processes, tui.getStatusBar(), () -> 3);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicReference<String> copied = new AtomicReference<>();
+        try {
+            tui.attachLineReader(reader);
+            ChatCompleter.setTerminalRef(reader, terminal);
+            ChatCompleter.setContentRedraw(tui::redrawContentView);
+            ChatCompleter.enableAutoTrigger(reader);
+            ChatRepl.bindStandardChatActivityKeys(
+                    (LineReaderImpl) reader, queue, activityPanel, tui,
+                    ignored -> { }, () -> "paste me", copied::set);
+            tui.start(terminal);
+            tui.recordInScrollRegion("alpha");
+            tui.recordInScrollRegion("bravo");
+
+            Future<String> line = executor.submit(() -> reader.readLine("kompile > "));
+            Thread.sleep(75);
+            terminalOutput.reset();
+
+            // SGR Button1 press, drag, and release across the first two transcript rows.
+            keyboardPipe.write("\033[<0;1;4M".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write("\033[<32;5;5M".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.write("\033[<0;5;5m".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!"alpha\nbravo".equals(tui.getSelectedTranscriptText())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals("alpha\nbravo", tui.getSelectedTranscriptText());
+
+            VirtualTerminal selectedFrame = new VirtualTerminal(40, 120);
+            selectedFrame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(selectedFrame.getStyledRow(tui.scrollTop() - 1).contains(";7"),
+                    () -> "first selected row must use inverse video\n" + selectedFrame.screenDump());
+            assertTrue(selectedFrame.getStyledRow(tui.scrollTop()).contains(";7"),
+                    () -> "second selected row must use inverse video\n" + selectedFrame.screenDump());
+
+            // Button3 on the transcript copies the retained selection.
+            keyboardPipe.write("\033[<2;1;4M\033[<2;1;4m"
+                    .getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (copied.get() == null && System.nanoTime() < deadline) Thread.sleep(10);
+            assertEquals("alpha\nbravo", copied.get());
+            assertEquals("", reader.getBuffer().toString(),
+                    "copying transcript text must not modify the composer");
+
+            // Button3 on the input row keeps the existing managed paste behavior.
+            String inputPaste = String.format(Locale.ROOT,
+                    "\033[<2;1;%dM\033[<2;1;%dm", tui.scrollBottom(), tui.scrollBottom());
+            keyboardPipe.write(inputPaste.getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!"paste me".equals(reader.getBuffer().toString())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals("paste me", reader.getBuffer().toString());
+
+            keyboardPipe.write(CR);
+            keyboardPipe.flush();
+            assertEquals("paste me", line.get(5, TimeUnit.SECONDS));
         } finally {
             queue.clear();
             ChatCompleter.clearTerminalRef(reader);
@@ -667,6 +753,22 @@ class ChatCompleterTtyTest {
             assertTrue(tui.getContentScrollOffset() > 0,
                     "PageUp must move the managed transcript viewport");
 
+            keyboardPipe.write("\033[6~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, tui.getContentScrollOffset(),
+                    "PageDown must return a one-page scroll to the live tail");
+
+            keyboardPipe.write("\033[5~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (tui.getContentScrollOffset() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
             keyboardPipe.write("\033[1;5F".getBytes(StandardCharsets.UTF_8));
             keyboardPipe.flush();
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
@@ -695,8 +797,10 @@ class ChatCompleterTtyTest {
 
             VirtualTerminal frame = new VirtualTerminal(40, 120);
             frame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
-            assertTrue(frame.getRow(2).contains("[↓ Bottom]"),
-                    () -> "scrolled viewport must show the clickable bottom control\n"
+            int controlY = tui.scrollToBottomControlY();
+            int controlX = tui.scrollToBottomControlX();
+            assertTrue(frame.getRow(controlY).contains("[↓ Scroll to bottom]"),
+                    () -> "scrolled viewport must show the floating clickable notification\n"
                             + frame.screenDump());
             assertTrue(frame.getRow(tui.scrollBottom() - 1).contains("kompile >"),
                     () -> "the prompt must be repainted on the input row\n" + frame.screenDump());
@@ -705,22 +809,50 @@ class ChatCompleterTtyTest {
             assertEquals("kompile > ".length(), frame.getCursorCol(),
                     "the text cursor must be restored after the prompt");
 
+            int originalControlX = controlX;
             terminalOutput.reset();
-            // X10 Button1 press at zero-based x=2,y=2, inside [↓ Bottom].
-            keyboardPipe.write("\033[M ##".getBytes(StandardCharsets.UTF_8));
+            terminal.setSize(new Size(100, 40));
+            tui.handleResize();
+            // This fixture suppresses async frames; a real bound key drives the
+            // synchronous JLine redraw after the size change.
+            keyboardPipe.write("\033[5~".getBytes(StandardCharsets.UTF_8));
+            keyboardPipe.flush();
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terminalOutput.toString(StandardCharsets.UTF_8)
+                    .contains("[↓ Scroll to bottom]") && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            controlX = tui.scrollToBottomControlX();
+            controlY = tui.scrollToBottomControlY();
+            assertNotEquals(originalControlX, controlX,
+                    "the floating notification must recenter after a terminal resize");
+            VirtualTerminal resizedFrame = new VirtualTerminal(40, 100);
+            resizedFrame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
+            assertTrue(resizedFrame.getRow(controlY).contains("[↓ Scroll to bottom]"),
+                    () -> "resized viewport must repaint the moving notification\n"
+                            + resizedFrame.screenDump());
+
+            terminalOutput.reset();
+            String floatingControlClick = String.format(Locale.ROOT,
+                    "\033[<0;%d;%dM\033[<0;%d;%dm",
+                    controlX + 1, controlY + 1, controlX + 1, controlY + 1);
+            keyboardPipe.write(floatingControlClick.getBytes(StandardCharsets.UTF_8));
             keyboardPipe.flush();
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (tui.getContentScrollOffset() != 0 && System.nanoTime() < deadline) {
                 Thread.sleep(10);
             }
             assertEquals(0, tui.getContentScrollOffset(),
-                    "clicking the separator control must return to the live tail");
+                    "clicking the floating notification must return to the live tail");
             assertTrue(tui.getVisibleContentLines().contains("retained line 80"));
 
-            VirtualTerminal bottomFrame = new VirtualTerminal(40, 120);
+            VirtualTerminal bottomFrame = new VirtualTerminal(40, 100);
             bottomFrame.feed(terminalOutput.toString(StandardCharsets.UTF_8));
-            assertFalse(bottomFrame.getRow(2).contains("[↓ Bottom]"),
-                    () -> "control must disappear after reaching the live tail\n"
+            assertFalse(bottomFrame.getRow(controlY).contains("[↓ Scroll to bottom]"),
+                    () -> "floating notification must disappear after reaching the live tail\n"
+                            + bottomFrame.screenDump());
+            assertTrue(bottomFrame.getRow(controlY).contains("retained line 80"),
+                    () -> "hiding the notification must restore the transcript row beneath it\n"
                             + bottomFrame.screenDump());
             assertTrue(bottomFrame.getRow(tui.scrollBottom() - 1).contains("kompile >"),
                     () -> "click repaint must preserve the prompt row\n"

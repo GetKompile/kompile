@@ -67,8 +67,17 @@ public final class ModelDiscoveryHttp {
         ChatProvider descriptor = ChatProviderRegistry.find(provider);
         if (descriptor != null && !descriptor.modelDiscoveryRequiresBaseUrl()) {
             try {
+                ChatConfig authProbe = new ChatConfig(
+                        provider,
+                        descriptor.supportsApiKey() ? key : null,
+                        "model-discovery",
+                        null);
+                OAuthProviderFlow.RequestAuth auth = "openai-codex".equals(normalize(provider))
+                        ? authProbe.resolveRequestAuth()
+                        : null;
                 return descriptor.modelDiscoveryStrategy().discover(new ModelDiscovery.Context(
-                        provider, null, key, null, null, TIMEOUT));
+                        provider, null, descriptor.supportsApiKey() ? key : null,
+                        auth, null, TIMEOUT));
             } catch (RuntimeException error) {
                 return ModelDiscovery.Result.failure(
                         ModelDiscovery.Status.UNAVAILABLE,

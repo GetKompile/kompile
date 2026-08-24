@@ -1,5 +1,6 @@
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -103,23 +105,60 @@ class CodexAppServerModelDiscoveryTest {
                 "setlocal EnableExtensions DisableDelayedExpansion",
                 "if /I not \"%~1\"==\"app-server\" exit /b 7",
                 "set /p initialize=",
-                "echo {\"id\":1,\"result\":{}}",
+                "echo {\"id\":1,\"result\":{\"userAgent\":\"fixture-codex/1.2.3\"}}",
                 "set /p initialized=",
+                "set /p login=",
+                "echo {\"id\":2,\"result\":{\"type\":\"chatgptAuthTokens\"}}",
+                "set /p accountRead=",
+                "echo {\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"planType\":\"plus\"}}}",
                 "set /p modelList=",
-                "echo {\"id\":2,\"result\":{\"data\":[{\"id\":\"dynamic-windows-model\"}],\"nextCursor\":null}}",
+                "echo {\"id\":4,\"result\":{\"data\":[{\"id\":\"dynamic-windows-model\"}],\"nextCursor\":null}}",
                 ""), StandardCharsets.UTF_8);
 
         CodexAppServerModelDiscovery.LaunchSpec launch =
                 CodexAppServerModelDiscovery.appServerCommand(
                         shim.toString(), true, "", ".CMD", System.getenv("ComSpec"));
         ModelDiscovery.Result result = CodexAppServerModelDiscovery.discover(
-                new ModelDiscovery.Context(
-                        "openai-codex", null, null, null, null, Duration.ofSeconds(5)),
-                launch.command(), launch.environment());
+                oauthContext(Duration.ofSeconds(5)), launch.command(), launch.environment());
 
         assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
         assertEquals(List.of("dynamic-windows-model"), result.models().stream()
                 .map(LiveModelDiscovery.Model::id).toList());
+        assertTrue(result.message().contains("fixture-codex/1.2.3"));
+        assertTrue(result.message().contains("plan plus"));
+    }
+
+    @Test
+    void discoveryNeverFallsBackToAnIndependentCodexLogin() {
+        ModelDiscovery.Result result = CodexAppServerModelDiscovery.discover(
+                new ModelDiscovery.Context(
+                        "openai-codex", null, null, null, null, Duration.ofSeconds(1)),
+                List.of("a-command-that-must-not-run"));
+
+        assertEquals(ModelDiscovery.Status.AUTH_REQUIRED, result.status());
+        assertTrue(result.message().contains("selected Kompile OAuth credential"));
+    }
+
+    @Test
+    void subprocessDiagnosticsRedactCredentials() {
+        String diagnostic = CodexAppServerModelDiscovery.sanitizeDiagnostic(
+                "Authorization: Bearer secret-value access_token=headerheaderheaderhead."
+                        + "payloadpayloadpayloadpay.sigsignature refresh-token=refresh-secret");
+
+        assertFalse(diagnostic.contains("secret-value"));
+        assertFalse(diagnostic.contains("headerheader"));
+        assertFalse(diagnostic.contains("refresh-secret"));
+        assertTrue(diagnostic.contains("<redacted>"));
+    }
+
+    @Test
+    void bundledOrCachedCatalogDiagnosticsAreNotAcceptedAsLive() {
+        assertTrue(CodexAppServerModelDiscovery.usedBundledOrCachedFallback(List.of(
+                "ERROR failed to refresh available models: request failed")));
+        assertTrue(CodexAppServerModelDiscovery.usedBundledOrCachedFallback(List.of(
+                "models cache: using cached models for OnlineIfUncached")));
+        assertFalse(CodexAppServerModelDiscovery.usedBundledOrCachedFallback(List.of(
+                "models cache: cache miss, fetching remote models")));
     }
 
     @Test
@@ -153,12 +192,13 @@ class CodexAppServerModelDiscoveryTest {
     @Test
     @Tag("live")
     void installedCodexReturnsItsLiveCatalogAndThinkingCapabilities() {
-        ModelDiscovery.Result result = CodexAppServerModelDiscovery.discover(
-                new ModelDiscovery.Context(
-                        "openai-codex", null, null, null, null, Duration.ofSeconds(20)));
+        ModelDiscovery.Result result = ModelDiscoveryHttp.refreshResult(
+                "openai-codex", null, null);
         assumeFalse(result.status() == ModelDiscovery.Status.UNSUPPORTED
-                        && result.message().startsWith("Unable to start Codex app-server"),
+                        && result.message().contains("Codex executable was not found"),
                 "Codex is not installed in this environment");
+        assumeFalse(result.status() == ModelDiscovery.Status.AUTH_REQUIRED,
+                "A managed OpenAI subscription OAuth credential is not configured");
 
         assertEquals(ModelDiscovery.Status.SUCCESS, result.status(), result.message());
         assertFalse(result.models().isEmpty());
@@ -170,6 +210,15 @@ class CodexAppServerModelDiscoveryTest {
         assertTrue(withThinking.variants().contains(withThinking.defaultVariant()));
         assertEquals(CodexAppServerModelDiscovery.ATTEMPTED_RESOURCE,
                 result.attemptedEndpoints().get(0));
+    }
+
+    private static ModelDiscovery.Context oauthContext(Duration timeout) {
+        OAuthProviderFlow.RequestAuth auth = OAuthProviderFlow.RequestAuth.oauth(
+                "fixture-access-token",
+                "https://chatgpt.com/backend-api",
+                Map.of("chatgpt-account-id", "fixture-account"));
+        return new ModelDiscovery.Context(
+                "openai-codex", null, null, auth, null, timeout);
     }
 
 }

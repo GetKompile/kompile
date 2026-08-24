@@ -73,6 +73,11 @@ The application layer depends only on `ChatModel` and
 - Tensor G5 prepared `.sdz` uses the SDX JavaCPP LiteRT-LM session and Google's dispatch
   runtime.
 
+The ART-facing `libjnisdx_llm.so` transport is consumer code owned and compiled here from
+`app/src/main/cpp/sdx_llm_android_jni.cpp`. It links only to the immutable SDX
+`sdx_llm_c.h`/`libsdx_llm.so` contract. The DL4J SDX SDK does not contain Kompile package
+names, graph APIs, this JNI bridge, or any other application-specific artifact.
+
 JNA and `libjnidispatch` are intentionally packaged only for the one-time GGUF/GGML
 ingestion ABI; remote and legacy chat transports remain excluded, and
 `verify-offline-apk.sh` rejects their DEX classes. Streaming, stop tokens, cancellation,
@@ -103,7 +108,8 @@ Required inputs:
 - populated Gradle and Maven caches
 - the selected SDX provider AAR installed in the local Maven repository
 - the explicitly built DL4J `nd4j/sdx-aot/target/android-aot` ABI-v2 SDK for direct
-  GGUF/GGML execution; its `android-aot` profile is opt-in and never runs in a default build
+  GGUF/GGML execution; its `android-aot` profile is opt-in and never runs in a default build.
+  The SDK supplies `sdx_llm_c.h` and `libsdx_llm.so`; Kompile builds the ART JNI adapter.
 
 The graph AOT SDK is no longer a manually supplied prerequisite. Maven builds
 `kompile-graph-reasoning-local` with its Android profile, invokes the retained
@@ -160,7 +166,8 @@ the lower-level packager as `--sdx-llm-sdk` (or publish/consume the matching cla
 through the Maven lifecycle). That ND4J backend supplies GGUF/GGML-to-SDZ conversion; it
 never replaces the independently packaged SDX NNAPI/Vulkan/Hexagon execution provider. The
 packager requires `abi.version=2`, `direct.gguf=true`, and
-`jni/arm64-v8a/libsdx_llm.so`; a default DL4J build does not create this artifact.
+`jni/arm64-v8a/libsdx_llm.so`, and rejects an SDX SDK that contains the consumer-owned
+`libjnisdx_llm.so`; a default DL4J build does not create this artifact.
 
 ### 2. Build from the Kompile root reactor
 
@@ -241,8 +248,9 @@ interfaces populate these stable inputs:
 <work-root>/accelerator/tensor-g3/dist/sdx-runtime-android-arm64-tensor-g3.aar
 ```
 
-The checked-in Tensor G3 entry point invokes both zero-parameter producers,
-then builds, host-verifies, and publishes the APK. Keep this as one command: the
+The checked-in Tensor G3 entry point owns both producers, builds the Kompile graph
+and generic Native Image support closure first, passes those inputs explicitly to
+the SDX producer, then builds, host-verifies, and publishes the APK. Keep this as one command: the
 managed process runner gives separate commands separate `/tmp` namespaces, so a
 producer started independently may not be visible to a later packaging process.
 
@@ -265,7 +273,9 @@ provider producer also removes its active Maven quarantine on every exit, so a
 failed build cannot accumulate another abandoned native tree.
 
 For focused diagnostics, the underlying producer interfaces remain independently
-callable and publish the same canonical layouts:
+callable and publish the same canonical layouts. SDX AOT calls must provide
+`--object-builder`, `--reuse-jdk-libs`, and `--reuse-svm-libs`; only the Kompile
+entry point knows that its graph producer is one source for those generic inputs:
 
 ```bash
 nd4j/sdx-aot/src/main/android/build-android-sdx-sdk.sh

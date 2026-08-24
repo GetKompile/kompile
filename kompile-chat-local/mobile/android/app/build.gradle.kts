@@ -159,8 +159,10 @@ val sdxRequiredClasses = setOf(
     "org/nd4j/dsp/model/ResumableModelDownloader\$EventType.class",
     "org/nd4j/dsp/model/ResumableModelDownloader\$ProgressEvent.class",
     "org/nd4j/dsp/model/ResumableModelDownloader\$ProgressListener.class",
+    "org/nd4j/dsp/model/SdxCachedModel.class",
     "org/nd4j/dsp/model/SdxCompiledModel.class",
     "org/nd4j/dsp/model/SdxModelCache.class",
+    "org/nd4j/dsp/model/SdxModelCacheInventory.class",
     "org/nd4j/dsp/model/SdxTargetProfile.class",
     "org/nd4j/dsp/model/SdxTextModelAssets.class",
     "org/nd4j/dsp/runtime/SdxRuntime.class",
@@ -385,8 +387,8 @@ android {
  * Drops the host hardware probe ND4J pulls in behind the Kompile libraries.
  *
  * oshi-core discovers host CPUs and GPUs through JNA. The probe never runs on a device;
- * leaving it in place only adds dead host classes. Android uses the JavaCPP transport
- * packaged by the canonical SDX SDK and therefore carries no JNA runtime.
+ * leaving it in place only adds dead host classes. Android uses provider JavaCPP plus the
+ * Kompile-owned direct JNI adapter to the canonical SDX C ABI and therefore carries no JNA runtime.
  * kompile-graph-reasoning-local already declares the same host-probe exclusions.
  */
 fun ExternalModuleDependency.excludeHostHardwareProbe() {

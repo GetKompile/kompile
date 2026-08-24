@@ -730,12 +730,9 @@ class GraphExtractionOrchestrator {
                 throw new IllegalStateException(
                         "Unified-corpus ontology pre-pass requires CorpusSchemaUnifier");
             }
-            if (llmDispatcher == null
-                    || (!llmDispatcher.hasStructuredChatBackend()
-                    && !llmDispatcher.hasLlmChat()
-                    && !llmDispatcher.hasModelBackend(job))) {
+            if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
                 throw new IllegalStateException(
-                        "Unified-corpus ontology pre-pass requires a model backend");
+                        "Unified-corpus ontology pre-pass requires a structured-chat model backend");
             }
 
             CorpusSchemaCandidates.Inventory candidates =
@@ -765,136 +762,24 @@ class GraphExtractionOrchestrator {
             GraphSchema configuredSchema = parseConfiguredSchema(config);
             GraphSchema deterministicGraphSchema =
                     DeterministicGraphSchemaInferencer.infer(deterministicGraph);
-            ExplicitAssertionSchemaInferencer.Analysis explicitAssertions =
-                    ExplicitAssertionSchemaInferencer.analyze(passageTexts);
-            GraphSchema explicitAssertionSchema = explicitAssertions.schema();
-            GraphSchema establishedSchema = corpusSchemaUnifier.unify(
+            GraphSchema unified = corpusSchemaUnifier.unify(
                     passageTexts,
                     candidates,
                     configuredSchema,
                     deterministicGraphSchema,
                     job,
                     corpus.snapshotId(),
-                    null);
-            if (explicitAssertionSchema != null) {
-                establishedSchema = CrawlOntology.merge(establishedSchema, explicitAssertionSchema);
-            }
-
-            ModelSchemaDiscovery discovery = deriveSchemaFromModelGraphDiscovery(
-                    passageTexts, config, job, establishedSchema, explicitAssertions);
-            if (!discovery.acceptedDelta()) {
-                throw new IllegalStateException(
-                        "Unified-corpus ontology model pre-pass failed: production "
-                                + "submit_graph_delta produced no accepted delta");
-            }
-            log.info("[Job {}] Derived the corpus ontology through the production decomposed "
-                            + "graph-extraction path",
+                    llmDispatcher);
+            log.info("[Job {}] Derived and froze the corpus ontology through the dedicated "
+                            + "type-only schema pre-pass",
                     jobId);
-            GraphSchema unified = CrawlOntology.merge(establishedSchema, discovery.schema());
-            return hasSchemaDefinitions(unified) ? unified : null;
+            return unified;
         } catch (RuntimeException e) {
             String schemaError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             markSchemaPrepassFailure(job, schemaError);
             log.error("[Job {}] Unified-corpus ontology pre-pass failed: {}", jobId, schemaError, e);
             throw e;
         }
-    }
-
-    private record ModelSchemaDiscovery(GraphSchema schema, boolean acceptedDelta) {
-    }
-
-    private ModelSchemaDiscovery deriveSchemaFromModelGraphDiscovery(
-            Map<String, String> passageTexts,
-            GraphExtractionConfig sourceConfig,
-            UnifiedCrawlJob job,
-            GraphSchema establishedSchema,
-            ExplicitAssertionSchemaInferencer.Analysis explicitAssertions) {
-        if (llmDispatcher == null || !llmDispatcher.hasModelBackend(job)) {
-            return new ModelSchemaDiscovery(null, false);
-        }
-        int explicitEntityCount = explicitAssertions == null
-                ? 0 : explicitAssertions.explicitEntityCount();
-        int explicitRelationCount = explicitAssertions == null
-                ? 0 : explicitAssertions.explicitRelationCount();
-
-        GraphExtractionConfig discoveryConfig = GraphExtractionConfig.builder()
-                .llmProvider(sourceConfig == null ? null : sourceConfig.getLlmProvider())
-                .modelName(sourceConfig == null ? null : sourceConfig.getModelName())
-                .temperature(sourceConfig == null ? 0.0d : sourceConfig.getTemperature())
-                .maxTokens(sourceConfig == null ? 4096 : sourceConfig.getMaxTokens())
-                .standardizedSchema(establishedSchema)
-                .schemaMode(establishedSchema == null
-                        ? SchemaEnforcementMode.STRICT
-                        : SchemaEnforcementMode.LENIENT)
-                .extractionMode(ExtractionMode.DECOMPOSED)
-                .decomposedPromptTier(GraphExtractionConfig.DecomposedPromptTier.COMPACT)
-                .decomposedBoundNativeProposalArrays(explicitEntityCount > 0)
-                .decomposedEntityCandidateLimit(Math.max(0, explicitEntityCount))
-                .decomposedRelationCandidateLimit(Math.max(0, explicitRelationCount))
-                .admissionMode("LLM_ONLY")
-                .entityResolution(false)
-                .customPrompt("ONTOLOGY DISCOVERY PREPASS: submit one entity per exact name. "
-                        + "For 'X is a Y', use Y as X's one uppercase type token. For 'X VERB Y', "
-                        + "use VERB as one uppercase directed relation type. Fill every positional "
-                        + "proposal slot required by the native tool schema exactly once, then stop. "
-                        + "Never join types or put prose in a type.")
-                .build();
-        Graph modelDiscoveryGraph = Graph.builder()
-                .id("schema-discovery:" + (job == null ? "crawl" : job.getJobId()))
-                .name("Corpus schema model discovery graph")
-                .build();
-
-        List<Map<String, String>> batches = CorpusSchemaUnifier.modelPassageBatches(passageTexts);
-        boolean acceptedDelta = false;
-        for (int index = 0; index < batches.size(); index++) {
-            Map<String, String> batch = batches.get(index);
-            ExplicitAssertionSchemaInferencer.Analysis batchAssertions =
-                    ExplicitAssertionSchemaInferencer.analyze(batch);
-            StringBuilder source = new StringBuilder();
-            batch.forEach((chunkId, text) -> source
-                    .append("BEGIN SOURCE ").append(chunkId).append('\n')
-                    .append(text).append('\n')
-                    .append("END SOURCE\n"));
-            String id = "corpus-schema-discovery-" + (index + 1);
-            Document document = new Document(
-                    id,
-                    source.toString(),
-                    Map.of("sourcePath", id + ".txt", "schemaPrepass", true));
-            String json = extractViaDecomposedPasses(
-                    source.toString(),
-                    document,
-                    discoveryConfig,
-                    null,
-                    modelDiscoveryGraph,
-                    job,
-                    null,
-                    batchAssertions);
-            if (!hasText(json)) {
-                continue;
-            }
-            try {
-                var extraction = GraphExtractionValidator.fromJson(json);
-                Graph discovered = GraphExtractionValidator.toGraph(extraction, source.toString());
-                mergeIntoContext(discovered, modelDiscoveryGraph, discoveryConfig);
-                acceptedDelta = true;
-            } catch (Exception parseFailure) {
-                log.warn("[Job {}] Native graph schema-discovery batch {} was unusable: {}",
-                        job == null ? "?" : job.getJobId(), index + 1,
-                        parseFailure.getMessage() == null
-                                ? parseFailure.getClass().getSimpleName()
-                                : parseFailure.getMessage());
-            }
-        }
-        return new ModelSchemaDiscovery(
-                DeterministicGraphSchemaInferencer.infer(modelDiscoveryGraph), acceptedDelta);
-    }
-
-    private static boolean hasSchemaDefinitions(GraphSchema schema) {
-        return schema != null
-                && ((schema.getNodeTypes() != null && !schema.getNodeTypes().isEmpty())
-                || (schema.getRelationshipTypes() != null
-                        && !schema.getRelationshipTypes().isEmpty())
-                || (schema.getPatterns() != null && !schema.getPatterns().isEmpty()));
     }
 
     boolean shouldDeriveCorpusSchema(GraphExtractionConfig config) {
@@ -973,7 +858,8 @@ class GraphExtractionOrchestrator {
             memoryMonitor.waitForMemoryCapacity(job, "GRAPH_EXTRACTION");
             boolean failed;
             if (graphConstructor != null) {
-                failed = !extractSingleChunkViaConstructor(doc, config, targetGraph, job);
+                failed = !extractSingleChunkViaConstructor(
+                        doc, config, targetGraph, job, corpusSchemaOverride);
             } else {
                 InlineLlmExtractionOutcome outcome = extractGraphViaLlmDocument(
                         doc, 0, docs.size(), extractionPrompt, config,
@@ -991,17 +877,20 @@ class GraphExtractionOrchestrator {
     /**
      * Extract a single chunk through the GraphConstructor in isolation. Returns true on success.
      */
-    private boolean extractSingleChunkViaConstructor(Document doc, GraphExtractionConfig config,
-                                                     Graph targetGraph, UnifiedCrawlJob job) {
+    private boolean extractSingleChunkViaConstructor(
+            Document doc,
+            GraphExtractionConfig config,
+            Graph targetGraph,
+            UnifiedCrawlJob job,
+            GraphSchema corpusSchemaOverride) {
         // Guard: a blank chunk cannot yield entities and would throw in toRetrievedDoc.
         if (!hasExtractableText(doc)) {
             log.debug("[Job {}] Per-chunk constructor: skipping blank/empty chunk id={}",
                     job.getJobId(), doc != null ? doc.getId() : "(null)");
             return false;
         }
-        GraphSchema schema = buildGraphSchema(config);
-        SchemaEnforcementMode mode = config.getSchemaMode() != null
-                ? config.getSchemaMode() : SchemaEnforcementMode.LENIENT;
+        GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
+        SchemaEnforcementMode mode = effectiveSchemaMode(config, corpusSchemaOverride);
         List<RetrievedDoc> single = List.of(toRetrievedDoc(doc));
         AgentCallContext.setJobId(job.getJobId());
         try {
@@ -1272,9 +1161,7 @@ class GraphExtractionOrchestrator {
                                              ExecutorService extractExec,
                                              GraphSchema corpusSchemaOverride) {
         GraphSchema schema = buildGraphSchema(config, corpusSchemaOverride);
-        SchemaEnforcementMode mode = config.getSchemaMode() != null
-                ? config.getSchemaMode()
-                : SchemaEnforcementMode.LENIENT;
+        SchemaEnforcementMode mode = effectiveSchemaMode(config, corpusSchemaOverride);
 
         // Chunks that fail all batch retries this pass are returned for re-accumulation. docById maps
         // a failed RetrievedDoc back to its source Document (they share ids — see toRetrievedDoc).
@@ -3880,6 +3767,16 @@ class GraphExtractionOrchestrator {
             GraphExtractionConfig config, GraphSchema effectiveSchema) {
         return effectiveSchema == null
                 && (config == null || config.getSchemaMode() != SchemaEnforcementMode.STRICT);
+    }
+
+    static SchemaEnforcementMode effectiveSchemaMode(
+            GraphExtractionConfig config, GraphSchema corpusSchemaOverride) {
+        if (corpusSchemaOverride != null) {
+            return SchemaEnforcementMode.STRICT;
+        }
+        return config != null && config.getSchemaMode() != null
+                ? config.getSchemaMode()
+                : SchemaEnforcementMode.LENIENT;
     }
 
     static StructuredChatLanguageModel.Request toStructuredChatRequest(

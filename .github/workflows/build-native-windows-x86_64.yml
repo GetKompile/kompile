@@ -462,6 +462,15 @@ jobs:
           set "MAVEN_OPTS=-Xmx4g"
           mvn clean install -DskipTests -Dskip.ui --no-transfer-progress --batch-mode
 
+      - name: Test Windows direct-provider model discovery
+        shell: bash
+        run: |
+          mvn --batch-mode --no-transfer-progress -pl :kompile-cli-main \
+            -Dtest=CodexAppServerModelDiscoveryTest,ModelDiscoveryHttpTest \
+            -DexcludedGroups=live \
+            -Dsurefire.failIfNoSpecifiedTests=false \
+            test
+
       - name: Determine native targets
         id: targets
         shell: bash

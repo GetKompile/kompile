@@ -39,6 +39,8 @@ import ai.kompile.chat.local.Message
 import ai.kompile.chat.local.android.model.AcceleratedChatModelAndroid
 import ai.kompile.chat.local.android.model.MobileModelArtifactResolver
 import ai.kompile.chat.local.android.model.ModelPreparationOptions
+import ai.kompile.chat.local.android.model.OptimizedModelCacheRepository
+import ai.kompile.chat.local.android.model.OptimizedModelStorageSnapshot
 import ai.kompile.chat.local.android.model.PreparedModelInfo
 import ai.kompile.chat.local.android.model.PreparationStage
 import ai.kompile.chat.local.android.model.SdxGgufModelImporter
@@ -135,6 +137,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val kompileApplication = getApplication<Application>() as KompileChatApplication
     private val context: Context get() = kompileApplication.applicationContext
     val prefs = AppPreferences(context)
+    private val optimizedModelCacheRepository = OptimizedModelCacheRepository(context)
     private val importDiagnosticStore = ImportDiagnosticStore(context)
     private val recoveredNativeOperations = kompileApplication.recoveredNativeOperations
         .sortedByDescending { it.attempt.checkpointEpochMillis }
@@ -373,6 +376,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _localModelSources = MutableStateFlow<List<LocalModelSource>>(emptyList())
     val localModelSources: StateFlow<List<LocalModelSource>> = _localModelSources.asStateFlow()
 
+    private val _optimizedModelStorage =
+        MutableStateFlow(OptimizedModelStorageSnapshot.EMPTY)
+    internal val optimizedModelStorage: StateFlow<OptimizedModelStorageSnapshot> =
+        _optimizedModelStorage.asStateFlow()
+
     private val _huggingFaceReference = MutableStateFlow(
         huggingFaceCheckpoint?.rawReference ?: prefs.huggingFaceReference
     )
@@ -412,6 +420,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val importDiagnostics: StateFlow<List<ImportDiagnostic>> = _importDiagnostics.asStateFlow()
 
     private val importGate = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val optimizedStorageRefreshGeneration = AtomicInteger(0)
     private val sendGate = AtomicSendGate()
     private var huggingFaceJob: Job? = null
     private var huggingFaceDownloadCancellation: ResumableModelDownloader.CancellationHandle? = null
@@ -474,6 +483,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(TAG, "Local model startup failed", failure)
         }
         refreshLocalModelSources()
+        refreshOptimizedModelStorage()
         viewModelScope.launch(startupFailureHandler) {
             bootstrapAssets()
             if (recoveredRuntimeTargetsActiveModel()) {
@@ -515,6 +525,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .distinctBy { it.absolutePath }
             .sortedByDescending(File::lastModified)
             .map { LocalModelSource(it.absolutePath, it.name, it.length()) }
+    }
+
+    fun refreshOptimizedModelStorage() {
+        val generation = optimizedStorageRefreshGeneration.incrementAndGet()
+        val activePath = if (_modelState.value is ModelUiState.Ready && localModel != null) {
+            prefs.modelPath
+        } else {
+            ""
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val snapshot = optimizedModelCacheRepository.snapshot(
+                    BuildConfig.SDX_TARGET_PROFILE,
+                    activePath,
+                )
+                if (optimizedStorageRefreshGeneration.get() == generation) {
+                    _optimizedModelStorage.value = snapshot
+                }
+            } catch (failure: Throwable) {
+                if (optimizedStorageRefreshGeneration.get() == generation) {
+                    Log.e(TAG, "Could not inventory optimized model storage", failure)
+                    _error.value = failure.message ?: "Optimized model storage could not be inspected."
+                    _errorStackTrace.value = failure.stackTraceToString()
+                }
+            }
+        }
     }
 
     private fun recordImportDiagnostic(
@@ -1070,6 +1106,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _huggingFaceSelection.value = null
                     _error.value = null
                     _errorStackTrace.value = null
+                    refreshOptimizedModelStorage()
                     cleanupFailure?.let {
                         Log.w(TAG, "Model ownership cleared after native cleanup reported a failure", it)
                     }
@@ -1149,6 +1186,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val route = newLocal.routeName
         localModel = newLocal
         _modelState.value = ModelUiState.Ready(modelFilePath, route)
+        refreshOptimizedModelStorage()
         _modelLoadProgress.value = null
         _activeRoute.value = route
         _graphState.value = GraphUiState.Checking
@@ -2460,6 +2498,69 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun activateCachedOptimizedModel(compileKey: String): Result<String> = runExclusiveImport(
+        operation = ImportOperationKind.CACHED_MODEL_ACTIVATION,
+        blocked = { reason -> Result.failure(IllegalStateException(reason)) },
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                val storage = optimizedModelCacheRepository.snapshot(
+                    BuildConfig.SDX_TARGET_PROFILE,
+                    if (_modelState.value is ModelUiState.Ready && localModel != null) {
+                        prefs.modelPath
+                    } else {
+                        ""
+                    },
+                )
+                val cached = storage.entries.singleOrNull { it.compileKey == compileKey }
+                    ?: throw IllegalStateException(
+                        "The selected optimized model is no longer present in the SDX cache."
+                    )
+                check(!cached.active) { "The selected optimized model is already active." }
+                val previousSelection = prefs.snapshotActiveSelection()
+                val activation = engineMutex.withLock {
+                    activateStandaloneModelLocked(
+                        modelPath = cached.canonicalSdzPath,
+                        previousSelection = previousSelection,
+                        preparationOptions = prefs.modelPreparationOptions,
+                        expectedCompileKey = compileKey,
+                    )
+                }
+                runCatching {
+                    optimizedModelCacheRepository.markUsed(compileKey)
+                    refreshOptimizedModelStorage()
+                    recordImportDiagnostic(
+                        operation = "cached optimized model",
+                        phase = "active",
+                        severity = ImportDiagnosticSeverity.SUCCESS,
+                        summary = "Reused ${cached.displayName} without reconversion.",
+                        remediation = "The canonical SDZ and target cache remain available after unloading.",
+                        technicalDetails = buildString {
+                            append("compile_key=").append(compileKey)
+                            append("\ncanonical_sdz_path=").append(cached.canonicalSdzPath)
+                            append("\nroute=").append(activation.route)
+                        },
+                    )
+                }.onFailure { metadataFailure ->
+                    Log.w(TAG, "Cached model activated but usage metadata could not be updated", metadataFailure)
+                }
+                Result.success(activation.modelPath)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Throwable) {
+                recordImportDiagnostic(
+                    operation = "cached optimized model",
+                    phase = "failed",
+                    severity = ImportDiagnosticSeverity.ERROR,
+                    summary = failure.message ?: "The optimized model could not be reused.",
+                    remediation = "Refresh the model cache inventory or prepare the retained source again.",
+                    failure = failure,
+                )
+                Result.failure(failure)
+            }
+        }
+    }
+
     fun retryLocalModelOptimizationStep(step: HuggingFaceImportStep): Boolean {
         val state = _localModelOptimizationState.value as? HuggingFaceImportUiState.Failed
             ?: return false
@@ -3078,6 +3179,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        expectedCompileKey: String? = null,
         preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): AcceleratedChatModelAndroid {
@@ -3087,6 +3189,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 tokenizerPath = tokenizerPath,
                 verifiedSourceSha256 = verifiedSourceSha256,
                 verifiedSourceBytes = verifiedSourceBytes,
+                expectedCompileKey = expectedCompileKey,
                 preparationOptions = preparationOptions,
             ) { preparationStage ->
                 onImportStep(
@@ -3138,6 +3241,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        expectedCompileKey: String? = null,
         preparedModelInfo: PreparedModelInfo? = null,
         preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onPreparationStage: (PreparationStage) -> Unit = {}
@@ -3153,6 +3257,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             tokenizerPath = tokenizerPath,
             verifiedSourceSha256 = verifiedSourceSha256,
             verifiedSourceBytes = verifiedSourceBytes,
+            expectedCompileKey = expectedCompileKey,
             onPreparationStage = { stage ->
                 publishModelPreparationStage(stage)
                 onPreparationStage(stage)
@@ -3169,6 +3274,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         tokenizerPath: String? = null,
         verifiedSourceSha256: String? = null,
         verifiedSourceBytes: Long? = null,
+        expectedCompileKey: String? = null,
         preparationOptions: ModelPreparationOptions = prefs.modelPreparationOptions,
         onImportStep: (HuggingFaceImportStep) -> Unit = {}
     ): StandaloneActivation {
@@ -3197,6 +3303,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         tokenizerPath = tokenizerPath,
                         verifiedSourceSha256 = verifiedSourceSha256,
                         verifiedSourceBytes = verifiedSourceBytes,
+                        expectedCompileKey = expectedCompileKey,
                         preparationOptions = preparationOptions,
                         onImportStep = onImportStep
                     )
@@ -3209,6 +3316,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val route = openedModel.routeName
                     val modelId = openedModel.modelId()
                     val preparedModel = openedModel.preparationInfo
+                    preparedModel?.let { prepared ->
+                        runCatching {
+                            optimizedModelCacheRepository.remember(
+                                prepared = prepared,
+                                originalModelPath = exactModelPath,
+                                options = preparationOptions,
+                            )
+                        }.onFailure { catalogFailure ->
+                            Log.w(TAG, "Could not retain optimized model display metadata", catalogFailure)
+                        }
+                    }
                     val activeModelPath = preparedModel?.canonicalSdzPath ?: exactModelPath
                     if (activeModelPath != exactModelPath) {
                         check(
@@ -3269,6 +3387,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 },
                 closeCandidate = AcceleratedChatModelAndroid::close
             ).execute(modelPath)
+            refreshOptimizedModelStorage()
             _navigationEvents.trySend(AppNavigationEvent.OpenChat)
             return activation
         } catch (failure: Throwable) {

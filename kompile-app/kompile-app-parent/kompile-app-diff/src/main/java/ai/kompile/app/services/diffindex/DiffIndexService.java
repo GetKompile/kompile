@@ -113,6 +113,23 @@ public class DiffIndexService {
      */
     @Async
     public void reindexAll() {
+        reindex(null);
+    }
+
+    /**
+     * Reindex transcript edits for one directory-owned project.
+     *
+     * <p>This is the in-process MCP/local-mode entry point. Providers that can query their
+     * native project index receive the directory directly; all other providers are guarded by
+     * an additional path-containment filter before any transcript is read.</p>
+     */
+    public void reindexAll(Path workingDirectory) {
+        Path projectDirectory = workingDirectory == null
+                ? null : workingDirectory.toAbsolutePath().normalize();
+        reindex(projectDirectory);
+    }
+
+    private void reindex(Path projectDirectory) {
         if (!indexing.compareAndSet(false, true)) {
             log.info("Indexing already in progress");
             return;
@@ -126,7 +143,7 @@ public class DiffIndexService {
                 try {
                     SourceInfo info = adapter.discover();
                     if (!info.available()) continue;
-                    total += indexSource(adapter);
+                    total += indexSource(adapter, projectDirectory);
                 } catch (Exception e) {
                     log.warn("Failed to index source {}: {}", adapter.id(), e.getMessage());
                 }
@@ -142,14 +159,26 @@ public class DiffIndexService {
      * Index a single CLI source.
      */
     public int indexSource(ChatSourceAdapter adapter) {
+        return indexSource(adapter, null);
+    }
+
+    /** Index one source, optionally limited to a directory-owned project. */
+    public int indexSource(ChatSourceAdapter adapter, Path projectDirectory) {
         int count = 0;
         String sourceId = adapter.id();
 
         try {
-            List<ChatSessionSummary> sessions = adapter.list();
+            List<ChatSessionSummary> sessions = projectDirectory == null
+                    ? adapter.list() : adapter.list(projectDirectory);
             for (ChatSessionSummary session : sessions) {
                 try {
-                    count += indexSession(sourceId, session);
+                    if (projectDirectory != null
+                            && !adapter.isWorkingDirectoryScopeAuthoritative()
+                            && !belongsToProject(adapter, session, projectDirectory)) {
+                        continue;
+                    }
+                    count += indexSession(sourceId, session,
+                            projectDirectory == null ? null : projectDirectory.toString());
                 } catch (Exception e) {
                     log.debug("Failed to index session {} from {}: {}",
                             session.sessionId(), sourceId, e.getMessage());
@@ -166,6 +195,11 @@ public class DiffIndexService {
      * Index a single session's tool calls for file diffs.
      */
     public int indexSession(String source, ChatSessionSummary session) throws IOException {
+        return indexSession(source, session, null);
+    }
+
+    private int indexSession(String source, ChatSessionSummary session,
+                             String projectDirectoryOverride) throws IOException {
         String sessionId = session.sessionId();
         String fingerprint = source + ":" + sessionId;
 
@@ -180,9 +214,12 @@ public class DiffIndexService {
         }
 
         int count = 0;
-        String projectDir = extraction.projectDirectory();
+        String projectDir = projectDirectoryOverride;
         if (projectDir == null) {
-            projectDir = session.workingDirectory();
+            projectDir = extraction.projectDirectory();
+            if (projectDir == null) {
+                projectDir = session.workingDirectory();
+            }
         }
 
         for (ToolCallExtractor.ExtractedToolCall call : extraction.toolCalls()) {
@@ -200,6 +237,33 @@ public class DiffIndexService {
         }
 
         return count;
+    }
+
+    private static boolean belongsToProject(ChatSourceAdapter adapter,
+                                            ChatSessionSummary session,
+                                            Path projectDirectory) {
+        String sessionDirectory = session.workingDirectory();
+        if (sessionDirectory == null || sessionDirectory.isBlank()) {
+            try {
+                sessionDirectory = adapter.resolveWorkingDirectory(session.sessionId())
+                        .map(Path::toString).orElse(null);
+            } catch (IOException ignored) {
+                return false;
+            }
+        }
+        if (sessionDirectory == null || sessionDirectory.isBlank()) {
+            return false;
+        }
+        try {
+            Path sessionPath = Path.of(sessionDirectory);
+            if (!sessionPath.isAbsolute()) {
+                sessionPath = projectDirectory.resolve(sessionPath);
+            }
+            sessionPath = sessionPath.toAbsolutePath().normalize();
+            return sessionPath.equals(projectDirectory) || sessionPath.startsWith(projectDirectory);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private ToolCallExtractor.ExtractionResult extractToolCalls(

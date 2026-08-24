@@ -25,6 +25,7 @@ internal object PlatformLocalChatModelFactory {
         maxTokens: Int,
         diagnosticModelPath: String = modelPath,
         @Suppress("UNUSED_PARAMETER") diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
+        expectedCompileKey: String? = null,
     ): PlatformLocalChatSession {
         val applicationContext = context.applicationContext
         val operation = NativeOperationJournal(applicationContext).begin(
@@ -36,7 +37,8 @@ internal object PlatformLocalChatModelFactory {
             val resolvedModel = MobileModelArtifactResolver.resolve(
                 applicationContext,
                 modelPath,
-                operation
+                operation,
+                expectedCompileKey,
             )
             val dispatchDirectory = applicationContext.applicationInfo.nativeLibraryDir
                 ?: error("Android native library directory is unavailable")

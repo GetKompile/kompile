@@ -16,7 +16,9 @@
 
 package ai.kompile.crawl.graph;
 
+import ai.kompile.core.crawl.graph.GraphExtractionConfig;
 import ai.kompile.core.crawl.graph.UnifiedCrawlJob;
+import ai.kompile.core.crawl.graph.UnifiedCrawlRequest;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.RelationshipType;
@@ -29,13 +31,15 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -120,9 +124,7 @@ class CorpusSchemaUnifierTest {
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
                 .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of(Map.of(
-                                "label", "KEYWORD",
-                                "description", "A statistical keyword.")),
+                        "nodeTypes", List.of("KEYWORD"),
                         "relationshipTypes", List.of(),
                         "patterns", List.of())));
 
@@ -163,9 +165,7 @@ class CorpusSchemaUnifierTest {
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
                 .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of(Map.of(
-                                "label", "SOURCE_TYPE",
-                                "description", "An invalid generic placeholder.")),
+                        "nodeTypes", List.of("SOURCE_TYPE"),
                         "relationshipTypes", List.of(),
                         "patterns", List.of())));
 
@@ -191,6 +191,105 @@ class CorpusSchemaUnifierTest {
     }
 
     @Test
+    void retriesInvalidSchemaWithValidatorFeedbackAndStableBatchContext() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-schema-repair");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder()
+                .maxValidationRetries(2)
+                .build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+
+        Map<String, Object> invalid = new LinkedHashMap<>();
+        invalid.put("nodeTypes", List.of("AMER"));
+        invalid.put("relationshipTypes", List.of());
+        invalid.put("patterns", List.of(Map.of(
+                "sourceType", "NORTHSTAR_GOODS",
+                "relationshipType", "PURCHASED_FROM",
+                "targetType", "FIRM")));
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(invalid))
+                .thenReturn(structuredSchemaResponse(domainSchemaArguments()));
+
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("email-window", "Sarah Chen sent the Q3 forecast."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null,
+                job,
+                "snapshot-schema-repair",
+                dispatcher);
+
+        assertEquals(java.util.Set.of("EMAIL_MESSAGE", "PERSON"), schema.getAllNodeLabels());
+        assertEquals(java.util.Set.of("SENT_BY"), schema.getAllRelationshipTypes());
+
+        ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scopes =
+                ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
+        verify(dispatcher, times(2)).promptStructuredWithCapacityFallback(
+                requests.capture(), eq("llm"), same(job), scopes.capture());
+        assertEquals(List.of("corpus-schema-1", "corpus-schema-1"), scopes.getAllValues().stream()
+                .map(CrawlLlmDispatcher.LlmCallScope::passId).toList());
+        assertEquals(List.of(1, 2), scopes.getAllValues().stream()
+                .map(CrawlLlmDispatcher.LlmCallScope::passInvocation).toList());
+        assertEquals("job-schema-repair:corpus-schema:1", scopes.getAllValues().get(0).taskId());
+        assertEquals("job-schema-repair:corpus-schema:1:attempt:2",
+                scopes.getAllValues().get(1).taskId());
+        String retryPrompt = requests.getAllValues().get(1).messages().get(1).content();
+        assertTrue(retryPrompt.contains("SCHEMA REPAIR REQUIRED (attempt 2 of 3)"));
+        assertTrue(retryPrompt.contains("SCHEMA_PATTERN_ENDPOINT"));
+        assertTrue(retryPrompt.contains("NORTHSTAR_GOODS"));
+        assertTrue(retryPrompt.contains("Sarah Chen sent the Q3 forecast."));
+    }
+
+    @Test
+    void exhaustsConfiguredSchemaValidationRetriesWithoutPromotingPatternLabels() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-schema-exhausted");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder()
+                .maxValidationRetries(2)
+                .build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+
+        Map<String, Object> invalid = new LinkedHashMap<>();
+        invalid.put("nodeTypes", List.of());
+        invalid.put("relationshipTypes", List.of());
+        invalid.put("patterns", List.of(Map.of(
+                "sourceType", "TARGET_CUSTOMER",
+                "relationshipType", "WANTED_BIGGER_MARGIN",
+                "targetType", "CUSTOMERS")));
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(invalid));
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> new CorpusSchemaUnifier().unify(
+                        Map.of("email-window", "The customer requested more margin."),
+                        new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                        null,
+                        job,
+                        "snapshot-schema-exhausted",
+                        dispatcher));
+
+        assertTrue(failure.getMessage().contains("SCHEMA_PATTERN_ENDPOINT"));
+        assertTrue(failure.getMessage().contains("TARGET_CUSTOMER"));
+        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+    }
+
+    @Test
     void successfulModelOverlayPreservesSeededAndDeterministicTypesInOneSchema() {
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
@@ -202,9 +301,7 @@ class CorpusSchemaUnifierTest {
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
                 .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of(Map.of(
-                                "label", "MODEL_INFERRED_TOPIC",
-                                "description", "A reusable topic inferred from corpus text.")),
+                        "nodeTypes", List.of("MODEL_INFERRED_TOPIC"),
                         "relationshipTypes", List.of(),
                         "patterns", List.of())));
 
@@ -308,7 +405,94 @@ class CorpusSchemaUnifierTest {
     }
 
     @Test
-    void validEmptyOverlayWithoutEstablishedSchemaIsNotAFailure() {
+    void semanticBatchesPreserveSentenceAssertionsAndEverySourceCharacter() {
+        String assertion = "Mei Chen is a finance leader.";
+        String passage = "x".repeat(900) + ". " + assertion + " " + "y".repeat(1_500);
+
+        List<Map<String, String>> batches = CorpusSchemaUnifier.modelPassageBatches(
+                Map.of("long-window", passage));
+        List<String> fragments = batches.stream()
+                .flatMap(batch -> batch.values().stream())
+                .toList();
+
+        assertEquals(passage, String.join("", fragments));
+        assertTrue(fragments.stream().allMatch(fragment -> fragment.length() <= 1_024));
+        assertTrue(fragments.stream().anyMatch(fragment -> fragment.contains(assertion)),
+                "the type assertion must not be split across semantic prepass windows");
+    }
+
+    @Test
+    void rejectsBackendWithoutStructuredSchemaToolSupport() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-no-structured-tool");
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> new CorpusSchemaUnifier().unify(
+                        Map.of("window", "Mei Chen submitted the forecast."),
+                        new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                        null,
+                        job,
+                        "snapshot-no-structured-tool",
+                        dispatcher));
+
+        assertTrue(failure.getMessage().contains("structured-chat tool support"));
+    }
+
+    @Test
+    void rejectsWrongOrMissingStructuredToolCalls() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-wrong-tool");
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(new StructuredChatLanguageModel.Response(
+                        "<native-tool-call>",
+                        "",
+                        List.of(new StructuredChatLanguageModel.ToolCall(
+                                "wrong-call", "submit_graph_delta", Map.of())),
+                        List.of()));
+
+        IllegalStateException wrongTool = assertThrows(
+                IllegalStateException.class,
+                () -> new CorpusSchemaUnifier().unify(
+                        Map.of("window", "Mei Chen submitted the forecast."),
+                        new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                        null,
+                        job,
+                        "snapshot-wrong-tool",
+                        dispatcher));
+        assertTrue(wrongTool.getMessage().contains("wrong tool"));
+
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(new StructuredChatLanguageModel.Response(
+                        "{\"nodeTypes\":[\"PERSON\"],\"relationshipTypes\":[],\"patterns\":[]}",
+                        "",
+                        List.of(),
+                        List.of()));
+        IllegalStateException missingTool = assertThrows(
+                IllegalStateException.class,
+                () -> new CorpusSchemaUnifier().unify(
+                        Map.of("window", "Mei Chen submitted the forecast."),
+                        new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                        null,
+                        job,
+                        "snapshot-missing-tool",
+                        dispatcher));
+        assertTrue(missingTool.getMessage().contains("did not call submit_corpus_schema"));
+    }
+
+    @Test
+    void validEmptyOverlayProducesAnExplicitFrozenEmptySchema() {
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-empty-overlay");
@@ -331,7 +515,13 @@ class CorpusSchemaUnifierTest {
                 "snapshot-empty-overlay",
                 dispatcher);
 
-        assertNull(schema);
+        assertNotNull(schema);
+        assertTrue(schema.getAllNodeLabels().isEmpty());
+        assertTrue(schema.getAllRelationshipTypes().isEmpty());
+        assertFalse(GraphExtractionOrchestrator.ontologyUpdatesAllowed(
+                GraphExtractionConfig.builder().schemaMode(
+                        ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode.LENIENT).build(),
+                schema));
     }
 
     @SuppressWarnings("unchecked")
@@ -353,20 +543,12 @@ class CorpusSchemaUnifierTest {
 
     private static Map<String, Object> domainSchemaArguments() {
         Map<String, Object> arguments = new LinkedHashMap<>();
-        arguments.put("nodeTypes", List.of(
-                Map.of(
-                        "label", "EMAIL_MESSAGE",
-                        "description", "An email message in the corpus."),
-                Map.of(
-                        "label", "PERSON",
-                        "description", "A human participant in the corpus.")));
-        arguments.put("relationshipTypes", List.of(Map.of(
-                "type", "SENT_BY",
-                "description", "An email message was sent by a person.",
-                "aliases", List.of("from", "sent by"))));
-        arguments.put(
-                "patterns",
-                List.of("(EMAIL_MESSAGE)-[:SENT_BY]->(PERSON)"));
+        arguments.put("nodeTypes", List.of("EMAIL_MESSAGE", "PERSON"));
+        arguments.put("relationshipTypes", List.of("SENT_BY"));
+        arguments.put("patterns", List.of(Map.of(
+                "sourceType", "EMAIL_MESSAGE",
+                "relationshipType", "SENT_BY",
+                "targetType", "PERSON")));
         return arguments;
     }
 }

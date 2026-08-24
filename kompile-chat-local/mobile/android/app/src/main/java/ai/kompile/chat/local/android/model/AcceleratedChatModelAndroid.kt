@@ -23,6 +23,7 @@ internal class AcceleratedChatModelAndroid(
     tokenizerPath: String? = null,
     verifiedSourceSha256: String? = null,
     verifiedSourceBytes: Long? = null,
+    expectedCompileKey: String? = null,
     preparationOptions: ModelPreparationOptions = ModelPreparationOptions(),
     onPreparationStage: (PreparationStage) -> Unit = {},
     preparedModelInfo: PreparedModelInfo? = null
@@ -54,6 +55,7 @@ internal class AcceleratedChatModelAndroid(
             maxTokens,
             diagnosticModelPath = modelPath,
             diagnosticMode = preparationOptions.diagnosticMode,
+            expectedCompileKey = expectedCompileKey,
         )
     }
 

@@ -19,11 +19,13 @@ internal object PlatformLocalChatModelFactory {
         maxTokens: Int,
         diagnosticModelPath: String = modelPath,
         diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
+        expectedCompileKey: String? = null,
     ): PlatformLocalChatSession = SdxPlatformChatSession.open(
         context = context,
         modelPath = modelPath,
         diagnosticModelPath = diagnosticModelPath,
         diagnosticMode = diagnosticMode,
+        expectedCompileKey = expectedCompileKey,
         routeName = "LOCAL_TENSOR_G3_NNAPI",
         modelIdPrefix = "sdx-tensor-g3-nnapi"
     )

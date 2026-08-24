@@ -5,6 +5,7 @@
  */
 package ai.kompile.cli.main.chat.config;
 
+import ai.kompile.cli.main.auth.oauth.OAuthProviderFlow;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -20,6 +21,8 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 final class CodexAppServerModelDiscovery {
     static final String ATTEMPTED_RESOURCE = "native:codex app-server/model/list";
     static final String CODEX_SHIM_ENV = "KOMPILE_CODEX_APP_SERVER_SHIM";
+    static final String CODEX_HOME_ENV = "CODEX_HOME";
     private static final ObjectMapper MAPPER =
             ai.kompile.cli.common.util.JsonUtils.standardMapper();
 
@@ -87,7 +91,8 @@ final class CodexAppServerModelDiscovery {
                 ? resolveWindowsExecutable(configured, path, pathExt) : null;
         if (windows && discovered == null) {
             return LaunchSpec.unavailable(
-                    "Unable to start Codex app-server: Codex executable was not found at its configured path or on PATH");
+                    "Unable to start Codex app-server: configured Codex executable '"
+                            + configured + "' was not found at its configured path or on PATH");
         }
         String resolved = discovered == null ? configured : discovered;
         if (windows && discovered != null && isBatchFile(resolved)) {
@@ -241,26 +246,50 @@ final class CodexAppServerModelDiscovery {
             Map<String, String> environment) {
         Duration timeout = context == null || context.timeout() == null
                 ? Duration.ofSeconds(15) : context.timeout();
+        OAuthProviderFlow.RequestAuth auth = context == null ? null : context.auth();
+        if (auth == null || !auth.oauth()) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.AUTH_REQUIRED,
+                    "OpenAI subscription model discovery requires the selected Kompile OAuth credential; sign in again and retry",
+                    List.of(ATTEMPTED_RESOURCE));
+        }
+        String accountId = header(auth.headers(), "chatgpt-account-id");
+        if (accountId == null || accountId.isBlank()) {
+            return ModelDiscovery.Result.failure(
+                    ModelDiscovery.Status.AUTH_REQUIRED,
+                    "The selected OpenAI OAuth credential has no ChatGPT account id; sign in again and retry",
+                    List.of(ATTEMPTED_RESOURCE));
+        }
         long deadline = System.nanoTime() + timeout.toNanos();
         Process process = null;
         ExecutorService readerExecutor = null;
+        Path discoveryHome = null;
+        List<String> diagnostics = Collections.synchronizedList(new ArrayList<>());
+        String runtime = launchDescription(command, environment);
+        String stage = "starting the Codex app-server";
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(List.copyOf(command))
-                    .redirectErrorStream(true);
+                    .redirectErrorStream(false);
             processBuilder.environment().putAll(environment);
+            discoveryHome = Files.createTempDirectory("kompile-codex-model-discovery-");
+            processBuilder.environment().put(CODEX_HOME_ENV, discoveryHome.toString());
             process = processBuilder.start();
             BlockingQueue<ReadEvent> events = new LinkedBlockingQueue<>();
             BufferedReader reader = new BufferedReader(new InputStreamReader(
                     process.getInputStream(), StandardCharsets.UTF_8));
-            readerExecutor = Executors.newSingleThreadExecutor(runnable -> {
+            BufferedReader errorReader = new BufferedReader(new InputStreamReader(
+                    process.getErrorStream(), StandardCharsets.UTF_8));
+            readerExecutor = Executors.newFixedThreadPool(2, runnable -> {
                 Thread thread = new Thread(runnable, "kompile-codex-model-list");
                 thread.setDaemon(true);
                 return thread;
             });
             readerExecutor.submit(() -> pump(reader, events));
+            readerExecutor.submit(() -> pumpDiagnostics(errorReader, diagnostics));
 
             try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
                     process.getOutputStream(), StandardCharsets.UTF_8))) {
+                stage = "initializing the Codex app-server";
                 ObjectNode initialize = MAPPER.createObjectNode();
                 initialize.put("method", "initialize");
                 initialize.put("id", 1);
@@ -269,17 +298,49 @@ final class CodexAppServerModelDiscovery {
                 clientInfo.put("name", "kompile");
                 clientInfo.put("title", "Kompile CLI");
                 clientInfo.put("version", "0.1.0");
+                initializeParams.putObject("capabilities").put("experimentalApi", true);
                 send(writer, initialize);
-                awaitResponse(events, 1, deadline);
+                JsonNode initializeResponse = awaitResponse(events, 1, deadline, diagnostics);
+                runtime = runtimeDescription(initializeResponse, runtime);
 
                 ObjectNode initialized = MAPPER.createObjectNode();
                 initialized.put("method", "initialized");
                 initialized.putObject("params");
                 send(writer, initialized);
 
+                stage = "binding the selected Kompile OAuth credential";
+                ObjectNode login = MAPPER.createObjectNode();
+                login.put("method", "account/login/start");
+                login.put("id", 2);
+                ObjectNode loginParams = login.putObject("params");
+                loginParams.put("type", "chatgptAuthTokens");
+                loginParams.put("accessToken", auth.token());
+                loginParams.put("chatgptAccountId", accountId);
+                send(writer, login);
+                JsonNode loginResponse = awaitResponse(events, 2, deadline, diagnostics);
+                String authType = loginResponse.path("result").path("type").asText("");
+                if (!"chatgptAuthTokens".equals(authType)) {
+                    throw new RpcFailure("Codex app-server returned unexpected authentication mode '"
+                            + (authType.isBlank() ? "unknown" : authType) + "'");
+                }
+
+                ObjectNode accountRead = MAPPER.createObjectNode();
+                accountRead.put("method", "account/read");
+                accountRead.put("id", 3);
+                accountRead.putObject("params").put("refreshToken", false);
+                send(writer, accountRead);
+                JsonNode accountResponse = awaitResponse(events, 3, deadline, diagnostics);
+                JsonNode account = accountResponse.path("result").path("account");
+                if (account.isMissingNode() || account.isNull() || !account.isObject()) {
+                    throw new RpcFailure(
+                            "Codex app-server did not activate the selected OpenAI subscription account");
+                }
+                String planType = account.path("planType").asText("");
+
+                stage = "listing models for the selected OpenAI subscription";
                 Map<String, LiveModelDiscovery.Model> models = new LinkedHashMap<>();
                 String cursor = null;
-                int requestId = 2;
+                int requestId = 4;
                 for (int page = 0; page < 20; page++) {
                     ObjectNode request = MAPPER.createObjectNode();
                     request.put("method", "model/list");
@@ -291,45 +352,68 @@ final class CodexAppServerModelDiscovery {
                         params.put("cursor", cursor);
                     }
                     send(writer, request);
-                    JsonNode response = awaitResponse(events, requestId, deadline);
+                    JsonNode response = awaitResponse(events, requestId, deadline, diagnostics);
                     JsonNode result = response.path("result");
                     for (LiveModelDiscovery.Model model : parseModels(result)) {
                         models.merge(model.id(), model, LiveModelDiscovery::merge);
                     }
                     cursor = result.path("nextCursor").asText("");
                     if (cursor.isBlank()) {
-                        return ModelDiscovery.Result.success(
-                                new ArrayList<>(models.values()),
+                        if (usedBundledOrCachedFallback(diagnostics)) {
+                            return ModelDiscovery.Result.failure(
+                                    ModelDiscovery.Status.UNAVAILABLE,
+                                    failureMessage(stage,
+                                            "Codex could not refresh the online model catalog and returned cached or bundled models",
+                                            runtime, process, diagnostics, false),
+                                    List.of(ATTEMPTED_RESOURCE));
+                        }
+                        List<LiveModelDiscovery.Model> discovered = new ArrayList<>(models.values());
+                        return new ModelDiscovery.Result(
+                                discovered.isEmpty()
+                                        ? ModelDiscovery.Status.SUCCESS_EMPTY
+                                        : ModelDiscovery.Status.SUCCESS,
+                                discovered,
+                                successMessage(runtime, planType, discovered.size()),
                                 List.of(ATTEMPTED_RESOURCE));
                     }
                     requestId++;
                 }
+                if (usedBundledOrCachedFallback(diagnostics)) {
+                    return ModelDiscovery.Result.failure(
+                            ModelDiscovery.Status.UNAVAILABLE,
+                            failureMessage(stage,
+                                    "Codex could not refresh the online model catalog and returned cached or bundled models",
+                                    runtime, process, diagnostics, false),
+                            List.of(ATTEMPTED_RESOURCE));
+                }
                 return new ModelDiscovery.Result(
                         ModelDiscovery.Status.SUCCESS,
                         new ArrayList<>(models.values()),
-                        "Codex model pagination stopped after 20 pages",
+                        successMessage(runtime, planType, models.size())
+                                + "; pagination stopped after 20 pages",
                         List.of(ATTEMPTED_RESOURCE));
             }
         } catch (RpcTimeout error) {
             return ModelDiscovery.Result.failure(
                     ModelDiscovery.Status.TIMEOUT,
-                    "Timed out while reading Codex app-server model/list",
+                    failureMessage(stage, "timed out", runtime, process, diagnostics, false),
                     List.of(ATTEMPTED_RESOURCE));
         } catch (RpcFailure error) {
             return ModelDiscovery.Result.failure(
-                    ModelDiscovery.Status.INVALID_RESPONSE,
-                    error.getMessage(),
+                    rpcFailureStatus(stage, error.getMessage()),
+                    failureMessage(stage, error.getMessage(), runtime, process, diagnostics,
+                            stage.contains("OAuth credential")),
                     List.of(ATTEMPTED_RESOURCE));
         } catch (IOException error) {
             return ModelDiscovery.Result.failure(
                     ModelDiscovery.Status.UNSUPPORTED,
-                    "Unable to start Codex app-server: " + message(error),
+                    failureMessage(stage, message(error), runtime, process, diagnostics, true),
                     List.of(ATTEMPTED_RESOURCE));
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             return ModelDiscovery.Result.failure(
                     ModelDiscovery.Status.TIMEOUT,
-                    "Interrupted while reading Codex app-server model/list",
+                    failureMessage(stage, "interrupted", runtime, process, diagnostics, false),
                     List.of(ATTEMPTED_RESOURCE));
         } finally {
             if (readerExecutor != null) {
@@ -346,6 +430,7 @@ final class CodexAppServerModelDiscovery {
                     process.destroyForcibly();
                 }
             }
+            deleteRecursively(discoveryHome);
         }
     }
 
@@ -394,7 +479,10 @@ final class CodexAppServerModelDiscovery {
     }
 
     private static JsonNode awaitResponse(
-            BlockingQueue<ReadEvent> events, int id, long deadline)
+            BlockingQueue<ReadEvent> events,
+            int id,
+            long deadline,
+            List<String> diagnostics)
             throws InterruptedException, RpcTimeout, RpcFailure {
         while (true) {
             long remaining = deadline - System.nanoTime();
@@ -409,13 +497,24 @@ final class CodexAppServerModelDiscovery {
                 throw new RpcFailure("Codex app-server output failed: " + message(event.error()));
             }
             if (event.eof()) {
-                throw new RpcFailure("Codex app-server exited before model/list completed");
+                throw new RpcFailure("Codex app-server exited before request " + id + " completed");
             }
             JsonNode response;
             try {
                 response = MAPPER.readTree(event.line());
             } catch (IOException ignored) {
+                rememberDiagnostic(diagnostics, event.line());
                 continue;
+            }
+            String method = response == null ? "" : response.path("method").asText("");
+            if ("account/chatgptAuthTokens/refresh".equals(method)) {
+                throw new RpcFailure(
+                        "Codex rejected the selected OpenAI OAuth token and requested refreshed credentials");
+            }
+            if ("account/login/completed".equals(method)
+                    && !response.path("params").path("success").asBoolean(false)) {
+                String detail = response.path("params").path("error").asText("unknown error");
+                throw new RpcFailure("Codex app-server failed to activate external OAuth: " + detail);
             }
             if (response == null || response.path("id").asInt(Integer.MIN_VALUE) != id) {
                 continue;
@@ -423,7 +522,7 @@ final class CodexAppServerModelDiscovery {
             if (response.has("error")) {
                 String detail = response.path("error").path("message").asText(
                         response.path("error").toString());
-                throw new RpcFailure("Codex app-server rejected model/list: " + detail);
+                throw new RpcFailure("Codex app-server rejected request " + id + ": " + detail);
             }
             if (!response.has("result")) {
                 throw new RpcFailure("Codex app-server returned a response without result");
@@ -441,6 +540,172 @@ final class CodexAppServerModelDiscovery {
             events.offer(new ReadEvent("", null, true));
         } catch (IOException error) {
             events.offer(new ReadEvent("", error, false));
+        }
+    }
+
+    private static void pumpDiagnostics(BufferedReader reader, List<String> diagnostics) {
+        try (reader) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                rememberDiagnostic(diagnostics, line);
+            }
+        } catch (IOException error) {
+            rememberDiagnostic(diagnostics, "stderr reader failed: " + message(error));
+        }
+    }
+
+    private static String header(Map<String, String> headers, String name) {
+        if (headers == null || name == null) {
+            return null;
+        }
+        return headers.entrySet().stream()
+                .filter(entry -> name.equalsIgnoreCase(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .filter(value -> value != null && !value.isBlank())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String launchDescription(List<String> command, Map<String, String> environment) {
+        String executable = environment == null ? null : environment.get(CODEX_SHIM_ENV);
+        if ((executable == null || executable.isBlank()) && command != null && !command.isEmpty()) {
+            executable = command.get(0);
+        }
+        return executable == null || executable.isBlank()
+                ? "unknown Codex executable"
+                : "Codex executable " + executable;
+    }
+
+    private static String runtimeDescription(JsonNode initializeResponse, String fallback) {
+        String userAgent = initializeResponse == null
+                ? null : firstText(initializeResponse.path("result"), "userAgent", "user_agent");
+        return userAgent == null || userAgent.isBlank()
+                ? fallback
+                : userAgent + " via " + fallback;
+    }
+
+    private static String successMessage(String runtime, String planType, int modelCount) {
+        return "Live OpenAI subscription catalog via " + runtime
+                + (planType == null || planType.isBlank() ? "" : " (plan " + planType + ")")
+                + ": " + modelCount + " model" + (modelCount == 1 ? "" : "s");
+    }
+
+    private static ModelDiscovery.Status rpcFailureStatus(String stage, String detail) {
+        String value = detail == null ? "" : detail.toLowerCase(Locale.ROOT);
+        if (value.contains("oauth token")
+                || value.contains("external oauth")
+                || value.contains("refreshed credentials")) {
+            return ModelDiscovery.Status.AUTH_REQUIRED;
+        }
+        if (value.contains("unsupported")
+                || value.contains("unknown variant")
+                || value.contains("method not found")
+                || value.contains("experimental")) {
+            return ModelDiscovery.Status.UNSUPPORTED;
+        }
+        return stage != null && stage.contains("OAuth credential")
+                ? ModelDiscovery.Status.AUTH_REQUIRED
+                : ModelDiscovery.Status.INVALID_RESPONSE;
+    }
+
+    private static String failureMessage(
+            String stage,
+            String detail,
+            String runtime,
+            Process process,
+            List<String> diagnostics,
+            boolean updateHint) {
+        StringBuilder message = new StringBuilder("Codex model discovery failed while ")
+                .append(stage == null || stage.isBlank() ? "running" : stage)
+                .append(": ")
+                .append(detail == null || detail.isBlank()
+                        ? "unknown error" : sanitizeDiagnostic(detail))
+                .append(". Runtime: ")
+                .append(runtime == null || runtime.isBlank() ? "unknown" : runtime);
+        if (process != null && !process.isAlive()) {
+            message.append(" (exit code ").append(process.exitValue()).append(')');
+        }
+        String output = diagnosticSummary(diagnostics);
+        if (!output.isBlank()) {
+            message.append(". Codex output: ").append(output);
+        }
+        if (updateHint) {
+            message.append(". Update the resolved Codex CLI if it does not support app-server external ChatGPT tokens");
+        }
+        return message.toString();
+    }
+
+    private static void rememberDiagnostic(List<String> diagnostics, String line) {
+        String safe = sanitizeDiagnostic(line);
+        if (diagnostics == null || safe.isBlank()) {
+            return;
+        }
+        synchronized (diagnostics) {
+            if (diagnostics.size() == 5) {
+                int removable = 0;
+                while (removable < diagnostics.size()
+                        && isFallbackDiagnostic(diagnostics.get(removable))) {
+                    removable++;
+                }
+                diagnostics.remove(removable == diagnostics.size() ? 0 : removable);
+            }
+            diagnostics.add(safe);
+        }
+    }
+
+    static String sanitizeDiagnostic(String line) {
+        if (line == null) {
+            return "";
+        }
+        String safe = line.replaceAll("\\u001B\\[[;0-9]*[ -/]*[@-~]", "")
+                .replaceAll("(?i)Bearer[ ]+[^ ]+", "Bearer <redacted>")
+                .replaceAll("(?i)(access[_-]?token|refresh[_-]?token|authorization)([ ]*[:=][ ]*)[^ ,;]+",
+                        "$1$2<redacted>")
+                .replaceAll("[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}",
+                        "<redacted-jwt>")
+                .trim();
+        return safe.length() <= 300 ? safe : safe.substring(0, 300) + "…";
+    }
+
+    private static String diagnosticSummary(List<String> diagnostics) {
+        if (diagnostics == null) {
+            return "";
+        }
+        synchronized (diagnostics) {
+            return String.join(" | ", diagnostics);
+        }
+    }
+
+    static boolean usedBundledOrCachedFallback(List<String> diagnostics) {
+        if (diagnostics == null) {
+            return false;
+        }
+        synchronized (diagnostics) {
+            return diagnostics.stream()
+                    .anyMatch(CodexAppServerModelDiscovery::isFallbackDiagnostic);
+        }
+    }
+
+    private static boolean isFallbackDiagnostic(String diagnostic) {
+        String value = diagnostic == null ? "" : diagnostic.toLowerCase(Locale.ROOT);
+        return value.contains("failed to refresh available models")
+                || value.contains("using cached models for onlineifuncached");
+    }
+
+    private static void deleteRecursively(Path root) {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException ignored) {
+                    // The OS temp directory can safely reap a file still held by a terminated child.
+                }
+            });
+        } catch (IOException ignored) {
+            // Discovery already has its result; cleanup failure must not hide it.
         }
     }
 

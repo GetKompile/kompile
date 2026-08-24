@@ -27,7 +27,11 @@ import java.nio.file.Path;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Clipboard utilities for the TUI.
@@ -38,6 +42,12 @@ import java.util.concurrent.TimeUnit;
 public class ClipboardUtil {
 
     private static final int MAX_CLIPBOARD_BYTES = 32 * 1024 * 1024;
+    private static final ExecutorService CLIPBOARD_COPY_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread thread = new Thread(r, "kompile-clipboard-copy");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private ClipboardUtil() {}
 
@@ -61,6 +71,19 @@ public class ClipboardUtil {
         boolean osc52Ok = tryOsc52(text, terminal);
         boolean nativeOk = tryNativeClipboard(text);
         return osc52Ok || nativeOk;
+    }
+
+    /**
+     * Ordered non-blocking copy for mouse widgets. Serial execution guarantees
+     * that a slower native helper for an older selection cannot overwrite a
+     * newer selection after it completes.
+     */
+    public static void copyToClipboardAsync(String text, Terminal terminal) {
+        if (text == null || text.isEmpty()) return;
+        // OSC 52 is a single ordered terminal write and should take effect
+        // immediately. Potentially slow native helpers stay off JLine's thread.
+        tryOsc52(text, terminal);
+        CLIPBOARD_COPY_EXECUTOR.execute(() -> tryNativeClipboard(text));
     }
 
     /**
@@ -158,17 +181,36 @@ public class ClipboardUtil {
     }
 
     private static boolean execPipe(String[] cmd, String text) {
+        Process process = null;
         try {
-            Process p = new ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
+            process = new ProcessBuilder(cmd)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start();
-            try (OutputStream os = p.getOutputStream()) {
-                os.write(text.getBytes(StandardCharsets.UTF_8));
-                os.flush();
+            Process active = process;
+            CompletableFuture<Boolean> write = CompletableFuture.supplyAsync(() -> {
+                try (OutputStream os = active.getOutputStream()) {
+                    os.write(text.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    return true;
+                } catch (IOException e) {
+                    return false;
+                }
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            if (!write.get(5, TimeUnit.SECONDS)) return false;
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !process.waitFor(remaining, TimeUnit.NANOSECONDS)) {
+                return false;
             }
-            return p.waitFor() == 0;
-        } catch (IOException | InterruptedException e) {
+            return process.exitValue() == 0;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return false;
+        } catch (IOException | ExecutionException | TimeoutException e) {
+            return false;
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
         }
     }
 

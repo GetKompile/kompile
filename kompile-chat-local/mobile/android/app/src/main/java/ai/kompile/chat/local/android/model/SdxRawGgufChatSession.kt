@@ -49,7 +49,9 @@ internal object SdxAndroidLlmLibrary {
         } ?: Os.unsetenv("ND4J_DSP_DIAGNOSTICS_LEVEL")
         if (effectiveDiagnosticMode.nativeOpSanity) {
             Os.setenv("ND4J_DSP_NATIVE_DUMP_OUTPUTS", "1", true)
-            Os.setenv("ND4J_DSP_DIAG_EXEC_LIMIT", "1", true)
+            // The known decode transition occurs around execution 36. Preserve the warmup,
+            // compiled, and early replay evidence while keeping forensic output bounded.
+            Os.setenv("ND4J_DSP_DIAG_EXEC_LIMIT", "64", true)
         } else {
             Os.unsetenv("ND4J_DSP_NATIVE_DUMP_OUTPUTS")
             Os.unsetenv("ND4J_DSP_DIAG_EXEC_LIMIT")
@@ -422,6 +424,10 @@ internal object SdxGgufModelImporter {
                         "declared=$optimizedSourceBytes actual=${optimizedSource.length()}"
                 )
             }
+            val compileKey = json.getString(SdxRawGgufContract.COMPILE_KEY_FIELD)
+            if (!compileKey.matches(Regex("[0-9a-f]{64}"))) {
+                throw ChatException("SDX prepared compile key is invalid: '$compileKey'")
+            }
             return PreparedModelInfo(
                 cacheHit = json.getBoolean(SdxRawGgufContract.CACHE_HIT_FIELD),
                 sourceSha256 = sourceSha256,
@@ -432,7 +438,7 @@ internal object SdxGgufModelImporter {
                 canonicalSdzBytes = declaredCanonicalBytes,
                 modelPath = runtimeModel.absolutePath,
                 tokenizerPath = tokenizer.absolutePath,
-                compileKey = json.getString(SdxRawGgufContract.COMPILE_KEY_FIELD),
+                compileKey = compileKey,
                 targetProfile = target,
                 targetSoc = json.getString(SdxRawGgufContract.TARGET_SOC_FIELD),
                 contextLength = json.getInt(SdxRawGgufContract.CONTEXT_LENGTH_FIELD),

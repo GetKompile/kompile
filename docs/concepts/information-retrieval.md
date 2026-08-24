@@ -346,15 +346,21 @@ entry point that fans out across all available backends:
 
 `knowledge_status` reports which backends are active and their node counts.
 
-## Cross-index search
+## Local and managed RAG search
 
-The REST endpoint `POST /api/search/cross-index` provides unified search
-across the entire indexed corpus. The CLI's `rag_search` MCP tool calls
-this endpoint.
+The CLI's `rag_search` MCP tool has two explicit execution modes:
 
-Parameters: `query`, `max_results` (default 5),
-`search_type` (`semantic`/`keyword`/`hybrid`),
-`similarity_threshold` (default 0.0).
+- **Local stdio (default):** resolves the nearest `kompile.project.json` and searches only that
+  directory's `data/crawls` knowledge bases. It launches the configured local `ENCODER` model as a
+  bounded, reusable embedding subprocess, reads artifacts only from `<project>/data/models`, and
+  never contacts the model-staging server. Chunk vectors are cached beside `chunks.jsonl` and are
+  invalidated by model-artifact and content fingerprints. If the encoder is not materialized,
+  retrieval degrades to lexical matching and reports `retrievalMode=lexical-fallback`.
+- **Explicit remote (`--url`):** calls `POST /api/knowledge/search`, where
+  `UnifiedKnowledgeTool` fans out across the managed deployment's document retrievers and graph.
+
+Local parameters are `query`, optional `topic`, optional folder-local `knowledgeBase`, and `limit`
+(default 20, maximum 50). A local invocation never enumerates or merges sibling project folders.
 
 ## RAG tool for agents
 

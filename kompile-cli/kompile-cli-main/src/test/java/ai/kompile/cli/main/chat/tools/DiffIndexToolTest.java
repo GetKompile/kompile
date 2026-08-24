@@ -1,7 +1,6 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.app.services.diffindex.DiffIndexEntry;
-import ai.kompile.app.services.diffindex.DiffIndexService;
 import ai.kompile.cli.main.chat.agent.AgentConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -49,11 +48,13 @@ class DiffIndexToolTest {
         assertEquals("diff_index", tool.id());
         assertTrue(tool.description().contains("old text"));
         assertTrue(tool.description().contains("unified diffs"));
+        assertTrue(tool.description().contains("current directory project"));
 
         JsonNode schema = tool.parameterSchema();
         assertTrue(schema.path("required").toString().contains("action"));
         assertTrue(schema.path("properties").has("query"));
         assertTrue(schema.path("properties").has("file_path"));
+        assertTrue(schema.path("properties").path("scope").path("enum").toString().contains("global"));
         assertTrue(schema.path("properties").has("include_content"));
         assertTrue(schema.path("properties").path("sort_by").path("enum").toString().contains("total_changes"));
         assertTrue(schema.path("properties").path("sort_dir").path("enum").toString().contains("asc"));
@@ -204,6 +205,58 @@ class DiffIndexToolTest {
     }
 
     @Test
+    void localBackendDefaultsToNearestDirectoryProject() throws Exception {
+        Path projectRoot = workDir.resolve("directory-project");
+        Path nested = projectRoot.resolve("modules/cli");
+        Files.createDirectories(nested);
+        Files.writeString(projectRoot.resolve("kompile.project.json"), "{}");
+        context = new ToolContext(
+                "diff-index-test", context.getAgent(), context.getPermissionService(), nested,
+                context.getToolRegistry());
+        backend.local = true;
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "stats");
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertNotNull(backend.lastScope);
+        assertEquals("project", backend.lastScope.name());
+        assertEquals(projectRoot.toAbsolutePath().normalize(), backend.lastScope.projectRoot());
+        assertEquals(projectRoot.toAbsolutePath().normalize().toString(),
+                result.getMetadata().get("project_root"));
+    }
+
+    @Test
+    void localBackendUsesGlobalIndexOnlyWhenExplicitlyRequested() throws Exception {
+        backend.local = true;
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "stats");
+        params.put("scope", "global");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertNotNull(backend.lastScope);
+        assertEquals("global", backend.lastScope.name());
+        assertNull(backend.lastScope.projectRoot());
+        assertEquals("global", result.getMetadata().get("scope"));
+    }
+
+    @Test
+    void rejectsUnknownScopeBeforeCallingBackend() throws Exception {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "search");
+        params.put("scope", "workspace");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertTrue(result.isError());
+        assertTrue(result.getOutput().contains("scope must be"));
+        assertNull(backend.lastPath);
+    }
+
+    @Test
     void rejectsUnsupportedSortBeforeCallingBackend() throws Exception {
         ObjectNode params = objectMapper.createObjectNode();
         params.put("action", "search");
@@ -239,8 +292,7 @@ class DiffIndexToolTest {
 
     @Test
     void localGatewayQueriesPersistedIndexWithoutAnAdminService() throws Exception {
-        Path isolatedHome = workDir.resolve("home");
-        Path indexDir = isolatedHome.resolve(".kompile/agent-state/diff-index");
+        Path indexDir = workDir.resolve(".kompile/agent-state/diff-index");
         Files.createDirectories(indexDir);
         DiffIndexEntry entry = DiffIndexEntry.builder()
                 .id("local-1")
@@ -261,22 +313,58 @@ class DiffIndexToolTest {
                 .build();
         objectMapper.writeValue(indexDir.resolve("local-1.json").toFile(), entry);
 
+        tool = new DiffIndexTool(null, objectMapper);
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("action", "search");
+        params.put("query", "stdio local");
+
+        ToolResult result = tool.execute(params, context);
+
+        assertFalse(result.isError(), result.getOutput());
+        assertTrue(result.getOutput().contains("src/Offline.java"));
+        assertTrue(result.getOutput().contains("local-1"));
+        assertFalse(result.getOutput().contains("admin service"));
+        assertEquals("project", result.getMetadata().get("scope"));
+        assertEquals(workDir.toAbsolutePath().normalize().toString(),
+                result.getMetadata().get("project_root"));
+    }
+
+    @Test
+    void localGatewayCanReadTheExplicitGlobalIndex() throws Exception {
+        Path isolatedHome = workDir.resolve("home");
+        Path indexDir = isolatedHome.resolve(".kompile/agent-state/diff-index");
+        Files.createDirectories(indexDir);
+        DiffIndexEntry entry = DiffIndexEntry.builder()
+                .id("global-1")
+                .agent("codex")
+                .source("codex")
+                .sessionId("global-session")
+                .sessionFingerprint("codex:global-session")
+                .projectDirectory("/another/project")
+                .filePath("src/Global.java")
+                .toolName("edit")
+                .diffType("edit")
+                .newString("cross-project history")
+                .unifiedDiff("+cross-project history")
+                .timestamp("2026-08-11T00:00:00Z")
+                .linesAdded(1)
+                .build();
+        objectMapper.writeValue(indexDir.resolve("global-1.json").toFile(), entry);
+
         String previousHome = System.getProperty("user.home");
         try {
             System.setProperty("user.home", isolatedHome.toString());
-            DiffIndexService service = new DiffIndexService();
-            tool = new DiffIndexTool(objectMapper,
-                    new DiffIndexTool.LocalBackendGateway(objectMapper, service));
+            tool = new DiffIndexTool(null, objectMapper);
             ObjectNode params = objectMapper.createObjectNode();
             params.put("action", "search");
-            params.put("query", "stdio local");
+            params.put("scope", "global");
+            params.put("query", "cross-project history");
 
             ToolResult result = tool.execute(params, context);
 
             assertFalse(result.isError(), result.getOutput());
-            assertTrue(result.getOutput().contains("src/Offline.java"));
-            assertTrue(result.getOutput().contains("local-1"));
-            assertFalse(result.getOutput().contains("admin service"));
+            assertTrue(result.getOutput().contains("src/Global.java"));
+            assertEquals("global", result.getMetadata().get("scope"));
         } finally {
             if (previousHome == null) {
                 System.clearProperty("user.home");
@@ -291,6 +379,8 @@ class DiffIndexToolTest {
         private int statusCode = 200;
         private String body = "[]";
         private String lastPath;
+        private boolean local;
+        private DiffIndexTool.RequestScope lastScope;
 
         @Override
         public boolean isAvailable(String path) {
@@ -298,8 +388,15 @@ class DiffIndexToolTest {
         }
 
         @Override
-        public DiffIndexTool.BackendResponse get(String path, Duration timeout) {
+        public boolean isLocal() {
+            return local;
+        }
+
+        @Override
+        public DiffIndexTool.BackendResponse get(
+                String path, Duration timeout, DiffIndexTool.RequestScope scope) {
             lastPath = path;
+            lastScope = scope;
             return new DiffIndexTool.BackendResponse(statusCode, body, null);
         }
     }

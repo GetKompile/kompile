@@ -48,7 +48,8 @@ internal object MobileModelArtifactResolver {
     fun resolve(
         context: Context,
         modelPath: String,
-        operation: NativeOperationTransaction
+        operation: NativeOperationTransaction,
+        expectedCompileKey: String? = null,
     ): SdxCompiledModel {
         val source = File(modelPath)
         require(source.isFile) { "SDX source model does not exist: $modelPath" }
@@ -59,7 +60,12 @@ internal object MobileModelArtifactResolver {
         operation.checkpoint(NativeOperationCheckpoint.RESOLVE_MODEL_ASSETS)
         val target = SdxTargetProfile.fromId(BuildConfig.SDX_TARGET_PROFILE)
         val cacheRoot = File(context.noBackupFilesDir, "sdx-model-cache")
-        val compiled = SdxModelCache(cacheRoot.toPath()).resolve(source.toPath(), target)
+        val compiled = SdxModelCache(cacheRoot.toPath()).resolveVerified(source.toPath(), target)
+        expectedCompileKey?.let { expected ->
+            require(compiled.compileKey() == expected) {
+                "Resolved SDX compile key ${compiled.compileKey()} does not match selected cache entry $expected"
+            }
+        }
         // A target object alone is not a runnable chat model. Fail at import with
         // the staging guidance from SDX instead of opening a partial native session.
         compiled.requireTextModelAssets()

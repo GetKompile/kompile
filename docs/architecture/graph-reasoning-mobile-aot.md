@@ -16,6 +16,10 @@ Companion handoff (dl4j side): `~/Documents/GitHub/deeplearning4j/SDX_MOBILE_LLM
   `native-image --shared` + `@CEntryPoint`** (same shape as the existing
   `kompile-c-library`/`kompile.h` desktop bridge). **Gluon is rejected** — no
   third-party AOT toolchain; mobile cross-targets are in-house build work.
+- Android consumer bindings follow the same ownership boundary: DL4J publishes only
+  the stable SDX C header/library, while the Kompile chat app owns and compiles its
+  `ai.kompile.*` JNI adapter. SDX must never contain Kompile package symbols, graph
+  reasoning APIs, or a Kompile-specific JNI artifact.
 - v1 of this doc recommended Gluon (iOS) + AAR-on-ART (Android). Superseded: one
   artifact shape on every platform; Android consumes the `.so` via JNA exactly like it
   consumes `libsdx_runtime`, iOS links the static lib/xcframework like SDX's.

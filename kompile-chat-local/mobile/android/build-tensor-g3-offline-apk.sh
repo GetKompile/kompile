@@ -45,6 +45,7 @@ APK_BUILDER="$SCRIPT_DIR/tools/build-offline-accelerators.sh"
 KOMPILE_MAVEN="${SDX_MAVEN:-/home/agibsonccc/dev-apps/mvn/bin/mvn}"
 GRAPH_MODULE="$KOMPILE_ROOT/kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local"
 GRAPH_LIBRARY="$GRAPH_MODULE/target/android-aot/jni/arm64-v8a/libkompile_reasoning_android.so"
+GRAPH_SUPPORT_DIR="$WORK_ROOT/graph-aot-work/clibraries/bionic"
 RESOLVED_BUILD_CONFIG="$WORK_ROOT/resolved-build-config.properties"
 RESUME_PUBLISH=0
 PUBLISH_MODE_ARGS=(--tensor-g3-aar "$ACCELERATOR_AAR")
@@ -89,8 +90,8 @@ resolved_config_value() {
 }
 
 ensure_graph_aot() {
-  if [[ -s "$GRAPH_LIBRARY" ]]; then
-    printf 'Reusing verified graph AOT producer: %s\n' "$GRAPH_LIBRARY"
+  if [[ -s "$GRAPH_LIBRARY" && -s "$GRAPH_SUPPORT_DIR/jdk-support-receipt" ]]; then
+    printf 'Reusing verified graph AOT producer and generic support closure: %s\n' "$GRAPH_LIBRARY"
     return
   fi
 
@@ -99,18 +100,20 @@ ensure_graph_aot() {
       --production \
       --jobs "$BUILD_JOBS" \
       --output-root "$WORK_ROOT" \
+      --object-builder "$GRAPH_MODULE/build-android-ndk.sh" \
       --print-config
   fi
 
-  local android_ndk graalvm_home support_dir
+  local android_ndk graalvm_home
+  local -a graph_maven_args
   android_ndk="$(resolved_config_value android_ndk)"
   graalvm_home="$(resolved_config_value graalvm_home)"
-  support_dir="$(resolved_config_value jdk_support_dir)"
-  [[ -n "$android_ndk" && -n "$graalvm_home" && -n "$support_dir" ]] ||
+  [[ -n "$android_ndk" && -n "$graalvm_home" ]] ||
     fail "resolved Android tool configuration is incomplete for graph AOT"
 
-  printf 'Graph AOT producer is missing; rebuilding only that producer with cached support.\n'
-  "$KOMPILE_MAVEN" -o -f "$KOMPILE_ROOT/pom.xml" \
+  printf 'Graph AOT producer or generic Android support closure is missing; rebuilding that producer.\n'
+  graph_maven_args=(
+    -o -f "$KOMPILE_ROOT/pom.xml"
     -pl kompile-app/kompile-data/kompile-graphs/kompile-graph-reasoning-local \
     -am install \
     -DskipTests \
@@ -118,9 +121,16 @@ ensure_graph_aot() {
     -Dmobile.android.ndk="$android_ndk" \
     -Dmobile.graalvm.home="$graalvm_home" \
     -Dkompile.android.jobs="$BUILD_JOBS" \
-    -Dkompile.android.work.dir="$WORK_ROOT/graph-aot-work" \
-    -Dkompile.android.reuse.support.dir="$support_dir"
+    -Dkompile.android.work.dir="$WORK_ROOT/graph-aot-work"
+  )
+  if [[ -s "$GRAPH_SUPPORT_DIR/jdk-support-receipt" ]]; then
+    graph_maven_args+=("-Dkompile.android.reuse.support.dir=$GRAPH_SUPPORT_DIR")
+  fi
+  "$KOMPILE_MAVEN" "${graph_maven_args[@]}"
   [[ -s "$GRAPH_LIBRARY" ]] || fail "graph AOT producer did not publish: $GRAPH_LIBRARY"
+  for support in libjvm.a liblibchelper.a libjava.a libnet.a libnio.a libzip.a libprefs.a libextnet.a jdk-support-receipt; do
+    [[ -s "$GRAPH_SUPPORT_DIR/$support" ]] || fail "graph AOT producer omitted generic support input: $support"
+  done
 }
 
 WORK_ROOT="$(realpath -m -- "$WORK_ROOT")"
@@ -163,11 +173,19 @@ printf 'Running mandatory pre-build cleanup.\n'
 "$CLEANUP_BUILDER" --build-root "$WORK_ROOT" "${CACHE_RETENTION_ARGS[@]}"
 "$APK_BUILDER" --cleanup-only --work-root "$WORK_ROOT"
 
+# Kompile owns the graph producer and the shared Android Native Image support
+# closure. SDX consumes those generic, explicit inputs and never discovers this
+# repository or graph module on its own.
+ensure_graph_aot
+
 if (( RESUME_PUBLISH == 0 )); then
   "$SDK_BUILDER" all \
     --production \
     --jobs "$BUILD_JOBS" \
-    --output-root "$WORK_ROOT"
+    --output-root "$WORK_ROOT" \
+    --object-builder "$GRAPH_MODULE/build-android-ndk.sh" \
+    --reuse-jdk-libs "$GRAPH_SUPPORT_DIR" \
+    --reuse-svm-libs "$GRAPH_SUPPORT_DIR"
 
   ACCELERATOR_BUILD_ARGS=(
     --jobs "$BUILD_JOBS"
@@ -191,8 +209,6 @@ else
   printf 'Resume publish: reusing immutable producer artifacts from their verified historical receipts.\n'
   PUBLISH_MODE_ARGS+=(--reuse-receipted-producers)
 fi
-
-ensure_graph_aot
 
 exec "$APK_BUILDER" \
   --variant tensor-g3 \

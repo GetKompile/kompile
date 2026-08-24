@@ -25,6 +25,8 @@ import org.jline.reader.LineReader;
 import org.jline.reader.Widget;
 import org.jline.terminal.Terminal;
 import org.jline.utils.AttributedString;
+import org.jline.utils.AttributedStringBuilder;
+import org.jline.utils.WCWidth;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -70,10 +72,7 @@ public class KompileTui {
     private static final String REDRAW_WIDGET = "kompile-redraw-frame";
     private static final int MAX_MAIN_TRANSCRIPT_LINES = 2_000;
     private static final long MIN_ASYNC_FRAME_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
-    private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Bottom]";
-    /** JLine mouse coordinates are zero-based; row 3 and column 2 keep X10 clicks ASCII-safe. */
-    private static final int SCROLL_TO_BOTTOM_CONTROL_X = 1;
-    private static final int SCROLL_TO_BOTTOM_CONTROL_Y = TopBar.TOP_HEIGHT - 1;
+    private static final String SCROLL_TO_BOTTOM_CONTROL = "[↓ Scroll to bottom]";
 
     private final TopBar topBar;
     private final StatusBar statusBar;
@@ -115,6 +114,21 @@ public class KompileTui {
         }
     }
 
+    /** One terminal row plus the retained logical line that produced it. */
+    private record VisualRow(AttributedString text, int logicalLine) {}
+
+    /** Absolute visual-row/cell coordinate within the active content view. */
+    private record SelectionPoint(int row, int column) {}
+
+    /** Normalized half-open selection range. */
+    private record SelectionRange(SelectionPoint start, SelectionPoint end) {}
+
+    /** Visible rows and their indexes in the complete visual transcript. */
+    private record VisibleVisualRows(
+            List<VisualRow> allRows,
+            List<VisualRow> rows,
+            List<Integer> absoluteIndexes) {}
+
     private final Deque<TranscriptEntry> mainTranscriptEntries = new ArrayDeque<>();
     private int mainTranscriptLineCount;
     private volatile String contentViewKey = MAIN_CONTENT_VIEW;
@@ -124,6 +138,16 @@ public class KompileTui {
     private volatile int contentScrollOffset = 0;
     /** Activity views pin their title row while their transcript body scrolls. */
     private volatile boolean contentViewPinsHeader = false;
+
+    /** Browser-like transcript selection retained independently of viewport scroll. */
+    private SelectionPoint selectionAnchorCell;
+    private SelectionPoint selectionActiveCell;
+    private boolean selectionDragging;
+    private String selectionViewKey;
+    private int selectionPointerX;
+    private int selectionPointerY;
+    private boolean selectionAutoScrollScheduled;
+    private long selectionVersion;
 
     /** True while a short-lived modal (for example the provider/model picker) owns the content area. */
     private volatile boolean temporaryWindowActive = false;
@@ -331,28 +355,141 @@ public class KompileTui {
         return contentScrollOffset;
     }
 
-    /** Whether the fixed separator-row shortcut should currently be shown. */
+    /** Whether the floating viewport shortcut should currently be shown. */
     public boolean isScrollToBottomControlVisible() {
         int width = terminalWidth > 0 ? terminalWidth : 80;
         return !temporaryWindowActive
                 && contentScrollOffset > 0
-                && width > SCROLL_TO_BOTTOM_CONTROL_X
-                + AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
+                && width > AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL) + 2
+                && scrollToBottomControlY() >= scrollTop() - 1;
+    }
+
+    /** Zero-based floating-control column, centered for the current terminal width. */
+    public int scrollToBottomControlX() {
+        int width = terminalWidth > 0 ? terminalWidth : 80;
+        int controlWidth = AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
+        return Math.max(1, (width - controlWidth) / 2);
+    }
+
+    /** Zero-based row immediately above JLine's live input row. */
+    public int scrollToBottomControlY() {
+        return Math.max(scrollTop() - 1, scrollBottom() - 2);
     }
 
     /**
      * Handle a zero-based JLine primary-click coordinate. Only the visible
-     * separator-row shortcut is active; every other click remains a no-op.
+     * floating shortcut is active; every other click remains a no-op.
      */
     public boolean handleScrollToBottomClick(int x, int y) {
         int controlWidth = AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL);
         if (!isScrollToBottomControlVisible()
-                || y != SCROLL_TO_BOTTOM_CONTROL_Y
-                || x < SCROLL_TO_BOTTOM_CONTROL_X
-                || x >= SCROLL_TO_BOTTOM_CONTROL_X + controlWidth) {
+                || y != scrollToBottomControlY()
+                || x < scrollToBottomControlX()
+                || x >= scrollToBottomControlX() + controlWidth) {
             return false;
         }
         return scrollToBottom();
+    }
+
+    /** Begin a primary-button selection on a rendered transcript row. */
+    public boolean beginTranscriptSelection(int x, int y) {
+        synchronized (drawLock) {
+            SelectionPoint point = selectionPointAt(x, y, false);
+            if (point == null || temporaryWindowActive) {
+                boolean changed = clearTranscriptSelectionLocked();
+                if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+                return changed;
+            }
+            selectionAnchorCell = point;
+            selectionActiveCell = point;
+            selectionDragging = true;
+            selectionViewKey = contentViewKey;
+            selectionPointerX = x;
+            selectionPointerY = y;
+            selectionAutoScrollScheduled = false;
+            selectionVersion++;
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return true;
+        }
+    }
+
+    /** Extend the active selection, scrolling when the pointer reaches a viewport edge. */
+    public boolean dragTranscriptSelection(int x, int y) {
+        synchronized (drawLock) {
+            if (!selectionDragging || !selectionBelongsToActiveView()) return false;
+            selectionPointerX = x;
+            selectionPointerY = y;
+            boolean changed = autoScrollSelectionAt(y);
+            SelectionPoint point = selectionPointAt(x, y, true, true);
+            if (point != null && !point.equals(selectionActiveCell)) {
+                selectionActiveCell = point;
+                changed = true;
+            }
+            scheduleSelectionAutoScrollLocked();
+            if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return changed;
+        }
+    }
+
+    /** Finish a primary-button selection while retaining its highlight for copying. */
+    public boolean finishTranscriptSelection(int x, int y) {
+        synchronized (drawLock) {
+            if (!selectionDragging || !selectionBelongsToActiveView()) return false;
+            selectionPointerX = x;
+            selectionPointerY = y;
+            SelectionPoint point = selectionPointAt(x, y, true, true);
+            if (point != null) selectionActiveCell = point;
+            selectionDragging = false;
+            if (selectionRangeLocked() == null) clearTranscriptSelectionLocked();
+            replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return true;
+        }
+    }
+
+    /** Clear any retained transcript selection. */
+    public boolean clearTranscriptSelection() {
+        synchronized (drawLock) {
+            boolean changed = clearTranscriptSelectionLocked();
+            if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+            return changed;
+        }
+    }
+
+    public boolean hasTranscriptSelection() {
+        synchronized (drawLock) {
+            return selectionRangeLocked() != null;
+        }
+    }
+
+    /** Whether a zero-based terminal coordinate addresses a currently rendered transcript row. */
+    public boolean isTranscriptCoordinate(int x, int y) {
+        synchronized (drawLock) {
+            return x >= 0 && selectionPointAt(x, y, false) != null;
+        }
+    }
+
+    /** Plain selected text with ANSI removed and soft wraps joined back together. */
+    public String getSelectedTranscriptText() {
+        synchronized (drawLock) {
+            List<VisualRow> rows = selectableVisualRows(contentViewLines, contentViewPinsHeader);
+            SelectionRange range = selectionRangeLocked(rows);
+            if (range == null) return "";
+            StringBuilder selected = new StringBuilder();
+            for (int rowIndex = range.start().row(); rowIndex <= range.end().row(); rowIndex++) {
+                VisualRow row = rows.get(rowIndex);
+                int from = rowIndex == range.start().row() ? range.start().column() : 0;
+                int to = rowIndex == range.end().row()
+                        ? range.end().column() : row.text().columnLength();
+                if (to > from) {
+                    selected.append(row.text().columnSubSequence(from, to));
+                }
+                if (rowIndex < range.end().row()
+                        && row.logicalLine() != rows.get(rowIndex + 1).logicalLine()) {
+                    selected.append('\n');
+                }
+            }
+            return AnsiConstants.stripAnsi(selected.toString());
+        }
     }
 
     /** Snapshot of the actual transcript rows selected by the current viewport. */
@@ -470,6 +607,7 @@ public class KompileTui {
         }
         window.add("╰" + "─".repeat(Math.max(1, Math.min(120, terminalWidth - 2))) + "╯");
         synchronized (drawLock) {
+            clearTranscriptSelectionLocked();
             if (!temporaryWindowActive) {
                 savedContentViewKey = contentViewKey;
                 savedContentViewTitle = contentViewTitle;
@@ -592,6 +730,7 @@ public class KompileTui {
         redrawExecutor.shutdownNow();
 
         synchronized (drawLock) {
+            clearTranscriptSelectionLocked();
             // Reset the region and clear through JLine's terminal stream so no
             // buffered stdout frame can arrive after shutdown.
             writeTerminal(ESC + "r" + ESC + "2J" + ESC + "H");
@@ -618,8 +757,8 @@ public class KompileTui {
         if (!started || temporaryWindowActive) return;
         synchronized (drawLock) {
             writeTerminal(scrollRegionSequence()
-                    + renderScrollToBottomControl()
-                    + renderContentRegion(contentViewLines, contentViewPinsHeader, false));
+                    + renderContentRegion(contentViewLines, contentViewPinsHeader, false)
+                    + renderScrollToBottomControl());
         }
     }
 
@@ -661,6 +800,7 @@ public class KompileTui {
         if (key == null || key.isBlank()) return false;
         List<String> lines = splitLines(text);
         synchronized (drawLock) {
+            List<String> previousContentLines = contentViewLines;
             int previousRows = 0;
             TranscriptEntry matched = null;
             for (TranscriptEntry entry : mainTranscriptEntries) {
@@ -681,6 +821,10 @@ public class KompileTui {
 
             if (isMainContentView()) {
                 contentViewLines = mainTranscriptSnapshot();
+                if (!selectionStableAcross(
+                        previousContentLines, false, contentViewLines, false)) {
+                    clearTranscriptSelectionLocked();
+                }
                 int nextRows = visualRows(matched.lines).size();
                 if (contentScrollOffset > 0 && nextRows > previousRows) {
                     contentScrollOffset = clampScrollOffset(
@@ -730,6 +874,7 @@ public class KompileTui {
         lines.addAll(splitLines(content));
         boolean plainOutput = !started;
         synchronized (drawLock) {
+            clearTranscriptSelectionLocked();
             contentViewKey = key == null || key.isBlank() ? "activity" : key;
             contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
             contentViewLines = List.copyOf(lines);
@@ -747,38 +892,51 @@ public class KompileTui {
      * This is used for live subagent chunks and process output updates.
      */
     public void updateActivityView(String key, String title, String content) {
-        if (temporaryWindowActive) return;
         if (key == null || key.isBlank()) return;
-        if (!key.equals(contentViewKey)) {
-            // A selection/process transition can arrive between refresh callbacks.
-            // Treat the new key as an authoritative view switch instead of silently
-            // updating an off-screen transcript.
-            showActivityView(key, title, content);
-            return;
-        }
         List<String> lines = new ArrayList<>();
         lines.add("── " + (title == null || title.isBlank() ? "Activity" : title) + " ──");
         lines.addAll(splitLines(content));
+        boolean plainOutput = false;
         synchronized (drawLock) {
-            int previousSize = visualBodyRows(contentViewLines, true).size();
-            boolean followingTail = contentScrollOffset == 0;
-            contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
-            contentViewLines = List.copyOf(lines);
-            contentViewPinsHeader = true;
-            int nextSize = visualBodyRows(lines, true).size();
-            if (!followingTail && nextSize > previousSize) {
-                contentScrollOffset += nextSize - previousSize;
+            if (temporaryWindowActive) return;
+            if (!key.equals(contentViewKey)) {
+                // A selection/process transition can arrive between refresh callbacks.
+                // Switch key and content atomically so a stale identity check cannot
+                // overwrite another view while leaving its key or selection behind.
+                clearTranscriptSelectionLocked();
+                contentViewKey = key;
+                contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+                contentViewLines = List.copyOf(lines);
+                contentScrollOffset = 0;
+                contentViewPinsHeader = true;
+                replaceScrollRegion(contentViewLines, true);
+                plainOutput = !started;
+            } else {
+                if (!selectionStableAcross(contentViewLines, true, lines, true)) {
+                    clearTranscriptSelectionLocked();
+                }
+                int previousSize = visualBodyRows(contentViewLines, true).size();
+                boolean followingTail = contentScrollOffset == 0;
+                contentViewTitle = title == null || title.isBlank() ? "Activity" : title;
+                contentViewLines = List.copyOf(lines);
+                contentViewPinsHeader = true;
+                int nextSize = visualBodyRows(lines, true).size();
+                if (!followingTail && nextSize > previousSize) {
+                    contentScrollOffset += nextSize - previousSize;
+                }
+                contentScrollOffset = clampScrollOffset(
+                        followingTail ? 0 : contentScrollOffset, contentViewLines, true);
+                replaceScrollRegion(contentViewLines, true);
             }
-            contentScrollOffset = clampScrollOffset(
-                    followingTail ? 0 : contentScrollOffset, contentViewLines, true);
-            replaceScrollRegion(contentViewLines, true);
         }
+        if (plainOutput) lines.forEach(System.out::println);
     }
 
     /** Restore the retained parent-chat transcript in-place. */
     public void showMainView() {
         if (temporaryWindowActive) return;
         synchronized (drawLock) {
+            clearTranscriptSelectionLocked();
             contentViewKey = MAIN_CONTENT_VIEW;
             contentViewTitle = "Main chat";
             List<String> lines = mainTranscriptSnapshot();
@@ -837,8 +995,10 @@ public class KompileTui {
     }
 
     private void trimMainTranscript() {
+        boolean trimmed = false;
         while (mainTranscriptLineCount > MAX_MAIN_TRANSCRIPT_LINES
                 && !mainTranscriptEntries.isEmpty()) {
+            trimmed = true;
             TranscriptEntry first = mainTranscriptEntries.peekFirst();
             int overflow = mainTranscriptLineCount - MAX_MAIN_TRANSCRIPT_LINES;
             if (first.lines.size() <= overflow) {
@@ -849,6 +1009,7 @@ public class KompileTui {
                 mainTranscriptLineCount -= overflow;
             }
         }
+        if (trimmed && selectionBelongsToActiveView()) clearTranscriptSelectionLocked();
     }
 
     private List<String> mainTranscriptSnapshot() {
@@ -878,12 +1039,12 @@ public class KompileTui {
             StringBuilder frame = new StringBuilder();
             frame.append(scrollRegionSequence());
             frame.append(topBar.render(terminalWidth));
-            frame.append(renderScrollToBottomControl());
             if (!temporaryWindowActive) {
                 frame.append(renderContentRegion(contentViewLines, contentViewPinsHeader, false));
             } else {
                 frame.append(renderContentRegion(temporaryWindowLines, false, false));
             }
+            frame.append(renderScrollToBottomControl());
             frame.append(renderQueueRegion());
             frame.append(statusBar.render(terminalHeight, terminalWidth));
             frame.append(ESC).append(scrollBottom()).append(";1H");
@@ -921,23 +1082,12 @@ public class KompileTui {
         return frame.toString();
     }
 
-    /**
-     * Paint or erase the scroll shortcut within the existing top separator.
-     * Replacing only these cells keeps the fixed layout and transcript capacity
-     * unchanged while allowing partial content repaints to update the control.
-     */
+    /** Paint a floating bottom-center shortcut over the scrolled transcript. */
     private String renderScrollToBottomControl() {
-        int width = terminalWidth > 0 ? terminalWidth : 80;
-        int available = Math.max(0, width - SCROLL_TO_BOTTOM_CONTROL_X - 1);
-        int cells = Math.min(
-                AnsiConstants.visibleLength(SCROLL_TO_BOTTOM_CONTROL), available);
-        if (cells <= 0) return "";
-
-        String content = isScrollToBottomControlVisible()
-                ? BOLD + CYAN + SCROLL_TO_BOTTOM_CONTROL + RESET
-                : DIM + HORIZONTAL_LINE.repeat(cells) + RESET;
-        return ESC + TopBar.TOP_HEIGHT + ";"
-                + (SCROLL_TO_BOTTOM_CONTROL_X + 1) + "H" + content;
+        if (!isScrollToBottomControlVisible()) return "";
+        return ESC + (scrollToBottomControlY() + 1) + ";"
+                + (scrollToBottomControlX() + 1) + "H"
+                + BOLD + CYAN + INVERSE + SCROLL_TO_BOTTOM_CONTROL + RESET;
     }
 
     private String renderQueueRegion() {
@@ -1043,30 +1193,48 @@ public class KompileTui {
             requestRedraw();
             return;
         }
-        writeTerminal(renderScrollToBottomControl()
-                + renderContentRegion(lines, preserveHeader, clearInputRow));
+        writeTerminal(renderContentRegion(lines, preserveHeader, clearInputRow)
+                + renderScrollToBottomControl());
     }
 
     private List<String> visibleContentLines(List<String> lines, boolean preserveHeader) {
+        VisibleVisualRows visible = visibleVisualRows(lines, preserveHeader);
+        if (visible.rows().isEmpty()) return List.of();
+        SelectionRange selection = selectionRangeLocked(visible.allRows());
+        List<String> rendered = new ArrayList<>(visible.rows().size());
+        for (int i = 0; i < visible.rows().size(); i++) {
+            rendered.add(renderVisualRow(
+                    visible.rows().get(i), visible.absoluteIndexes().get(i), selection));
+        }
+        return List.copyOf(rendered);
+    }
+
+    private VisibleVisualRows visibleVisualRows(List<String> lines, boolean preserveHeader) {
         int capacity = transcriptCapacity();
-        if (lines == null || lines.isEmpty()) return List.of();
+        List<VisualRow> allRows = selectableVisualRows(lines, preserveHeader);
+        if (allRows.isEmpty()) return new VisibleVisualRows(allRows, List.of(), List.of());
         int offset = clampScrollOffset(contentScrollOffset, lines, preserveHeader);
         if (preserveHeader && capacity > 1) {
             int bodyCapacity = capacity - 1;
-            List<String> headerRows = visualRows(List.of(lines.get(0)));
-            List<String> bodyRows = visualBodyRows(lines, true);
-            int bodySize = bodyRows.size();
+            int bodySize = allRows.size() - 1;
             int end = Math.max(0, bodySize - offset);
             int start = Math.max(0, end - bodyCapacity);
-            List<String> visible = new ArrayList<>(capacity);
-            visible.add(headerRows.isEmpty() ? "" : headerRows.get(0));
-            visible.addAll(bodyRows.subList(start, end));
-            return visible;
+            List<VisualRow> visible = new ArrayList<>(capacity);
+            List<Integer> indexes = new ArrayList<>(capacity);
+            visible.add(allRows.get(0));
+            indexes.add(0);
+            for (int index = start; index < end; index++) {
+                visible.add(allRows.get(index + 1));
+                indexes.add(index + 1);
+            }
+            return new VisibleVisualRows(allRows, List.copyOf(visible), List.copyOf(indexes));
         }
-        List<String> rows = visualRows(lines);
-        int end = Math.max(0, rows.size() - offset);
+        int end = Math.max(0, allRows.size() - offset);
         int start = Math.max(0, end - capacity);
-        return List.copyOf(rows.subList(start, end));
+        List<Integer> indexes = new ArrayList<>(end - start);
+        for (int index = start; index < end; index++) indexes.add(index);
+        return new VisibleVisualRows(
+                allRows, List.copyOf(allRows.subList(start, end)), List.copyOf(indexes));
     }
 
     private int clampScrollOffset(int requested, List<String> lines, boolean preserveHeader) {
@@ -1088,22 +1256,240 @@ public class KompileTui {
      * the terminal's automatic right-margin wrap from advancing into input.
      */
     private List<String> visualRows(List<String> lines) {
+        List<VisualRow> visualRows = visualRowsWithMetadata(lines, 0);
+        if (visualRows.isEmpty()) return List.of();
+        List<String> rows = new ArrayList<>(visualRows.size());
+        for (VisualRow row : visualRows) rows.add(toAnsi(row.text()));
+        return rows;
+    }
+
+    private List<VisualRow> visualRowsWithMetadata(List<String> lines, int logicalLineOffset) {
         if (lines == null || lines.isEmpty()) return List.of();
         int width = Math.max(1, (terminalWidth > 0 ? terminalWidth : 80) - 1);
-        List<String> rows = new ArrayList<>();
-        Terminal active = terminal;
-        for (String line : lines) {
+        List<VisualRow> rows = new ArrayList<>();
+        for (int logicalLine = 0; logicalLine < lines.size(); logicalLine++) {
+            String line = lines.get(logicalLine);
             AttributedString attributed = AttributedString.fromAnsi(line == null ? "" : line);
             List<AttributedString> wrapped = attributed.columnSplitLength(width);
             if (wrapped.isEmpty()) {
-                rows.add("");
+                rows.add(new VisualRow(AttributedString.EMPTY, logicalLineOffset + logicalLine));
                 continue;
             }
             for (AttributedString row : wrapped) {
-                rows.add(active == null ? row.toAnsi() : row.toAnsi(active));
+                rows.add(new VisualRow(row, logicalLineOffset + logicalLine));
             }
         }
-        return rows;
+        return List.copyOf(rows);
+    }
+
+    private List<VisualRow> selectableVisualRows(List<String> lines, boolean preserveHeader) {
+        if (lines == null || lines.isEmpty()) return List.of();
+        if (preserveHeader && transcriptCapacity() > 1) {
+            List<VisualRow> headerRows = visualRowsWithMetadata(List.of(lines.get(0)), 0);
+            List<VisualRow> bodyRows = visualRowsWithMetadata(lines.subList(1, lines.size()), 1);
+            List<VisualRow> rows = new ArrayList<>(bodyRows.size() + 1);
+            rows.add(headerRows.isEmpty()
+                    ? new VisualRow(AttributedString.EMPTY, 0) : headerRows.get(0));
+            rows.addAll(bodyRows);
+            return List.copyOf(rows);
+        }
+        return visualRowsWithMetadata(lines, 0);
+    }
+
+    private String renderVisualRow(VisualRow row, int rowIndex, SelectionRange selection) {
+        AttributedString text = row.text();
+        if (selection != null
+                && rowIndex >= selection.start().row()
+                && rowIndex <= selection.end().row()) {
+            int start = rowIndex == selection.start().row() ? selection.start().column() : 0;
+            int end = rowIndex == selection.end().row()
+                    ? selection.end().column() : text.columnLength();
+            text = inverseColumns(text, start, end);
+        }
+        return toAnsi(text);
+    }
+
+    private AttributedString inverseColumns(AttributedString text, int start, int end) {
+        int length = text.columnLength();
+        int from = Math.max(0, Math.min(start, length));
+        int to = Math.max(from, Math.min(end, length));
+        if (from == to) return text;
+        AttributedStringBuilder highlighted = new AttributedStringBuilder(text.length());
+        highlighted.append(text.columnSubSequence(0, from));
+        AttributedString selected = text.columnSubSequence(from, to);
+        for (int i = 0; i < selected.length(); i++) {
+            highlighted.append(selected.subSequence(i, i + 1), selected.styleAt(i).inverse());
+        }
+        highlighted.append(text.columnSubSequence(to, length));
+        return highlighted.toAttributedString();
+    }
+
+    private String toAnsi(AttributedString text) {
+        Terminal active = terminal;
+        return active == null ? text.toAnsi() : text.toAnsi(active);
+    }
+
+    private SelectionPoint selectionPointAt(int x, int y, boolean clampToTranscript) {
+        return selectionPointAt(x, y, clampToTranscript, false);
+    }
+
+    private SelectionPoint selectionPointAt(
+            int x, int y, boolean clampToTranscript, boolean preferBodyAtPinnedTop) {
+        VisibleVisualRows visible = visibleVisualRows(contentViewLines, contentViewPinsHeader);
+        if (visible.rows().isEmpty()) return null;
+        int top = scrollTop() - 1;
+        int bottom = Math.min(transcriptBottomY(), top + visible.rows().size() - 1);
+        if (!clampToTranscript && (y < top || y > bottom)) return null;
+        int rowOnScreen = Math.max(top, Math.min(y, bottom)) - top;
+        if (preferBodyAtPinnedTop && contentViewPinsHeader
+                && y <= top && visible.rows().size() > 1) {
+            rowOnScreen = 1;
+        }
+        VisualRow row = visible.rows().get(rowOnScreen);
+        int column = Math.max(0, Math.min(x, row.text().columnLength()));
+        return new SelectionPoint(visible.absoluteIndexes().get(rowOnScreen), column);
+    }
+
+    private boolean autoScrollSelectionAt(int y) {
+        int maximum = clampScrollOffset(
+                Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
+        int next = contentScrollOffset;
+        if (y <= scrollTop() - 1 && contentScrollOffset < maximum) {
+            next++;
+        } else if (y >= transcriptBottomY() && contentScrollOffset > 0) {
+            next--;
+        }
+        if (next == contentScrollOffset) return false;
+        contentScrollOffset = next;
+        return true;
+    }
+
+    private void scheduleSelectionAutoScrollLocked() {
+        if (selectionAutoScrollScheduled || !selectionDragging || !selectionAtScrollableEdge()) return;
+        selectionAutoScrollScheduled = true;
+        long version = selectionVersion;
+        CompletableFuture.delayedExecutor(75, TimeUnit.MILLISECONDS).execute(() -> {
+            synchronized (drawLock) {
+                if (version != selectionVersion) return;
+                selectionAutoScrollScheduled = false;
+                if (!selectionDragging
+                        || !selectionBelongsToActiveView()) {
+                    return;
+                }
+                boolean changed = autoScrollSelectionAt(selectionPointerY);
+                SelectionPoint point = selectionPointAt(
+                        selectionPointerX, selectionPointerY, true, true);
+                if (point != null && !point.equals(selectionActiveCell)) {
+                    selectionActiveCell = point;
+                    changed = true;
+                }
+                if (changed) replaceScrollRegion(contentViewLines, contentViewPinsHeader);
+                if (changed) scheduleSelectionAutoScrollLocked();
+            }
+        });
+    }
+
+    private boolean selectionAtScrollableEdge() {
+        int maximum = clampScrollOffset(
+                Integer.MAX_VALUE, contentViewLines, contentViewPinsHeader);
+        return (selectionPointerY <= scrollTop() - 1 && contentScrollOffset < maximum)
+                || (selectionPointerY >= transcriptBottomY() && contentScrollOffset > 0);
+    }
+
+    private int transcriptBottomY() {
+        return Math.max(scrollTop() - 1, scrollBottom() - 2);
+    }
+
+    private boolean selectionBelongsToActiveView() {
+        return selectionViewKey != null && selectionViewKey.equals(contentViewKey);
+    }
+
+    private SelectionRange selectionRangeLocked() {
+        return selectionRangeLocked(selectableVisualRows(contentViewLines, contentViewPinsHeader));
+    }
+
+    private SelectionRange selectionRangeLocked(List<VisualRow> rows) {
+        if (!selectionBelongsToActiveView()
+                || selectionAnchorCell == null || selectionActiveCell == null
+                || rows.isEmpty() || selectionAnchorCell.equals(selectionActiveCell)) {
+            return null;
+        }
+        boolean forward = comparePoints(selectionAnchorCell, selectionActiveCell) < 0;
+        SelectionPoint firstCell = forward ? selectionAnchorCell : selectionActiveCell;
+        SelectionPoint lastCell = forward ? selectionActiveCell : selectionAnchorCell;
+        if (firstCell.row() < 0 || lastCell.row() >= rows.size()) return null;
+        AttributedString firstRow = rows.get(firstCell.row()).text();
+        AttributedString lastRow = rows.get(lastCell.row()).text();
+        int startColumn = glyphStartColumn(firstRow, firstCell.column());
+        int endColumn = glyphEndColumn(lastRow, lastCell.column());
+        SelectionPoint start = new SelectionPoint(firstCell.row(), startColumn);
+        SelectionPoint end = new SelectionPoint(lastCell.row(), endColumn);
+        return comparePoints(start, end) < 0 ? new SelectionRange(start, end) : null;
+    }
+
+    private static int comparePoints(SelectionPoint left, SelectionPoint right) {
+        int row = Integer.compare(left.row(), right.row());
+        return row != 0 ? row : Integer.compare(left.column(), right.column());
+    }
+
+    private static int glyphStartColumn(AttributedString text, int requestedColumn) {
+        return glyphBoundary(text, requestedColumn, false);
+    }
+
+    private static int glyphEndColumn(AttributedString text, int requestedColumn) {
+        return glyphBoundary(text, requestedColumn, true);
+    }
+
+    private static int glyphBoundary(
+            AttributedString text, int requestedColumn, boolean afterGlyph) {
+        int target = Math.max(0, Math.min(requestedColumn, text.columnLength()));
+        int column = 0;
+        for (int index = 0; index < text.length();) {
+            int codePoint = text.codePointAt(index);
+            int width = text.isHidden(index) ? 0 : Math.max(0, WCWidth.wcwidth(codePoint));
+            if (width > 0 && target < column + width) {
+                return afterGlyph ? column + width : column;
+            }
+            column += width;
+            index += Character.charCount(codePoint);
+        }
+        return column;
+    }
+
+    private boolean selectionStableAcross(
+            List<String> previousLines,
+            boolean previousPreservesHeader,
+            List<String> nextLines,
+            boolean nextPreservesHeader) {
+        if (!selectionBelongsToActiveView()
+                || selectionAnchorCell == null || selectionActiveCell == null) {
+            return true;
+        }
+        List<VisualRow> previous = selectableVisualRows(previousLines, previousPreservesHeader);
+        List<VisualRow> next = selectableVisualRows(nextLines, nextPreservesHeader);
+        int lastSelectedRow = Math.max(selectionAnchorCell.row(), selectionActiveCell.row());
+        if (lastSelectedRow >= previous.size() || lastSelectedRow >= next.size()) return false;
+        for (int row = 0; row <= lastSelectedRow; row++) {
+            VisualRow before = previous.get(row);
+            VisualRow after = next.get(row);
+            if (before.logicalLine() != after.logicalLine()
+                    || !before.text().equals(after.text())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean clearTranscriptSelectionLocked() {
+        boolean changed = selectionAnchorCell != null || selectionActiveCell != null
+                || selectionDragging || selectionViewKey != null;
+        selectionAnchorCell = null;
+        selectionActiveCell = null;
+        selectionDragging = false;
+        selectionViewKey = null;
+        selectionAutoScrollScheduled = false;
+        selectionVersion++;
+        return changed;
     }
 
     private int transcriptCapacity() {
@@ -1173,12 +1559,18 @@ public class KompileTui {
     }
 
     private void updateTerminalSize() {
+        int previousWidth = terminalWidth;
         if (terminal != null) {
             terminalHeight = terminal.getHeight();
             terminalWidth = terminal.getWidth();
         }
         if (terminalHeight <= 0) terminalHeight = 24;
         if (terminalWidth <= 0) terminalWidth = 80;
+        if (previousWidth > 0 && previousWidth != terminalWidth) {
+            synchronized (drawLock) {
+                clearTranscriptSelectionLocked();
+            }
+        }
     }
 
     private void fireResizeListeners() {

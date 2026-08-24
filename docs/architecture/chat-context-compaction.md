@@ -22,19 +22,35 @@ overhead, and `inputBudgetTokens` for prompt + history.
 
 ## CLI (`kompile chat`, local/direct mode)
 
+- `ConversationLedger` is the durable source of truth at
+  `~/.kompile/conversations/<session>.context.json`. It retains immutable user,
+  assistant, tool-call, and tool-result events. Compaction commits a versioned
+  checkpoint (portable summary plus an optional provider-native payload) without
+  deleting the raw audit events. Resume and provider switching project from this
+  checkpoint instead of replaying the full pre-compaction transcript.
+- Compaction boundaries are complete user exchanges. A tool call is never separated
+  from its successful, denied, failed, missing-tool, or cancelled result.
 - `CompactionService` budgets are **model-aware and proportional**: the loop refreshes
   `setMaxTokens(...)` each turn via `ModelContextResolver`; the trigger headroom is
-  `min(20K, window/8)` and the preserved-recent span `min(40K, window/3)` — the old
-  fixed 20K/40K constants made a 4K model permanently "needs compaction" while never
-  actually shrinking anything.
+  `min(window × configured threshold, window - output reserve - safety reserve)` and
+  the preserved-recent span is `min(40K, window/3)` — fixed budgets would make a 4K
+  model permanently "needs compaction" while never actually shrinking anything.
 - The trigger also honors the **provider-reported prompt tokens** of the previous call
   (`usage.prompt_tokens` / `input_tokens`), which see the system prompt and tool
   definitions the char/4 estimate cannot.
-- **Turn start** (`AgenticChatLoop.maybeAutoCompactBeforeTurn`): when near the budget,
-  run the same LLM summarization as `/compact` (`forceCompact`); if summarization
-  fails, fall back to deterministic pruning plus a digest rewrite of the wire history.
-  This fixes the old auto-compact, which only pruned the *tracking* list and never
-  changed what `DirectLlmClient` actually sent.
+- **Turn start** (`AgenticChatLoop.maybeAutoCompactBeforeTurn`): count the complete
+  pending request through Anthropic `count_tokens`, Responses `input_tokens`, or
+  Gemini `countTokens` when supported. Otherwise combine the last provider-reported
+  usage with estimated growth. At the trigger, select provider-native compaction or
+  a structured generic summary, with a deterministic digest as the final fallback.
+- Vendor-native paths are explicit and capability-gated: Anthropic server compaction
+  retains its readable compaction block; OpenAI Responses retains the exact encrypted
+  compaction output plus a portable digest; OpenCode calls its native session summarize
+  endpoint. Proxy providers such as GitHub Copilot never inherit beta support solely
+  from a model-name prefix.
+- Utility summaries/judges use isolated clients, so they never clear or lock the live
+  chat history while a queued turn is trying to start. Compaction checkpoints use a
+  ledger-version compare-and-set and remain unchanged on cancellation or provider error.
 - **Mid-loop** (between agentic steps): only structure-safe in-place shrinking —
   `DirectLlmClient.compactToolHistory` collapses old `tool` message contents and clips
   old assistant text without touching ids or `tool_calls`, so the pairing providers
@@ -90,8 +106,12 @@ Frontend (UnifiedChat):
 
 ## Tests
 
-- CLI: `CompactionServiceModelAwareTest`, `ModelContextResolverTest`
-  (`kompile-cli-main`).
+- CLI: `ConversationLedgerTest`, `CompactionServiceModelAwareTest`,
+  `ProviderCompactionCapabilitiesTest`, `DirectLlmClientTokenCountTest`,
+  `DirectLlmClientOAuthTest`, `OpenCodeServeClientTest`, and
+  `ModelContextResolverTest` (`kompile-cli-main`).
+- Shared E2E contracts: `DirectLlmClientHistoryTest`,
+  `ConversationSummarizerTest`, and `ForceCompactResultTest`.
 - App: `ChatContextBudgetServiceTest`, `ChatHistoryCompactorTest`
   (`kompile-app-agent`).
 - Frontend: `unified-chat-compaction.spec.ts` (divider rendering, no chat bubble for

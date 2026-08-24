@@ -60,6 +60,34 @@ class SmokeDecodeTraceLogTest {
     }
 
     @Test
+    fun dspDiagnosticsManualClearRemovesCaptureBackupsAndExports() {
+        val directory = Files.createTempDirectory("dsp-diagnostics-clear").toFile()
+        try {
+            val active = File(directory, DspDiagnosticsExportPolicy.ACTIVE_FILE)
+                .apply { writeText("current-chat\n") }
+            File(directory, "${DspDiagnosticsExportPolicy.ACTIVE_FILE}.1")
+                .writeText("previous-runtime\n")
+            val export = DspDiagnosticsExportPolicy.writeShareSnapshot(directory)
+            val temporaryExport = File(
+                directory,
+                "${DspDiagnosticsExportPolicy.SHARE_FILE_PREFIX}interrupted" +
+                    "${DspDiagnosticsExportPolicy.SHARE_FILE_SUFFIX}.tmp"
+            ).apply { writeText("partial-export\n") }
+
+            DspDiagnosticsExportPolicy.clearAll(directory)
+
+            assertTrue(active.isFile)
+            assertEquals(0L, active.length())
+            assertFalse(File(directory, "${DspDiagnosticsExportPolicy.ACTIVE_FILE}.1").exists())
+            assertFalse(export.exists())
+            assertFalse(temporaryExport.exists())
+            assertTrue(DspDiagnosticsExportPolicy.contentsDescription(directory).contains("trace is empty"))
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun dspDiagnosticsExportImplementationDoesNotMaterializeTraceText() {
         val source = File(
             "src/main/java/ai/kompile/chat/local/android/diagnostics/DspDiagnosticsTraceLog.kt"

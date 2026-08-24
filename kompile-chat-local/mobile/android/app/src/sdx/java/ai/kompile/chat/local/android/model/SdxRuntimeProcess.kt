@@ -53,6 +53,7 @@ private const val EVENT_CHUNK = 101
 private const val KEY_REQUEST_ID = "request_id"
 private const val KEY_OPERATION_ATTEMPT_ID = "operation_attempt_id"
 private const val KEY_PID = "pid"
+private const val KEY_PROCESS_START_TIME_TICKS = "process_start_time_ticks"
 private const val KEY_HAS_ACTIVE_SESSION = "has_active_session"
 private const val KEY_WORKER_RETIRING = "worker_retiring"
 private const val KEY_SUCCESS = "success"
@@ -62,6 +63,7 @@ private const val KEY_FAILURE_STACK = "failure_stack"
 private const val KEY_MODEL_PATH = "model_path"
 private const val KEY_DIAGNOSTIC_MODEL_PATH = "diagnostic_model_path"
 private const val KEY_DIAGNOSTIC_MODE = "diagnostic_mode"
+private const val KEY_EXPECTED_COMPILE_KEY = "expected_compile_key"
 private const val KEY_ROUTE_NAME = "route_name"
 private const val KEY_MODEL_ID_PREFIX = "model_id_prefix"
 private const val KEY_SESSION_ID = "session_id"
@@ -92,12 +94,55 @@ internal fun sdxRuntimeProcessName(packageName: String): String =
 
 internal data class SdxRuntimeWorkerState(
     val pid: Int,
+    val startTimeTicks: Long,
     val ownsModelSession: Boolean,
     val retiring: Boolean
 )
 
 internal fun sdxRuntimeWorkerMustRestartBeforeOpen(state: SdxRuntimeWorkerState): Boolean =
     state.ownsModelSession || state.retiring
+
+internal fun awaitSdxRuntimeWorkerExit(
+    pid: Int,
+    startTimeTicks: Long,
+    maxChecks: Int = (EXIT_EVIDENCE_WAIT_MILLIS / SERVICE_POLL_MILLIS).toInt() + 1,
+    processMatches: (Int, Long) -> Boolean = ::sdxRuntimeProcessMatches,
+    waitBetweenChecks: () -> Unit = { Thread.sleep(SERVICE_POLL_MILLIS) },
+): Boolean {
+    require(pid > 0) { "Runtime worker pid must be positive" }
+    require(startTimeTicks > 0L) { "Runtime worker start time must be positive" }
+    require(maxChecks > 0) { "Runtime worker exit checks must be positive" }
+    repeat(maxChecks) { checkIndex ->
+        if (!processMatches(pid, startTimeTicks)) return true
+        if (checkIndex < maxChecks - 1) {
+            try {
+                waitBetweenChecks()
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw ChatException(
+                    "Waiting for the SDX runtime process $pid to exit was interrupted.",
+                    interrupted,
+                )
+            }
+        }
+    }
+    return !processMatches(pid, startTimeTicks)
+}
+
+internal fun sdxRuntimeProcessStartTimeTicks(
+    pid: Int,
+    readStat: (Int) -> String = { watchedPid -> File("/proc/$watchedPid/stat").readText() },
+): Long? = runCatching {
+    val stat = readStat(pid)
+    val commandEnd = stat.lastIndexOf(')')
+    require(commandEnd > 0 && commandEnd + 2 < stat.length)
+    val fieldsAfterCommand = stat.substring(commandEnd + 2).trim().split(Regex("\\s+"))
+    require(fieldsAfterCommand.size > 19)
+    fieldsAfterCommand[19].toLong().takeIf { it > 0L }
+}.getOrNull()
+
+internal fun sdxRuntimeProcessMatches(pid: Int, expectedStartTimeTicks: Long): Boolean =
+    sdxRuntimeProcessStartTimeTicks(pid) == expectedStartTimeTicks
 
 private fun isFrameworkOnlyRuntimeWireValueClass(valueClass: Class<*>): Boolean =
     valueClass == String::class.java ||
@@ -125,7 +170,8 @@ internal object SdxPlatformChatSession {
         diagnosticModelPath: String = modelPath,
         routeName: String,
         modelIdPrefix: String,
-        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF
+        diagnosticMode: ModelDiagnosticMode = ModelDiagnosticMode.OFF,
+        expectedCompileKey: String? = null,
     ): PlatformLocalChatSession {
         val applicationContext = context.applicationContext
         check(Application.getProcessName() != sdxRuntimeProcessName(applicationContext.packageName)) {
@@ -152,6 +198,7 @@ internal object SdxPlatformChatSession {
                 putString(KEY_DIAGNOSTIC_MODE, diagnosticMode.name)
                 putString(KEY_ROUTE_NAME, routeName)
                 putString(KEY_MODEL_ID_PREFIX, modelIdPrefix)
+                expectedCompileKey?.let { putString(KEY_EXPECTED_COMPILE_KEY, it) }
                 putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
             }
             val response = executeJournaledRequest(
@@ -172,6 +219,7 @@ internal object SdxPlatformChatSession {
                 connection = connection,
                 processName = processName,
                 processId = pid,
+                processStartTimeTicks = workerState.startTimeTicks,
                 diagnosticModelPath = diagnosticModelPath,
                 traceEnabled = effectiveDiagnosticModeForRuntime(diagnosticMode).capturesSmokeTrace,
                 sessionId = sessionId,
@@ -179,7 +227,11 @@ internal object SdxPlatformChatSession {
                 modelId = response.requireString(KEY_MODEL_ID)
             )
         } catch (failure: Throwable) {
-            connection.close()
+            try {
+                connection.retireAndAwait(workerState.pid, workerState.startTimeTicks)
+            } catch (retirementFailure: Throwable) {
+                failure.addSuppressed(retirementFailure)
+            }
             throw failure
         }
     }
@@ -189,6 +241,7 @@ internal object SdxPlatformChatSession {
         private val connection: SdxRuntimeConnection,
         private val processName: String,
         private val processId: Int,
+        private val processStartTimeTicks: Long,
         private val diagnosticModelPath: String,
         private val traceEnabled: Boolean,
         private val sessionId: String,
@@ -239,7 +292,11 @@ internal object SdxPlatformChatSession {
             } catch (failure: Throwable) {
                 if (!connection.isProcessAlive(processId)) {
                     closed.set(true)
-                    connection.close()
+                    try {
+                        connection.retireAndAwait(processId, processStartTimeTicks)
+                    } catch (retirementFailure: Throwable) {
+                        failure.addSuppressed(retirementFailure)
+                    }
                 }
                 throw failure
             }
@@ -275,41 +332,14 @@ internal object SdxPlatformChatSession {
                 processName = processName,
                 processId = processId
             )
-            executeJournaledRequest(
-                applicationContext,
-                connection,
-                processName,
-                processId,
-                operation,
-                MSG_CANCEL,
-                Bundle().apply {
-                    putString(KEY_SESSION_ID, sessionId)
-                    putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
-                },
-                SERVICE_CONTROL_TIMEOUT_MILLIS,
-                traceEnabled,
-                null
-            )
-        }
-
-        override fun close() {
-            if (!closed.compareAndSet(false, true)) return
             try {
-                if (!connection.isProcessAlive(processId)) return
-                val operation = NativeOperationJournal(applicationContext).begin(
-                    modelPath = diagnosticModelPath,
-                    operation = NativeOperationKind.SDX_MODEL_TEARDOWN,
-                    checkpoint = NativeOperationCheckpoint.CLOSE_TEXT_SESSION,
-                    processName = processName,
-                    processId = processId
-                )
                 executeJournaledRequest(
                     applicationContext,
                     connection,
                     processName,
                     processId,
                     operation,
-                    MSG_CLOSE,
+                    MSG_CANCEL,
                     Bundle().apply {
                         putString(KEY_SESSION_ID, sessionId)
                         putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
@@ -318,9 +348,57 @@ internal object SdxPlatformChatSession {
                     traceEnabled,
                     null
                 )
-            } finally {
-                connection.close()
+            } catch (failure: Throwable) {
+                if (!connection.isProcessAlive(processId)) {
+                    closed.set(true)
+                    try {
+                        connection.retireAndAwait(processId, processStartTimeTicks)
+                    } catch (retirementFailure: Throwable) {
+                        failure.addSuppressed(retirementFailure)
+                    }
+                }
+                throw failure
             }
+        }
+
+        override fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            var firstFailure: Throwable? = null
+            try {
+                if (connection.isProcessAlive(processId)) {
+                    val operation = NativeOperationJournal(applicationContext).begin(
+                        modelPath = diagnosticModelPath,
+                        operation = NativeOperationKind.SDX_MODEL_TEARDOWN,
+                        checkpoint = NativeOperationCheckpoint.CLOSE_TEXT_SESSION,
+                        processName = processName,
+                        processId = processId
+                    )
+                    executeJournaledRequest(
+                        applicationContext,
+                        connection,
+                        processName,
+                        processId,
+                        operation,
+                        MSG_CLOSE,
+                        Bundle().apply {
+                            putString(KEY_SESSION_ID, sessionId)
+                            putString(KEY_OPERATION_ATTEMPT_ID, operation.snapshot().attemptId)
+                        },
+                        SERVICE_CONTROL_TIMEOUT_MILLIS,
+                        traceEnabled,
+                        null
+                    )
+                }
+            } catch (failure: Throwable) {
+                firstFailure = failure
+            }
+            try {
+                connection.retireAndAwait(processId, processStartTimeTicks)
+            } catch (retirementFailure: Throwable) {
+                if (firstFailure == null) firstFailure = retirementFailure
+                else firstFailure?.addSuppressed(retirementFailure)
+            }
+            firstFailure?.let { throw it }
         }
 
         private fun requireOpen() {
@@ -564,6 +642,9 @@ private class SdxRuntimeConnection private constructor(
     @Volatile
     private var remotePid: Int = -1
 
+    @Volatile
+    private var remoteStartTimeTicks: Long = -1L
+
     override fun onServiceConnected(name: ComponentName, service: IBinder) {
         try {
             service.linkToDeath(this, 0)
@@ -604,9 +685,15 @@ private class SdxRuntimeConnection private constructor(
         ).bundle
         val pid = reply.getInt(KEY_PID, -1)
         if (pid <= 0) throw ChatException("The SDX runtime service returned an invalid pid: $pid")
+        val startTimeTicks = reply.getLong(KEY_PROCESS_START_TIME_TICKS, -1L)
+        if (startTimeTicks <= 0L) {
+            throw ChatException("The SDX runtime service returned no process start identity")
+        }
         remotePid = pid
+        remoteStartTimeTicks = startTimeTicks
         return SdxRuntimeWorkerState(
             pid = pid,
+            startTimeTicks = startTimeTicks,
             ownsModelSession = reply.getBoolean(KEY_HAS_ACTIVE_SESSION, false),
             retiring = reply.getBoolean(KEY_WORKER_RETIRING, false)
         )
@@ -672,7 +759,12 @@ private class SdxRuntimeConnection private constructor(
                             )
                         )
                     }
-                    if (watchedPid > 0 && isProcessAlive(watchedPid)) Process.killProcess(watchedPid)
+                    if (watchedPid > 0 &&
+                        remoteStartTimeTicks > 0L &&
+                        sdxRuntimeProcessMatches(watchedPid, remoteStartTimeTicks)
+                    ) {
+                        Process.killProcess(watchedPid)
+                    }
                     throw ChatException(
                         "The app-private SDX runtime did not finish IPC method $method within " +
                             "$timeoutMillis ms. Android terminated that worker; the verified model, " +
@@ -706,6 +798,7 @@ private class SdxRuntimeConnection private constructor(
             Thread.currentThread().interrupt()
             throw ChatException("Waiting for the SDX runtime process was interrupted.", interrupted)
         } catch (failure: RemoteException) {
+            markDead(ChatException("The SDX runtime Binder request failed.", failure))
             if (!attemptId.isNullOrBlank()) {
                 trace.recordFailure("ipc_failed", attemptId, failure, mapOf("method" to method))
             }
@@ -725,15 +818,37 @@ private class SdxRuntimeConnection private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        remoteBinder?.unlinkToDeath(this, 0)
+        try {
+            remoteBinder?.unlinkToDeath(this, 0)
+        } catch (failure: Throwable) {
+            Log.w(TAG, "SDX runtime death recipient was already detached", failure)
+        }
         pending.values.forEach { it.completed.countDown() }
         try {
             context.unbindService(this)
         } catch (failure: IllegalArgumentException) {
             Log.w(TAG, "SDX runtime service was already unbound", failure)
         }
-        context.stopService(Intent(context, SdxRuntimeService::class.java))
-        replyThread.quitSafely()
+        try {
+            context.stopService(Intent(context, SdxRuntimeService::class.java))
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Could not stop the SDX runtime service cleanly", failure)
+        } finally {
+            replyThread.quitSafely()
+            remoteBinder = null
+            remoteMessenger = null
+            remoteStartTimeTicks = -1L
+        }
+    }
+
+    fun retireAndAwait(pid: Int, startTimeTicks: Long) {
+        close()
+        if (sdxRuntimeProcessMatches(pid, startTimeTicks)) Process.killProcess(pid)
+        if (!awaitSdxRuntimeWorkerExit(pid, startTimeTicks)) {
+            throw ChatException(
+                "The retired SDX runtime process $pid did not exit before model ownership returned."
+            )
+        }
     }
 
     private fun awaitConnected() {
@@ -820,13 +935,7 @@ private class SdxRuntimeConnection private constructor(
                         "active=${state.ownsModelSession} retiring=${state.retiring} " +
                         "before opening a new model session."
                 )
-                connection.close()
-                if (File("/proc/${state.pid}").exists()) Process.killProcess(state.pid)
-                if (!awaitWorkerExit(state.pid)) {
-                    throw ChatException(
-                        "The stale SDX runtime process ${state.pid} did not exit before model load."
-                    )
-                }
+                connection.retireAndAwait(state.pid, state.startTimeTicks)
                 lastFailure = ChatException(
                     "The previous SDX runtime process ${state.pid} was not reusable " +
                         "(active=${state.ownsModelSession}, retiring=${state.retiring})."
@@ -863,22 +972,6 @@ private class SdxRuntimeConnection private constructor(
             return connection
         }
 
-        private fun awaitWorkerExit(pid: Int): Boolean {
-            val deadline = SystemClock.elapsedRealtime() + EXIT_EVIDENCE_WAIT_MILLIS
-            while (File("/proc/$pid").exists()) {
-                if (SystemClock.elapsedRealtime() >= deadline) return false
-                try {
-                    Thread.sleep(SERVICE_POLL_MILLIS)
-                } catch (interrupted: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    throw ChatException(
-                        "Waiting for the stale SDX runtime process $pid to exit was interrupted.",
-                        interrupted
-                    )
-                }
-            }
-            return true
-        }
     }
 }
 
@@ -963,6 +1056,11 @@ class SdxRuntimeService : Service() {
                 Bundle().apply {
                     putBoolean(KEY_SUCCESS, true)
                     putInt(KEY_PID, Process.myPid())
+                    putLong(
+                        KEY_PROCESS_START_TIME_TICKS,
+                        sdxRuntimeProcessStartTimeTicks(Process.myPid())
+                            ?: error("Android did not expose the runtime process start identity"),
+                    )
                     putBoolean(KEY_HAS_ACTIVE_SESSION, activeSession != null)
                     putBoolean(KEY_WORKER_RETIRING, sdxRuntimeWorkerRetiring.get())
                 }
@@ -1051,6 +1149,7 @@ class SdxRuntimeService : Service() {
                 modelIdPrefix = extras.requireString(KEY_MODEL_ID_PREFIX),
                 loadTransaction = operation,
                 diagnosticMode = diagnosticMode,
+                expectedCompileKey = extras.getString(KEY_EXPECTED_COMPILE_KEY),
             )
             val id = UUID.randomUUID().toString()
             activeSession = created
@@ -1150,6 +1249,7 @@ class SdxRuntimeService : Service() {
     private fun closeSession(extras: Bundle): Bundle {
         val session = requireSession(extras)
         val operation = resumeOperation(extras)
+        sdxRuntimeWorkerRetiring.set(true)
         try {
             session.close(operation)
         } finally {

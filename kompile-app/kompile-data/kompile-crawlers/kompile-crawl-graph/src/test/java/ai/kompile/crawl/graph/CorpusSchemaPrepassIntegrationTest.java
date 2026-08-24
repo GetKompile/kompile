@@ -9,6 +9,7 @@ import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
+import ai.kompile.core.llm.StructuredChatLanguageModel;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusPassage;
 import ai.kompile.crawl.graph.CrawlIndexTrackingCallback.CrawlCorpusSnapshot;
 import ai.kompile.knowledgegraph.service.ConceptExtractor;
@@ -16,20 +17,21 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,7 +39,7 @@ class CorpusSchemaPrepassIntegrationTest {
 
     @Test
     void productionPrepassCombinesSeedsExtractorsAndModelBeforeExtraction() {
-        GraphExtractionOrchestrator orchestrator = spy(new GraphExtractionOrchestrator());
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
         orchestrator.conceptExtractor = mock(ConceptExtractor.class);
         orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
@@ -52,6 +54,13 @@ class CorpusSchemaPrepassIntegrationTest {
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-integration");
+        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(schemaResponse(
+                        List.of("MODEL_INFERRED_TOPIC"), List.of(), List.of()));
         GraphExtractionConfig config = GraphExtractionConfig.builder()
                 .extractionMode(ExtractionMode.SINGLE_PASS)
                 .schemaMode(SchemaEnforcementMode.LENIENT)
@@ -77,21 +86,6 @@ class CorpusSchemaPrepassIntegrationTest {
                 .entities(new ArrayList<>(List.of(message, actor)))
                 .relationships(new ArrayList<>(List.of(emittedBy)))
                 .build();
-        String discoveredGraph = """
-                {"$schema":"kompile-graph-extraction/v1","entities":[
-                  {"id":"topic","name":"monthly forecast","type":"MODEL_INFERRED_TOPIC","confidence":0.98}
-                ],"relations":[]}
-                """;
-        doReturn(discoveredGraph).when(orchestrator).extractViaDecomposedPasses(
-                any(String.class),
-                any(org.springframework.ai.document.Document.class),
-                any(GraphExtractionConfig.class),
-                isNull(),
-                any(Graph.class),
-                same(job),
-                isNull(),
-                any(ExplicitAssertionSchemaInferencer.Analysis.class));
-
         GraphSchema schema = orchestrator.deriveCorpusSchema(
                 job, corpus, config, deterministicGraph);
 
@@ -105,58 +99,52 @@ class CorpusSchemaPrepassIntegrationTest {
         assertTrue(schema.getPatterns().contains(
                 "(EXTRACTOR_MESSAGE)-[:EMITTED_BY]->(DETERMINISTIC_ACTOR)"));
 
-        ArgumentCaptor<String> source = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<GraphExtractionConfig> discoveryConfig =
-                ArgumentCaptor.forClass(GraphExtractionConfig.class);
-        verify(orchestrator).extractViaDecomposedPasses(
-                source.capture(),
-                any(org.springframework.ai.document.Document.class),
-                discoveryConfig.capture(),
-                isNull(),
-                any(Graph.class),
-                same(job),
-                isNull(),
-                any(ExplicitAssertionSchemaInferencer.Analysis.class));
-        GraphSchema modelContext = discoveryConfig.getValue().getStandardizedSchema();
-        assertTrue(modelContext.getAllNodeLabels().containsAll(List.of(
-                "SEEDED_DOCUMENT", "EXTRACTOR_MESSAGE", "APPROVAL_ROLE")));
-        assertTrue(source.getValue().contains("monthly forecast"));
+        ArgumentCaptor<StructuredChatLanguageModel.Request> request =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scope =
+                ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
+        verify(orchestrator.llmDispatcher).promptStructuredWithCapacityFallback(
+                request.capture(), eq("llm"), same(job), scope.capture());
+        assertEquals("submit_corpus_schema", request.getValue().tools().get(0).name());
+        assertEquals("SCHEMA_PREPASS", scope.getValue().phase());
+        String prompt = request.getValue().messages().get(1).content();
+        assertTrue(prompt.contains("SEEDED_DOCUMENT"));
+        assertTrue(prompt.contains("EXTRACTOR_MESSAGE"));
+        assertTrue(prompt.contains("APPROVAL_ROLE"));
+        assertTrue(prompt.contains("monthly forecast"));
     }
 
     @Test
-    void productionPrepassUsesProductionGraphExtractionTypes() {
-        GraphExtractionOrchestrator orchestrator = spy(new GraphExtractionOrchestrator());
+    void productionPrepassUsesTypeOnlyToolAndRejectsIncidentalAssertionVocabulary() {
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
         orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
-        when(job.getJobId()).thenReturn("prepass-graph-discovery");
-
-        String discoveredGraph = """
-                {"$schema":"kompile-graph-extraction/v1","entities":[
-                  {"id":"jordan","name":"Jordan Lee","type":"PERSON","confidence":0.98},
-                  {"id":"helios","name":"Helios Dynamics","type":"COMPANY","confidence":0.98}
-                ],"relations":[
-                  {"source":"jordan","target":"helios","type":"FOUNDED","confidence":0.97}
-                ]}
-                """;
-        doReturn(discoveredGraph).when(orchestrator).extractViaDecomposedPasses(
-                any(String.class),
-                any(org.springframework.ai.document.Document.class),
-                any(GraphExtractionConfig.class),
-                isNull(),
-                any(Graph.class),
+        when(job.getJobId()).thenReturn("prepass-type-only");
+        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
                 same(job),
-                isNull(),
-                any(ExplicitAssertionSchemaInferencer.Analysis.class));
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(schemaResponse(
+                        List.of("PERSON", "ORGANIZATION"),
+                        List.of("WORKS_FOR"),
+                        List.of(Map.of(
+                                "sourceType", "PERSON",
+                                "relationshipType", "WORKS_FOR",
+                                "targetType", "ORGANIZATION"))));
 
         CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
-                "snapshot-graph-discovery",
+                "snapshot-type-only",
                 List.of(new CrawlCorpusPassage(
-                        "founding-1", 0,
-                        "Jordan Lee is a person. Helios Dynamics is a company. "
-                                + "Jordan Lee founded Helios Dynamics.",
-                        "hash-founding", Map.of(), true)));
+                        "incidental-1", 0,
+                        "Slack DMs are the actual channel. SKUs are AU-001. "
+                                + "KAA is a one-shot consulting deliverable. "
+                                + "The platform thesis: customer-N is faster than customer-(N-1). "
+                                + "The SKU master is on our shared drive. "
+                                + "Mei Chen works for Northstar Goods.",
+                        "hash-incidental", Map.of(), true)));
 
         GraphSchema schema = orchestrator.deriveCorpusSchema(
                 job,
@@ -166,28 +154,37 @@ class CorpusSchemaPrepassIntegrationTest {
                         .build(),
                 Graph.builder().build());
 
-        assertTrue(schema.getAllNodeLabels().containsAll(List.of("PERSON", "COMPANY")));
-        assertTrue(schema.getAllRelationshipTypes().contains("FOUNDED"));
-        assertTrue(schema.getPatterns().contains("(PERSON)-[:FOUNDED]->(COMPANY)"));
+        assertEquals(java.util.Set.of("PERSON", "ORGANIZATION"), schema.getAllNodeLabels());
+        assertEquals(java.util.Set.of("WORKS_FOR"), schema.getAllRelationshipTypes());
+        assertEquals(List.of("(PERSON)-[:WORKS_FOR]->(ORGANIZATION)"), schema.getPatterns());
+        assertFalse(schema.getAllNodeLabels().stream().anyMatch(List.of(
+                "ACTUAL", "AU_001", "ONE_SHOT", "FASTER", "ON")::contains));
+        assertFalse(schema.getAllRelationshipTypes().stream().anyMatch(List.of(
+                "EW", "EXECUTES_FOR")::contains));
+
+        ArgumentCaptor<StructuredChatLanguageModel.Request> request =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        verify(orchestrator.llmDispatcher).promptStructuredWithCapacityFallback(
+                request.capture(), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+        assertEquals(List.of("submit_corpus_schema"), request.getValue().tools().stream()
+                .map(StructuredChatLanguageModel.Tool::name).toList());
     }
 
     @Test
     void failedModelOntologyPathsDoNotReturnConfiguredOrDeterministicSchema() {
-        GraphExtractionOrchestrator orchestrator = spy(new GraphExtractionOrchestrator());
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
         orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-fail-loudly");
-        doReturn(null).when(orchestrator).extractViaDecomposedPasses(
-                any(String.class),
-                any(org.springframework.ai.document.Document.class),
-                any(GraphExtractionConfig.class),
-                isNull(),
-                any(Graph.class),
+        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
                 same(job),
-                isNull(),
-                any(ExplicitAssertionSchemaInferencer.Analysis.class));
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(null);
 
         CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
                 "snapshot-fail-loudly",
@@ -214,7 +211,7 @@ class CorpusSchemaPrepassIntegrationTest {
                                 .build(),
                         Graph.builder().build()));
 
-        assertTrue(failure.getMessage().contains("submit_graph_delta produced no accepted delta"));
+        assertTrue(failure.getMessage().contains("Structured model response was null"));
     }
 
     @Test
@@ -249,22 +246,18 @@ class CorpusSchemaPrepassIntegrationTest {
 
     @Test
     void productionPrepassDoesNotTruncateLongCorpusPassages() {
-        GraphExtractionOrchestrator orchestrator = spy(new GraphExtractionOrchestrator());
+        GraphExtractionOrchestrator orchestrator = new GraphExtractionOrchestrator();
         orchestrator.corpusSchemaUnifier = new CorpusSchemaUnifier();
         orchestrator.llmDispatcher = mock(CrawlLlmDispatcher.class);
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-full-passage");
-        doReturn("{\"$schema\":\"kompile-graph-extraction/v1\",\"entities\":[],\"relations\":[]}")
-                .when(orchestrator).extractViaDecomposedPasses(
-                        any(String.class),
-                        any(org.springframework.ai.document.Document.class),
-                        any(GraphExtractionConfig.class),
-                        isNull(),
-                        any(Graph.class),
-                        same(job),
-                        isNull(),
-                        any(ExplicitAssertionSchemaInferencer.Analysis.class));
+        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(schemaResponse(List.of(), List.of(), List.of()));
 
         String tailMarker = "FULL_CORPUS_TAIL_MARKER";
         String longPassage = "x".repeat(13_500) + tailMarker;
@@ -281,20 +274,35 @@ class CorpusSchemaPrepassIntegrationTest {
                         .build(),
                 Graph.builder().build());
 
-        assertNull(schema);
-        ArgumentCaptor<String> sources = ArgumentCaptor.forClass(String.class);
-        verify(orchestrator, atLeast(2)).extractViaDecomposedPasses(
-                sources.capture(),
-                any(org.springframework.ai.document.Document.class),
-                any(GraphExtractionConfig.class),
-                isNull(),
-                any(Graph.class),
-                same(job),
-                isNull(),
-                any(ExplicitAssertionSchemaInferencer.Analysis.class));
-        String modelSources = String.join("", sources.getAllValues());
-        assertTrue(modelSources.contains(tailMarker),
+        assertNotNull(schema);
+        assertTrue(schema.getAllNodeLabels().isEmpty());
+        assertTrue(schema.getAllRelationshipTypes().isEmpty());
+        ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        verify(orchestrator.llmDispatcher, atLeast(2)).promptStructuredWithCapacityFallback(
+                requests.capture(), eq("llm"), same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class));
+        String modelPrompts = requests.getAllValues().stream()
+                .map(request -> request.messages().get(1).content())
+                .reduce("", String::concat);
+        assertTrue(modelPrompts.contains(tailMarker),
                 "corpus schema pre-pass truncated the tail of a long passage");
+    }
+
+    private static StructuredChatLanguageModel.Response schemaResponse(
+            List<String> nodeTypes,
+            List<String> relationshipTypes,
+            List<Map<String, String>> patterns) {
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("nodeTypes", nodeTypes);
+        arguments.put("relationshipTypes", relationshipTypes);
+        arguments.put("patterns", patterns);
+        return new StructuredChatLanguageModel.Response(
+                "<native-tool-call>",
+                "",
+                List.of(new StructuredChatLanguageModel.ToolCall(
+                        "schema-call", CorpusSchemaUnifier.SCHEMA_TOOL_NAME, arguments)),
+                List.of());
     }
 
     private static Entity entity(String id, String type) {

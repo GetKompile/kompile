@@ -4,6 +4,7 @@ import org.jline.keymap.KeyMap;
 import org.jline.reader.Binding;
 import org.jline.reader.LineReader;
 import org.jline.reader.Reference;
+import org.jline.terminal.MouseEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -96,7 +97,7 @@ class ChatReplKeyBindingTest {
                 "\033[1;5H", "\033[5H");
         keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_BOTTOM_WIDGET),
                 "\033[1;5F", "\033[5F");
-        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET), "\033[M");
+        keyMap.bind(new Reference(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET), "\033[M", "\033[<");
     }
 
     @Test
@@ -241,6 +242,46 @@ class ChatReplKeyBindingTest {
                 ((Reference) keyMap.getBound("\033[1;5F")).name());
         assertEquals(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET,
                 ((Reference) keyMap.getBound("\033[M")).name());
+        assertEquals(ChatRepl.STANDARD_CHAT_SCROLL_MOUSE_WIDGET,
+                ((Reference) keyMap.getBound("\033[<")).name());
+    }
+
+    @Test
+    void sgrMouseReportsDecodeDragReleaseWheelAndExtendedCoordinates() {
+        MouseEvent pressed = ChatRepl.parseSgrMouseEvent("0;301;41M", null);
+        assertNotNull(pressed);
+        assertEquals(MouseEvent.Type.Pressed, pressed.getType());
+        assertEquals(MouseEvent.Button.Button1, pressed.getButton());
+        assertEquals(300, pressed.getX());
+        assertEquals(40, pressed.getY());
+
+        MouseEvent dragged = ChatRepl.parseSgrMouseEvent("32;302;42M", pressed);
+        assertNotNull(dragged);
+        assertEquals(MouseEvent.Type.Dragged, dragged.getType());
+        assertEquals(MouseEvent.Button.Button1, dragged.getButton());
+
+        MouseEvent released = ChatRepl.parseSgrMouseEvent("0;302;42m", dragged);
+        assertNotNull(released);
+        assertEquals(MouseEvent.Type.Released, released.getType());
+        assertEquals(MouseEvent.Button.Button1, released.getButton());
+
+        MouseEvent wheel = ChatRepl.parseSgrMouseEvent("65;9;10M", released);
+        assertNotNull(wheel);
+        assertEquals(MouseEvent.Type.Wheel, wheel.getType());
+        assertEquals(MouseEvent.Button.WheelDown, wheel.getButton());
+
+        assertNull(ChatRepl.parseSgrMouseEvent("66;9;10M", wheel),
+                "horizontal wheel reports must not masquerade as vertical scrolling");
+        assertNull(ChatRepl.parseSgrMouseEvent("128;9;10M", wheel),
+                "unsupported extended buttons must not masquerade as Button1");
+        assertNull(ChatRepl.parseSgrMouseEvent("256;9;10M", wheel),
+                "unknown high bits must be rejected, not truncated to Button1");
+        assertNull(ChatRepl.parseSgrMouseEvent("96;9;10M", wheel),
+                "wheel-plus-motion is not a supported vertical wheel report");
+        assertNull(ChatRepl.parseSgrMouseEvent("64;9;10m", wheel),
+                "wheel reports cannot use the SGR release terminator");
+        assertNull(ChatRepl.parseSgrMouseEvent("0;0;10M", wheel),
+                "SGR coordinates are one-based and must reject zero");
     }
 
     @Test
