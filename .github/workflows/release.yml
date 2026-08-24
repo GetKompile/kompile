@@ -618,7 +618,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: v${{ inputs.version }}
         run: |
-          EXISTING_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null || true)"
+          EXISTING_SHA=""
+          if ! EXISTING_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha 2>/dev/null)"; then
+            EXISTING_SHA=""
+          fi
           if [ -n "${EXISTING_SHA}" ] && [ "${EXISTING_SHA}" != "${GITHUB_SHA}" ]; then
             echo "ERROR: ${RELEASE_TAG} already targets ${EXISTING_SHA}, not selected commit ${GITHUB_SHA}." >&2
             echo "Choose a new version; release publication never moves an existing tag." >&2
