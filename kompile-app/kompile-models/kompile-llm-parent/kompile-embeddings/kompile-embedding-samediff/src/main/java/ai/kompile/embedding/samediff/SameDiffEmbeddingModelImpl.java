@@ -5,322 +5,400 @@
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
- * limitations under the License.
+ *  limitations under the License.
  */
 
 package ai.kompile.embedding.samediff;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.embedding.samediff.config.SameDiffEmbeddingProperties;
+import ai.kompile.pipelines.steps.samediff.nlp.SameDiffHuggingFaceTokenizer;
 import ai.kompile.pipelines.util.URIUtils;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
+import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.common.base.Preconditions;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.indexing.NDArrayIndex;
+import org.nd4j.linalg.ops.transforms.Transforms;
 import org.springframework.ai.document.Document;
 
 import java.io.File;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Set;
 
+/**
+ * Managed Hugging Face tokenizer + SameDiff embedding model execution.
+ *
+ * <p>The model artifact is an imported SameDiff {@code .sdz}; text preprocessing is delegated to
+ * Kompile's existing Rust-backed Hugging Face tokenizer adapter. Transformer outputs can be either
+ * already-pooled {@code [batch, hidden]} tensors or token embeddings
+ * {@code [batch, sequence, hidden]}. Token embeddings are reduced through CLS or
+ * attention-mask-aware mean pooling and can be L2-normalized row-wise.</p>
+ */
 @Slf4j
 public class SameDiffEmbeddingModelImpl implements EmbeddingModel {
 
     private final SameDiffEmbeddingProperties properties;
     private SameDiff sameDiff;
-    private final String inputTensorName;
-    private final String outputTensorName;
+    private SameDiffHuggingFaceTokenizer tokenizer;
+    private List<String> modelInputNames = List.of();
+    private String outputTensorName;
     private int dimensions = -1;
 
     public SameDiffEmbeddingModelImpl(@NotNull SameDiffEmbeddingProperties properties) {
         Preconditions.checkNotNull(properties, "SameDiffEmbeddingProperties cannot be null");
         this.properties = properties;
-        this.inputTensorName = properties.getInputTensorName();
-        this.outputTensorName = properties.getOutputTensorName();
+        initialize();
+    }
 
-        if (properties.getModelUri() == null || properties.getModelUri().isEmpty()) {
-            log.warn("SameDiff model URI is not configured. SameDiffEmbeddingModelImpl will not be functional.");
-            this.sameDiff = null; // Or throw an InitializationException
+    private void initialize() {
+        if (!hasText(properties.getModelUri())) {
+            log.info("SameDiff embedding model is not configured; set kompile.embedding.samediff.model-uri");
+            return;
+        }
+        if (!hasText(properties.getTokenizerUri())) {
+            log.warn("SameDiff embedding tokenizer is not configured; set kompile.embedding.samediff.tokenizer-uri");
             return;
         }
 
         try {
-            log.info("Loading SameDiff embedding model from URI: {}", properties.getModelUri());
             File modelFile = URIUtils.getFileFromUriOrPath(properties.getModelUri());
-            if (modelFile != null && modelFile.exists()) {
-                this.sameDiff = SameDiff.load(modelFile, true);
-                log.info("Successfully loaded SameDiff model. Inputs: {}, Outputs: {}",
-                        this.sameDiff.inputs(), this.sameDiff.outputs());
-
-                // Validate that configured input/output names exist in the model
-                if (!this.sameDiff.getVariables().containsKey(this.inputTensorName) && !this.sameDiff.getVariables().containsKey(this.inputTensorName)) {
-                    log.warn("Configured input tensor name '{}' not found in the loaded SameDiff model's variables or placeholders. Available: variables={}, placeholders={}",
-                            this.inputTensorName, this.sameDiff.getVariables().keySet(), this.sameDiff.getVariables());
-                    // Consider this a fatal error for embedding
-                }
-                if (!this.sameDiff.getVariables().containsKey(this.outputTensorName)) {
-                    log.warn("Configured output tensor name '{}' not found in the loaded SameDiff model's variables. Available: {}",
-                            this.outputTensorName, this.sameDiff.getVariables().keySet());
-                    // Consider this a fatal error for embedding
-                }
-
-
-            } else {
-                log.error("SameDiff model file not found or could not be accessed at URI: {}", properties.getModelUri());
-                this.sameDiff = null;
+            if (modelFile == null || !modelFile.isFile()) {
+                throw new IllegalArgumentException("SameDiff embedding model does not exist: "
+                        + properties.getModelUri());
             }
-        } catch (Exception e) {
-            log.error("Failed to load SameDiff model from URI: {}", properties.getModelUri(), e);
-            this.sameDiff = null;
-        }
-    }
+            this.sameDiff = SameDiff.load(modelFile, true);
+            this.modelInputNames = List.copyOf(this.sameDiff.inputs());
+            this.outputTensorName = resolveOutputTensorName(this.sameDiff, properties.getOutputTensorName());
 
-    @Override
-    public INDArray embed(List<String> texts) {
-        if (this.sameDiff == null) {
-            log.warn("SameDiff model is not loaded. Cannot generate embeddings.");
-            return Nd4j.empty(DataType.FLOAT);
-        }
-        if (texts == null || texts.isEmpty()) {
-            return Nd4j.empty(DataType.FLOAT);
-        }
-        // For batch processing, SameDiff models might expect a single batch INDArray.
-        // This example processes one by one for simplicity, but batching is preferred for performance.
-        INDArray arrs = Nd4j.create(texts.size(),this.dimensions());
-        for(int i = 0; i < arrs.rows(); i++) {
-            // CRITICAL: Close the temporary INDArray after putRow to prevent memory leak
-            INDArray rowEmbedding = embed(texts.get(i));
-            try {
-                arrs.putRow(i, rowEmbedding);
-            } finally {
-                if (rowEmbedding != null && !rowEmbedding.wasClosed()) {
-                    try {
-                        rowEmbedding.close();
-                    } catch (Exception e) {
-                        log.trace("Error closing row embedding: {}", e.getMessage());
-                    }
-                }
-            }
-        }
+            this.tokenizer = new SameDiffHuggingFaceTokenizer();
+            this.tokenizer.initialize(properties.getTokenizerUri(), Map.of(
+                    "maxLength", Integer.toString(properties.getMaxSequenceLength())));
 
-        return arrs;
-    }
-
-    @Override
-    public INDArray embedDocuments(List<Document> documents) {
-        return embed(documents.stream().map(input -> input.getText()).collect(Collectors.toList()));
-    }
-
-    @Override
-    public int dimensions() {
-        if(dimensions < 0) {
-            if (this.sameDiff == null) {
-                log.warn("Cannot determine dimensions: SameDiff model is not loaded.");
-                return -1;
-            }
-            // Evaluate to get dimensions, then close the array to prevent memory leak
-            INDArray evalArray = this.sameDiff.getVariable(outputTensorName).eval();
-            try {
-                this.dimensions = (int) evalArray.length();
-            } finally {
-                if (evalArray != null && !evalArray.wasClosed()) {
-                    try {
-                        evalArray.close();
-                    } catch (Exception e) {
-                        log.trace("Error closing eval array: {}", e.getMessage());
-                    }
-                }
-            }
+            this.dimensions = inferDimensionsFromShape();
+            log.info("Initialized SameDiff embedding model (inputs={}, output={}, dimensions={}, pooling={})",
+                    modelInputNames, outputTensorName, dimensions, properties.getPoolingStrategy());
+        } catch (Exception failure) {
+            cleanup();
+            throw new IllegalStateException("Unable to initialize SameDiff embedding model", failure);
         }
-        return dimensions;
     }
 
     @Override
     public INDArray embed(String text) {
-        if (this.sameDiff == null) {
-            log.warn("SameDiff model is not loaded. Cannot generate embedding for text: '{}'", text);
+        if (text == null || text.isBlank()) {
             return Nd4j.empty(DataType.FLOAT);
         }
-        if (text == null || text.isEmpty()) {
+        INDArray batch = embed(List.of(text));
+        if (batch == null || batch.isEmpty()) {
             return Nd4j.empty(DataType.FLOAT);
         }
-
-        INDArray inputArray = null;
-        Map<String, INDArray> outputMap = null;
-        INDArray result = null;
         try {
-            // --- Placeholder for Text-to-INDArray Conversion ---
-            // This is highly model-specific.
-            // 1. Tokenization: Use a tokenizer compatible with your model (e.g., WordPiece, SentencePiece, or a custom one).
-            //    The tokenizer might come from kompile-pipelines-steps-samediff/src/main/java/ai/kompile/pipelines/steps/samediff/nlp/
-            //    (e.g., SameDiffWordPieceTokenizer if suitable)
-            // 2. Token ID to INDArray: Convert token IDs into an INDArray with the shape expected by the model.
-            //    (e.g., [1, sequenceLength] or [batchSize, sequenceLength])
-
-            // Example: Assuming a very simple model that takes a fixed-size array of character bytes
-            // THIS IS A SIMPLISTIC PLACEHOLDER - REPLACE WITH ACTUAL PREPROCESSING FOR YOUR MODEL
-            inputArray = createSimpleInputArrayFromString(text, 128); // Assuming max length 128
-            if (inputArray == null) return Nd4j.empty(DataType.FLOAT);
-
-            // Associate the input NDArray with the input placeholder/variable name
-            this.sameDiff.associateArrayWithVariable(inputArray, this.inputTensorName);
-            // If your model uses sd.setArray(placeholderName, array), use that.
-
-            // Execute the graph to get the specified output tensor
-            outputMap = this.sameDiff.output(Collections.emptyMap(), this.outputTensorName);
-            INDArray embeddingArray = outputMap.get(this.outputTensorName);
-
-            if (embeddingArray == null) {
-                log.warn("Output tensor '{}' not found in SameDiff model output for text: '{}'", this.outputTensorName, text);
-                return Nd4j.empty(DataType.FLOAT);
-            }
-
-            // CRITICAL MEMORY FIX: Clone the embedding array before the finally block closes it
-            // The outputMap will be closed in finally, so we must return a detached copy
-            // dup() creates a completely independent copy with its own native memory buffer
-            result = embeddingArray.dup();
-            return result;
-
-        } catch (Exception e) {
-            log.error("Error during SameDiff embedding generation for text: '{}'", text, e);
-            // Close result if we created it before the exception
-            if (result != null && !result.wasClosed()) {
-                try {
-                    result.close();
-                } catch (Exception closeEx) {
-                    log.trace("Error closing result array: {}", closeEx.getMessage());
-                }
-            }
-            return Nd4j.empty(DataType.FLOAT);
+            return batch.rank() == 1 ? batch.dup() : batch.getRow(0).dup();
         } finally {
-            // CRITICAL: Close the input array to release native memory
-            if (inputArray != null && !inputArray.wasClosed()) {
-                try {
-                    inputArray.close();
-                } catch (Exception e) {
-                    log.trace("Error closing input array: {}", e.getMessage());
-                }
-            }
-            // CRITICAL: Close ALL output arrays in the outputMap
-            // The result has been dup()'d so it's safe to close these now
-            if (outputMap != null) {
-                for (Map.Entry<String, INDArray> entry : outputMap.entrySet()) {
-                    INDArray arr = entry.getValue();
-                    if (arr != null && !arr.wasClosed()) {
-                        try {
-                            arr.close();
-                        } catch (Exception e) {
-                            log.trace("Error closing output array '{}': {}", entry.getKey(), e.getMessage());
-                        }
-                    }
-                }
-            }
+            closeQuietly(batch);
         }
     }
 
-    /**
-     * PLACEHOLDER: Converts a String to an INDArray.
-     * This needs to be replaced with actual preprocessing logic suitable for the specific SameDiff embedding model.
-     * For example, tokenization to IDs, padding/truncation, etc.
-     *
-     * @param text The input text.
-     * @param maxLength The maximum sequence length.
-     * @return An INDArray representation of the text.
-     */
-    private INDArray createSimpleInputArrayFromString(String text, int maxLength) {
-        // This is a naive example. Real models require sophisticated tokenization.
-        byte[] textBytes = text.getBytes(StandardCharsets.UTF_8);
-        float[] floatArray = new float[maxLength];
-        for (int i = 0; i < maxLength; i++) {
-            if (i < textBytes.length) {
-                floatArray[i] = textBytes[i];
-            } else {
-                floatArray[i] = 0.0f; // Padding
-            }
-        }
-        // Create array with correct shape directly to avoid memory leak from reshape views.
-        // Previously: Nd4j.create(floatArray).reshape(1, maxLength) would create a temp array
-        // that never got explicitly closed, causing the underlying buffer to leak.
-        return Nd4j.create(floatArray, new long[]{1, maxLength});
-    }
-
-    /**
-     * Closes this embedding model and releases all native resources.
-     * Implements AutoCloseable.close() for proper resource management.
-     */
     @Override
-    public void close() throws Exception {
+    public synchronized INDArray embed(List<String> texts) {
+        requireReady();
+        if (texts == null || texts.isEmpty()) {
+            return Nd4j.empty(DataType.FLOAT);
+        }
+
+        List<String> prepared = new ArrayList<>(texts.size());
+        String prefix = properties.getInputPrefix() == null ? "" : properties.getInputPrefix();
+        for (String text : texts) {
+            prepared.add(prefix + (text == null ? "" : text));
+        }
+
+        Map<String, INDArray> encoded = tokenizer.batchEncode(
+                prepared, properties.isAddSpecialTokens());
+        Set<INDArray> inputsToClose = Collections.newSetFromMap(new IdentityHashMap<>());
+        inputsToClose.addAll(encoded.values());
+        Map<String, INDArray> placeholders = new LinkedHashMap<>();
+        Map<String, INDArray> outputs = null;
+        INDArray pooled = null;
+
+        try {
+            INDArray inputIds = encoded.get("input_ids");
+            INDArray attentionMask = encoded.get("attention_mask");
+            if (inputIds == null || attentionMask == null) {
+                throw new IllegalStateException("Tokenizer did not produce input_ids and attention_mask");
+            }
+
+            INDArray tokenTypeIds = null;
+            for (String inputName : modelInputNames) {
+                if (isInputIds(inputName)) {
+                    placeholders.put(inputName, inputIds);
+                } else if (isAttentionMask(inputName)) {
+                    placeholders.put(inputName, attentionMask);
+                } else if (isTokenTypeIds(inputName)) {
+                    if (tokenTypeIds == null) {
+                        tokenTypeIds = Nd4j.zeros(DataType.INT64, inputIds.shape());
+                        inputsToClose.add(tokenTypeIds);
+                    }
+                    placeholders.put(inputName, tokenTypeIds);
+                } else {
+                    throw new IllegalStateException("Unsupported SameDiff embedding model input: "
+                            + inputName);
+                }
+            }
+
+            outputs = sameDiff.output(placeholders, outputTensorName);
+            INDArray rawOutput = outputs.get(outputTensorName);
+            if (rawOutput == null) {
+                throw new IllegalStateException("Embedding output '" + outputTensorName
+                        + "' was not returned; available outputs=" + outputs.keySet());
+            }
+
+            pooled = pool(rawOutput, attentionMask, properties.getPoolingStrategy());
+            INDArray result = properties.isNormalizeOutput()
+                    ? normalizeRows(pooled)
+                    : pooled.dup();
+            dimensions = result.rank() == 1
+                    ? (int) result.length()
+                    : (int) result.size(result.rank() - 1);
+            return result;
+        } catch (RuntimeException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("SameDiff embedding execution failed", failure);
+        } finally {
+            closeQuietly(pooled);
+            closeAll(outputs == null ? List.of() : outputs.values());
+            closeAll(inputsToClose);
+        }
+    }
+
+    @Override
+    public INDArray embedDocuments(List<Document> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return Nd4j.empty(DataType.FLOAT);
+        }
+        return embed(documents.stream().map(Document::getText).toList());
+    }
+
+    @Override
+    public synchronized int dimensions() {
+        if (dimensions > 0) {
+            return dimensions;
+        }
+        dimensions = inferDimensionsFromShape();
+        if (dimensions > 0) {
+            return dimensions;
+        }
+        if (sameDiff == null || tokenizer == null) {
+            return -1;
+        }
+        INDArray probe = embed("dimension probe");
+        try {
+            dimensions = probe == null || probe.isEmpty() ? -1 : (int) probe.length();
+            return dimensions;
+        } finally {
+            closeQuietly(probe);
+        }
+    }
+
+    static INDArray pool(
+            INDArray output,
+            INDArray attentionMask,
+            SameDiffEmbeddingProperties.PoolingStrategy strategy) {
+        if (output == null || output.isEmpty()) {
+            throw new IllegalArgumentException("Embedding output must not be null or empty");
+        }
+        SameDiffEmbeddingProperties.PoolingStrategy effective = strategy == null
+                ? SameDiffEmbeddingProperties.PoolingStrategy.AUTO
+                : strategy;
+
+        if (output.rank() == 1) {
+            return output.reshape(1, output.length()).dup();
+        }
+        if (output.rank() == 2) {
+            return output.dup();
+        }
+        if (output.rank() != 3) {
+            throw new IllegalArgumentException("Unsupported embedding output shape: "
+                    + java.util.Arrays.toString(output.shape()));
+        }
+
+        if (effective == SameDiffEmbeddingProperties.PoolingStrategy.CLS) {
+            return output.get(
+                    NDArrayIndex.all(), NDArrayIndex.point(0), NDArrayIndex.all()).dup();
+        }
+        if (attentionMask == null || attentionMask.rank() != 2
+                || attentionMask.size(0) != output.size(0)
+                || attentionMask.size(1) != output.size(1)) {
+            throw new IllegalArgumentException(
+                    "Masked mean pooling requires attention_mask [batch, sequence] matching output");
+        }
+
+        INDArray floatMask = null;
+        INDArray weighted = null;
+        INDArray sums = null;
+        INDArray counts = null;
+        try {
+            floatMask = attentionMask.castTo(output.dataType());
+            INDArray expandedMask = floatMask.reshape(
+                    floatMask.size(0), floatMask.size(1), 1);
+            weighted = output.mul(expandedMask);
+            sums = weighted.sum(1);
+            counts = floatMask.sum(1).reshape(floatMask.size(0), 1);
+            counts.addi(1.0e-12);
+            return sums.div(counts);
+        } finally {
+            closeQuietly(counts);
+            closeQuietly(sums);
+            closeQuietly(weighted);
+            closeQuietly(floatMask);
+        }
+    }
+
+    static INDArray normalizeRows(INDArray values) {
+        INDArray normalized = values.dup();
+        if (normalized.rank() == 1) {
+            double norm = normalized.norm2Number().doubleValue();
+            if (norm > 0.0 && Double.isFinite(norm)) {
+                normalized.divi(norm);
+            }
+            return normalized;
+        }
+        INDArray rawNorms = null;
+        INDArray rowNorms = null;
+        INDArray boundedNorms = null;
+        INDArray epsilon = null;
+        try {
+            rawNorms = normalized.norm2(1);
+            rowNorms = rawNorms.reshape(normalized.size(0), 1).dup();
+            epsilon = Nd4j.scalar(1.0e-12f);
+            boundedNorms = Transforms.max(rowNorms, epsilon, false);
+            normalized.diviColumnVector(boundedNorms);
+        } finally {
+            closeQuietly(epsilon);
+            if (boundedNorms != rowNorms) closeQuietly(boundedNorms);
+            closeQuietly(rowNorms);
+            closeQuietly(rawNorms);
+        }
+        return normalized;
+    }
+
+    private int inferDimensionsFromShape() {
+        if (sameDiff == null || !hasText(outputTensorName)) {
+            return -1;
+        }
+        SDVariable output = sameDiff.getVariable(outputTensorName);
+        long[] shape = output == null ? null : output.getShape();
+        if (shape == null || shape.length == 0) {
+            return -1;
+        }
+        long dimension = shape[shape.length - 1];
+        return dimension > 0 && dimension <= Integer.MAX_VALUE ? (int) dimension : -1;
+    }
+
+    private static String resolveOutputTensorName(SameDiff model, String configured) {
+        if (hasText(configured) && model.getVariables().containsKey(configured)) {
+            return configured;
+        }
+        List<String> outputs = model.outputs();
+        if (outputs == null || outputs.isEmpty()) {
+            throw new IllegalArgumentException("SameDiff embedding model exposes no outputs");
+        }
+        if (hasText(configured)) {
+            log.warn("Configured embedding output '{}' not found; using model output '{}'",
+                    configured, outputs.get(0));
+        }
+        return outputs.get(0);
+    }
+
+    private boolean isInputIds(String inputName) {
+        String normalized = inputName.toLowerCase(Locale.ROOT);
+        return normalized.equals(properties.getInputTensorName().toLowerCase(Locale.ROOT))
+                || normalized.equals("input_ids")
+                || normalized.equals("inputids");
+    }
+
+    private boolean isAttentionMask(String inputName) {
+        String normalized = inputName.toLowerCase(Locale.ROOT);
+        return normalized.equals(properties.getAttentionMaskTensorName().toLowerCase(Locale.ROOT))
+                || normalized.equals("attention_mask")
+                || normalized.equals("attentionmask");
+    }
+
+    private boolean isTokenTypeIds(String inputName) {
+        String normalized = inputName.toLowerCase(Locale.ROOT);
+        return normalized.equals(properties.getTokenTypeIdsTensorName().toLowerCase(Locale.ROOT))
+                || normalized.equals("token_type_ids")
+                || normalized.equals("tokentypeids")
+                || normalized.equals("segment_ids");
+    }
+
+    private void requireReady() {
+        if (sameDiff == null || tokenizer == null) {
+            throw new IllegalStateException(
+                    "SameDiff embedding model requires both model-uri and tokenizer-uri");
+        }
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static void closeAll(Iterable<INDArray> arrays) {
+        for (INDArray array : arrays) {
+            closeQuietly(array);
+        }
+    }
+
+    private static void closeQuietly(INDArray array) {
+        if (array != null && !array.wasClosed()) {
+            try {
+                array.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    @Override
+    public void close() {
         cleanup();
     }
 
-    /**
-     * Cleanup method called by Spring when this bean is destroyed.
-     * Properly closes the SameDiff model and all native resources.
-     *
-     * CRITICAL: Cleanup order matters for proper memory release:
-     * 1. First close SameDiff model (releases OpContext caches and InferenceSessions)
-     * 2. Then destroy workspaces (releases workspace memory that was used by model)
-     * 3. Finally release memory manager context
-     *
-     * The order is important: SameDiff InferenceSessions cache OpContexts that hold
-     * references to workspace memory. If we destroy workspaces first, those references
-     * become dangling and may not be properly cleaned up.
-     */
     @PreDestroy
-    public void cleanup() {
-        log.info("Cleaning up SameDiffEmbeddingModelImpl");
-
-        // Step 1: Close SameDiff model FIRST
-        // This releases all OpContexts cached in InferenceSessions.
-        // InferenceSessions hold references to workspace buffers, so we must
-        // close them before destroying the workspaces they reference.
-        if (this.sameDiff != null) {
+    public synchronized void cleanup() {
+        if (tokenizer != null) {
+            tokenizer.close();
+            tokenizer = null;
+        }
+        if (sameDiff != null) {
             try {
-                log.debug("Step 1: Closing SameDiff model (releases OpContext caches)");
-                // Use reflection to call close() for compatibility with different nd4j-api versions
-                java.lang.reflect.Method closeMethod = this.sameDiff.getClass().getMethod("close");
-                closeMethod.invoke(this.sameDiff);
-                log.info("Closed SameDiff model and all cached native resources");
-            } catch (NoSuchMethodException e) {
-                log.debug("SameDiff.close() not available in this nd4j-api version - skipping cleanup");
-            } catch (Exception e) {
-                log.warn("Error during SameDiff cleanup", e);
+                java.lang.reflect.Method closeMethod = sameDiff.getClass().getMethod("close");
+                closeMethod.invoke(sameDiff);
+            } catch (NoSuchMethodException ignored) {
+            } catch (Exception failure) {
+                log.warn("Unable to close SameDiff embedding model cleanly", failure);
             }
-            this.sameDiff = null;
+            sameDiff = null;
         }
-
-        // Step 2: Now destroy workspaces - safe because SameDiff no longer references them
-        try {
-            log.debug("Step 2: Destroying ND4J workspaces");
-            Nd4j.getWorkspaceManager().destroyAllWorkspacesForCurrentThread();
-        } catch (Exception e) {
-            log.debug("Could not destroy workspaces (may already be destroyed): {}", e.getMessage());
-        }
-
-        // Step 3: Release memory manager context
-        try {
-            log.debug("Step 3: Releasing ND4J memory manager context");
-            Nd4j.getMemoryManager().releaseCurrentContext();
-        } catch (Exception e) {
-            log.debug("Could not release memory context: {}", e.getMessage());
-        }
-
-        // Hint GC to clean up any orphaned native references
-        System.gc();
-        log.info("SameDiffEmbeddingModelImpl cleanup complete");
+        modelInputNames = List.of();
+        outputTensorName = null;
+        dimensions = -1;
     }
 }

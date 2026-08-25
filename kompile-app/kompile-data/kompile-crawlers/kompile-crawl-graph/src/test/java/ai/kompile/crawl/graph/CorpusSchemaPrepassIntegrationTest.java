@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -54,15 +55,14 @@ class CorpusSchemaPrepassIntegrationTest {
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-integration");
-        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(schemaResponse(
-                        List.of("MODEL_INFERRED_TOPIC"), List.of(), List.of()));
+        stubTypePasses(
+                orchestrator.llmDispatcher, job,
+                nodeResponse(List.of("MODEL_INFERRED_TOPIC")),
+                relationshipResponse(List.of()));
         GraphExtractionConfig config = GraphExtractionConfig.builder()
-                .extractionMode(ExtractionMode.SINGLE_PASS)
+                .extractionMode(ExtractionMode.DECOMPOSED)
+                .decomposedPassStrategy(
+                        GraphExtractionConfig.DecomposedPassStrategy.ENTITIES_THEN_RELATIONS)
                 .schemaMode(SchemaEnforcementMode.LENIENT)
                 .standardizedSchema(new GraphSchema(
                         List.of(new NodeType(
@@ -103,15 +103,32 @@ class CorpusSchemaPrepassIntegrationTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scope =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
-        verify(orchestrator.llmDispatcher).promptStructuredWithCapacityFallback(
+        verify(orchestrator.llmDispatcher, times(3)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job), scope.capture());
-        assertEquals("submit_corpus_schema", request.getValue().tools().get(0).name());
-        assertEquals("SCHEMA_PREPASS", scope.getValue().phase());
-        String prompt = request.getValue().messages().get(1).content();
-        assertTrue(prompt.contains("SEEDED_DOCUMENT"));
-        assertTrue(prompt.contains("EXTRACTOR_MESSAGE"));
-        assertTrue(prompt.contains("APPROVAL_ROLE"));
-        assertTrue(prompt.contains("monthly forecast"));
+        assertEquals(List.of(
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
+                request.getAllValues().stream()
+                        .map(value -> value.tools().get(0).name()).toList());
+        assertTrue(scope.getAllValues().stream().allMatch(
+                value -> "SCHEMA_PREPASS".equals(value.phase())));
+        assertEquals(List.of(
+                        "node-types-1", "node-types-consolidation", "relationship-types-1"),
+                scope.getAllValues().stream().map(
+                        CrawlLlmDispatcher.LlmCallScope::passId).toList());
+        assertTrue(request.getAllValues().stream().allMatch(value -> {
+            String prompt = value.messages().get(1).content();
+            return prompt.contains("SEEDED_DOCUMENT")
+                    && prompt.contains("EXTRACTOR_MESSAGE")
+                    && prompt.contains("APPROVAL_ROLE");
+        }));
+        assertTrue(request.getAllValues().get(0).messages().get(1).content().contains(
+                "monthly forecast"));
+        assertTrue(request.getAllValues().get(2).messages().get(1).content().contains(
+                "monthly forecast"));
+        assertTrue(request.getAllValues().get(1).messages().get(1).content().contains(
+                "MODEL_INFERRED_TOPIC"));
     }
 
     @Test
@@ -122,18 +139,10 @@ class CorpusSchemaPrepassIntegrationTest {
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-type-only");
-        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(schemaResponse(
-                        List.of("PERSON", "ORGANIZATION"),
-                        List.of("WORKS_FOR"),
-                        List.of(Map.of(
-                                "sourceType", "PERSON",
-                                "relationshipType", "WORKS_FOR",
-                                "targetType", "ORGANIZATION"))));
+        stubTypePasses(
+                orchestrator.llmDispatcher, job,
+                nodeResponse(List.of("PERSON", "ORGANIZATION")),
+                relationshipResponse(List.of("WORKS_FOR")));
 
         CrawlCorpusSnapshot corpus = new CrawlCorpusSnapshot(
                 "snapshot-type-only",
@@ -156,7 +165,7 @@ class CorpusSchemaPrepassIntegrationTest {
 
         assertEquals(java.util.Set.of("PERSON", "ORGANIZATION"), schema.getAllNodeLabels());
         assertEquals(java.util.Set.of("WORKS_FOR"), schema.getAllRelationshipTypes());
-        assertEquals(List.of("(PERSON)-[:WORKS_FOR]->(ORGANIZATION)"), schema.getPatterns());
+        assertTrue(schema.getPatterns() == null || schema.getPatterns().isEmpty());
         assertFalse(schema.getAllNodeLabels().stream().anyMatch(List.of(
                 "ACTUAL", "AU_001", "ONE_SHOT", "FASTER", "ON")::contains));
         assertFalse(schema.getAllRelationshipTypes().stream().anyMatch(List.of(
@@ -164,11 +173,19 @@ class CorpusSchemaPrepassIntegrationTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(orchestrator.llmDispatcher).promptStructuredWithCapacityFallback(
+        verify(orchestrator.llmDispatcher, times(4)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertEquals(List.of("submit_corpus_schema"), request.getValue().tools().stream()
-                .map(StructuredChatLanguageModel.Tool::name).toList());
+        assertEquals(List.of(
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
+                request.getAllValues().stream()
+                        .map(value -> value.tools().get(0).name()).toList());
+        assertTrue(request.getAllValues().stream().allMatch(value ->
+                value.messages().get(0).content().contains(
+                        "Do not extract entities or relations")));
     }
 
     @Test
@@ -252,12 +269,9 @@ class CorpusSchemaPrepassIntegrationTest {
         when(orchestrator.llmDispatcher.hasStructuredChatBackend()).thenReturn(true);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("prepass-full-passage");
-        when(orchestrator.llmDispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(schemaResponse(List.of(), List.of(), List.of()));
+        stubTypePasses(
+                orchestrator.llmDispatcher, job,
+                nodeResponse(List.of()), relationshipResponse(List.of()));
 
         String tailMarker = "FULL_CORPUS_TAIL_MARKER";
         String longPassage = "x".repeat(13_500) + tailMarker;
@@ -289,20 +303,47 @@ class CorpusSchemaPrepassIntegrationTest {
                 "corpus schema pre-pass truncated the tail of a long passage");
     }
 
-    private static StructuredChatLanguageModel.Response schemaResponse(
-            List<String> nodeTypes,
-            List<String> relationshipTypes,
-            List<Map<String, String>> patterns) {
-        Map<String, Object> arguments = new LinkedHashMap<>();
-        arguments.put("nodeTypes", nodeTypes);
-        arguments.put("relationshipTypes", relationshipTypes);
-        arguments.put("patterns", patterns);
+    private static StructuredChatLanguageModel.Response nodeResponse(List<String> labels) {
+        return typeResponse(
+                CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                Map.of("nodeTypes", labels));
+    }
+
+    private static StructuredChatLanguageModel.Response relationshipResponse(List<String> labels) {
+        return typeResponse(
+                CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                Map.of("relationshipTypes", labels));
+    }
+
+    private static StructuredChatLanguageModel.Response typeResponse(
+            String toolName, Map<String, Object> arguments) {
         return new StructuredChatLanguageModel.Response(
                 "<native-tool-call>",
                 "",
                 List.of(new StructuredChatLanguageModel.ToolCall(
-                        "schema-call", CorpusSchemaUnifier.SCHEMA_TOOL_NAME, arguments)),
+                        "schema-call", toolName, arguments)),
                 List.of());
+    }
+
+    private static void stubTypePasses(
+            CrawlLlmDispatcher dispatcher,
+            UnifiedCrawlJob job,
+            StructuredChatLanguageModel.Response nodeResponse,
+            StructuredChatLanguageModel.Response relationshipResponse) {
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return nodeResponse;
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipResponse;
+                    }
+                    throw new AssertionError("Unexpected schema type tool: " + tool);
+                });
     }
 
     private static Entity entity(String id, String type) {

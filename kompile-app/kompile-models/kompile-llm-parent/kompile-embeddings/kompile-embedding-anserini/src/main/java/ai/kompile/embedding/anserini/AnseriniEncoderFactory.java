@@ -316,9 +316,63 @@ public class AnseriniEncoderFactory {
             case SPLADE_PP_SD:
             case GENERIC_DENSE:
             default:
+                GenericDenseSameDiffEncoder.PoolingStrategy poolingStrategy =
+                        poolingStrategy(bundle.getMetadata());
+                boolean normalizeOutput = booleanMetadata(
+                        bundle.getMetadata(), "normalize_output", true);
+                String inputPrefix = stringMetadata(
+                        bundle.getMetadata(), "input_prefix", "");
+                Integer embeddingDimension = integerMetadata(
+                        bundle.getMetadata(), "embedding_dim", null);
                 // Use legacy constructor with explicit paths - tensor names can be null (auto-detected)
                 return new GenericDenseSameDiffEncoder(modelIdentifier, modelPath, vocabPath,
-                        null, null, doLowerCase, maxSequenceLength, addSpecialTokens, true);
+                        null, null, doLowerCase, maxSequenceLength, addSpecialTokens,
+                        normalizeOutput, poolingStrategy, inputPrefix, embeddingDimension);
+        }
+    }
+
+    static GenericDenseSameDiffEncoder.PoolingStrategy poolingStrategy(
+            Map<String, Object> metadata) {
+        Object value = metadata == null ? null : metadata.get("pooling_strategy");
+        if (value == null || value.toString().isBlank()) {
+            return GenericDenseSameDiffEncoder.PoolingStrategy.AUTO;
+        }
+        try {
+            return GenericDenseSameDiffEncoder.PoolingStrategy.valueOf(
+                    value.toString().trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("Unsupported encoder pooling_strategy: " + value, invalid);
+        }
+    }
+
+    static boolean booleanMetadata(
+            Map<String, Object> metadata, String key, boolean defaultValue) {
+        Object value = metadata == null ? null : metadata.get(key);
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        return value == null ? defaultValue : Boolean.parseBoolean(value.toString());
+    }
+
+    static String stringMetadata(
+            Map<String, Object> metadata, String key, String defaultValue) {
+        Object value = metadata == null ? null : metadata.get(key);
+        return value == null ? defaultValue : value.toString();
+    }
+
+    static Integer integerMetadata(
+            Map<String, Object> metadata, String key, Integer defaultValue) {
+        Object value = metadata == null ? null : metadata.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null || value.toString().isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.valueOf(value.toString());
+        } catch (NumberFormatException invalid) {
+            return defaultValue;
         }
     }
 

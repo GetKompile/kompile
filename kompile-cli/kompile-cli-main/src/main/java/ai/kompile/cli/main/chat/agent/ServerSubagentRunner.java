@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.tools.CliTool;
@@ -58,6 +59,7 @@ public class ServerSubagentRunner implements SubagentRunner {
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
     private volatile LifecycleListener lifecycleListener;
+    private volatile ReminderManager reminderManager;
     private final Map<String, ServerSession> sessions = new ConcurrentHashMap<>();
 
     private static final class ServerSession {
@@ -94,6 +96,11 @@ public class ServerSubagentRunner implements SubagentRunner {
     }
 
     @Override
+    public void setReminderManager(ReminderManager reminderManager) {
+        this.reminderManager = reminderManager;
+    }
+
+    @Override
     public String runSubagent(AgentConfig agent, String prompt, ToolContext parentContext) throws Exception {
         long startTime = System.currentTimeMillis();
         String subagentId = agent.getName() + "-"
@@ -122,7 +129,7 @@ public class ServerSubagentRunner implements SubagentRunner {
 
         // Send to server agent endpoint
         ObjectNode request = objectMapper.createObjectNode();
-        request.put("message", prompt);
+        request.put("message", reminderManager == null ? prompt : reminderManager.prependTo(prompt));
         request.put("agentName", "claude");
         request.put("enableRag", false);
         request.put("workingDirectory", parentContext.getWorkingDirectory().toAbsolutePath().toString());

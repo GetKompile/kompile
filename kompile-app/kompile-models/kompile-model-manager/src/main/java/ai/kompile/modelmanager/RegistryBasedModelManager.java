@@ -844,8 +844,12 @@ public class RegistryBasedModelManager {
         KompileModelManager.ModelBundle localBundle = loadBundleFromLocalCache(modelId, entry);
         if (localBundle != null) {
             // Verify checksum matches if registry has one (detects optimized/updated models)
-            if (entry.checksum != null && !entry.checksum.isBlank() && stagingUrl != null) {
+            if (entry.checksum != null && !entry.checksum.isBlank()) {
                 if (!verifyLocalChecksum(localBundle.getModelPath(), entry.checksum)) {
+                    if (stagingUrl == null) {
+                        throw new IOException("Local model checksum mismatch for " + modelId
+                                + " and no remote source is configured");
+                    }
                     logger.info("Model {} checksum mismatch - remote version is different (possibly optimized). Re-downloading.", modelId);
                     // Delete old files and re-download
                     try {
@@ -1072,6 +1076,9 @@ public class RegistryBasedModelManager {
         result.put("max_sequence_length", metadata.maxSequenceLength);
         if (metadata.modelType != null) result.put("model_type", metadata.modelType);
         if (metadata.encoderType != null) result.put("encoder_type", metadata.encoderType);
+        if (metadata.poolingStrategy != null) result.put("pooling_strategy", metadata.poolingStrategy);
+        if (metadata.inputPrefix != null) result.put("input_prefix", metadata.inputPrefix);
+        if (metadata.normalizeOutput != null) result.put("normalize_output", metadata.normalizeOutput);
         if (metadata.framework != null) result.put("framework", metadata.framework);
         if (metadata.description != null) result.put("description", metadata.description);
         if (metadata.ragRole != null) result.put("rag_role", metadata.ragRole);
@@ -1127,7 +1134,7 @@ public class RegistryBasedModelManager {
         entry.path = json.has("path") ? json.get("path").asText() : null;
         entry.modelFile = json.has("model_file") ? json.get("model_file").asText() : "model.sdz";
         entry.vocabFile = json.has("vocab_file") ? json.get("vocab_file").asText() : "vocab.txt";
-        entry.checksum = json.has("checksum") ? json.get("checksum").asText() : null;
+        entry.checksum = nullableText(json, "checksum", null);
         entry.status = json.has("status") ? json.get("status").asText() : "active";
 
         JsonNode metadataNode = json.get("metadata");
@@ -1139,6 +1146,12 @@ public class RegistryBasedModelManager {
             metadata.maxSequenceLength = metadataNode.has("max_sequence_length") ? metadataNode.get("max_sequence_length").asInt() : 512;
             metadata.modelType = metadataNode.has("model_type") ? metadataNode.get("model_type").asText() : null;
             metadata.encoderType = metadataNode.has("encoder_type") ? metadataNode.get("encoder_type").asText() : null;
+            metadata.poolingStrategy = metadataNode.has("pooling_strategy")
+                    ? metadataNode.get("pooling_strategy").asText() : null;
+            metadata.inputPrefix = metadataNode.has("input_prefix")
+                    ? metadataNode.get("input_prefix").asText() : null;
+            metadata.normalizeOutput = !metadataNode.has("normalize_output")
+                    || metadataNode.get("normalize_output").asBoolean(true);
             metadata.framework = metadataNode.has("framework") ? metadataNode.get("framework").asText() : null;
             metadata.description = metadataNode.has("description") ? metadataNode.get("description").asText() : null;
             metadata.ragRole = metadataNode.has("rag_role") ? metadataNode.get("rag_role").asText() : null;
@@ -1157,6 +1170,14 @@ public class RegistryBasedModelManager {
         }
 
         return entry;
+    }
+
+    static String nullableText(JsonNode object, String field, String defaultValue) {
+        if (object == null || field == null || !object.hasNonNull(field)) {
+            return defaultValue;
+        }
+        String value = object.get(field).asText();
+        return value == null || value.isBlank() ? defaultValue : value;
     }
 
     private List<String> readStringList(JsonNode node) {
@@ -1238,6 +1259,15 @@ public class RegistryBasedModelManager {
 
         @JsonProperty("encoder_type")
         public String encoderType;
+
+        @JsonProperty("pooling_strategy")
+        public String poolingStrategy;
+
+        @JsonProperty("input_prefix")
+        public String inputPrefix;
+
+        @JsonProperty("normalize_output")
+        public Boolean normalizeOutput = true;
 
         @JsonProperty("framework")
         public String framework = "samediff";

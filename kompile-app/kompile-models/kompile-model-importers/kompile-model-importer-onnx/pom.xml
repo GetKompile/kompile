@@ -60,6 +60,17 @@
             <artifactId>nd4j-api</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.native.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
+        </dependency>
 
 
         <!-- SameDiff ONNX Import -->
@@ -192,7 +203,7 @@
                             </execution>
                         </executions>
                         <configuration>
-                            <mainClass>ai.kompile.model.importer.onnx.OnnxImporterApplication</mainClass>
+                            <mainClass>ai.kompile.model.importer.onnx.OnnxImporterCLI</mainClass>
                             <imageName>onnx-importer</imageName>
                             <buildArgs>
                                 <buildArg>-J-Xmx12g</buildArg>

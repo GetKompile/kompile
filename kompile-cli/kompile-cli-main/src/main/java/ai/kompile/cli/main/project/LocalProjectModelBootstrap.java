@@ -107,6 +107,10 @@ public final class LocalProjectModelBootstrap {
                     + firstNonBlank(selection, DEFAULT_CATALOG_MODEL)
                     + "' is not registered; provision it with model_runtime first.");
         }
+        if ("SOURCE".equalsIgnoreCase(model.getMetadata().get("artifact.stage"))) {
+            throw new IOException("Project model '" + modelId(model)
+                    + "' is a source artifact and must be converted before runtime use");
+        }
         boolean explicitProvisioning = booleanOption(options, "forceBootstrap", false)
                 || modelDefinitionChanged(model, options);
         Path existing = resolveManifestArtifact(root, model);
@@ -187,6 +191,8 @@ public final class LocalProjectModelBootstrap {
         for (KompileProjectModel model : manifest.getModels()) {
             Path artifact = resolveManifestArtifact(root, model);
             boolean artifactReady = artifact != null;
+            String artifactStage = model.getMetadata().getOrDefault("artifact.stage", "RUNTIME");
+            boolean runtimeArtifactReady = artifactReady && !"SOURCE".equalsIgnoreCase(artifactStage);
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", model.getId());
             item.put("modelId", model.getModelId());
@@ -198,11 +204,14 @@ public final class LocalProjectModelBootstrap {
             item.put("resolvedArtifact", artifactReady ? artifact.toString() : null);
             item.put("artifactReady", artifactReady);
             item.put("artifactStatus", artifactReady ? "AVAILABLE" : "MISSING");
-            item.put("runtimeStatus", "NOT_PROBED");
-            item.put("runtimeProbeRequired", true);
-            item.put("ready", artifactReady);
-            item.put("readyMeaning", "legacy alias for artifactReady; it does not prove runtime initialization");
-            item.put("recommendedAction", artifactReady
+            item.put("artifactStage", artifactStage);
+            item.put("runtimeStatus", runtimeArtifactReady ? "NOT_PROBED" : "CONVERSION_REQUIRED");
+            item.put("runtimeProbeRequired", runtimeArtifactReady);
+            item.put("ready", runtimeArtifactReady);
+            item.put("readyMeaning", "true only for a runtime-form artifact; runtime initialization is still probed separately");
+            item.put("recommendedAction", !runtimeArtifactReady && artifactReady
+                    ? "Convert the source artifact with model_runtime action=convert."
+                    : artifactReady
                     ? "Run pipeline test/run to initialize the runtime and receive structured diagnostics."
                     : "Provision the artifact with model_runtime action=bootstrap or import.");
             result.add(item);
@@ -212,8 +221,8 @@ public final class LocalProjectModelBootstrap {
 
     /**
      * Convert one local model by invoking the standalone model CLI's real
-     * `convert` command. The model CLI then resolves the configured staging
-     * converter, so MCP does not embed importer/backend policy.
+     * `convert` command. ONNX conversion resolves the standalone importer directly;
+     * other formats retain their configured converter until migrated.
      */
     public static Map<String, Object> convert(
             Path root,
@@ -237,6 +246,13 @@ public final class LocalProjectModelBootstrap {
         addOption(command, "--format=", format);
         addOption(command, "--staging-executable=", stringOption(options, "stagingExecutable", null));
         addOption(command, "--staging-jar=", stringOption(options, "stagingJar", null));
+        addOption(command, "--onnx-importer-executable=", stringOption(options, "onnxImporterExecutable", null));
+        addOption(command, "--onnx-importer-jar=", stringOption(options, "onnxImporterJar", null));
+        addOption(command, "--model-id=", stringOption(options, "modelId", null));
+        addOption(command, "--models-root=", root.resolve("data/models").toAbsolutePath().normalize().toString());
+        if (booleanOption(options, "force", false)) {
+            command.add("--force");
+        }
         addOption(command, "--java=", stringOption(options, "javaExecutable", null));
         command.add("--timeout-minutes=" + longOption(options, "timeoutMinutes", 60L));
 
@@ -645,7 +661,7 @@ public final class LocalProjectModelBootstrap {
         }
         return name.endsWith(".gguf") || name.endsWith(".ggml")
                 || name.endsWith(".sdz") || name.endsWith(".fb")
-                || name.endsWith(".onnx") || name.equals("pipeline.json");
+                || name.equals("pipeline.json");
     }
 
     private static boolean hasVlmRuntimeComponents(Path directory) {

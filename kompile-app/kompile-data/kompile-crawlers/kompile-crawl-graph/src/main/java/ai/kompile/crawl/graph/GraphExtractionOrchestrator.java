@@ -214,6 +214,9 @@ class GraphExtractionOrchestrator {
     CorpusSchemaUnifier corpusSchemaUnifier;
 
     @Autowired(required = false)
+    CorpusTopicModel corpusTopicModel;
+
+    @Autowired(required = false)
     GraphConstructor graphConstructor;
 
     /** Read side of the unified crawl corpus assembled before extraction. */
@@ -700,6 +703,7 @@ class GraphExtractionOrchestrator {
 
         List<CrawlCorpusPassage> orderedPassages = passages.stream()
                 .filter(Objects::nonNull)
+                .filter(CrawlCorpusPassage::completeText)
                 .filter(passage -> hasText(passage.content()))
                 .sorted(Comparator.comparingInt((CrawlCorpusPassage p) -> p.chunkIndex())
                         .thenComparing(p -> p.chunkId() == null ? "" : p.chunkId()))
@@ -730,6 +734,13 @@ class GraphExtractionOrchestrator {
                 throw new IllegalStateException(
                         "Unified-corpus ontology pre-pass requires CorpusSchemaUnifier");
             }
+            CorpusTopicEvidence topicEvidence = corpusTopicModel == null
+                    ? CorpusTopicEvidence.empty()
+                    : corpusTopicModel.analyze(orderedPassages, job);
+            log.info("[Job {}] Corpus topic evidence: topics={}, outliers={}, embeddingModel={}",
+                    jobId, topicEvidence.topics().size(), topicEvidence.outlierCount(),
+                    topicEvidence.embeddingModelId());
+
             if (llmDispatcher == null || !llmDispatcher.hasStructuredChatBackend()) {
                 throw new IllegalStateException(
                         "Unified-corpus ontology pre-pass requires a structured-chat model backend");
@@ -767,6 +778,7 @@ class GraphExtractionOrchestrator {
                     candidates,
                     configuredSchema,
                     deterministicGraphSchema,
+                    topicEvidence,
                     job,
                     corpus.snapshotId(),
                     llmDispatcher);

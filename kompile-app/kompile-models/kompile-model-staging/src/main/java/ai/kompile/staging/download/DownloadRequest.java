@@ -122,6 +122,14 @@ public class DownloadRequest {
      */
     private String expectedChecksum;
 
+    /** Per-component SHA-256 checksums keyed by the stable asset key. */
+    @Builder.Default
+    private Map<String, String> expectedChecksums = new LinkedHashMap<>();
+
+    /** Per-component exact byte sizes keyed by the stable asset key. */
+    @Builder.Default
+    private Map<String, Long> expectedSizes = new LinkedHashMap<>();
+
     /**
      * Optional URL to download a tokenizer.json for models (e.g. GGUF) that
      * don't bundle a HuggingFace-format tokenizer file.

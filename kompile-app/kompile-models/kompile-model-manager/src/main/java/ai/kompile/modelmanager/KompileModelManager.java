@@ -250,6 +250,12 @@ public class KompileModelManager {
             entry.numLayers = metadata.has("num_layers") ? metadata.get("num_layers").asInt() : null;
             entry.maxSequenceLength = metadata.has("max_sequence_length") ? metadata.get("max_sequence_length").asInt() : 512;
             entry.encoderType = metadata.has("encoder_type") ? metadata.get("encoder_type").asText() : null;
+            entry.poolingStrategy = metadata.has("pooling_strategy")
+                    ? metadata.get("pooling_strategy").asText() : null;
+            entry.inputPrefix = metadata.has("input_prefix")
+                    ? metadata.get("input_prefix").asText() : null;
+            entry.normalizeOutput = !metadata.has("normalize_output")
+                    || metadata.get("normalize_output").asBoolean(true);
             entry.supportedLanguages = readStringList(metadata.get("supported_languages"));
             entry.optimized = metadata.has("optimized") && metadata.get("optimized").asBoolean(false);
         }
@@ -315,6 +321,9 @@ public class KompileModelManager {
         Map<String, Object> metadata = new HashMap<>();
         if (entry.embeddingDim != null) metadata.put("embedding_dim", entry.embeddingDim);
         if (entry.encoderType != null) metadata.put("encoder_type", entry.encoderType);
+        if (entry.poolingStrategy != null) metadata.put("pooling_strategy", entry.poolingStrategy);
+        if (entry.inputPrefix != null) metadata.put("input_prefix", entry.inputPrefix);
+        metadata.put("normalize_output", entry.normalizeOutput);
         if (entry.supportedLanguages != null && !entry.supportedLanguages.isEmpty()) {
             metadata.put("supported_languages", List.copyOf(entry.supportedLanguages));
         }
@@ -449,6 +458,9 @@ public class KompileModelManager {
         Integer numLayers;
         int maxSequenceLength = 512;
         String encoderType;
+        String poolingStrategy;
+        String inputPrefix;
+        boolean normalizeOutput = true;
         List<String> supportedLanguages;
         boolean optimized;
         boolean doLowerCase = true;

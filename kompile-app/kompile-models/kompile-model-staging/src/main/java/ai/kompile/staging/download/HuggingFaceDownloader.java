@@ -227,6 +227,22 @@ public class HuggingFaceDownloader implements DownloadService {
                 downloadedFiles.put(fileKey, targetPath);
                 totalBytes += fileBytes;
 
+                Long expectedSize = request.getExpectedSizes() == null
+                        ? null : request.getExpectedSizes().get(fileKey);
+                if (expectedSize != null && expectedSize > 0 && fileBytes != expectedSize) {
+                    throw new IOException("Size mismatch for " + fileKey + ": expected "
+                            + expectedSize + " bytes but got " + fileBytes);
+                }
+                String expectedChecksum = request.getExpectedChecksums() == null
+                        ? null : request.getExpectedChecksums().get(fileKey);
+                if (expectedChecksum != null && !expectedChecksum.isBlank()) {
+                    String actualChecksum = calculateSha256(targetPath);
+                    if (!expectedChecksum.equalsIgnoreCase(actualChecksum)) {
+                        throw new IOException("SHA-256 mismatch for " + fileKey + ": expected "
+                                + expectedChecksum + " but got " + actualChecksum);
+                    }
+                }
+
                 log.info("Downloaded {} ({} bytes)", fileName, fileBytes);
             }
 

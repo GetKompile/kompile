@@ -81,6 +81,8 @@ public class ChatCompleter implements Completer {
         COMMANDS.put("/conversations", "List conversations");
         COMMANDS.put("/sessions", "List sessions");
         COMMANDS.put("/title", "Show or change the session title");
+        COMMANDS.put("/reminder", "List or add session reminders");
+        COMMANDS.put("/reminder-global", "List or add project-global reminders");
 
         // RAG & planning
         COMMANDS.put("/rag", "Toggle or configure RAG");
@@ -197,6 +199,13 @@ public class ChatCompleter implements Completer {
                 new String[]{"passthrough", "Agent passthrough mode"},
                 new String[]{"plan", "Planning mode"}
         ));
+        List<String[]> reminderArgs = List.of(
+                new String[]{"list", "List configured reminders"},
+                new String[]{"add", "Add a reminder"},
+                new String[]{"clear", "Clear configured reminders"}
+        );
+        SUB_ARGS.put("/reminder", reminderArgs);
+        SUB_ARGS.put("/reminder-global", reminderArgs);
         SUB_ARGS.put("/render", List.of(
                 new String[]{"mirror", "Render the agent terminal directly"},
                 new String[]{"decoded", "Render the decoded transcript"},

@@ -170,10 +170,17 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-"$ADB" -s "$serial" install -r -t "${VALUE[candidate_apk]}" >/dev/null ||
-  fail "could not install candidate APK"
-"$ADB" -s "$serial" install -r -t "${VALUE[test_apk]}" >/dev/null ||
-  fail "could not install qualification test APK"
+install_apk() {
+  local label="$1"
+  local apk="$2"
+  local install_output
+  if ! install_output="$("$ADB" -s "$serial" install -r -t "$apk" 2>&1)"; then
+    fail "could not install $label: $install_output"
+  fi
+}
+
+install_apk "candidate APK" "${VALUE[candidate_apk]}"
+install_apk "qualification test APK" "${VALUE[test_apk]}"
 [[ "$("$ADB" -s "$serial" shell pm clear "$package" | tr -d '\r')" == Success ]] ||
   fail "could not clear candidate package data for a cold import"
 

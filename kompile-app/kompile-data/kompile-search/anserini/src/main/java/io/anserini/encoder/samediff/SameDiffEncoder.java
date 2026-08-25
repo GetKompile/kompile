@@ -40,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -677,15 +678,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             throw new IOException("Vocabulary file not found at bundle path: " + vocabPath);
         }
         
-        // Load vocabulary
-        SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
-        
-        this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(
-            vocabulary, 
-            doLowerCaseAndStripAccents,
-            addSpecialTokens,
-            maxSequenceLength
-        );
+        this.tokenizerPreProcessor = createTokenizerPreProcessor(
+                vocabPath, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
 
         // Load SameDiff model
         loadSameDiffModel(modelPath);
@@ -721,9 +715,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
         LOG.info("[{}] Loading vocabulary from Kompile-managed path: {}", modelIdentifier, vocabPath.toAbsolutePath());
         
-        // Load vocabulary
-        SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
-        this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
+        this.tokenizerPreProcessor = createTokenizerPreProcessor(
+                vocabPath, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
 
         // Load SameDiff model
         loadSameDiffModel(modelPath);
@@ -751,6 +744,24 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             }
         }
         return vocabPath;
+    }
+
+    private SamediffBertTokenizerPreProcessor createTokenizerPreProcessor(
+            Path tokenizerPath,
+            boolean doLowerCaseAndStripAccents,
+            boolean addSpecialTokens,
+            int maxSequenceLength) throws IOException {
+        String fileName = tokenizerPath.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (fileName.endsWith(".json")) {
+            LOG.info("[{}] Loading Hugging Face tokenizer JSON from {}",
+                    modelIdentifier, tokenizerPath.toAbsolutePath());
+            return new SamediffBertTokenizerPreProcessor(
+                    tokenizerPath.toString(), addSpecialTokens, maxSequenceLength);
+        }
+        SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(
+                tokenizerPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
+        return new SamediffBertTokenizerPreProcessor(
+                vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
     }
 
     private void loadSameDiffModel(Path modelPath) throws IOException {
@@ -1086,9 +1097,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         if (!Files.exists(vocabPath) || !Files.isRegularFile(vocabPath)) {
             throw new IOException("Kompile-managed vocabulary path does not exist or is not a file: " + kompileManagedVocabPath);
         }
-        // Use the provided SamediffBertVocabulary constructor
-        SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
-        this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
+        this.tokenizerPreProcessor = createTokenizerPreProcessor(
+                vocabPath, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
 
         Path modelPath = Paths.get(kompileManagedModelPath);
         LOG.info("[{}] Loading model from Kompile-managed path: {}", modelIdentifier, modelPath.toAbsolutePath());

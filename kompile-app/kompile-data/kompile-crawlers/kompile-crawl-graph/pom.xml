@@ -52,6 +52,14 @@
             <artifactId>kompile-knowledge-graph</artifactId>
         </dependency>
         <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-algorithms</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>nd4j-api</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
             <optional>true</optional>
@@ -99,6 +107,19 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>${nd4j.native.backend}</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}${javacpp.platform.extension}</classifier>
             <scope>test</scope>
         </dependency>
     </dependencies>

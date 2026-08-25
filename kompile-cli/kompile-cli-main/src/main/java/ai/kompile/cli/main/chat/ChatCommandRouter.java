@@ -78,6 +78,7 @@ public class ChatCommandRouter {
     private final BackgroundProcessManager processManager;
     private final ai.kompile.cli.main.chat.tui.StatusBar statusBar;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
+    private final ReminderManager reminderManager;
     private String serverCustomSystemPrompt;
 
     // Mutable state that the router can modify via ChatRepl accessors
@@ -105,7 +106,8 @@ public class ChatCommandRouter {
             BackgroundTaskManager backgroundTaskManager,
             BackgroundProcessManager processManager,
             ai.kompile.cli.main.chat.tui.StatusBar statusBar,
-            List<ChatRepl.PendingAttachment> pendingAttachments) {
+            List<ChatRepl.PendingAttachment> pendingAttachments,
+            ReminderManager reminderManager) {
         this.repl = repl;
         this.messageHandler = messageHandler;
         this.queueManager = queueManager;
@@ -128,6 +130,7 @@ public class ChatCommandRouter {
         this.processManager = processManager;
         this.statusBar = statusBar;
         this.pendingAttachments = pendingAttachments;
+        this.reminderManager = reminderManager;
     }
 
     /**
@@ -311,6 +314,14 @@ public class ChatCommandRouter {
 
             case "/recall":
                 handleRecall(rest);
+                return true;
+
+            case "/reminder":
+                printReminderResult(ReminderManager.Scope.SESSION, rest);
+                return true;
+
+            case "/reminder-global":
+                printReminderResult(ReminderManager.Scope.PROJECT, rest);
                 return true;
 
             case "/permissions":
@@ -642,6 +653,10 @@ public class ChatCommandRouter {
     // Help
     // ========================================================================
 
+    private void printReminderResult(ReminderManager.Scope scope, String arguments) {
+        System.out.println(reminderManager.handleCommand(scope, arguments));
+    }
+
     private void printHelp() {
         StringBuilder body = new StringBuilder();
 
@@ -717,6 +732,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
+            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add session reminders; use clear to reset\n");
+            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders shared by every session\n");
             body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
             body.append("  ").append(renderer.cyan("/auto-compact ...")).append("   Configure automatic model-aware compaction\n");
             body.append("\n");
@@ -756,6 +773,8 @@ public class ChatCommandRouter {
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("  ").append(renderer.cyan("/title [text]")).append("       Show or change the session title\n");
+            body.append("  ").append(renderer.cyan("/reminder [text]")).append("    List/add session reminders; use clear to reset\n");
+            body.append("  ").append(renderer.cyan("/reminder-global [text]")).append("Project reminders shared by every session\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");

@@ -51,12 +51,10 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-1");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(domainSchemaArguments()));
+        stubTypePasses(
+                dispatcher, job,
+                nodeTypes("EMAIL_MESSAGE", "PERSON"),
+                relationshipTypes("SENT_BY"));
 
         GraphSchema schema = new CorpusSchemaUnifier().unify(
                 Map.of(
@@ -72,25 +70,26 @@ class CorpusSchemaUnifierTest {
                 List.of("EMAIL_MESSAGE", "PERSON"),
                 schema.getNodeTypes().stream().map(NodeType::getLabel).toList());
         assertEquals("SENT_BY", schema.getRelationshipTypes().get(0).getType());
-        assertEquals(
-                List.of("(EMAIL_MESSAGE)-[:SENT_BY]->(PERSON)"),
-                schema.getPatterns());
+        assertTrue(schema.getPatterns() == null || schema.getPatterns().isEmpty());
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(4)).promptStructuredWithCapacityFallback(
                 request.capture(),
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        assertEquals(
-                StructuredChatLanguageModel.ToolChoice.REQUIRED,
-                request.getValue().toolChoice());
-        assertEquals(
-                CorpusSchemaUnifier.SCHEMA_TOOL_NAME,
-                request.getValue().tools().get(0).name());
+        List<StructuredChatLanguageModel.Request> typeRequests = request.getAllValues();
+        assertEquals(List.of(
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                        CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME),
+                typeRequests.stream().map(value -> value.tools().get(0).name()).toList());
+        assertTrue(typeRequests.stream().allMatch(value ->
+                value.toolChoice() == StructuredChatLanguageModel.ToolChoice.REQUIRED));
         Map<String, Object> topProperties = asMap(
-                request.getValue().tools().get(0).parameters().get("properties"));
+                typeRequests.get(0).tools().get(0).parameters().get("properties"));
         Map<String, Object> nodeType = asMap(
                 asMap(topProperties.get("nodeTypes")).get("items"));
         assertEquals("string", nodeType.get("type"));
@@ -98,18 +97,21 @@ class CorpusSchemaUnifierTest {
         assertEquals(48, nodeType.get("maxLength"));
         assertEquals(true, asMap(topProperties.get("nodeTypes")).get("uniqueItems"));
         assertEquals(32, asMap(topProperties.get("nodeTypes")).get("maxItems"));
+        assertEquals(java.util.Set.of("nodeTypes"), topProperties.keySet());
+        Map<String, Object> relationshipProperties = asMap(
+                typeRequests.get(2).tools().get(0).parameters().get("properties"));
         Map<String, Object> relationshipType = asMap(
-                asMap(topProperties.get("relationshipTypes")).get("items"));
+                asMap(relationshipProperties.get("relationshipTypes")).get("items"));
         assertEquals("string", relationshipType.get("type"));
         assertEquals("^[A-Z][A-Z0-9_]*$", relationshipType.get("pattern"));
         assertEquals(48, relationshipType.get("maxLength"));
-        Map<String, Object> patternProperties = asMap(asMap(
-                asMap(topProperties.get("patterns")).get("items")).get("properties"));
-        assertEquals(48, asMap(patternProperties.get("sourceType")).get("maxLength"));
-        assertEquals(48, asMap(patternProperties.get("relationshipType")).get("maxLength"));
-        assertEquals(48, asMap(patternProperties.get("targetType")).get("maxLength"));
-        assertTrue(request.getValue().messages().get(1).content().contains("email-window"));
-        assertTrue(request.getValue().messages().get(1).content().contains("workbook-window"));
+        assertEquals(java.util.Set.of("relationshipTypes"), relationshipProperties.keySet());
+        assertTrue(typeRequests.get(0).messages().get(1).content().contains("email-window"));
+        assertTrue(typeRequests.get(2).messages().get(1).content().contains("workbook-window"));
+        assertTrue(typeRequests.get(1).messages().get(1).content().contains(
+                "UNTRUSTED BATCH PROPOSALS"));
+        assertTrue(typeRequests.get(3).messages().get(1).content().contains(
+                "UNTRUSTED BATCH PROPOSALS"));
     }
 
     @Test
@@ -118,15 +120,7 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-2");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of("KEYWORD"),
-                        "relationshipTypes", List.of(),
-                        "patterns", List.of())));
+        stubTypePasses(dispatcher, job, nodeTypes("KEYWORD"), relationshipTypes());
 
         CorpusSchemaCandidates.Inventory fallbackInventory =
                 new CorpusSchemaCandidates.Inventory(
@@ -159,15 +153,7 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-configured-fallback");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of("SOURCE_TYPE"),
-                        "relationshipTypes", List.of(),
-                        "patterns", List.of())));
+        stubTypePasses(dispatcher, job, nodeTypes("SOURCE_TYPE"), relationshipTypes());
 
         GraphSchema configured = new GraphSchema(
                 List.of(
@@ -191,7 +177,7 @@ class CorpusSchemaUnifierTest {
     }
 
     @Test
-    void retriesInvalidSchemaWithValidatorFeedbackAndStableBatchContext() {
+    void retriesInvalidNodeTypesWithValidatorFeedbackThenRunsRelationshipPass() {
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-schema-repair");
@@ -200,20 +186,16 @@ class CorpusSchemaUnifierTest {
                 .build());
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
 
-        Map<String, Object> invalid = new LinkedHashMap<>();
-        invalid.put("nodeTypes", List.of("AMER"));
-        invalid.put("relationshipTypes", List.of());
-        invalid.put("patterns", List.of(Map.of(
-                "sourceType", "NORTHSTAR_GOODS",
-                "relationshipType", "PURCHASED_FROM",
-                "targetType", "FIRM")));
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(invalid))
-                .thenReturn(structuredSchemaResponse(domainSchemaArguments()));
+                .thenReturn(nodeTypes("KEYWORD"))
+                .thenReturn(nodeTypes("EMAIL_MESSAGE", "PERSON"))
+                .thenReturn(nodeTypes("EMAIL_MESSAGE", "PERSON"))
+                .thenReturn(relationshipTypes("SENT_BY"))
+                .thenReturn(relationshipTypes("SENT_BY"));
 
         GraphSchema schema = new CorpusSchemaUnifier().unify(
                 Map.of("email-window", "Sarah Chen sent the Q3 forecast."),
@@ -230,24 +212,30 @@ class CorpusSchemaUnifierTest {
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
         ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scopes =
                 ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
-        verify(dispatcher, times(2)).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(
                 requests.capture(), eq("llm"), same(job), scopes.capture());
-        assertEquals(List.of("corpus-schema-1", "corpus-schema-1"), scopes.getAllValues().stream()
+        assertEquals(List.of(
+                        "node-types-1", "node-types-1", "node-types-consolidation",
+                        "relationship-types-1", "relationship-types-consolidation"),
+                scopes.getAllValues().stream()
                 .map(CrawlLlmDispatcher.LlmCallScope::passId).toList());
-        assertEquals(List.of(1, 2), scopes.getAllValues().stream()
+        assertEquals(List.of(1, 2, 1, 1, 1), scopes.getAllValues().stream()
                 .map(CrawlLlmDispatcher.LlmCallScope::passInvocation).toList());
-        assertEquals("job-schema-repair:corpus-schema:1", scopes.getAllValues().get(0).taskId());
-        assertEquals("job-schema-repair:corpus-schema:1:attempt:2",
+        assertEquals("job-schema-repair:corpus-schema:node-types:1",
+                scopes.getAllValues().get(0).taskId());
+        assertEquals("job-schema-repair:corpus-schema:node-types:1:attempt:2",
                 scopes.getAllValues().get(1).taskId());
         String retryPrompt = requests.getAllValues().get(1).messages().get(1).content();
-        assertTrue(retryPrompt.contains("SCHEMA REPAIR REQUIRED (attempt 2 of 3)"));
-        assertTrue(retryPrompt.contains("SCHEMA_PATTERN_ENDPOINT"));
-        assertTrue(retryPrompt.contains("NORTHSTAR_GOODS"));
+        assertTrue(retryPrompt.contains("TYPE-SCHEMA REPAIR REQUIRED (attempt 2 of 3)"));
+        assertTrue(retryPrompt.contains("SCHEMA_GENERIC_TYPE"));
+        assertTrue(retryPrompt.contains("KEYWORD"));
         assertTrue(retryPrompt.contains("Sarah Chen sent the Q3 forecast."));
+        assertFalse(retryPrompt.contains("sourceType"));
+        assertFalse(retryPrompt.contains("targetType"));
     }
 
     @Test
-    void exhaustsConfiguredSchemaValidationRetriesWithoutPromotingPatternLabels() {
+    void exhaustsConfiguredNodeTypeValidationRetriesWithoutStartingRelations() {
         CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-schema-exhausted");
@@ -256,19 +244,12 @@ class CorpusSchemaUnifierTest {
                 .build());
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
 
-        Map<String, Object> invalid = new LinkedHashMap<>();
-        invalid.put("nodeTypes", List.of());
-        invalid.put("relationshipTypes", List.of());
-        invalid.put("patterns", List.of(Map.of(
-                "sourceType", "TARGET_CUSTOMER",
-                "relationshipType", "WANTED_BIGGER_MARGIN",
-                "targetType", "CUSTOMERS")));
         when(dispatcher.promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"),
                 same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(invalid));
+                .thenReturn(nodeTypes("KEYWORD"));
 
         IllegalStateException failure = assertThrows(
                 IllegalStateException.class,
@@ -280,8 +261,8 @@ class CorpusSchemaUnifierTest {
                         "snapshot-schema-exhausted",
                         dispatcher));
 
-        assertTrue(failure.getMessage().contains("SCHEMA_PATTERN_ENDPOINT"));
-        assertTrue(failure.getMessage().contains("TARGET_CUSTOMER"));
+        assertTrue(failure.getMessage().contains("SCHEMA_GENERIC_TYPE"));
+        assertTrue(failure.getMessage().contains("KEYWORD"));
         verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
                 any(StructuredChatLanguageModel.Request.class),
                 eq("llm"),
@@ -295,15 +276,10 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-merged-schema");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of("MODEL_INFERRED_TOPIC"),
-                        "relationshipTypes", List.of(),
-                        "patterns", List.of())));
+        stubTypePasses(
+                dispatcher, job,
+                nodeTypes("MODEL_INFERRED_TOPIC"),
+                relationshipTypes());
 
         CorpusSchemaCandidates.Inventory deterministicCandidates =
                 new CorpusSchemaCandidates.Inventory(
@@ -344,13 +320,59 @@ class CorpusSchemaUnifierTest {
 
         ArgumentCaptor<StructuredChatLanguageModel.Request> request =
                 ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
-        verify(dispatcher).promptStructuredWithCapacityFallback(
+        verify(dispatcher, times(3)).promptStructuredWithCapacityFallback(
                 request.capture(), eq("llm"), same(job),
                 any(CrawlLlmDispatcher.LlmCallScope.class));
-        String prompt = request.getValue().messages().get(1).content();
-        assertTrue(prompt.contains("SEEDED_DOCUMENT"));
-        assertTrue(prompt.contains("EXTRACTOR_MESSAGE"));
-        assertTrue(prompt.contains("DETERMINISTIC_ACTOR"));
+        assertTrue(request.getAllValues().stream().allMatch(value ->
+                value.messages().get(1).content().contains("SEEDED_DOCUMENT")));
+        assertTrue(request.getAllValues().stream().allMatch(value ->
+                value.messages().get(1).content().contains("EXTRACTOR_MESSAGE")));
+        assertTrue(request.getAllValues().stream().allMatch(value ->
+                value.messages().get(1).content().contains("DETERMINISTIC_ACTOR")));
+    }
+
+    @Test
+    void consolidatesUntrustedProposalsBeforeCommitAndRejectsNodeNounRelations() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-consolidation");
+        when(job.getRequest()).thenReturn(UnifiedCrawlRequest.builder()
+                .maxValidationRetries(1)
+                .build());
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(nodeTypes("AMER_FORECAST_Q3_FINAL", "FORECAST"))
+                .thenReturn(nodeTypes("FORECAST"))
+                .thenReturn(relationshipTypes("FORECAST", "USES_CURRENCY"))
+                .thenReturn(relationshipTypes("FORECAST"))
+                .thenReturn(relationshipTypes("USES_CURRENCY"));
+
+        GraphSchema schema = new CorpusSchemaUnifier().unify(
+                Map.of("window", "The regional forecast uses local currency."),
+                new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                null, job, "snapshot-consolidation", dispatcher);
+
+        assertEquals(java.util.Set.of("FORECAST"), schema.getAllNodeLabels());
+        assertEquals(java.util.Set.of("USES_CURRENCY"), schema.getAllRelationshipTypes());
+
+        ArgumentCaptor<StructuredChatLanguageModel.Request> requests =
+                ArgumentCaptor.forClass(StructuredChatLanguageModel.Request.class);
+        ArgumentCaptor<CrawlLlmDispatcher.LlmCallScope> scopes =
+                ArgumentCaptor.forClass(CrawlLlmDispatcher.LlmCallScope.class);
+        verify(dispatcher, times(5)).promptStructuredWithCapacityFallback(
+                requests.capture(), eq("llm"), same(job), scopes.capture());
+        assertTrue(requests.getAllValues().get(1).messages().get(1).content().contains(
+                "AMER_FORECAST_Q3_FINAL"));
+        assertTrue(requests.getAllValues().get(1).messages().get(1).content().contains(
+                "untrusted suggestions"));
+        String relationshipRepair = requests.getAllValues().get(4).messages().get(1).content();
+        assertTrue(relationshipRepair.contains("SCHEMA_TYPE_CATEGORY"));
+        assertTrue(relationshipRepair.contains("FORECAST"));
+        assertEquals("relationship-types-consolidation",
+                scopes.getAllValues().get(4).passId());
+        assertEquals(2, scopes.getAllValues().get(4).passInvocation());
     }
 
     @Test
@@ -359,15 +381,7 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-full-corpus");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of(),
-                        "relationshipTypes", List.of(),
-                        "patterns", List.of())));
+        stubTypePasses(dispatcher, job, nodeTypes(), relationshipTypes());
 
         Map<String, String> passages = new LinkedHashMap<>();
         for (int index = 0; index < 20; index++) {
@@ -488,7 +502,37 @@ class CorpusSchemaUnifierTest {
                         job,
                         "snapshot-missing-tool",
                         dispatcher));
-        assertTrue(missingTool.getMessage().contains("did not call submit_corpus_schema"));
+        assertTrue(missingTool.getMessage().contains("did not call submit_node_types"));
+    }
+
+    @Test
+    void rejectsObjectDefinitionsEvenWhenBackendViolatesToolSchema() {
+        CrawlLlmDispatcher dispatcher = mock(CrawlLlmDispatcher.class);
+        UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
+        when(job.getJobId()).thenReturn("job-object-type");
+        when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"),
+                same(job),
+                any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenReturn(structuredSchemaResponse(
+                        CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                        Map.of("nodeTypes", List.of(Map.of(
+                                "label", "PERSON",
+                                "description", "An extracted person.")))));
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> new CorpusSchemaUnifier().unify(
+                        Map.of("window", "Mei Chen submitted the forecast."),
+                        new CorpusSchemaCandidates.Inventory(List.of(), List.of()),
+                        null,
+                        job,
+                        "snapshot-object-type",
+                        dispatcher));
+
+        assertTrue(failure.getMessage().contains("plain label strings, never objects"));
     }
 
     @Test
@@ -497,15 +541,7 @@ class CorpusSchemaUnifierTest {
         UnifiedCrawlJob job = mock(UnifiedCrawlJob.class);
         when(job.getJobId()).thenReturn("job-empty-overlay");
         when(dispatcher.hasStructuredChatBackend()).thenReturn(true);
-        when(dispatcher.promptStructuredWithCapacityFallback(
-                any(StructuredChatLanguageModel.Request.class),
-                eq("llm"),
-                same(job),
-                any(CrawlLlmDispatcher.LlmCallScope.class)))
-                .thenReturn(structuredSchemaResponse(Map.of(
-                        "nodeTypes", List.of(),
-                        "relationshipTypes", List.of(),
-                        "patterns", List.of())));
+        stubTypePasses(dispatcher, job, nodeTypes(), relationshipTypes());
 
         GraphSchema schema = new CorpusSchemaUnifier().unify(
                 Map.of("window", "A passage with no reusable domain vocabulary."),
@@ -530,25 +566,45 @@ class CorpusSchemaUnifierTest {
     }
 
     private static StructuredChatLanguageModel.Response structuredSchemaResponse(
-            Map<String, Object> arguments) {
+            String toolName, Map<String, Object> arguments) {
         return new StructuredChatLanguageModel.Response(
                 "<native-tool-call>",
                 "",
                 List.of(new StructuredChatLanguageModel.ToolCall(
-                        "schema-call",
-                        CorpusSchemaUnifier.SCHEMA_TOOL_NAME,
-                        arguments)),
+                        "schema-call", toolName, arguments)),
                 List.of());
     }
 
-    private static Map<String, Object> domainSchemaArguments() {
-        Map<String, Object> arguments = new LinkedHashMap<>();
-        arguments.put("nodeTypes", List.of("EMAIL_MESSAGE", "PERSON"));
-        arguments.put("relationshipTypes", List.of("SENT_BY"));
-        arguments.put("patterns", List.of(Map.of(
-                "sourceType", "EMAIL_MESSAGE",
-                "relationshipType", "SENT_BY",
-                "targetType", "PERSON")));
-        return arguments;
+    private static StructuredChatLanguageModel.Response nodeTypes(String... labels) {
+        return structuredSchemaResponse(
+                CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME,
+                Map.of("nodeTypes", List.of(labels)));
+    }
+
+    private static StructuredChatLanguageModel.Response relationshipTypes(String... labels) {
+        return structuredSchemaResponse(
+                CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME,
+                Map.of("relationshipTypes", List.of(labels)));
+    }
+
+    private static void stubTypePasses(
+            CrawlLlmDispatcher dispatcher,
+            UnifiedCrawlJob job,
+            StructuredChatLanguageModel.Response nodeResponse,
+            StructuredChatLanguageModel.Response relationshipResponse) {
+        when(dispatcher.promptStructuredWithCapacityFallback(
+                any(StructuredChatLanguageModel.Request.class),
+                eq("llm"), same(job), any(CrawlLlmDispatcher.LlmCallScope.class)))
+                .thenAnswer(invocation -> {
+                    StructuredChatLanguageModel.Request request = invocation.getArgument(0);
+                    String tool = request.tools().get(0).name();
+                    if (CorpusSchemaUnifier.NODE_TYPE_TOOL_NAME.equals(tool)) {
+                        return nodeResponse;
+                    }
+                    if (CorpusSchemaUnifier.RELATIONSHIP_TYPE_TOOL_NAME.equals(tool)) {
+                        return relationshipResponse;
+                    }
+                    throw new AssertionError("Unexpected schema type tool: " + tool);
+                });
     }
 }

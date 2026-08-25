@@ -676,6 +676,22 @@ class VectorIndexingHelper {
         return embeddingModels.get(0);
     }
 
+    EmbeddingModel embeddingModel(String modelId) {
+        if (modelId == null || modelId.isBlank() || embeddingModels == null) {
+            return null;
+        }
+        for (EmbeddingModel model : embeddingModels) {
+            try {
+                if (model != null && modelId.equals(model.getModelIdentifier())) {
+                    return model;
+                }
+            } catch (Exception ignored) {
+                // A broken optional model must not prevent resolving another registered model.
+            }
+        }
+        return null;
+    }
+
     boolean isEmbeddingModelReady(EmbeddingModel embeddingModel) {
         if (embeddingModel == null) {
             return false;

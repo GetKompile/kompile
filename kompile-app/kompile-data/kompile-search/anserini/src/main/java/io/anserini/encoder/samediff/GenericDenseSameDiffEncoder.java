@@ -45,6 +45,12 @@ import java.util.concurrent.atomic.AtomicLong;
 public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final Logger LOG = LogManager.getLogger(GenericDenseSameDiffEncoder.class);
 
+    public enum PoolingStrategy {
+        AUTO,
+        CLS,
+        MEAN
+    }
+
     /**
      * Listener notified when the encoder shrinks a sub-batch due to native-memory pressure.
      * Implemented by the subprocess main class to forward decisions over the stdout protocol.
@@ -78,6 +84,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     public static final boolean DEFAULT_NORMALIZE = true;
 
     private final boolean normalizeOutput;
+    private final PoolingStrategy poolingStrategy;
+    private final String inputPrefix;
 
     // ========== INFERENCE BENCHMARKING STATS ==========
     // These track cumulative timing to identify bottlenecks
@@ -121,11 +129,37 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                                        boolean addSpecialTokens,
                                        boolean normalizeOutput)
             throws IOException {
+        this(modelIdentifier, doLowerCaseAndStripAccents, maxSequenceLength,
+                addSpecialTokens, normalizeOutput, PoolingStrategy.AUTO);
+    }
+
+    public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
+                                       boolean doLowerCaseAndStripAccents,
+                                       int maxSequenceLength,
+                                       boolean addSpecialTokens,
+                                       boolean normalizeOutput,
+                                       PoolingStrategy poolingStrategy)
+            throws IOException {
+        this(modelIdentifier, doLowerCaseAndStripAccents, maxSequenceLength,
+                addSpecialTokens, normalizeOutput, poolingStrategy, "");
+    }
+
+    public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
+                                       boolean doLowerCaseAndStripAccents,
+                                       int maxSequenceLength,
+                                       boolean addSpecialTokens,
+                                       boolean normalizeOutput,
+                                       PoolingStrategy poolingStrategy,
+                                       String inputPrefix)
+            throws IOException {
         super(modelIdentifier, doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
         this.normalizeOutput = normalizeOutput;
+        this.poolingStrategy = poolingStrategy == null ? PoolingStrategy.AUTO : poolingStrategy;
+        this.inputPrefix = inputPrefix == null ? "" : inputPrefix;
         initBatchSizeDefaults();
-        LOG.info("[{}] GenericDenseSameDiffEncoder initialized. Normalize output: {}, batchSize: optimal={}, max={}",
-                this.modelIdentifier, this.normalizeOutput, this.instanceOptimalBatchSize, this.instanceMaxBatchSize);
+        LOG.info("[{}] GenericDenseSameDiffEncoder initialized. Normalize output: {}, pooling: {}, inputPrefix: {}, batchSize: optimal={}, max={}",
+                this.modelIdentifier, this.normalizeOutput, this.poolingStrategy, this.inputPrefix,
+                this.instanceOptimalBatchSize, this.instanceMaxBatchSize);
     }
 
     // Simplified constructor using all defaults
@@ -149,6 +183,63 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                                        boolean addSpecialTokens,
                                        boolean normalizeOutput)
             throws IOException {
+        this(modelIdentifier, kompileManagedOnnxModelPath, kompileManagedVocabPath,
+                inputTensorNamesForModel, outputTensorNameFromModel,
+                doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens,
+                normalizeOutput, PoolingStrategy.AUTO);
+    }
+
+    @Deprecated
+    public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
+                                       @NotNull String kompileManagedOnnxModelPath,
+                                       @NotNull String kompileManagedVocabPath,
+                                       List<String> inputTensorNamesForModel,
+                                       String outputTensorNameFromModel,
+                                       boolean doLowerCaseAndStripAccents,
+                                       int maxSequenceLength,
+                                       boolean addSpecialTokens,
+                                       boolean normalizeOutput,
+                                       PoolingStrategy poolingStrategy)
+            throws IOException {
+        this(modelIdentifier, kompileManagedOnnxModelPath, kompileManagedVocabPath,
+                inputTensorNamesForModel, outputTensorNameFromModel,
+                doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens,
+                normalizeOutput, poolingStrategy, "");
+    }
+
+    @Deprecated
+    public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
+                                       @NotNull String kompileManagedOnnxModelPath,
+                                       @NotNull String kompileManagedVocabPath,
+                                       List<String> inputTensorNamesForModel,
+                                       String outputTensorNameFromModel,
+                                       boolean doLowerCaseAndStripAccents,
+                                       int maxSequenceLength,
+                                       boolean addSpecialTokens,
+                                       boolean normalizeOutput,
+                                       PoolingStrategy poolingStrategy,
+                                       String inputPrefix)
+            throws IOException {
+        this(modelIdentifier, kompileManagedOnnxModelPath, kompileManagedVocabPath,
+                inputTensorNamesForModel, outputTensorNameFromModel,
+                doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens,
+                normalizeOutput, poolingStrategy, inputPrefix, null);
+    }
+
+    @Deprecated
+    public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
+                                       @NotNull String kompileManagedOnnxModelPath,
+                                       @NotNull String kompileManagedVocabPath,
+                                       List<String> inputTensorNamesForModel,
+                                       String outputTensorNameFromModel,
+                                       boolean doLowerCaseAndStripAccents,
+                                       int maxSequenceLength,
+                                       boolean addSpecialTokens,
+                                       boolean normalizeOutput,
+                                       PoolingStrategy poolingStrategy,
+                                       String inputPrefix,
+                                       Integer embeddingDimension)
+            throws IOException {
         // Handle null tensor names by passing empty lists - the parent will auto-detect from the model
         super(modelIdentifier, kompileManagedOnnxModelPath, kompileManagedVocabPath,
                 inputTensorNamesForModel != null ? inputTensorNamesForModel : List.of(),
@@ -158,9 +249,30 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 addSpecialTokens);
 
         this.normalizeOutput = normalizeOutput;
+        this.poolingStrategy = poolingStrategy == null ? PoolingStrategy.AUTO : poolingStrategy;
+        this.inputPrefix = inputPrefix == null ? "" : inputPrefix;
+        if (embeddingDimension != null && embeddingDimension > 0) {
+            this.cachedEmbeddingDimension = embeddingDimension;
+        }
         initBatchSizeDefaults();
-        LOG.info("[{}] GenericDenseSameDiffEncoder initialized (legacy). Normalize output: {}, batchSize: optimal={}, max={}",
-                this.modelIdentifier, this.normalizeOutput, this.instanceOptimalBatchSize, this.instanceMaxBatchSize);
+        LOG.info("[{}] GenericDenseSameDiffEncoder initialized (legacy). Normalize output: {}, pooling: {}, inputPrefix: {}, batchSize: optimal={}, max={}",
+                this.modelIdentifier, this.normalizeOutput, this.poolingStrategy, this.inputPrefix,
+                this.instanceOptimalBatchSize, this.instanceMaxBatchSize);
+    }
+
+    @Override
+    protected String getInstructionPrefix() {
+        return inputPrefix;
+    }
+
+    private String prefixed(String text) {
+        return applyInputPrefix(inputPrefix, text);
+    }
+
+    static String applyInputPrefix(String prefix, String text) {
+        String effectivePrefix = prefix == null ? "" : prefix;
+        return effectivePrefix.isEmpty() || text.startsWith(effectivePrefix)
+                ? text : effectivePrefix + text;
     }
 
     @Override
@@ -180,7 +292,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // ========== BENCHMARK: Tokenization ==========
         long tokenizeStart = System.nanoTime();
-        SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
+        SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(prefixed(query));
         long tokenizeEnd = System.nanoTime();
         long tokenizeTimeNanos = tokenizeEnd - tokenizeStart;
         // Null check for AtomicLong fields - they may be null during super() constructor validation
@@ -431,7 +543,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             // ========== BENCHMARK: Post-processing ==========
             long postProcessStart = System.nanoTime();
-            float[] result = processOutputTensor(embeddingTensor);
+            float[] result = processOutputTensor(embeddingTensor, encoding.attentionMask);
             long postProcessEnd = System.nanoTime();
             long postProcessTimeNanos = postProcessEnd - postProcessStart;
             // Null check for AtomicLong fields - they may be null during super() constructor validation
@@ -537,7 +649,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                lower.equals("segmentids");
     }
 
-    protected float[] processOutputTensor(INDArray embeddingTensor) {
+    protected float[] processOutputTensor(INDArray embeddingTensor, long[] attentionMask) {
         // Validate input tensor
         if (embeddingTensor == null || embeddingTensor.isEmpty() || embeddingTensor.length() == 0) {
             LOG.error("[{}] Invalid embedding tensor - null or empty", this.modelIdentifier);
@@ -562,10 +674,17 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         try {
             if (embeddingTensor.rank() == 3 && embeddingTensor.shape()[0] == 1 && embeddingTensor.shape()[1] > 0) {
-                // 3D tensor [batch, sequence, hidden] - extract CLS token (first token)
-                clsEmbedding = embeddingTensor.get(NDArrayIndex.point(0), NDArrayIndex.point(0), NDArrayIndex.all());
-                LOG.info("[{}] SHAPE PROCESS: Extracted CLS from 3D tensor -> clsEmbedding shape={}",
-                        this.modelIdentifier, Arrays.toString(clsEmbedding.shape()));
+                if (poolingStrategy == PoolingStrategy.MEAN) {
+                    clsEmbedding = maskedMeanPool(embeddingTensor, attentionMask);
+                    LOG.info("[{}] SHAPE PROCESS: Applied masked mean pooling -> embedding shape={}",
+                            this.modelIdentifier, Arrays.toString(clsEmbedding.shape()));
+                } else {
+                    // AUTO preserves the legacy generic-encoder contract: first-token pooling.
+                    clsEmbedding = embeddingTensor.get(
+                            NDArrayIndex.point(0), NDArrayIndex.point(0), NDArrayIndex.all());
+                    LOG.info("[{}] SHAPE PROCESS: Extracted CLS from 3D tensor -> clsEmbedding shape={}",
+                            this.modelIdentifier, Arrays.toString(clsEmbedding.shape()));
+                }
             } else if (embeddingTensor.rank() == 2 && embeddingTensor.shape()[0] == 1) {
                 // 2D tensor [batch, hidden] - already pooled
                 clsEmbedding = embeddingTensor.getRow(0);
@@ -692,6 +811,101 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             closeArraySafely(reshapedEmbedding, clsEmbedding);
             closeArraySafely(norm);
             closeArraySafely(normMax, norm);
+        }
+    }
+
+    static INDArray maskedMeanPool(INDArray embeddingTensor, long[] attentionMask) {
+        if (attentionMask == null || attentionMask.length != embeddingTensor.size(1)) {
+            throw new IllegalArgumentException("Masked mean pooling requires one attention value per token");
+        }
+        INDArray maskIds = null;
+        INDArray castMask = null;
+        INDArray mask = null;
+        INDArray weighted = null;
+        INDArray sum = null;
+        INDArray pooled = null;
+        try {
+            maskIds = Nd4j.createFromArray(new long[][]{attentionMask});
+            castMask = maskIds.castTo(embeddingTensor.dataType());
+            mask = castMask.reshape(1, attentionMask.length, 1).dup();
+            weighted = embeddingTensor.mul(mask);
+            sum = weighted.sum(1);
+            double count = 0.0;
+            for (long value : attentionMask) {
+                count += value;
+            }
+            pooled = sum.div(Math.max(count, 1.0e-12));
+            return pooled.reshape(-1).dup();
+        } finally {
+            if (pooled != null) pooled.close();
+            if (sum != null) sum.close();
+            if (weighted != null) weighted.close();
+            if (mask != null) mask.close();
+            if (castMask != null) castMask.close();
+            if (maskIds != null) maskIds.close();
+        }
+    }
+
+    static INDArray maskedMeanPoolBatch(
+            INDArray embeddingTensor, long[][] attentionMasks, int logicalRows) {
+        if (embeddingTensor == null || embeddingTensor.rank() != 3
+                || attentionMasks == null || attentionMasks.length < logicalRows
+                || logicalRows < 1 || embeddingTensor.size(0) < logicalRows) {
+            throw new IllegalArgumentException(
+                    "Masked batch mean pooling requires aligned [batch,seq,hidden] output and masks");
+        }
+        int sequenceLength = Math.toIntExact(embeddingTensor.size(1));
+        for (int row = 0; row < logicalRows; row++) {
+            if (attentionMasks[row] == null || attentionMasks[row].length != sequenceLength) {
+                throw new IllegalArgumentException(
+                        "Masked batch mean pooling requires one attention value per token");
+            }
+        }
+
+        INDArray logicalOutput = null;
+        INDArray maskIds = null;
+        INDArray logicalMaskIds = null;
+        INDArray castMask = null;
+        INDArray mask = null;
+        INDArray weighted = null;
+        INDArray sum = null;
+        INDArray rawCounts = null;
+        INDArray counts = null;
+        INDArray boundedCounts = null;
+        INDArray pooled = null;
+        try {
+            logicalOutput = embeddingTensor.get(
+                    NDArrayIndex.interval(0, logicalRows),
+                    NDArrayIndex.all(), NDArrayIndex.all());
+            maskIds = Nd4j.create(attentionMasks);
+            logicalMaskIds = maskIds.get(
+                    NDArrayIndex.interval(0, logicalRows), NDArrayIndex.all());
+            castMask = logicalMaskIds.castTo(embeddingTensor.dataType());
+            mask = castMask.reshape(logicalRows, sequenceLength, 1).dup();
+            weighted = logicalOutput.mul(mask);
+            sum = weighted.sum(1);
+            rawCounts = mask.sum(1);
+            counts = rawCounts.reshape(logicalRows, 1).dup();
+            INDArray epsilon = Nd4j.scalar(1e-12f);
+            try {
+                boundedCounts = Transforms.max(counts, epsilon, false);
+            } finally {
+                epsilon.close();
+            }
+            pooled = sum.div(boundedCounts);
+            return pooled.dup();
+        } finally {
+            if (pooled != null) pooled.close();
+            if (boundedCounts != null && boundedCounts != counts) boundedCounts.close();
+            if (counts != null) counts.close();
+            if (rawCounts != null) rawCounts.close();
+            if (sum != null) sum.close();
+            if (weighted != null) weighted.close();
+            if (mask != null) mask.close();
+            if (castMask != null) castMask.close();
+            if (logicalMaskIds != null) logicalMaskIds.close();
+            if (maskIds != null) maskIds.close();
+            if (logicalOutput != null) logicalOutput.close();
         }
     }
 
@@ -1160,7 +1374,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
             String text = texts.get(i);
-            SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(text);
+            SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(prefixed(text));
             results.add(encodeFromTokenized(text, encoding));
         }
         long elapsed = System.currentTimeMillis() - startTime;
@@ -1202,7 +1416,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             }
 
             String text = texts.get(i);
-            SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(text);
+            SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(prefixed(text));
             int seqLen = enc.inputIds.length;
             indexedEncodings.add(new IndexedEncoding(i, text, enc, seqLen));
 
@@ -1642,13 +1856,15 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             // extractAllEmbeddings copies all values via getFloat(i,j) / System.arraycopy
             // into new float[] arrays (plain Java heap). These do NOT reference native
             // memory and are therefore safe after clearSessionCaches() runs.
-            List<float[]> extracted = extractAllEmbeddings(batchOutput, batchSize);
+            List<float[]> extracted = extractAllEmbeddings(
+                    batchOutput, batchSize, batchAttentionMask);
 
             if (extracted == null) {
                 LOG.warn("[{}] Vectorized extraction failed, falling back to sequential", modelIdentifier);
                 for (int i = 0; i < batchSize; i++) {
                     try {
-                        results.add(extractSingleEmbedding(batchOutput, i));
+                        results.add(extractSingleEmbedding(
+                                batchOutput, i, batchAttentionMask[i]));
                     } catch (Exception e) {
                         LOG.warn("[{}] Failed to extract embedding {}: {}", modelIdentifier, i, e.getMessage());
                         results.add(null);
@@ -1771,7 +1987,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) return null;
-            SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(texts.get(i));
+            SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(prefixed(texts.get(i)));
             encodings.add(enc);
             passageTokenCounts[i] = enc.inputIds.length;
             if (enc.inputIds.length > maxLen) maxLen = enc.inputIds.length;
@@ -1899,12 +2115,14 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             // Extract embeddings to heap float[] BEFORE clearing session caches.
             // extractAllEmbeddings copies all values into new float[] (plain Java heap).
             // These survive clearSessionCaches() because they hold no native pointers.
-            List<float[]> extracted = extractAllEmbeddings(batchOutput, batchSize);
+            List<float[]> extracted = extractAllEmbeddings(
+                    batchOutput, batchSize, batchAttentionMask);
             if (extracted == null) {
                 LOG.warn("[{}] Vectorized extraction failed, falling back to sequential", modelIdentifier);
                 for (int i = 0; i < batchSize; i++) {
                     try {
-                        results.add(extractSingleEmbedding(batchOutput, i));
+                        results.add(extractSingleEmbedding(
+                                batchOutput, i, batchAttentionMask[i]));
                     } catch (Exception e) {
                         LOG.warn("[{}] Failed to extract embedding {}: {}", modelIdentifier, i, e.getMessage());
                         results.add(null);
@@ -1979,7 +2197,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      * @param batchSize The number of embeddings to extract
      * @return List of float[] embeddings, or null on error
      */
-    private List<float[]> extractAllEmbeddings(INDArray batchOutput, int batchSize) {
+    private List<float[]> extractAllEmbeddings(
+            INDArray batchOutput, int batchSize, long[][] attentionMasks) {
         if (batchOutput == null || batchOutput.isEmpty()) {
             LOG.error("[{}] Cannot extract embeddings from null/empty batch output", modelIdentifier);
             return null;
@@ -1993,6 +2212,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         INDArray normalized = null;
         INDArray logicalEmbeddings = null;
         boolean logicalEmbeddingsIsView = false;
+        INDArray rawNorms = null;
+        INDArray boundedNorms = null;
         INDArray norms = null;
 
         try {
@@ -2011,10 +2232,18 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 LOG.info("[{}] VECTORIZED EXTRACT: From 4D tensor -> clsEmbeddings shape={}",
                         modelIdentifier, Arrays.toString(clsEmbeddings.shape()));
             } else if (shape.length == 3) {
-                // [batch, seq_len, hidden] - extract CLS token (position 0) for all batches
-                clsEmbeddings = batchOutput.get(NDArrayIndex.all(), NDArrayIndex.point(0), NDArrayIndex.all());
-                LOG.info("[{}] VECTORIZED EXTRACT: From 3D tensor [all][0][all] -> clsEmbeddings shape={}",
-                        modelIdentifier, Arrays.toString(clsEmbeddings.shape()));
+                if (poolingStrategy == PoolingStrategy.MEAN) {
+                    clsEmbeddings = maskedMeanPoolBatch(
+                            batchOutput, attentionMasks, batchSize);
+                    LOG.info("[{}] VECTORIZED EXTRACT: Applied masked mean pooling to {} rows -> shape={}",
+                            modelIdentifier, batchSize, Arrays.toString(clsEmbeddings.shape()));
+                } else {
+                    // AUTO preserves the generic encoder's legacy first-token contract.
+                    clsEmbeddings = batchOutput.get(
+                            NDArrayIndex.all(), NDArrayIndex.point(0), NDArrayIndex.all());
+                    LOG.info("[{}] VECTORIZED EXTRACT: From 3D tensor [all][0][all] -> clsEmbeddings shape={}",
+                            modelIdentifier, Arrays.toString(clsEmbeddings.shape()));
+                }
             } else if (shape.length == 2) {
                 // [batch, hidden] - already pooled, use directly
                 clsEmbeddings = batchOutput;
@@ -2074,17 +2303,17 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 sanitizeNonFinite(logicalEmbeddings);
                 // VECTORIZED L2 normalization using ND4J's native norm2 operation
                 // norm2(1) computes L2 norm along dimension 1 (hidden dim) for each row
-                norms = logicalEmbeddings.norm2(1);  // [batch] - L2 norm per row
+                rawNorms = logicalEmbeddings.norm2(1);  // [batch] - L2 norm per row
 
                 // Clamp norms to avoid division by zero, then reshape for broadcast
                 // Use Transforms.max for vectorized clamping with epsilon
                 INDArray epsilon = Nd4j.scalar(1e-12f);
                 try {
-                    norms = Transforms.max(norms, epsilon, false);  // in-place max with epsilon
+                    boundedNorms = Transforms.max(rawNorms, epsilon, false);
                 } finally {
                     epsilon.close();
                 }
-                norms = norms.reshape(batchSize, 1);  // [batch, 1] for broadcast
+                norms = boundedNorms.reshape(batchSize, 1).dup();
 
                 // Broadcast divide: [batch, hidden] / [batch, 1] -> [batch, hidden]
                 normalized = logicalEmbeddings.div(norms);
@@ -2125,6 +2354,10 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
         } finally {
             // Clean up intermediate arrays (but not the input batchOutput)
             if (norms != null) try { norms.close(); } catch (Exception ignored) {}
+            if (boundedNorms != null && boundedNorms != rawNorms) {
+                try { boundedNorms.close(); } catch (Exception ignored) {}
+            }
+            if (rawNorms != null) try { rawNorms.close(); } catch (Exception ignored) {}
             // Only close normalized if it's a new array (not the same as clsEmbeddings)
             if (normalized != null && normalized != clsEmbeddings && this.normalizeOutput) {
                 try { normalized.close(); } catch (Exception ignored) {}
@@ -2149,7 +2382,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
      *
      * @deprecated Use extractAllEmbeddings() for batch extraction - more efficient
      */
-    private float[] extractSingleEmbedding(INDArray batchOutput, int batchIndex) {
+    private float[] extractSingleEmbedding(
+            INDArray batchOutput, int batchIndex, long[] attentionMask) {
         INDArray singleOutput = null;
         INDArray clsEmbedding = null;
         INDArray reshapedEmbedding = null;
@@ -2181,11 +2415,20 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 LOG.info("[{}] SHAPE EXTRACT: From 4D tensor [{}][0][0][*] -> clsEmbedding shape={}",
                         modelIdentifier, batchIndex, Arrays.toString(clsEmbedding.shape()));
             } else if (shape.length == 3) {
-                // [batch, seq_len, hidden] - extract CLS token (index 0 of sequence)
-                singleOutput = batchOutput.get(NDArrayIndex.point(batchIndex), NDArrayIndex.point(0), NDArrayIndex.all());
-                clsEmbedding = singleOutput;
-                LOG.info("[{}] SHAPE EXTRACT: From 3D tensor [{}][0][*] -> clsEmbedding shape={}",
-                        modelIdentifier, batchIndex, Arrays.toString(clsEmbedding.shape()));
+                if (poolingStrategy == PoolingStrategy.MEAN) {
+                    singleOutput = batchOutput.get(
+                            NDArrayIndex.interval(batchIndex, batchIndex + 1),
+                            NDArrayIndex.all(), NDArrayIndex.all());
+                    clsEmbedding = maskedMeanPool(singleOutput, attentionMask);
+                    LOG.info("[{}] SHAPE EXTRACT: Applied masked mean pooling to row {} -> shape={}",
+                            modelIdentifier, batchIndex, Arrays.toString(clsEmbedding.shape()));
+                } else {
+                    singleOutput = batchOutput.get(
+                            NDArrayIndex.point(batchIndex), NDArrayIndex.point(0), NDArrayIndex.all());
+                    clsEmbedding = singleOutput;
+                    LOG.info("[{}] SHAPE EXTRACT: From 3D tensor [{}][0][*] -> clsEmbedding shape={}",
+                            modelIdentifier, batchIndex, Arrays.toString(clsEmbedding.shape()));
+                }
             } else if (shape.length == 2) {
                 // [batch, hidden] - already pooled
                 singleOutput = batchOutput.getRow(batchIndex);

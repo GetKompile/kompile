@@ -6,6 +6,8 @@ package ai.kompile.staging.cli;
 
 import ai.kompile.core.staging.StagingModelInfo;
 import ai.kompile.core.staging.StagingStatus;
+import ai.kompile.modelmanager.ManagedModelArtifactCatalog;
+import ai.kompile.modelmanager.ManagedModelArtifactDownloader;
 import ai.kompile.modelmanager.registry.ModelEntry;
 import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.modelmanager.registry.RegistryService;
@@ -24,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.stream.Collectors;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
@@ -131,13 +134,24 @@ public class BootstrapCommand implements Callable<Integer> {
         return 0;
     }
 
-    private DownloadRequest buildDownloadRequest() {
+    DownloadRequest buildDownloadRequest() throws Exception {
         CatalogModel catalog = catalogService.getModel(modelId).orElse(null);
-        String effectiveSource = firstNonBlank(source, catalog == null ? null : catalog.getSource());
+        ManagedModelArtifactCatalog.Definition managed =
+                ManagedModelArtifactCatalog.find(modelId).orElse(null);
+        String effectiveSource = firstNonBlank(
+                source, catalog == null ? null : catalog.getSource(),
+                managed == null ? null : managed.source());
         String effectiveRepository =
-                firstNonBlank(repository, catalog == null ? null : catalog.getRepo());
-        String effectiveFormat = firstNonBlank(format, catalog == null ? null : catalog.getFormat(), "auto");
-        String effectiveType = firstNonBlank(type, catalog == null ? null : catalog.getModelType());
+                firstNonBlank(repository, catalog == null ? null : catalog.getRepo(),
+                        managed == null ? null : managed.repository());
+        String effectiveRevision = firstNonBlank(
+                revision, managed == null ? null : managed.revision());
+        String effectiveFormat = firstNonBlank(
+                format, catalog == null ? null : catalog.getFormat(),
+                managed == null ? null : managed.format(), "auto");
+        String effectiveType = firstNonBlank(
+                type, catalog == null ? null : catalog.getModelType(),
+                managed == null ? null : managed.modelType());
         if (effectiveType == null && "gguf".equalsIgnoreCase(effectiveFormat)) {
             effectiveType = ModelType.LLM_GGML.getValue();
         }
@@ -145,16 +159,44 @@ public class BootstrapCommand implements Callable<Integer> {
             throw new IllegalArgumentException(
                     "Model is not in the catalog; --source and --repository are required");
         }
+        if (managed != null && (!managed.source().equalsIgnoreCase(effectiveSource)
+                || !managed.repository().equals(effectiveRepository)
+                || !managed.revision().equals(effectiveRevision)
+                || !managed.format().equalsIgnoreCase(effectiveFormat))) {
+            throw new IllegalArgumentException(
+                    "Managed model source, repository, revision, and format are immutable for " + modelId);
+        }
 
-        Map<String, String> files = catalog == null || catalog.getFiles() == null
-                ? Map.of() : catalog.getFiles();
-        Map<String, String> assetUrls = catalog == null || catalog.getAssetUrls() == null
-                ? Map.of() : catalog.getAssetUrls();
+        Map<String, String> files;
+        Map<String, String> assetUrls;
+        Map<String, String> expectedChecksums = new LinkedHashMap<>();
+        Map<String, Long> expectedSizes = new LinkedHashMap<>();
+        if (catalog != null) {
+            files = catalog.getFiles() == null ? Map.of() : catalog.getFiles();
+            assetUrls = catalog.getAssetUrls() == null ? Map.of() : catalog.getAssetUrls();
+        } else if (managed != null) {
+            files = managed.components().stream().collect(Collectors.toMap(
+                    ManagedModelArtifactCatalog.Component::key,
+                    ManagedModelArtifactCatalog.Component::localFileName,
+                    (left, right) -> left,
+                    LinkedHashMap::new));
+            Map<String, String> urls = new LinkedHashMap<>();
+            for (ManagedModelArtifactCatalog.Component component : managed.components()) {
+                urls.put(component.key(), ManagedModelArtifactDownloader.componentUrl(
+                        managed, component).toString());
+                expectedChecksums.put(component.key(), component.sha256());
+                expectedSizes.put(component.key(), component.expectedBytes());
+            }
+            assetUrls = Map.copyOf(urls);
+        } else {
+            files = Map.of();
+            assetUrls = Map.of();
+        }
 
         return DownloadRequest.builder()
                 .source(effectiveSource)
                 .repository(effectiveRepository)
-                .revision(revision)
+                .revision(effectiveRevision)
                 .format(effectiveFormat)
                 .modelType(ModelType.fromValue(effectiveType))
                 .audioSynthesis(catalog == null ? null : catalog.getAudioSynthesis())
@@ -162,6 +204,8 @@ public class BootstrapCommand implements Callable<Integer> {
                 .files(files)
                 .textAssets(TextModelAssetMap.fromFileMap(files))
                 .textAssetUrls(TextModelAssetUrlMap.fromUrlMap(assetUrls))
+                .expectedChecksums(expectedChecksums)
+                .expectedSizes(expectedSizes)
                 .build();
     }
 

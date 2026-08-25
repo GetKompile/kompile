@@ -751,7 +751,17 @@ public class ModelConstants {
             Object dim = descriptor.getMetadata().get("embedding_dim");
             return dim instanceof Integer ? (Integer) dim : null;
         }
-        return null;
+        return ManagedModelArtifactCatalog.find(modelId)
+                .map(definition -> definition.metadata().get("embedding_dim"))
+                .filter(value -> value != null && !value.isBlank())
+                .map(value -> {
+                    try {
+                        return Integer.valueOf(value);
+                    } catch (NumberFormatException invalid) {
+                        return null;
+                    }
+                })
+                .orElse(null);
     }
 
     /**

@@ -110,6 +110,7 @@ public class ChatRepl {
     private final String sessionId;
     private final ChatHistory chatHistory;
     private final ChatMemory chatMemory;
+    private final ReminderManager reminderManager;
     private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
     private boolean ragEnabled;
     private String agentName;
@@ -286,6 +287,7 @@ public class ChatRepl {
                 ? Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
                 : workingDirectory.toAbsolutePath().normalize();
         Path workDir = this.workingDirectory;
+        this.reminderManager = new ReminderManager(objectMapper, sessionId, workDir);
 
         // Load custom agents from .kompile/agents/ and ~/.kompile/agents/
         CustomAgentLoader customAgentLoader = new CustomAgentLoader(workDir);
@@ -315,6 +317,10 @@ public class ChatRepl {
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,
                 permissionService, renderer, processManager,
                 localMode ? chatConfig : null, roleManager);
+        SubagentRunner configuredSubagentRunner = toolRegistry.getSubagentRunner();
+        if (configuredSubagentRunner != null) {
+            configuredSubagentRunner.setReminderManager(reminderManager);
+        }
 
         // Create DirectLlmClient for local mode
         this.directClient = localMode && chatConfig != null
@@ -324,6 +330,7 @@ public class ChatRepl {
                 baseUrl, objectMapper, toolRegistry, permissionService,
                 agentRegistry, workDir, directClient, processManager, skillRegistry);
         this.agenticLoop.configureConversationSession(sessionId);
+        this.agenticLoop.setReminderManager(reminderManager);
 
         // Initialize message queue for queued chats
         this.messageQueue = new MessageQueue(sessionId);
@@ -425,13 +432,15 @@ public class ChatRepl {
     public AgentRunController getRunController() { return runController; }
     public CrawlRunStore getCrawlRunStore() { return crawlRunStore; }
     public boolean isForceAgentic() { return forceAgentic; }
+    ReminderManager getReminderManager() { return reminderManager; }
 
     /** Initialise the four extracted collaborator classes after construction. */
     private void initCollaborators() {
         this.messageHandler = new ChatMessageHandler(
                 this, mcpClient, httpClient, objectMapper, sessionId, localMode,
                 chatHistory, chatMemory, sessionMetrics, renderer, ascii, agenticLoop,
-                backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments);
+                backgroundTaskManager, messageQueue, cancelSignal, pendingAttachments,
+                reminderManager);
 
         this.queueManager = new MessageQueueManager(
                 this, messageQueue, messageHandler, backgroundTaskManager, sessionMetrics,
@@ -448,7 +457,7 @@ public class ChatRepl {
                 agentRegistry, skillRegistry, roleManager,
                 toolRegistry, permissionService, agenticLoop,
                 backgroundTaskManager, processManager, statusBar,
-                pendingAttachments);
+                pendingAttachments, reminderManager);
     }
 
     // ── Inline enforcer loading (called from router on /enforcer on|reload) ──

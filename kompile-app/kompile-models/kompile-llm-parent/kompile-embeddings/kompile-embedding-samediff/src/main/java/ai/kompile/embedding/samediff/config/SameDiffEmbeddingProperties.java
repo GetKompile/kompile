@@ -29,6 +29,12 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "kompile.embedding.samediff")
 public class SameDiffEmbeddingProperties {
 
+    public enum PoolingStrategy {
+        AUTO,
+        CLS,
+        MEAN
+    }
+
     /**
      * Whether this SameDiff embedding model is enabled.
      */
@@ -39,11 +45,18 @@ public class SameDiffEmbeddingProperties {
      */
     private String modelUri;
 
+    /** URI or path to the model's Hugging Face tokenizer.json. */
+    private String tokenizerUri;
+
     /**
      * Name of the input placeholder/variable in the SameDiff graph for the primary text input.
      * This typically expects an NDArray of token IDs or preprocessed features.
      */
     private String inputTensorName = "input"; // Default, but should match the model
+
+    private String attentionMaskTensorName = "attention_mask";
+
+    private String tokenTypeIdsTensorName = "token_type_ids";
 
     /**
      * Optional: Names of other input placeholders/variables if the model requires multiple inputs.
@@ -56,6 +69,18 @@ public class SameDiffEmbeddingProperties {
      * Name of the output variable in the SameDiff graph that provides the embedding vector.
      */
     private String outputTensorName = "embedding"; // Default, but should match the model
+
+    /** Maximum tokenizer sequence length before right truncation. */
+    private int maxSequenceLength = 512;
+
+    private boolean addSpecialTokens = true;
+
+    private PoolingStrategy poolingStrategy = PoolingStrategy.AUTO;
+
+    private boolean normalizeOutput = true;
+
+    /** Optional model-specific prefix such as E5's "query: ". */
+    private String inputPrefix = "";
 
     /**
      * Optional: Names of other output variables if the model produces multiple outputs.

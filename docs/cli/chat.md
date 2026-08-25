@@ -38,6 +38,26 @@ For direct providers and models that expose reasoning effort, the wizard also of
 
 At the standard chat prompt, Ctrl-C exits through the normal session cleanup path. Use the configured cancel key (Escape by default) to cancel an in-progress model operation.
 
+### Prompt reminders
+
+Use reminders when an instruction must be repeated at the front of every prompt sent by Kompile Chat. Session reminders are the default and follow the conversation when it is resumed:
+
+```text
+/reminder Always run the focused tests before answering.
+/reminder
+/reminder clear
+```
+
+Project-global reminders apply to every chat session started in the same project folder and are stored in `.kompile/chat-reminders.json`:
+
+```text
+/reminder-global Do not edit generated files.
+/reminder-global list
+/reminder-global clear
+```
+
+`/reminder add <text>` and `/reminder-global add <text>` are explicit aliases for adding reminders. Project-global reminders are prepended first, followed by session reminders. The injected reminder block is sent to the model but is not written into the user transcript or used as the session title.
+
 If Standard Chat selects the local `Kompile` provider and no process is listening at its local chat URL, the CLI starts only `kompile-chat` from the installed distribution and connects the REPL to it. Startup happens after the wizard has resolved the mode and provider; it never replaces or bypasses model configuration.
 
 The native executable is preferred, with `kompile-chat.jar` as fallback, through the normal Kompile process manager. When `kompile` itself is a native image, it infers the distribution root from its own executable and directly launches the sibling `bin/kompile-chat` binary. It uses `~/.kompile` as its data directory, writes subprocess output under `~/.kompile/logs`, and does not create a project or start app-main, model staging, crawling, or model-serving infrastructure.

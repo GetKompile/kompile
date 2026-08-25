@@ -138,7 +138,8 @@ class ChatCompleterTest {
                 "/clear", "/compact", "/auto-compact", "/rag", "/agents", "/local-agents",
                 "/agent", "/local-agent", "/config", "/sessions", "/ask",
                 "/agent-chat", "/conversations", "/transcript", "/memory",
-                "/recall", "/permissions", "/todos", "/plan", "/title", "/queue",
+                "/recall", "/reminder", "/reminder-global", "/permissions", "/todos",
+                "/plan", "/title", "/queue",
                 "/queues", "/queue-send", "/queue-send-all", "/queue-remove",
                 "/queue-edit", "/queue-move", "/queue-clear", "/queue-status",
                 "/jobs", "/jobs-remove",
@@ -354,6 +355,14 @@ class ChatCompleterTest {
         List<Candidate> candidates = complete("/mode ");
         Set<String> values = candidateValues(candidates);
         assertEquals(Set.of("standard", "passthrough", "plan"), values);
+    }
+
+    @Test
+    void reminderSubArgs() {
+        assertEquals(Set.of("list", "add", "clear"),
+                candidateValues(complete("/reminder ")));
+        assertEquals(Set.of("list", "add", "clear"),
+                candidateValues(complete("/reminder-global ")));
     }
 
     @Test

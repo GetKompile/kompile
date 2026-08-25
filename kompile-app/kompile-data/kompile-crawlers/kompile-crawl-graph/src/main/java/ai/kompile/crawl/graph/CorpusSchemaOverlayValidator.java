@@ -39,7 +39,8 @@ final class CorpusSchemaOverlayValidator {
     private static final Set<String> GENERIC_TYPE_NAMES = Set.of(
             "NODE_LABEL", "SOURCE_TYPE", "TARGET_TYPE", "ENTITY_TYPE", "REL_TYPE",
             "TYPE", "UNKNOWN", "ENTITY", "TOPIC", "THEME", "KEYWORD", "TECHNICAL",
-            "PHRASE", "RELATIONSHIP", "RELATIONS", "CO_OCCURS"
+            "PHRASE", "RELATIONSHIP", "RELATIONS", "CO_OCCURS", "CONNECTION",
+            "CONNECTIONS", "LINK", "LINKS", "ASSOCIATION", "ASSOCIATIONS"
     );
     private static final List<String> ALLOWED_PROPERTY_TYPES = List.of(
             "String",
@@ -77,6 +78,15 @@ final class CorpusSchemaOverlayValidator {
     }
 
     static Result validate(GraphSchema configuredSchema, GraphSchema generatedOverlay) {
+        return validate(configuredSchema, generatedOverlay, true);
+    }
+
+    static Result validateTypesOnly(GraphSchema configuredSchema, GraphSchema generatedOverlay) {
+        return validate(configuredSchema, generatedOverlay, false);
+    }
+
+    private static Result validate(
+            GraphSchema configuredSchema, GraphSchema generatedOverlay, boolean validatePatterns) {
         List<String> errors = new ArrayList<>();
         if (generatedOverlay == null) {
             errors.add("[SCHEMA_OVERLAY] Generated schema overlay is null");
@@ -90,8 +100,13 @@ final class CorpusSchemaOverlayValidator {
         validateGeneratedNodes(generatedOverlay, errors, generatedNodeTypeNames);
         validateGeneratedRelationships(generatedOverlay, errors, generatedRelationshipTypeNames, generatedRelationHasPattern);
 
-        validatePatterns(configuredSchema, generatedOverlay, generatedNodeTypeNames, generatedRelationshipTypeNames,
-                generatedRelationHasPattern, errors);
+        if (validatePatterns) {
+            validatePatterns(configuredSchema, generatedOverlay, generatedNodeTypeNames,
+                    generatedRelationshipTypeNames, generatedRelationHasPattern, errors);
+        } else if (generatedOverlay.getPatterns() != null
+                && !generatedOverlay.getPatterns().isEmpty()) {
+            errors.add("[SCHEMA_TYPE_ONLY] Type discovery must not emit endpoint patterns");
+        }
 
         return new Result(errors.isEmpty(), errors);
     }

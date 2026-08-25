@@ -62,9 +62,19 @@ public final class CrawlOntology {
      * filled, relationship aliases are unioned, and new directed endpoint patterns are appended.</p>
      */
     public synchronized UpdateResult update(GraphSchema overlay) {
+        return update(overlay, false);
+    }
+
+    synchronized UpdateResult updateTypesOnly(GraphSchema overlay) {
+        return update(overlay, true);
+    }
+
+    private UpdateResult update(GraphSchema overlay, boolean typesOnly) {
         GraphSchema before = current;
         CorpusSchemaOverlayValidator.Result validation =
-                CorpusSchemaOverlayValidator.validate(before, overlay);
+                typesOnly
+                        ? CorpusSchemaOverlayValidator.validateTypesOnly(before, overlay)
+                        : CorpusSchemaOverlayValidator.validate(before, overlay);
         if (!validation.valid()) {
             return new UpdateResult(
                     false, false, revision, copySchema(before), validation.errors());

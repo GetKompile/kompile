@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.ToolCallIndex;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
@@ -160,6 +161,7 @@ public class AgenticChatLoop {
     private volatile ToolActivityListener toolActivityListener;
     private final AtomicLong transcriptBlockSequence = new AtomicLong();
     private volatile Supplier<String> queuedMessageSupplier = () -> null;
+    private volatile ReminderManager reminderManager;
     private final AtomicReference<Consumer<String>> backgroundOutputConsumer = new AtomicReference<>();
 
     // Inline enforcer: keyword-based rule checker applied to every turn in the chat REPL.
@@ -333,6 +335,11 @@ public class AgenticChatLoop {
     /** Supply queued user guidance from the owning normal-REPL session. */
     public void setQueuedMessageSupplier(Supplier<String> supplier) {
         this.queuedMessageSupplier = supplier != null ? supplier : () -> null;
+    }
+
+    /** Apply active session and project reminders at the provider request boundary. */
+    public void setReminderManager(ReminderManager reminderManager) {
+        this.reminderManager = reminderManager;
     }
 
     /** Route subsequent turn output to a retained background task. */
@@ -1179,15 +1186,17 @@ public class AgenticChatLoop {
                     ? initialToolDefs
                     : toolDefinitions(agent, progressiveToolLoading);
             ConversationLedger.Snapshot ledgerBeforeRequest = conversationLedger.snapshot();
+            String outboundMessage = reminderManager == null
+                    ? currentMessage : reminderManager.prependTo(currentMessage);
 
             StreamResult result;
             if (isDirectMode()) {
                 result = streamDirectTurn(
-                        currentMessage, systemPrompt, toolDefs, pendingToolResults,
+                        outboundMessage, systemPrompt, toolDefs, pendingToolResults,
                         agent.getModelOverride());
             } else {
                 result = streamServerTurn(
-                        currentMessage, sessionId, serverAgent, ragEnabled,
+                        outboundMessage, sessionId, serverAgent, ragEnabled,
                         systemPrompt, toolDefs, pendingToolResults);
             }
 

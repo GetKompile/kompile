@@ -2,6 +2,7 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.common.util.JsonUtils;
 import ai.kompile.cli.main.chat.ChatCompleter;
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
@@ -86,6 +87,27 @@ class AgenticChatLoopQueueSteeringTest {
         assertTrue(retained.toString().contains("background response"));
         loop.clearBackgroundOutput();
         assertFalse(loop.isOutputBackgrounded());
+    }
+
+    @Test
+    void remindersAreAppliedAtEachUserPromptBoundary() {
+        ObjectMapper objectMapper = JsonUtils.standardMapper();
+        ScriptedDirectClient client = ScriptedDirectClient.finalResponseOnly(objectMapper);
+        AgenticChatLoop loop = new AgenticChatLoop(
+                null, objectMapper, new ToolRegistry(objectMapper),
+                new PermissionService(), new AgentRegistry(), workingDirectory, client, null);
+        loop.setReminderManager(ReminderManager.inMemory(
+                List.of("Keep project context"), List.of("Run focused tests")));
+
+        loop.chat("implement the feature", "reminder-boundary-" + UUID.randomUUID(),
+                "coder", "default", false);
+
+        assertEquals(1, client.messages.size());
+        String outbound = client.messages.get(0);
+        assertTrue(outbound.startsWith("<kompile_reminders>"));
+        assertTrue(outbound.indexOf("[project] Keep project context")
+                < outbound.indexOf("[session] Run focused tests"));
+        assertTrue(outbound.endsWith("implement the feature"));
     }
 
     @Test

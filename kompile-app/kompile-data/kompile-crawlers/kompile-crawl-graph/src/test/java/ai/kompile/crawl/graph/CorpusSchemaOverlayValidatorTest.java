@@ -135,4 +135,48 @@ class CorpusSchemaOverlayValidatorTest {
         assertFalse(result.valid());
         assertTrue(result.errors().stream().anyMatch(e -> e.startsWith("[SCHEMA_PATTERN_RELATION]")));
     }
+
+    @Test
+    void typeOnlyValidationAcceptsRelationshipTypesWithoutPatterns() {
+        GraphSchema overlay = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", null)),
+                List.of(new RelationshipType("SUBMITS", "Submission relation", null)),
+                null);
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
+
+        assertTrue(result.valid());
+    }
+
+    @Test
+    void typeOnlyValidationRejectsAnyEndpointPatterns() {
+        GraphSchema overlay = new GraphSchema(
+                List.of(new NodeType("PERSON", "A person", null)),
+                null,
+                List.of("(PERSON)-[:SUBMITS]->(FORECAST)"));
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_TYPE_ONLY]")));
+    }
+
+    @Test
+    void typeOnlyValidationRejectsGenericConnectionLabels() {
+        GraphSchema overlay = new GraphSchema(
+                null,
+                List.of(new RelationshipType(
+                        "CONNECTIONS", "A generic connection placeholder", null)),
+                null);
+
+        CorpusSchemaOverlayValidator.Result result =
+                CorpusSchemaOverlayValidator.validateTypesOnly(null, overlay);
+
+        assertFalse(result.valid());
+        assertTrue(result.errors().stream().anyMatch(
+                error -> error.startsWith("[SCHEMA_GENERIC_TYPE]")));
+    }
 }

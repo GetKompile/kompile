@@ -49,6 +49,7 @@ import java.util.Map;
 public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
 
     private HuggingFaceTokenizer delegate;
+    private int maxLength;
 
     /** Optional explicit special-token IDs (overrides delegate values when >= 0). */
     private int padTokenId = -1;
@@ -90,6 +91,7 @@ public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
             if (config.containsKey("bosTokenId")) this.bosTokenId = parseIntOrDefault(config.get("bosTokenId"), -1);
             if (config.containsKey("eosTokenId")) this.eosTokenId = parseIntOrDefault(config.get("eosTokenId"), -1);
             if (config.containsKey("unkTokenId")) this.unkTokenId = parseIntOrDefault(config.get("unkTokenId"), -1);
+            if (config.containsKey("maxLength")) this.maxLength = parseIntOrDefault(config.get("maxLength"), 0);
         }
 
         // Defaults from the underlying native tokenizer when overrides not supplied
@@ -132,7 +134,7 @@ public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
     @Override
     public INDArray encode(String text) {
         requireInitialized();
-        Encoding enc = delegate.encode(text, true);
+        Encoding enc = truncate(delegate.encode(text, true));
         int[] ids = enc.getIds();
         long[] longIds = new long[ids.length];
         for (int i = 0; i < ids.length; i++) longIds[i] = ids[i];
@@ -145,7 +147,7 @@ public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
         List<int[]> idsList = new ArrayList<>(texts.size());
         int maxLen = 0;
         for (String text : texts) {
-            Encoding enc = delegate.encode(text, addSpecialTokens);
+            Encoding enc = truncate(delegate.encode(text, addSpecialTokens));
             int[] ids = enc.getIds() != null ? enc.getIds() : new int[0];
             idsList.add(ids);
             if (ids.length > maxLen) maxLen = ids.length;
@@ -171,6 +173,10 @@ public class SameDiffHuggingFaceTokenizer implements SameDiffLLMTokenizer {
         result.put("input_ids", Nd4j.createFromArray(inputIds));
         result.put("attention_mask", Nd4j.createFromArray(attentionMask));
         return result;
+    }
+
+    private Encoding truncate(Encoding encoding) {
+        return maxLength > 0 ? encoding.truncate(maxLength, true) : encoding;
     }
 
     @Override

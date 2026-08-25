@@ -47,8 +47,15 @@ public class SameDiffEmbeddingStepConfig extends GenericStepConfig {
     @JsonPropertyDescription("URI of the SameDiff model file (.sd). Example: file:/path/to/model.sd or classpath:/models/my_embedding_model.sd")
     private final String modelUri;
 
+    @JsonPropertyDescription("URI or path to the Hugging Face tokenizer.json paired with the model.")
+    private final String tokenizerUri;
+
     @JsonPropertyDescription("Name of the input tensor/placeholder in the SameDiff graph for the text(s) to be embedded.")
     private final String inputTensorName;
+
+    private final String attentionMaskTensorName;
+
+    private final String tokenTypeIdsTensorName;
 
     @JsonPropertyDescription("Name of the output tensor/variable in the SameDiff graph that provides the embedding vector(s).")
     private final String outputTensorName;
@@ -58,6 +65,16 @@ public class SameDiffEmbeddingStepConfig extends GenericStepConfig {
 
     @JsonPropertyDescription("Key in the pipeline Data object where the output embedding (List<Float> or List<List<Float>>) will be stored.")
     private final String outputEmbeddingsKey;
+
+    private final int maxSequenceLength;
+
+    private final boolean addSpecialTokens;
+
+    private final String poolingStrategy;
+
+    private final boolean normalizeOutput;
+
+    private final String inputPrefix;
 
     // 'name' is not a direct field here, but accessed via getParameters().getString("name", ...) if needed,
     // or set via put("name", ...) on the underlying Data object.
@@ -92,14 +109,25 @@ public class SameDiffEmbeddingStepConfig extends GenericStepConfig {
 
         this.name = params.getString("name", "UnnamedSameDiffEmbeddingStep"); // Default name if not specified
         this.modelUri = params.getString("modelUri", null); // No default, should be required
+        this.tokenizerUri = params.getString("tokenizerUri", null);
         this.inputTensorName = params.getString("inputTensorName", "input"); // Default value "input"
+        this.attentionMaskTensorName = params.getString("attentionMaskTensorName", "attention_mask");
+        this.tokenTypeIdsTensorName = params.getString("tokenTypeIdsTensorName", "token_type_ids");
         this.outputTensorName = params.getString("outputTensorName", "embedding"); // Default value "embedding"
         this.inputTextKey = params.getString("inputTextKey", "inputText"); // Default value "inputText"
         this.outputEmbeddingsKey = params.getString("outputEmbeddingsKey", "samediffEmbeddings"); // Default "samediffEmbeddings"
+        this.maxSequenceLength = params.getInt32("maxSequenceLength", 512);
+        this.addSpecialTokens = params.getBoolean("addSpecialTokens", true);
+        this.poolingStrategy = params.getString("poolingStrategy", "AUTO");
+        this.normalizeOutput = params.getBoolean("normalizeOutput", true);
+        this.inputPrefix = params.getString("inputPrefix", "");
 
         // Perform validation for required fields
         if (this.modelUri == null || this.modelUri.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing required configuration parameter 'modelUri' for SAMEDIFF_EMBEDDING step '" + this.name + "'.");
+        }
+        if (this.tokenizerUri == null || this.tokenizerUri.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing required configuration parameter 'tokenizerUri' for SAMEDIFF_EMBEDDING step '" + this.name + "'.");
         }
         if (this.inputTextKey == null || this.inputTextKey.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing required configuration parameter 'inputTextKey' for SAMEDIFF_EMBEDDING step '" + this.name + "'.");

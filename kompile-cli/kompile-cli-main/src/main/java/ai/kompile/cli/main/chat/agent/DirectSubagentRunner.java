@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.utils.StringUtils;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
@@ -51,6 +52,7 @@ public class DirectSubagentRunner implements SubagentRunner {
     private final PermissionService permissionService;
     private final TerminalRenderer renderer;
     private volatile LifecycleListener lifecycleListener;
+    private volatile ReminderManager reminderManager;
     private final Map<String, DirectSession> sessions = new ConcurrentHashMap<>();
     private static final int MAX_RETAINED_SESSIONS = 16;
 
@@ -95,6 +97,11 @@ public class DirectSubagentRunner implements SubagentRunner {
     @Override
     public void setLifecycleListener(LifecycleListener listener) {
         this.lifecycleListener = listener;
+    }
+
+    @Override
+    public void setReminderManager(ReminderManager reminderManager) {
+        this.reminderManager = reminderManager;
     }
 
     @Override
@@ -169,8 +176,10 @@ public class DirectSubagentRunner implements SubagentRunner {
             // Rebuild on every iteration so an activate_tools call immediately exposes
             // its selected capability group to the subagent's next request.
             ArrayNode toolDefinitions = directToolDefinitionsFor(session.agent);
+            String outboundMessage = reminderManager == null
+                    ? currentMessage : reminderManager.prependTo(currentMessage);
             DirectLlmClient.StreamResult result = session.client.streamChat(
-                    currentMessage, session.systemPrompt, toolDefinitions,
+                    outboundMessage, session.systemPrompt, toolDefinitions,
                     pendingToolResults, session.modelOverride);
             if (result.cancelled || session.cancelled.get()
                     || session.parentContext.isAborted()) {

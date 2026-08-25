@@ -106,6 +106,17 @@ public class CrawlLanguageDetector {
                 && configService != null && configService.isEnabled();
     }
 
+    /**
+     * Detect a language for corpus-level analysis without manufacturing a CrawlItem.
+     * Returns {@code und} when the managed detector is unavailable or disabled.
+     */
+    public String detectLanguage(String text) {
+        if (!isAvailable() || text == null || text.isBlank()) {
+            return LanguageSupport.UNDETERMINED_LANGUAGE;
+        }
+        return LanguageSupport.normalizeLanguageCode(languageDetector.detectLanguage(text));
+    }
+
     private void propagateToMetadata(CrawlItem item) {
         if (item.getMetadata() == null) {
             item.setMetadata(new HashMap<>());

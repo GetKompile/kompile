@@ -52,6 +52,16 @@ public class ModelMetadata {
     @JsonProperty("encoder_type")
     private String encoderType;
 
+    @JsonProperty("pooling_strategy")
+    private String poolingStrategy;
+
+    @JsonProperty("input_prefix")
+    private String inputPrefix;
+
+    @JsonProperty("normalize_output")
+    @Builder.Default
+    private Boolean normalizeOutput = true;
+
     @JsonProperty("rag_role")
     private String ragRole;
 

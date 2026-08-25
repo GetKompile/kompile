@@ -146,17 +146,30 @@ public final class LouvainCommunityDetection {
         double m = totalWeight;
         if (m <= 0) return 0.0;
 
-        double q = 0.0;
-        for (String i : view.nodeIds()) {
-            for (String j : view.nodeIds()) {
-                if (!assignments.get(i).equals(assignments.get(j))) continue;
-                double aij = adj.get(i).getOrDefault(j, 0.0);
-                double ki = nodeWeight.get(i);
-                double kj = nodeWeight.get(j);
-                q += (aij - (ki * kj) / (2.0 * m));
+        // Sparse Newman-Girvan form: sum per-community internal edge weight and degree.
+        // The previous all-pairs implementation was O(n^2), defeating the adjacency-list
+        // representation for the large kNN graphs this class is intended to handle.
+        Map<Integer, Double> communityDegree = new HashMap<>();
+        Map<Integer, Double> communityInternalTwice = new HashMap<>();
+        for (String node : view.nodeIds()) {
+            Integer community = assignments.get(node);
+            if (community == null) continue;
+            communityDegree.merge(community, nodeWeight.getOrDefault(node, 0.0), Double::sum);
+            for (Map.Entry<String, Double> edge : adj.getOrDefault(node, Map.of()).entrySet()) {
+                if (community.equals(assignments.get(edge.getKey()))) {
+                    communityInternalTwice.merge(community, edge.getValue(), Double::sum);
+                }
             }
         }
-        return q / (2.0 * m);
+
+        double twoM = 2.0 * m;
+        double modularity = 0.0;
+        for (Map.Entry<Integer, Double> community : communityDegree.entrySet()) {
+            double internal = communityInternalTwice.getOrDefault(community.getKey(), 0.0);
+            double degreeFraction = community.getValue() / twoM;
+            modularity += internal / twoM - degreeFraction * degreeFraction;
+        }
+        return modularity;
     }
 
     private static Map<Integer, Double> neighborCommunityWeights(String u,

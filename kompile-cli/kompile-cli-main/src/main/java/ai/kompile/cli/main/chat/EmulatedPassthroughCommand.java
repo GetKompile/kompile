@@ -151,6 +151,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private final PassthroughStreamParser parser = new PassthroughStreamParser();
     private final ChatCompleter chatCompleter = new ChatCompleter(() -> null);
     private final ChatSessionTitle sessionTitle = new ChatSessionTitle();
+    private volatile ReminderManager reminderManager;
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
     private TerminalRenderer renderer;
@@ -218,6 +219,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
     private final AtomicLong lastOutputTime = new AtomicLong(0);
     // Last message sent to agent — used to filter PTY echo of user input
     private volatile String lastSentMessage;
+    private volatile Set<String> lastSentEchoLines = Set.of();
     // Subprocess log file — raw PTY output for debugging
     private volatile Writer subprocessLogWriter;
     // Raw PTY byte dump — replay with `cat` to see exact subprocess rendering.
@@ -530,6 +532,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             this.sessionIdentity = SessionIdentity.of(
                     sessionId,
                     enforcerExtraEnv != null ? enforcerExtraEnv.get("KOMPILE_ENFORCER_SESSION_ID") : null);
+            String reminderSourceSessionId = resumeSessionId;
             ChatHistory history = new ChatHistory(sessionId);
             this.sessionHistory = history;
             ChatSessionMetrics metrics = new ChatSessionMetrics(sessionId);
@@ -648,6 +651,21 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                     sessionIdentity = sessionIdentity.withAgentNativeSessionId(nativeResumeId);
                 }
                 firstMessageSent = nativeResumeId != null;
+            }
+            Path reminderWorkingDirectory = Path.of(
+                    workingDir == null || workingDir.isBlank() ? "." : workingDir);
+            this.reminderManager = new ReminderManager(
+                    objectMapper, sessionId, reminderWorkingDirectory);
+            if (reminderSourceSessionId != null && !reminderSourceSessionId.isBlank()
+                    && !reminderSourceSessionId.equals(sessionId)) {
+                try {
+                    ReminderManager resumedReminders = new ReminderManager(
+                            objectMapper, reminderSourceSessionId, reminderWorkingDirectory);
+                    reminderManager.inheritSessionReminders(resumedReminders);
+                } catch (IOException e) {
+                    safePrintln(renderer.dim("  Could not restore session reminders: "
+                            + e.getMessage()));
+                }
             }
 
             replThread = Thread.currentThread();
@@ -986,13 +1004,34 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
      * when the agent repaints.
      */
     private boolean isSentMessageEcho(String strippedLine) {
-        String echo = normalizeEchoLine(lastSentMessage);
-        if (echo.isEmpty()) return false;
         String norm = normalizeEchoLine(strippedLine);
         if (norm.isEmpty()) return false;
-        return norm.equals(echo)
+        for (String echoLine : lastSentEchoLines) {
+            if (norm.equals(echoLine)
+                    || (echoLine.length() >= 8 && norm.endsWith(echoLine))
+                    || (echoLine.length() >= 16 && norm.length() >= 12
+                    && echoLine.contains(norm))) {
+                return true;
+            }
+        }
+        String echo = normalizeEchoLine(lastSentMessage);
+        return !echo.isEmpty() && (norm.equals(echo)
                 || (echo.length() >= 8 && norm.endsWith(echo))
-                || (echo.length() >= 16 && norm.length() >= 12 && echo.contains(norm));
+                || (echo.length() >= 16 && norm.length() >= 12 && echo.contains(norm)));
+    }
+
+    private void rememberSentMessage(String message) {
+        lastSentMessage = message;
+        if (message == null || message.isBlank()) {
+            lastSentEchoLines = Set.of();
+            return;
+        }
+        LinkedHashSet<String> lines = new LinkedHashSet<>();
+        for (String line : message.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
+            String normalized = normalizeEchoLine(line);
+            if (!normalized.isEmpty()) lines.add(normalized);
+        }
+        lastSentEchoLines = Set.copyOf(lines);
     }
 
     /** Drop box-drawing/dash glyphs an input frame can bleed in, then collapse whitespace. */
@@ -3812,6 +3851,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
 
         history.logUserMessage(message);
         metrics.recordUserTurn(message);
+        String outboundMessage = preparePromptForAgent(message);
 
         updateStatusLine("thinking");
         TerminalRenderer.SpinnerHandle spinner = startStatusSpinner(agent);
@@ -4095,9 +4135,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
 
             // Send the message via stdin
-            lastSentMessage = message;
+            rememberSentMessage(outboundMessage);
             synchronized (agentStdin) {
-                agentStdin.write(message.getBytes(StandardCharsets.UTF_8));
+                agentStdin.write(outboundMessage.getBytes(StandardCharsets.UTF_8));
                 agentStdin.flush();
                 long submitDelay = agentDecoder.submitDelayMillis();
                 if (submitDelay > 0) {
@@ -5452,6 +5492,7 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
         agentDecoder = null;
         virtualTerminal = null;
         lastSentMessage = null;
+        lastSentEchoLines = Set.of();
         if (tuiSubagentId != null && tui != null) {
             tui.getStatusBar().unregisterSubagent(tuiSubagentId);
         }
@@ -5540,6 +5581,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             case "/status" -> printStatus(metrics);
             case "/title" -> handleTitle(rest, history);
             case "/copy" -> copyLatestResponse(rest, history);
+            case "/reminder" -> showReminderResult(ReminderManager.Scope.SESSION, rest);
+            case "/reminder-global" -> showReminderResult(ReminderManager.Scope.PROJECT, rest);
             case "/clear" -> initScrollLayout();
             case "/passthrough", "/keys" -> {
                 if (!decoderOwnsScreen()) {
@@ -5634,6 +5677,37 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
             }
         }
         return null;
+    }
+
+    private void showReminderResult(ReminderManager.Scope scope, String arguments) {
+        String result = reminderManager().handleCommand(scope, arguments);
+        for (String line : result.split("\\R", -1)) {
+            safePrintln("  " + line);
+        }
+    }
+
+    private ReminderManager reminderManager() {
+        ReminderManager current = reminderManager;
+        if (current != null) return current;
+        synchronized (this) {
+            if (reminderManager == null) {
+                String sessionId = resumeSessionId != null && !resumeSessionId.isBlank()
+                        ? resumeSessionId
+                        : sessionIdentity != null ? sessionIdentity.kompileSessionId()
+                        : "emulated-current";
+                Path directory = Path.of(
+                        workingDir == null || workingDir.isBlank() ? "." : workingDir);
+                reminderManager = new ReminderManager(objectMapper, sessionId, directory);
+            }
+            return reminderManager;
+        }
+    }
+
+    String preparePromptForAgent(String message) {
+        if (message == null || message.stripLeading().startsWith("/")) {
+            return message;
+        }
+        return reminderManager().prependTo(message);
     }
 
     private void enqueueMessage(String content, ChatSessionMetrics metrics) {
@@ -6042,6 +6116,8 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                   /statusbar         Toggle the bottom status bar
                   /status            Show session metrics
                   /title [text]      Show or change the session title
+                  /reminder [text]   List/add session reminders; use clear to reset
+                  /reminder-global [text]  Project reminders shared by every session
                   /copy              Copy the latest assistant response
                   /clear             Clear the screen
                   /passthrough|/keys Forward keys straight to the agent (Ctrl+] to exit)
@@ -6942,7 +7018,9 @@ public class EmulatedPassthroughCommand implements Callable<Integer> {
                 return;
             }
             String prompt = realtimeCorrectionPrompt(reason, correctionPrompt, toolCall);
-            if (actuator.sendTextAndSubmit(prompt)) {
+            String outboundPrompt = preparePromptForAgent(prompt);
+            rememberSentMessage(outboundPrompt);
+            if (actuator.sendTextAndSubmit(outboundPrompt)) {
                 safePrintln(renderer.yellow("[enforcer] sent realtime correction"));
             } else {
                 safePrintln(renderer.dim("[enforcer] realtime correction skipped: submit failed"));

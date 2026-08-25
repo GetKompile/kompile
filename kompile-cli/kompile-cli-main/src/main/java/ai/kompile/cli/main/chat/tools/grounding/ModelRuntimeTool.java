@@ -10,6 +10,7 @@ import ai.kompile.cli.main.chat.tools.McpToolAnnotations;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolExecutionException;
 import ai.kompile.cli.main.chat.tools.ToolResult;
+import ai.kompile.cli.main.project.LocalProjectModelAcquisition;
 import ai.kompile.cli.main.project.LocalProjectModelBootstrap;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,6 +32,7 @@ public final class ModelRuntimeTool implements CliTool {
     private static final String[] OPTION_FIELDS = {
             "autoBootstrap", "forceBootstrap", "localPath", "source", "repository",
             "revision", "format", "type", "stagingExecutable", "stagingJar",
+            "onnxImporterExecutable", "onnxImporterJar",
             "modelExecutable", "modelJar", "outputPath", "profile", "maxIterations",
             "quantizationType", "force", "createBackup", "dryRun", "selectedPasses",
             "servingExecutable", "servingJar", "javaExecutable", "heapSize",
@@ -52,8 +54,8 @@ public final class ModelRuntimeTool implements CliTool {
     public String description() {
         return "Inspect, bootstrap, import, convert, or optimize a model in the current folder's Kompile project. "
                 + "bootstrap is the configured remote acquisition/download operation; import forces provisioning "
-                + "from localPath or a configured remote source. Native-image distributions run model staging as a "
-                + "request-scoped native child; JAR distributions use the equivalent executable-JAR ABI. "
+                + "from localPath or a configured remote source. Folder-local acquisition is executed directly "
+                + "from a pinned managed component manifest and does not invoke the scale-out staging service. "
                 + "Acquired artifacts are stored under the folder's data/models tree for automatic use by "
                 + "MCP-owned reusable pipeline runtimes; an existing localPath can be consumed in place. "
                 + "convert invokes the standalone kompile-model convert command for local ONNX, TensorFlow/Keras, "
@@ -111,9 +113,13 @@ public final class ModelRuntimeTool implements CliTool {
                 .put("description", "Registry model type such as llm_ggml, encoder, or vlm_pipeline.");
 
         properties.putObject("stagingExecutable").put("type", "string")
-                .put("description", "Optional standalone native kompile-model-staging binary.");
+                .put("description", "Deprecated for model_runtime; scale-out staging is a separate lifecycle.");
         properties.putObject("stagingJar").put("type", "string")
-                .put("description", "Optional packaged executable model-staging JAR for the JAR distribution/JVM mode; rejected by a native parent.");
+                .put("description", "Deprecated for model_runtime; scale-out staging is a separate lifecycle.");
+        properties.putObject("onnxImporterExecutable").put("type", "string")
+                .put("description", "Standalone native ONNX-to-SameDiff importer override.");
+        properties.putObject("onnxImporterJar").put("type", "string")
+                .put("description", "Standalone ONNX-to-SameDiff importer CLI JAR override for JVM mode.");
         properties.putObject("modelExecutable").put("type", "string")
                 .put("description", "Optional standalone native kompile-model CLI binary used by action=convert or optimize.");
         properties.putObject("modelJar").put("type", "string")
@@ -187,8 +193,12 @@ public final class ModelRuntimeTool implements CliTool {
             if ("convert".equals(action)) {
                 String inputPath = text(params, "localPath");
                 String outputPath = text(params, "outputPath");
+                String modelId = text(params, "modelId");
                 if (inputPath == null || outputPath == null) {
                     return ToolResult.error("action=convert requires localPath (input) and outputPath (.sdz destination)");
+                }
+                if (modelId != null) {
+                    options.put("modelId", modelId);
                 }
                 Map<String, Object> conversion = LocalProjectModelBootstrap.convert(
                         projectRoot,
@@ -197,9 +207,16 @@ public final class ModelRuntimeTool implements CliTool {
                         text(params, "format"),
                         options);
                 response.set("conversion", mapper.valueToTree(conversion));
+                if (modelId != null && !params.path("dryRun").asBoolean(false)) {
+                    response.set("registeredModel", mapper.valueToTree(
+                            LocalProjectModelAcquisition.registerConverted(
+                                    projectRoot, modelId,
+                                    projectRoot.resolve(outputPath).normalize())));
+                }
                 return ToolResult.success("model_runtime convert", response.toPrettyString(),
                         Map.of("action", action, "projectRoot", projectRoot.toString(),
-                                "inputPath", inputPath, "outputPath", outputPath));
+                                "inputPath", inputPath, "outputPath", outputPath,
+                                "modelId", modelId == null ? "" : modelId));
             }
             if ("optimize".equals(action)) {
                 String inputPath = text(params, "localPath");
@@ -220,28 +237,32 @@ public final class ModelRuntimeTool implements CliTool {
                                 "inputPath", inputPath == null ? "" : inputPath,
                                 "outputPath", outputPath == null ? "" : outputPath));
             }
+            boolean forceAcquisition = params.path("forceBootstrap").asBoolean(false);
             if ("import".equals(action)) {
                 if (firstNonBlank(params, "localPath", "source", "repository") == null) {
                     return ToolResult.error("action=import requires localPath, source, or repository");
                 }
-                options.put("forceBootstrap", true);
-                options.put("autoBootstrap", true);
+                forceAcquisition = true;
             }
 
             String modelId = text(params, "modelId");
-            LocalProjectModelBootstrap.ResolvedProjectModel resolved =
-                    LocalProjectModelBootstrap.ensure(projectRoot, modelId, options);
+            LocalProjectModelAcquisition.Result resolved = LocalProjectModelAcquisition.acquire(
+                    projectRoot, modelId, options, forceAcquisition,
+                    params.path("dryRun").asBoolean(false));
             ObjectNode model = response.putObject("model");
             model.put("modelId", resolved.modelId());
             model.put("modelPath", resolved.modelPath().toString());
             if (resolved.tokenizerPath() != null) {
                 model.put("tokenizerPath", resolved.tokenizerPath().toString());
             }
-            if (resolved.stagingRuntime() != null) {
-                model.put("stagingRuntime", resolved.stagingRuntime().toString());
-            }
-            model.put("bootstrapped", resolved.bootstrapped());
+            model.put("downloaded", resolved.downloaded());
+            model.put("dryRun", resolved.dryRun());
             model.put("disposition", resolved.disposition());
+            if (resolved.definition() != null) {
+                model.put("repository", resolved.definition().repository());
+                model.put("revision", resolved.definition().revision());
+                model.put("format", resolved.definition().format());
+            }
             response.set("models", mapper.valueToTree(LocalProjectModelBootstrap.inventory(projectRoot)));
 
             return ToolResult.success("model_runtime " + action, response.toPrettyString(),

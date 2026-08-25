@@ -70,6 +70,7 @@ public class ChatMessageHandler {
     private final MessageQueue messageQueue;
     private final AtomicBoolean cancelSignal;
     private final List<ChatRepl.PendingAttachment> pendingAttachments;
+    private final ReminderManager reminderManager;
     private final Object turnDispatchLock = new Object();
     private final AtomicReference<Thread> activeDispatchThread = new AtomicReference<>();
     private final AtomicReference<InputStream> activeResponseBody = new AtomicReference<>();
@@ -110,7 +111,8 @@ public class ChatMessageHandler {
             BackgroundTaskManager backgroundTaskManager,
             MessageQueue messageQueue,
             AtomicBoolean cancelSignal,
-            List<ChatRepl.PendingAttachment> pendingAttachments) {
+            List<ChatRepl.PendingAttachment> pendingAttachments,
+            ReminderManager reminderManager) {
         this.repl = repl;
         this.mcpClient = mcpClient;
         this.httpClient = httpClient;
@@ -127,6 +129,7 @@ public class ChatMessageHandler {
         this.messageQueue = messageQueue;
         this.cancelSignal = cancelSignal;
         this.pendingAttachments = pendingAttachments;
+        this.reminderManager = reminderManager;
         ChatCompleter.setQueueSupplier(() -> this.messageQueue.getAll().stream()
                 .map(MessageQueue.QueuedMessage::getContent)
                 .collect(Collectors.toList()));
@@ -744,7 +747,7 @@ public class ChatMessageHandler {
         try {
             ObjectNode args = objectMapper.createObjectNode();
             args.put("sessionId", sessionId);
-            args.put("message", enrichedMessage);
+            args.put("message", reminderManager.prependTo(enrichedMessage));
             args.put("enableRag", repl.isRagEnabled());
             args.put("maxResults", 10);
             args.put("similarityThreshold", 0.5);
@@ -824,7 +827,7 @@ public class ChatMessageHandler {
         startActivityIndicator();
         try {
             ObjectNode request = objectMapper.createObjectNode();
-            request.put("message", enrichedMessage);
+            request.put("message", reminderManager.prependTo(enrichedMessage));
             request.put("agentName", repl.getAgentName());
             request.put("enableRag", repl.isRagEnabled());
             request.put("ragMaxResults", 5);

@@ -16,6 +16,7 @@
 
 package ai.kompile.cli.main.chat.agent;
 
+import ai.kompile.cli.main.chat.ReminderManager;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 
 /**
@@ -57,6 +58,11 @@ public interface SubagentRunner {
      */
     default void setLifecycleListener(LifecycleListener listener) {
         // Default no-op for implementations that don't support it
+    }
+
+    /** Configure reminders that must be applied at each subagent provider boundary. */
+    default void setReminderManager(ReminderManager reminderManager) {
+        // Default no-op for implementations that do not send model prompts directly.
     }
 
     /**

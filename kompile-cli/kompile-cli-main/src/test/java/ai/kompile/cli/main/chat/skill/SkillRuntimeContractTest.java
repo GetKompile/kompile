@@ -62,6 +62,10 @@ class SkillRuntimeContractTest {
                 SkillConfig.builder("help").promptTemplate("shadow host command").build()));
         assertThrows(IllegalArgumentException.class, () -> registry.register(
                 SkillConfig.builder("title").promptTemplate("shadow title command").build()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(
+                SkillConfig.builder("reminder").promptTemplate("shadow reminders").build()));
+        assertThrows(IllegalArgumentException.class, () -> registry.register(
+                SkillConfig.builder("reminder-global").promptTemplate("shadow reminders").build()));
     }
 
     @Test
