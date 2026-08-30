@@ -55,6 +55,7 @@ class TensorG3QualificationTest {
         assertEquals(expectedModelSha256, sha256(model))
         sendStatus("PROCESS_PID:${android.os.Process.myPid()}")
         sendStatus("INPUT_VERIFIED")
+        preflightMemoryFloor(passMarker)
 
         val options = GenOptions.builder()
             .temperature(0.0)
@@ -108,6 +109,71 @@ class TensorG3QualificationTest {
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    /**
+     * The import pipeline legitimately needs ~2.6GB free RAM + swap headroom to
+     * convert and optimize the canonical SDZ. The Pixel 8a shares its zram with
+     * every background app, so when the phone is under load the import dies in
+     * low-memory termination even though the flow itself is correct. Gate the
+     * run on a memory floor: wait up to 90s for other apps to settle, then fail
+     * fast with an unambiguous DEVICE_UNDER_LOAD diagnostic instead of letting
+     * the importer die mid-convert and misreporting it as a code regression.
+     */
+    private fun preflightMemoryFloor(passMarker: String) {
+        val minAvailableBytes = 2_500_000_000L
+        val minSwapFreeBytes = 1_500_000_000L
+        val deadline = System.currentTimeMillis() + 90_000L
+        var last = memorySnapshot()
+        while (System.currentTimeMillis() < deadline) {
+            if (last.availableBytes >= minAvailableBytes &&
+                last.swapFreeBytes >= minSwapFreeBytes) {
+                break
+            }
+            Thread.sleep(5_000)
+            last = memorySnapshot()
+        }
+        sendStatus(
+            "MEMORY_PREFLIGHT:" +
+                "availableBytes=${last.availableBytes}" +
+                ",swapFreeBytes=${last.swapFreeBytes}" +
+                ",thresholdMet=${last.availableBytes >= minAvailableBytes &&
+                    last.swapFreeBytes >= minSwapFreeBytes}"
+        )
+        if (last.availableBytes < minAvailableBytes ||
+            last.swapFreeBytes < minSwapFreeBytes) {
+            sendStatus(
+                "DEVICE_UNDER_LOAD: " +
+                    "MemAvailable=${last.availableBytes / 1_000_000}MB " +
+                    "(need ${minAvailableBytes / 1_000_000}MB), " +
+                    "SwapFree=${last.swapFreeBytes / 1_000_000}MB " +
+                    "(need ${minSwapFreeBytes / 1_000_000}MB). " +
+                    "Close background apps and rerun; the import pipeline needs " +
+                    "the memory floor and $passMarker would not be meaningful."
+            )
+            throw IllegalStateException(
+                "DEVICE_UNDER_LOAD: insufficient free memory for import " +
+                    "(available=${last.availableBytes}B, swapFree=${last.swapFreeBytes}B)"
+            )
+        }
+    }
+
+    private fun memorySnapshot(): MemorySnapshot {
+        var availableBytes = -1L
+        var swapFreeBytes = -1L
+        java.io.File("/proc/meminfo").useLines { lines ->
+            for (line in lines) {
+                when {
+                    line.startsWith("MemAvailable:") -> availableBytes =
+                        line.substringAfter(':').trim().split(' ').first().toLong() * 1024
+                    line.startsWith("SwapFree:") -> swapFreeBytes =
+                        line.substringAfter(':').trim().split(' ').first().toLong() * 1024
+                }
+            }
+        }
+        return MemorySnapshot(availableBytes, swapFreeBytes)
+    }
+
+    private data class MemorySnapshot(val availableBytes: Long, val swapFreeBytes: Long)
 
     private fun sendStatus(marker: String) {
         instrumentation.sendStatus(
