@@ -214,6 +214,35 @@ if [[ "$cold_instrumentation_status" -ne 0 ]]; then
   fail "cold instrumentation command failed with status $cold_instrumentation_status"
 fi
 
+# Do not start the warm process unless cold qualification really passed. In
+# particular, a DEVICE_UNDER_LOAD preflight is a retryable device-state result,
+# not permission to wait another 90 seconds and then report a misleading warm
+# cache failure.
+if grep -Fq 'tensor_g3_qualification=DEVICE_UNDER_LOAD:' "$output_tmp"; then
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold qualification refused to run because the device is under load"
+fi
+[[ "$(grep -Fc 'tensor_g3_qualification=MEMORY_PREFLIGHT:' "$output_tmp" || true)" -eq 1 ]] || {
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold qualification did not publish one memory preflight result"
+}
+grep -Fq 'thresholdMet=true' "$output_tmp" || {
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold qualification memory floor was not met"
+}
+[[ "$(grep -Fc 'tensor_g3_qualification=COLD_DECODE_PASS' "$output_tmp" || true)" -eq 1 ]] || {
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold qualification did not pass"
+}
+[[ "$(grep -Fc 'OK (1 test)' "$output_tmp" || true)" -eq 1 ]] || {
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold AndroidJUnitRunner result was not one passing test"
+}
+[[ "$(grep -Fc 'INSTRUMENTATION_CODE: -1' "$output_tmp" || true)" -eq 1 ]] || {
+  sed -n '1,240p' "$output_tmp" >&2
+  fail "cold instrumentation did not finish successfully"
+}
+
 "$ADB" -s "$serial" shell am force-stop "$package" || fail "could not stop target process between cold and warm runs"
 "$ADB" -s "$serial" shell am force-stop "$test_package" || fail "could not stop test process between cold and warm runs"
 printf '%s\n' '=== WARM PROCESS ===' >>"$output_tmp"

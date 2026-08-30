@@ -111,7 +111,7 @@ class TensorG3QualificationTest {
     }
 
     /**
-     * The import pipeline legitimately needs ~2.6GB free RAM + swap headroom to
+     * The import pipeline legitimately needs 2.5 GB free RAM plus swap headroom to
      * convert and optimize the canonical SDZ. The Pixel 8a shares its zram with
      * every background app, so when the phone is under load the import dies in
      * low-memory termination even though the flow itself is correct. Gate the
@@ -121,21 +121,32 @@ class TensorG3QualificationTest {
      */
     private fun preflightMemoryFloor(passMarker: String) {
         val minAvailableBytes = 2_500_000_000L
-        val minSwapFreeBytes = 1_500_000_000L
-        val deadline = System.currentTimeMillis() + 90_000L
+        val minSwapFreeBytes = 2_000_000_000L
+        val deadline = android.os.SystemClock.elapsedRealtime() + 90_000L
         var last = memorySnapshot()
-        while (System.currentTimeMillis() < deadline) {
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            requireReadableMemorySnapshot(last)
             if (last.availableBytes >= minAvailableBytes &&
                 last.swapFreeBytes >= minSwapFreeBytes) {
                 break
             }
+            sendStatus(
+                "MEMORY_PREFLIGHT_WAIT:" +
+                    "availableBytes=${last.availableBytes}" +
+                    ",swapFreeBytes=${last.swapFreeBytes}" +
+                    ",minAvailableBytes=$minAvailableBytes" +
+                    ",minSwapFreeBytes=$minSwapFreeBytes"
+            )
             Thread.sleep(5_000)
             last = memorySnapshot()
         }
+        requireReadableMemorySnapshot(last)
         sendStatus(
             "MEMORY_PREFLIGHT:" +
                 "availableBytes=${last.availableBytes}" +
                 ",swapFreeBytes=${last.swapFreeBytes}" +
+                ",minAvailableBytes=$minAvailableBytes" +
+                ",minSwapFreeBytes=$minSwapFreeBytes" +
                 ",thresholdMet=${last.availableBytes >= minAvailableBytes &&
                     last.swapFreeBytes >= minSwapFreeBytes}"
         )
@@ -157,6 +168,19 @@ class TensorG3QualificationTest {
         }
     }
 
+    private fun requireReadableMemorySnapshot(snapshot: MemorySnapshot) {
+        if (snapshot.availableBytes <= 0L || snapshot.swapFreeBytes < 0L) {
+            sendStatus(
+                "MEMORY_PREFLIGHT_ERROR:" +
+                    "availableBytes=${snapshot.availableBytes}" +
+                    ",swapFreeBytes=${snapshot.swapFreeBytes}"
+            )
+            throw IllegalStateException(
+                "MEMORY_PREFLIGHT_ERROR: could not read MemAvailable/SwapFree from /proc/meminfo"
+            )
+        }
+    }
+
     private fun memorySnapshot(): MemorySnapshot {
         var availableBytes = -1L
         var swapFreeBytes = -1L
@@ -164,9 +188,9 @@ class TensorG3QualificationTest {
             for (line in lines) {
                 when {
                     line.startsWith("MemAvailable:") -> availableBytes =
-                        line.substringAfter(':').trim().split(' ').first().toLong() * 1024
+                        line.substringAfter(':').trim().substringBefore(' ').toLong() * 1024
                     line.startsWith("SwapFree:") -> swapFreeBytes =
-                        line.substringAfter(':').trim().split(' ').first().toLong() * 1024
+                        line.substringAfter(':').trim().substringBefore(' ').toLong() * 1024
                 }
             }
         }
