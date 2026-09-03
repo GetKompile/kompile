@@ -632,10 +632,32 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                 consecutiveKillChecks.set(0);
             }
 
-            // Check critical threshold (GC trigger) - HEAP
+            // Check critical threshold (GC trigger) - HEAP.
+            // Defer the GC suggestion while heap is in an active growth burst: firing
+            // System.gc() mid-burst closes DataBuffers whose device memory the DSP decode
+            // of an in-flight generation is still reading (the deallocator thread's
+            // cudaFreeAsync is not ordered against the DSP plan stream), which surfaces
+            // as NaN at gated_delta_rule. A burst that keeps climbing is still caught by
+            // the kill path below; a transient burst subsides and GC fires on the next
+            // quiet cycle.
+            boolean heapBurstActive = heapVelocityPercentPerSecond > RAPID_GROWTH_THRESHOLD_PERCENT_PER_SECOND;
             if (usagePercent >= memoryCriticalPercent) {
-                if (!criticalMemory.get()) {
-                    criticalMemory.set(true);
+                if (heapBurstActive) {
+                    if (!criticalMemory.get()) {
+                        criticalMemory.set(true);
+                        logger.info("CRITICAL MEMORY: {}% used but heap growing at {}/s — "
+                                        + "deferring GC until the burst subsides to avoid freeing "
+                                        + "buffers an in-flight generation is reading",
+                                String.format("%.1f", usagePercent),
+                                String.format("%.1f%%", heapVelocityPercentPerSecond));
+                    } else {
+                        logger.info("CRITICAL MEMORY: {}% used, heap still bursting — GC deferred again",
+                                String.format("%.1f", usagePercent));
+                    }
+                } else {
+                    if (!criticalMemory.get()) {
+                        criticalMemory.set(true);
+                    }
                     logger.warn("CRITICAL MEMORY: {}% used ({}MB/{}MB) - triggering GC",
                             String.format("%.1f", usagePercent),
                             snapshot.usedMB, snapshot.maxMB);
@@ -1063,17 +1085,36 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     }
 
     /**
-     * Build an ownership-aware probe. Driver-wide free memory is retained for diagnostics, but
-     * thresholds use only this JVM's tracked allocations and native CUDA-pool occupancy.
+     * Build an ownership-aware probe from PHYSICAL occupancy signals only.
+     *
+     * <p>The JVM-side DataBuffer byte tracker ({@code trackedBytes}) counts LOGICAL bytes and
+     * double-counts aliased device memory (plan slot arrays, KV slots, and weight copies that
+     * share the same pool pages), so it can exceed the card's physical capacity and must never
+     * drive kill thresholds. Physical process occupancy is the native CUDA mempool's used
+     * bytes ({@code nativePoolUsedBytes} = cudaMemPoolAttrUsedMemCurrent), which every pool and
+     * allocateDirect allocation flows through. {@code driverFreeBytes} is physical truth for
+     * card exhaustion: when the device itself is out of free memory, allocations fail
+     * regardless of page ownership, so near-total physical exhaustion escalates the probe
+     * even if our mempool accounting is lagging.</p>
      */
     static GpuProbe processOwnedGpuProbe(int deviceId, long totalBytes, long driverFreeBytes,
                                          long trackedBytes, long nativePoolUsedBytes) {
         if (totalBytes <= 0 || (nativePoolUsedBytes < 0 && trackedBytes <= 0)) {
             return null;
         }
-        long ownedBytes = Math.max(Math.max(0, trackedBytes), Math.max(0, nativePoolUsedBytes));
-        ownedBytes = Math.min(totalBytes, ownedBytes);
         long driverUsedBytes = Math.max(0, Math.min(totalBytes, totalBytes - driverFreeBytes));
+        // Physical occupancy: native mempool used. If the mempool probe is unavailable,
+        // fall back to driver-wide used (conservative: includes other processes' pages,
+        // which is the safe direction for a kill signal).
+        long ownedBytes = nativePoolUsedBytes >= 0
+                ? nativePoolUsedBytes
+                : driverUsedBytes;
+        // Card-exhaustion override: if the device is physically out of free memory
+        // (<1%), treat it as full regardless of what the mempool reports.
+        if (driverFreeBytes >= 0 && driverFreeBytes < (totalBytes / 100)) {
+            ownedBytes = Math.max(ownedBytes, driverUsedBytes);
+        }
+        ownedBytes = Math.min(totalBytes, ownedBytes);
         double usage = (ownedBytes * 100.0) / totalBytes;
         return new GpuProbe(deviceId, ownedBytes, totalBytes, usage, driverUsedBytes);
     }

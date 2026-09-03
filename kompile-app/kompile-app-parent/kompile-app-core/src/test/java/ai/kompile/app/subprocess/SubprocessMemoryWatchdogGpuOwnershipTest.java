@@ -18,9 +18,11 @@ class SubprocessMemoryWatchdogGpuOwnershipTest {
 
     @Test
     void driverWideSaturationFromAnotherProcessDoesNotKillThisSubprocess() {
+        // 512MB free = ~2.1% (above the 1% exhaustion override): another process has the
+        // card nearly full, but OUR mempool holds only 2GB — no kill signal from that.
         SubprocessMemoryWatchdog.GpuProbe probe =
                 SubprocessMemoryWatchdog.processOwnedGpuProbe(
-                        0, 24 * GIB, 64L * 1024L * 1024L, GIB, 2 * GIB);
+                        0, 24 * GIB, 512L * 1024L * 1024L, GIB, 2 * GIB);
 
         assertNotNull(probe);
         assertEquals(2 * GIB, probe.usedBytes());
@@ -31,10 +33,43 @@ class SubprocessMemoryWatchdogGpuOwnershipTest {
     }
 
     @Test
-    void genuineProcessOwnedSaturationStillCrossesTheKillThreshold() {
+    void aliasedLogicalTrackedBytesNeverInflateTheKillSignal() {
+        // The regression this guards against: logical DataBuffer tracking double-counts
+        // aliased pool pages and exceeded physical capacity (tracked 25GB on a 24GB card)
+        // while the real mempool occupancy was ~18GB — the watchdog killed a healthy plan.
         SubprocessMemoryWatchdog.GpuProbe probe =
                 SubprocessMemoryWatchdog.processOwnedGpuProbe(
-                        0, 24 * GIB, 64L * 1024L * 1024L, 22 * GIB, 23 * GIB);
+                        0, 24 * GIB, 1500L * 1024L * 1024L, 25 * GIB, 18 * GIB);
+
+        assertNotNull(probe);
+        assertEquals(18 * GIB, probe.usedBytes(),
+                "kill signal must use physical mempool occupancy, never logical tracked bytes");
+        assertTrue(probe.usagePercent() < 95.0,
+                "aliased over-count must not fabricate a kill-threshold crossing");
+    }
+
+    @Test
+    void physicalCardExhaustionEscalatesEvenWhenMempoolAccountingLags() {
+        // Driver reports <1% free (64MB of 24GB): allocations are failing regardless of
+        // accounting, so the probe escalates to driver-wide used (total - free).
+        long expectedUsed = (24 * GIB) - (64L * 1024L * 1024L);
+        SubprocessMemoryWatchdog.GpuProbe probe =
+                SubprocessMemoryWatchdog.processOwnedGpuProbe(
+                        0, 24 * GIB, 64L * 1024L * 1024L, GIB, 2 * GIB);
+
+        assertNotNull(probe);
+        assertEquals(expectedUsed, probe.usedBytes(),
+                "near-total physical exhaustion must escalate used to the driver-wide value");
+        assertTrue(probe.usagePercent() > 99.0,
+                "escalated driver-wide used must read as effectively full");
+    }
+
+    @Test
+    void genuineProcessOwnedSaturationStillCrossesTheKillThreshold() {
+        // 512MB free (~2.1%, above override): mempool honestly reports 23GB → >92%.
+        SubprocessMemoryWatchdog.GpuProbe probe =
+                SubprocessMemoryWatchdog.processOwnedGpuProbe(
+                        0, 24 * GIB, 512L * 1024L * 1024L, 22 * GIB, 23 * GIB);
 
         assertNotNull(probe);
         assertEquals(23 * GIB, probe.usedBytes());
@@ -42,14 +77,16 @@ class SubprocessMemoryWatchdogGpuOwnershipTest {
     }
 
     @Test
-    void trackedAllocationsRemainUsableWhenNativePoolTelemetryIsUnavailable() {
+    void mempoolTelemetryUnavailableFallsBackToDriverWideUsed() {
         SubprocessMemoryWatchdog.GpuProbe probe =
                 SubprocessMemoryWatchdog.processOwnedGpuProbe(
                         1, 8 * GIB, GIB, 3 * GIB, -1);
 
         assertNotNull(probe);
-        assertEquals(3 * GIB, probe.usedBytes());
-        assertEquals(37.5, probe.usagePercent(), 0.0001);
+        // nativePoolUsed=-1 → conservative driver-wide fallback (8GB - 1GB = 7GB),
+        // NOT the logical tracked bytes.
+        assertEquals(7 * GIB, probe.usedBytes());
+        assertEquals(87.5, probe.usagePercent(), 0.0001);
     }
 
     @Test
@@ -63,7 +100,7 @@ class SubprocessMemoryWatchdogGpuOwnershipTest {
 
         SubprocessMemoryWatchdog.GpuProbe highest =
                 SubprocessMemoryWatchdog.highestUsageGpuProbe(
-                        java.util.List.of(idleDevice, saturatedDevice));
+                java.util.List.of(idleDevice, saturatedDevice));
 
         assertNotNull(highest);
         assertEquals(1, highest.deviceId());
